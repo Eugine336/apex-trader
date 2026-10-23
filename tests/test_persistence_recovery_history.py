@@ -1,4 +1,8 @@
-from persistence.recovery import find_confirmed_close_deals
+from persistence import domain_events as DE
+from persistence.recovery import (
+    PositionLifecycleProjection,
+    find_confirmed_close_deals,
+)
 
 
 def test_only_matching_mt5_exit_deals_confirm_a_closed_position():
@@ -39,3 +43,26 @@ def test_position_ids_are_matched_exactly_after_numeric_normalization():
     # The requested ID remains an exact string identifier: numeric broker IDs
     # are normalized, but we don't fuzzy-match distinct strings.
     assert confirmed == {}
+
+
+def test_reconciled_close_event_removes_stale_position_from_projection():
+    projection = PositionLifecycleProjection()
+    projection.apply({
+        "event_type": DE.TRADE_OPEN,
+        "seq": 1,
+        "symbol": "XAUUSD",
+        "payload_json": {"order_id": "1836084408"},
+    })
+    assert projection.open_order_ids() == {"1836084408"}
+
+    projection.apply({
+        "event_type": DE.TRADE_RECONCILED_CLOSED,
+        "seq": 2,
+        "symbol": "XAUUSD",
+        "payload_json": {
+            "order_id": "1836084408",
+            "broker_history_verified": True,
+            "financial_attribution": "not_reconstructed",
+        },
+    })
+    assert projection.open_order_ids() == set()
