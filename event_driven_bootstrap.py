@@ -2941,6 +2941,12 @@ class EventDrivenSystem:
                     _cog_loop.set_gold_market_source(
                         gold_observer.evidence_for if gold_observer is not None else None
                     )
+                    if gold_observer is not None:
+                        gold_observer.set_evidence_change_callback(
+                            lambda symbol: _cog_loop.request_reason(
+                                symbol, reason="gold_market_evidence_changed"
+                            )
+                        )
                 except Exception as exc:
                     logger.debug("[event-driven] Gold market evidence wiring failed: {}", exc)
                 # Violation #2 — wire the inter-candle structural interactions in
