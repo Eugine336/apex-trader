@@ -46,6 +46,7 @@ from cognition.contracts import (
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
+from cognition.pattern_rules import pattern_name
 
 logger = logging.getLogger("apex.cognition.brain")
 
