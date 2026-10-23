@@ -1,5 +1,8 @@
 # Apex Gold Desk — single-Brain integration
 
+
+> **Identity migration status (2026-10-23):** System-wide identity applies here too: the Gold Desk is an observation layer for the shared CognitiveBrain, not the scope of Apex's identity. See docs/APEX_IDENTITY.md. Gold-specific wiring/guardrails do not prove that the same full intelligence is implemented across all instruments; remaining system-wide gaps are in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 ## Architecture rule
 
 Apex has one market decision authority: the existing `CognitiveBrain`, driven
