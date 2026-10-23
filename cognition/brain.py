@@ -773,9 +773,11 @@ class CognitiveBrain:
         # of the council must have contributed. When NO council metadata is present
         # the quorum cannot be verified — this no longer passes SILENTLY: it is
         # recorded as UNCONFIRMED (and logged/attenuated as degraded above).
+        # Unknown advisor coverage is not a quorum. Missing metadata cannot
+        # silently grant an exposure-increasing action.
         quorum_ok = (
-            advisors_responded is None
-            or advisors_responded >= self.min_advisors_for_action
+            advisors_responded is not None
+            and advisors_responded >= self.min_advisors_for_action
         )
         if advisors_responded is not None:
             if quorum_ok:
@@ -796,19 +798,29 @@ class CognitiveBrain:
             )
         # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
         # consolidation omits the count (a hand-built consolidation dict).
-        domain_count = consolidation.get("domain_count")
-        domain_ok = (domain_count is None) or (int(domain_count) >= self.min_evidence_domains)
-        if domain_count is not None:
-            if domain_ok:
-                questions["evidence_coverage"] = (
-                    f"ADEQUATE: {int(domain_count)} domains present "
-                    f"(minimum: {self.min_evidence_domains})"
-                )
-            else:
-                questions["evidence_coverage"] = (
-                    f"INSUFFICIENT: {int(domain_count)} domains present, "
-                    f"minimum {self.min_evidence_domains} required"
-                )
+        raw_domain_count = consolidation.get("domain_count")
+        try:
+            domain_count = int(raw_domain_count) if raw_domain_count is not None else None
+        except (TypeError, ValueError, OverflowError):
+            domain_count = None
+        domain_ok = (
+            domain_count is not None and domain_count >= self.min_evidence_domains
+        )
+        if domain_count is None:
+            questions["evidence_coverage"] = (
+                "UNCONFIRMED: evidence-domain count is missing or invalid; "
+                f"required minimum: {self.min_evidence_domains}"
+            )
+        elif domain_ok:
+            questions["evidence_coverage"] = (
+                f"ADEQUATE: {domain_count} domains present "
+                f"(minimum: {self.min_evidence_domains})"
+            )
+        else:
+            questions["evidence_coverage"] = (
+                f"INSUFFICIENT: {domain_count} domains present, "
+                f"minimum {self.min_evidence_domains} required"
+            )
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
         # Article IX — the Brain's OWN leading-hypothesis invalidation leads the
@@ -938,28 +950,36 @@ class CognitiveBrain:
             elif directional_and_qualified and ev_ok and not quorum_ok:
                 # Article XX — a qualified opportunity backed by too few advisors:
                 # cognitive coverage is insufficient to originate a campaign.
+                quorum_status = (
+                    f"{advisors_responded}/{self.min_advisors_for_action}"
+                    if advisors_responded is not None
+                    else f"unknown (need {self.min_advisors_for_action})"
+                )
                 reason_txt = (
-                    f"advisor quorum not met: {advisors_responded}/"
-                    f"{self.min_advisors_for_action} advisors responded — "
-                    "cognitive coverage insufficient for action"
+                    f"advisor quorum not met or unconfirmed: {quorum_status} "
+                    "— cognitive coverage insufficient for action"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — advisor quorum not met "
-                    f"({advisors_responded}/{self.min_advisors_for_action})"
+                    "evaluated: doing nothing is correct — advisor quorum is "
+                    f"not met or unconfirmed ({quorum_status})"
                 )
             elif directional_and_qualified and ev_ok and not domain_ok:
                 # Article XXXIV — a qualified opportunity on too few evidence
                 # domains: cannot determine whether an opportunity exists.
+                coverage_status = (
+                    f"{domain_count}/{self.min_evidence_domains} domains"
+                    if domain_count is not None
+                    else f"unknown; {self.min_evidence_domains} domains required"
+                )
                 reason_txt = (
-                    f"insufficient evidence coverage: {int(domain_count)}/"
-                    f"{self.min_evidence_domains} domains — cannot determine "
-                    "whether opportunity exists"
+                    f"insufficient or unconfirmed evidence coverage: {coverage_status} "
+                    "— cannot determine whether opportunity exists"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — insufficient evidence "
-                    f"coverage ({int(domain_count)}/{self.min_evidence_domains} domains)"
+                    "evaluated: doing nothing is correct — evidence coverage is "
+                    f"insufficient or unconfirmed ({coverage_status})"
                 )
             elif (directional_and_qualified and not ev_ok) or (
                 self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
