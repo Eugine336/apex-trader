@@ -5,6 +5,14 @@ on:
     paths:
       - "gold_desk/**"
       - "tests/test_gold_desk_core.py"
+      - "tests/test_action_executor.py"
+      - "tests/test_brain_native_reasoning.py"
+      - "execution/action_executor.py"
+      - "cognition/brain.py"
+      - "event_driven_bootstrap.py"
+      - "cognition/evidence_adapters.py"
+      - "cognition/loop.py"
+      - "GOLD_DESK_IMPLEMENTATION.md"
       - ".github/workflows/gold-desk.yml"
   push:
     branches:
@@ -12,6 +20,14 @@ on:
     paths:
       - "gold_desk/**"
       - "tests/test_gold_desk_core.py"
+      - "tests/test_action_executor.py"
+      - "tests/test_brain_native_reasoning.py"
+      - "execution/action_executor.py"
+      - "cognition/brain.py"
+      - "event_driven_bootstrap.py"
+      - "cognition/evidence_adapters.py"
+      - "cognition/loop.py"
+      - "GOLD_DESK_IMPLEMENTATION.md"
       - ".github/workflows/gold-desk.yml"
 
 jobs:
@@ -28,6 +44,6 @@ jobs:
       - name: Install focused test tools
         run: python -m pip install --upgrade pip pytest ruff loguru
       - name: Test deterministic Gold desk kernel
-        run: python -m pytest tests/test_gold_desk_core.py -q
+        run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py -q
       - name: Lint new implementation
         run: ruff check gold_desk tests/test_gold_desk_core.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
