@@ -427,7 +427,7 @@ class BrainReasoner:
                 direction = SHORT if zvalue > 0.0 else (LONG if zvalue < 0.0 else FLAT)
                 hyps.append(self._make(
                     statement=(
-                        f"XAUUSD statistical displacement is {abs(zvalue):.2f} standard deviations "
+                        f"{symbol} statistical displacement is {abs(zvalue):.2f} standard deviations "
                         "from its rolling mean while the EMA spread is contained; a return toward "
                         "the mean is a competing hypothesis, not an assumed outcome."
                     ),
@@ -587,9 +587,14 @@ class BrainReasoner:
 
     @staticmethod
     def _required_domains(h: BrainHypothesis) -> "list[str]":
-        needs = {"structure"}
         sup = {pattern_name(p) for p in h.supporting_patterns}
-        if sup & {"momentum_acceleration", "liquidity_sweep_with_momentum_exhaustion"}:
+        # A pure statistical-displacement thesis is supported by its signed
+        # momentum z-score and contained EMA-spread measurement; requiring a
+        # structure module that was not part of that detector would penalise it
+        # for an unrelated missing domain.
+        needs = set() if sup and sup <= {"statistical_displacement"} else {"structure"}
+        if sup & {"momentum_acceleration", "liquidity_sweep_with_momentum_exhaustion",
+                  "statistical_displacement"}:
             needs.add("momentum")
         if sup & {"volume_confirmed_breakout", "displacement_confirmed"}:
             needs.add("volume")
