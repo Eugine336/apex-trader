@@ -151,7 +151,7 @@ def test_gold_market_adapter_emits_one_neutral_evidence_record():
     assert item.measurements["orders_sent"] is False
     forbidden = {"direction", "entry", "stop", "target", "quality_score", "reward_to_risk"}
     assert forbidden.isdisjoint(item.measurements)
-    assert "not independent votes" in item.observation
+    assert "NOT independent votes" in item.observation
 
 
 def test_gold_market_adapter_rejects_stale_payload_and_non_gold_symbol():
