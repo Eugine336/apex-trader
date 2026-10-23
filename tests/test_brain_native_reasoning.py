@@ -213,6 +213,21 @@ def test_flat_brain_defers_without_changing_confidence():
 
 # ── Article X: independent origination when the advisor is unavailable ────────
 
+
+def test_brain_originates_natively_when_no_external_reasoner_is_configured():
+    # No AI provider object exists at all. A strong, low-uncertainty structured
+    # market read must still be reasoned over by the native Brain.
+    brain = CognitiveBrain(reasoner=None, reward_r_default=2.0)
+    out = brain.reason(_strong_long_state())
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.campaign is not None
+    assert out.campaign.direction == LONG
+    assert out.campaign.initial_execution_intent.get("independent_origination") is True
+    assert "no external advisor configured" in out.decision.questions_answered["reasoner_state"]
+    assert brain.get_status()["independent_originations"] == 1
+
+
+
 def test_brain_originates_independently_when_advisor_unavailable():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.9), available=False),
                            reward_r_default=2.0)
