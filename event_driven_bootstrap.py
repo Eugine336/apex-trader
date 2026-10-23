@@ -5885,7 +5885,21 @@ class EventDrivenSystem:
         comment: str = "",
         idempotency_key: str = "",
     ):
-        """Place a pending LIMIT via the per-symbol broker connector."""
+        """Place a pending LIMIT via the per-symbol broker connector.
+
+        Final Gold-only safeguard for the direct pending-order path. Pending
+        orders do not go through ActionExecutor, so keep this boundary guarded
+        even if an operator accidentally re-enables a retired staging component.
+        """
+        allowed_gold_symbols = {
+            "XAUUSD", "GOLD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
+        }
+        if str(symbol or "").strip().upper() not in allowed_gold_symbols:
+            logger.warning(
+                "[gold-only] rejected pending order for non-Gold symbol {}",
+                symbol,
+            )
+            return None
         connector = self._pm.get_connector(symbol)
         if connector is None:
             return None
