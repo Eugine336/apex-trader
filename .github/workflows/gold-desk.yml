@@ -43,6 +43,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install focused test tools
         run: python -m pip install --upgrade pip pytest ruff loguru numpy pandas aiosqlite
+      - name: Compile changed runtime modules
+        run: >-
+          python -m py_compile
+          gold_desk/__init__.py gold_desk/apex_observer.py
+          gold_desk/indicators.py gold_desk/models.py gold_desk/news_context.py
+          gold_desk/strategies.py gold_desk/symbols.py
+          cognition/brain.py cognition/brain_reasoning.py cognition/evidence_adapters.py
+          cognition/loop.py cognition/pattern_rules.py
+          execution/action_executor.py event_driven_bootstrap.py
       - name: Test deterministic Gold desk kernel
         run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py -q
       - name: Lint new implementation
