@@ -70,12 +70,14 @@ def test_identity_safe_configuration_defaults_require_authoritative_net_ev_and_b
         "COGNITION_GATE_MODE",
         "COGNITION_EV_PRIMARY_GATE",
         "COGNITION_MIN_EVIDENCE_DOMAINS",
+        "COGNITION_EVENT_MIN_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     cfg = CognitionConfig()
     assert cfg.gate_mode == "authoritative"
     assert cfg.ev_primary_gate is True
     assert cfg.min_evidence_domains >= 3
+    assert cfg.event_min_interval_seconds == 1.0
 
 
 def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
