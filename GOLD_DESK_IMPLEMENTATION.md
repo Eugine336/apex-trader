@@ -135,10 +135,17 @@ live orders. Before enabling live trading:
    can reason without AI, but provider-outage and no-provider behavior must be
    validated in an end-to-end runtime test, not inferred from unit tests alone.
 
-## Environment file
+## Environment file and credential hygiene
 
-The `.env` file has been restored on this feature branch from the exact blob
-present on `main`. Do not delete it as part of the Gold desk work. This update
-did not print or rewrite its contents. If that file contains live credentials,
-rotate them separately if they have been exposed in a shared repository; restoring
-the tracked file does not remove prior Git history.
+The repository must not track runtime `.env` files. This branch removes the
+previously tracked `.env`, adds a sanitized `.env.example`, and tests that
+secret-like variables in the example remain blank. On a local checkout, back up
+any existing runtime `.env` before pulling, then recreate it from the template
+and enter credentials locally. Never copy credentials into the template or commit
+the runtime file.
+
+The former tracked file contained a non-empty Deriv access token and an inline
+Modal inference key. Revoke/rotate those credentials in their provider consoles,
+and rotate any other credential that may have been used while this history was
+public. Deleting the current file does not erase prior Git history. This security
+cleanup applies to all of Apex, not only Gold Desk.
