@@ -123,6 +123,28 @@ def test_m1_price_action_with_unknown_source_time_is_explicitly_uncertain():
     assert evidence.uncertainty == 0.75
 
 
+def test_council_and_execution_metadata_do_not_pad_market_domain_coverage():
+    state = MarketState(symbol="EURUSD")
+    state.add(Evidence(
+        source_module="structure.test", domain=EvidenceDomain.STRUCTURE,
+        confidence=0.9, uncertainty=0.1, relevance_horizon_seconds=300.0,
+    ))
+    state.add(Evidence(
+        source_module="reasoning_engine.test", domain=EvidenceDomain.REASONING,
+        confidence=0.9, uncertainty=0.1, relevance_horizon_seconds=300.0,
+    ))
+    state.add(Evidence(
+        source_module="execution_cost.test", domain=EvidenceDomain.EXECUTION_QUALITY,
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
+    consolidation = state.consolidation()
+    assert consolidation["domain_count"] == 3
+    assert consolidation["market_domain_count"] == 1
+    assert consolidation["market_domains_present"] == ["structure"]
+
+
 def test_m1_rejection_patterns_become_neutral_provisional_evidence():
     frame = _m1_frame()
     measurements = detect_m1_price_action(frame)
