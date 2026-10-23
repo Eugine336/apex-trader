@@ -39,6 +39,7 @@ from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
     evidence_from_execution_cost,
+    evidence_from_gold_market,
     evidence_from_portfolio,
     evidence_from_reasoning,
     evidence_from_thesis_status,
