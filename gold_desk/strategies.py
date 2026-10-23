@@ -157,7 +157,9 @@ class VolatilityExpansionDetector:
         if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 30:
             return []
         av = atr(bars)
-        baseline = median_true_range(bars[:-1], window=18)
+        # Helper excludes the newest true range; pass the full series so the baseline
+        # is exactly the 18 completed bars before the breakout candle.
+        baseline = median_true_range(bars, window=18)
         if av is None or baseline is None:
             return []
         last, prior = bars[-1], bars[-21:-1]
