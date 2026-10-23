@@ -3690,7 +3690,15 @@ class EventDrivenSystem:
             _time.sleep(10.0)
 
     def _run_news_planner_update(self) -> None:
-        """Drive the news pre-planner ~every 60s (staged breakouts + OCO)."""
+        """Drive legacy OCO staging only when Apex's single-Brain path is disabled.
+
+        On the normal single-path architecture the Brain owns trade origination.
+        NewsGuard still feeds verified event context to the Brain, but this legacy
+        planner must not stage a second, independent pair of broker orders.
+        """
+        cognition_cfg = getattr(self._config, "cognition", None)
+        if bool(getattr(cognition_cfg, "single_path", True)):
+            return
         planner = getattr(self, "_news_planner", None)
         if planner is None:
             return
