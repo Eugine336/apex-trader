@@ -209,9 +209,14 @@ def assess_strategy_lenses(
             reasons.append("regime context: " + ", ".join(regime_hits[:3]))
 
         raw_score = len(matched) + min(2, len(domain_hits)) + min(1, len(regime_hits))
-        missing = [requirement for requirement in lens.data_requirements
-                   if not any(token in surfaces for token in requirement.lower().split()
-                              if len(token) > 3)]
+        missing = [
+            requirement for requirement in lens.data_requirements
+            if not all(
+                token in surfaces
+                for token in requirement.lower().split()
+                if len(token) > 3
+            )
+        ]
         if raw_score >= 2:
             status = "relevant"
         elif raw_score == 1:
