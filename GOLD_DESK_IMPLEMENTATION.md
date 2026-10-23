@@ -27,9 +27,10 @@ Selected XAUUSD broker feed
 
 The observer has no broker order API. It emits the monitoring event
 `gold_market_evidence`, not `gold_desk_opportunity`. The actual latest payload
-is read directly by the existing CognitionLoop. Detector results' internal
-direction, entry, stop, target, rationale and ranking score are stripped before
-the payload is stored or supplied to the Brain.
+is read directly by the existing CognitionLoop. Detector interfaces now return
+`PatternObservation` records containing facts and raw measurements only. They
+have no direction, entry, stop, target, rationale, rank or trade-candidate object
+to strip or route into execution.
 
 ## Detector families
 
@@ -58,15 +59,15 @@ does not determine whether the deterministic market measurements are calculated.
 - The observer uses broker-fetch history with `include_forming=False`, filters forming/future bars, checks tick freshness, and updates a cached evidence payload.
 - Evidence is freshness-limited at the CognitiveLoop adapter; an expired or unavailable Gold feed is reported as degraded evidence, not as a no-opportunity market conclusion.
 - Pattern data is provided as one neutral Evidence object. Overlapping modules are not votes, and no additive score or coordinator chooses a winner.
-- The preflight gate remains shadow-only by default and is not an order route. Risk/execution gates remain separate governance safeguards; they do not act as another market brain.
+- No new Gold-specific risk gate or execution path exists in this branch. Position sizing, portfolio exposure, the existing execution RiskGate, ActionExecutor and broker routing remain Apex's authoritative execution controls.
 
 ## Validation
 
-The focused tests cover detector registration, CRT pattern conditions, strict
-Gold symbol mapping, shadow-only risk authorization, drawdown blocking, candle
-time integrity, one-record neutral evidence conversion, stale evidence rejection,
-venue-routing mismatch and stripping of trade instructions before evidence
-reaches the central Brain.
+The focused tests cover evidence-only detector registration, CRT range/sweep/
+reclaim observations, strict Gold symbol mapping, candle time integrity,
+one-record neutral evidence conversion with factual measurements, stale evidence
+rejection, venue-routing mismatch, and proof that no pattern detector output
+contains trade direction or execution geometry.
 
 Run:
 
