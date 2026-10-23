@@ -58,6 +58,8 @@ def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
                     confidence=0.9, uncertainty=0.1, polarity=polarity))
     ms.add(Evidence(source_module="s2", domain="structure",
                     confidence=0.9, uncertainty=0.1, polarity=polarity))
+    ms.add(Evidence(source_module="s3", domain="liquidity",
+                    confidence=0.85, uncertainty=0.15, polarity=0.0))
     ms.add(Evidence(
         source_module="reasoning_engine.test_council", domain="reasoning",
         symbol=symbol, observation="verified test council coverage",
