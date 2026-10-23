@@ -14,7 +14,7 @@ import hashlib
 import json
 import threading
 import time
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from loguru import logger
 
@@ -119,6 +119,9 @@ class ApexGoldDeskShadowObserver:
         candle_fetcher: Callable[[str, str, int], Any],
         venue_resolver: Callable[[str], str],
         market_open: Callable[[str], bool] | None = None,
+        event_window_source: Callable[
+            [str, datetime, Mapping[str, Sequence[Candle]]], EventWindow | None
+        ] | None = None,
         pattern_detectors: Sequence[Any] | None = None,
         max_tick_age_seconds: float = 5.0,
     ) -> None:
@@ -136,9 +139,9 @@ class ApexGoldDeskShadowObserver:
         self.candle_fetcher = candle_fetcher
         self.venue_resolver = venue_resolver
         self.market_open = market_open
-        # These modules are read-only pattern detectors. Their TradeIdea-shaped
-        # internal result is deliberately stripped down to factual observations
-        # before the one evidence record reaches CognitionLoop.
+        self.event_window_source = event_window_source
+        # These modules only report facts and measurements. Their interface has
+        # no trade direction or executable candidate object.
         self._pattern_detectors = list(pattern_detectors or default_pattern_detectors())
         self.max_tick_age_seconds = float(max_tick_age_seconds)
 
@@ -269,6 +272,9 @@ class ApexGoldDeskShadowObserver:
                 tf: [dict(bar) for bar in bars]
                 for tf, bars in (payload.get("completed_bars") or {}).items()
             }
+            copied["event_context"] = (
+                dict(payload["event_context"]) if isinstance(payload.get("event_context"), dict) else None
+            )
             copied["pattern_observations"] = [
                 {
                     "family": item["family"],
@@ -407,6 +413,13 @@ class ApexGoldDeskShadowObserver:
         else:
             market_is_open = True
 
+        event_window = None
+        if self.event_window_source is not None:
+            try:
+                event_window = self.event_window_source(symbol, observed_at, candle_map)
+            except Exception as exc:
+                self.feed_errors += 1
+                logger.debug("[gold-desk] event-window source failed: {}", exc)
         snapshot = MarketSnapshot(
             symbol=symbol,
             venue=self.venue,
@@ -414,6 +427,7 @@ class ApexGoldDeskShadowObserver:
             bid=bid,
             ask=ask,
             candles=candle_map,
+            event_window=event_window,
             market_open=market_is_open,
             data_quality_ok=bool(candle_map.get("M5")) and quote_age <= self.max_tick_age_seconds,
         )
@@ -451,6 +465,14 @@ class ApexGoldDeskShadowObserver:
             "data_quality_ok": snapshot.data_quality_ok,
             "quote": {"bid": bid, "ask": ask, "spread": ask - bid},
             "completed_bars": completed_bars,
+            "event_context": ({
+                "name": event_window.name,
+                "impact": event_window.impact,
+                "starts_at": event_window.starts_at.isoformat(),
+                "ends_at": event_window.ends_at.isoformat(),
+                "pre_event_high": event_window.pre_event_high,
+                "pre_event_low": event_window.pre_event_low,
+            } if event_window is not None else None),
             "pattern_observations": observations[:12],
             "data_source": "selected_broker_tick_and_completed_ohlc",
             "decision_authority": "CognitiveBrain",
