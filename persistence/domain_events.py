@@ -50,6 +50,11 @@ TRADING_LOOP_HALTED = "TRADING_LOOP_HALTED"
 # ── Backfill (Phase 6) ─────────────────────────────────────────────────────
 TRADE_CLOSE_DERIVED = "TRADE_CLOSE_DERIVED"
 
+# Reconciliation-only lifecycle marker: broker history confirms a position is
+# closed, but full financial attribution is not being reconstructed here. This
+# closes the startup projection without pretending to know P&L or close reason.
+TRADE_RECONCILED_CLOSED = "TRADE_RECONCILED_CLOSED"
+
 # ── Orchestrator (round table — graded sizing) ──────────────────────────────
 # One event per entry attempt the orchestrator graded: the collected evidence
 # proposal and the resulting bounded size multiplier (or physics veto). Powers
