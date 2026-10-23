@@ -1,10 +1,9 @@
-"""Deterministic Gold pattern detectors used as evidence instruments.
+"""Deterministic Gold pattern detectors — evidence only, never trade decisions.
 
-These modules are not competing trading strategies in the active Apex runtime.
-They inspect completed broker candles and expose factual conditions. The
-runtime strips internal candidate geometry before sending a single neutral
-evidence record to the existing CognitiveBrain. No module places orders or
-owns the final directional decision.
+Every detector answers: "What factual price pattern is visible in completed
+market data?" None outputs direction, entry, stop, target, position size, rank,
+win probability, expected value or an instruction to trade. Overlapping patterns
+are simply observations for Apex's single CognitiveBrain to interpret.
 """
 from __future__ import annotations
 
@@ -13,322 +12,377 @@ from statistics import median
 from typing import Protocol, Sequence
 
 from gold_desk.indicators import atr, ema, median_true_range, rsi, rolling_zscore, true_ranges
-from gold_desk.models import Candle, Direction, MarketSnapshot, TradeIdea
+from gold_desk.models import Candle, MarketSnapshot, PatternObservation
 
 
 class PatternDetector(Protocol):
     pattern_id: str
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]: ...
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]: ...
 
 
 def _closes(bars: Sequence[Candle]) -> list[float]:
     return [bar.close for bar in bars]
 
 
-def _idea(
+def _observation(
     snapshot: MarketSnapshot,
     *,
-    strategy_id: str,
-    direction: Direction,
-    stop: float,
-    target: float,
-    atr_value: float,
-    quality: float,
-    rationale: str,
-    evidence: tuple[str, ...],
-    timeframe: str = "M5",
-    ttl_minutes: int = 15,
-) -> TradeIdea | None:
+    pattern_id: str,
+    timeframe: str,
+    facts: Sequence[str],
+    measurements: dict[str, float | int | str | bool],
+    source_bar: Candle | None = None,
+) -> PatternObservation:
     bars = snapshot.bars(timeframe)
-    if not bars:
-        return None
-    try:
-        return TradeIdea(
-            symbol=snapshot.symbol,
-            venue=str(snapshot.venue),
-            direction=direction,
-            strategy_id=strategy_id,
-            entry=snapshot.mid,
-            stop=float(stop),
-            target=float(target),
-            created_at=snapshot.observed_at,
-            expires_at=snapshot.observed_at + timedelta(minutes=ttl_minutes),
-            source_bar_time=bars[-1].timestamp,
-            atr=float(atr_value),
-            quality_score=max(0.0, min(100.0, float(quality))),
-            rationale=rationale,
-            evidence=evidence,
-        )
-    except (ValueError, TypeError):
-        # Invalid structure (for example, a market gap has already crossed a
-        # level) is not repaired into a trade. Rejecting is safer than guessing.
-        return None
+    if source_bar is None:
+        if not bars:
+            raise ValueError("observation requires a source candle")
+        source_bar = bars[-1]
+    return PatternObservation(
+        symbol="XAUUSD",
+        venue=str(snapshot.venue),
+        pattern_id=pattern_id,
+        timeframe=timeframe,
+        observed_at=snapshot.observed_at,
+        source_bar_time=source_bar.timestamp,
+        facts=tuple(facts),
+        measurements=measurements,
+    )
 
 
-def _rr_target(entry: float, stop: float, direction: Direction, multiple: float) -> float:
-    risk = abs(entry - stop)
-    return entry + risk * multiple if direction is Direction.LONG else entry - risk * multiple
-
-
-class TrendContinuation:
+class TrendContinuationDetector:
+    """Measure trend/pullback/continuation geometry on completed M15 candles."""
     pattern_id = "trend_continuation"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("M15")
-        if len(bars) < 55:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 55:
             return []
-        closes = _closes(bars)
-        fast, slow = ema(closes, 20), ema(closes, 50)
-        av = atr(bars)
+        values = _closes(bars)
+        fast, slow, av = ema(values, 20), ema(values, 50), atr(bars)
         if fast is None or slow is None or av is None:
             return []
         last, previous = bars[-1], bars[-2]
-        recent = bars[-6:-1]
+        pullback = bars[-6:-1]
         if fast > slow and last.close > fast and last.close > previous.high and last.close > last.open:
-            if min(b.low for b in recent) <= fast + 0.45 * av:
-                stop = min(b.low for b in bars[-6:]) - 0.20 * av
-                target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.7)
-                idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                             stop=stop, target=target, atr_value=av, quality=68,
-                             rationale="H1/M15 trend proxy with M15 pullback reclaim and close-confirmed continuation.",
-                             evidence=("EMA20 above EMA50", "pullback into EMA20 zone", "close above prior high"),
-                             timeframe="M15", ttl_minutes=30)
-                return [idea] if idea else []
+            if min(bar.low for bar in pullback) <= fast + 0.45 * av:
+                return [_observation(
+                    snapshot, pattern_id=self.pattern_id, timeframe="M15",
+                    facts=(
+                        "EMA20 is above EMA50 on the completed M15 series",
+                        "price tested the EMA20 area during the recent five-bar window",
+                        "latest completed M15 candle closed above the preceding candle high",
+                        "latest completed M15 candle closed above its open",
+                    ),
+                    measurements={
+                        "ema20": fast, "ema50": slow, "atr14": av,
+                        "last_close": last.close, "previous_high": previous.high,
+                        "recent_pullback_low": min(bar.low for bar in pullback),
+                        "last_close_above_ema20": True,
+                    },
+                    source_bar=last,
+                )]
         if fast < slow and last.close < fast and last.close < previous.low and last.close < last.open:
-            if max(b.high for b in recent) >= fast - 0.45 * av:
-                stop = max(b.high for b in bars[-6:]) + 0.20 * av
-                target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.7)
-                idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                             stop=stop, target=target, atr_value=av, quality=68,
-                             rationale="H1/M15 trend proxy with M15 pullback rejection and close-confirmed continuation.",
-                             evidence=("EMA20 below EMA50", "pullback into EMA20 zone", "close below prior low"),
-                             timeframe="M15", ttl_minutes=30)
-                return [idea] if idea else []
+            if max(bar.high for bar in pullback) >= fast - 0.45 * av:
+                return [_observation(
+                    snapshot, pattern_id=self.pattern_id, timeframe="M15",
+                    facts=(
+                        "EMA20 is below EMA50 on the completed M15 series",
+                        "price tested the EMA20 area during the recent five-bar window",
+                        "latest completed M15 candle closed below the preceding candle low",
+                        "latest completed M15 candle closed below its open",
+                    ),
+                    measurements={
+                        "ema20": fast, "ema50": slow, "atr14": av,
+                        "last_close": last.close, "previous_low": previous.low,
+                        "recent_pullback_high": max(bar.high for bar in pullback),
+                        "last_close_below_ema20": True,
+                    },
+                    source_bar=last,
+                )]
         return []
 
 
-class LiquiditySweepReversal:
-    pattern_id = "liquidity_sweep_reversal"
+class LiquiditySweepDetector:
+    """Record a recent-range extreme sweep and close back inside the range."""
+    pattern_id = "liquidity_sweep"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("M5")
-        if len(bars) < 22:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 22:
             return []
         av = atr(bars)
         if av is None:
             return []
         last, prior = bars[-1], bars[-21:-1]
-        range_high = max(b.high for b in prior)
-        range_low = min(b.low for b in prior)
-        if last.low < range_low - 0.05 * av and last.close > range_low and last.close > last.open:
-            stop = last.low - 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.8)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=target, atr_value=av, quality=66,
-                         rationale="Sell-side liquidity was swept and price closed back above the prior range low.",
-                         evidence=("prior-range low swept", "close reclaimed range", "bullish rejection candle"))
-            return [idea] if idea else []
-        if last.high > range_high + 0.05 * av and last.close < range_high and last.close < last.open:
-            stop = last.high + 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.8)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=target, atr_value=av, quality=66,
-                         rationale="Buy-side liquidity was swept and price closed back below the prior range high.",
-                         evidence=("prior-range high swept", "close reclaimed range", "bearish rejection candle"))
-            return [idea] if idea else []
+        high, low = max(bar.high for bar in prior), min(bar.low for bar in prior)
+        measurements = {
+            "atr14": av, "prior_20bar_high": high, "prior_20bar_low": low,
+            "current_high": last.high, "current_low": last.low, "current_close": last.close,
+            "high_sweep_distance": max(0.0, last.high - high),
+            "low_sweep_distance": max(0.0, low - last.low),
+        }
+        if last.low < low - 0.05 * av and last.close > low:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest completed M5 candle traded below the prior 20-bar low",
+                    "latest completed M5 candle closed back above the prior 20-bar low",
+                    "the lower range boundary was swept and reclaimed within one completed candle",
+                ),
+                measurements={**measurements, "boundary_swept": "prior_20bar_low",
+                              "reclaimed_boundary": "prior_20bar_low"},
+                source_bar=last,
+            )]
+        if last.high > high + 0.05 * av and last.close < high:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest completed M5 candle traded above the prior 20-bar high",
+                    "latest completed M5 candle closed back below the prior 20-bar high",
+                    "the upper range boundary was swept and reclaimed within one completed candle",
+                ),
+                measurements={**measurements, "boundary_swept": "prior_20bar_high",
+                              "reclaimed_boundary": "prior_20bar_high"},
+                source_bar=last,
+            )]
         return []
 
 
-class VolatilityExpansionBreakout:
-    pattern_id = "volatility_expansion_breakout"
+class VolatilityExpansionDetector:
+    """Record range escape accompanied by elevated true range."""
+    pattern_id = "volatility_expansion"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("M5")
-        if len(bars) < 30:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 30:
             return []
         av = atr(bars)
-        baseline = median_true_range(bars[-25:-1], window=18)
+        baseline = median_true_range(bars[:-1], window=18)
         if av is None or baseline is None:
             return []
         last, prior = bars[-1], bars[-21:-1]
-        ceiling = max(b.high for b in prior)
-        floor = min(b.low for b in prior)
+        high, low = max(bar.high for bar in prior), min(bar.low for bar in prior)
         current_tr = true_ranges(bars)[-1]
         if current_tr < 1.25 * baseline:
             return []
-        if last.close > ceiling + 0.05 * av and last.close > last.open:
-            stop = ceiling - 0.25 * av
-            target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=target, atr_value=av, quality=65,
-                         rationale="Range breakout accompanied by an expansion in true range.",
-                         evidence=("close above prior 20-bar range", "true range expansion", "close-confirmed"))
-            return [idea] if idea else []
-        if last.close < floor - 0.05 * av and last.close < last.open:
-            stop = floor + 0.25 * av
-            target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=target, atr_value=av, quality=65,
-                         rationale="Range breakdown accompanied by an expansion in true range.",
-                         evidence=("close below prior 20-bar range", "true range expansion", "close-confirmed"))
-            return [idea] if idea else []
+        common = {"atr14": av, "median_prior_true_range": baseline,
+                  "current_true_range": current_tr, "true_range_expansion_multiple": current_tr / baseline,
+                  "prior_20bar_high": high, "prior_20bar_low": low, "close": last.close}
+        if last.close > high + 0.05 * av:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest completed M5 close is above the prior 20-bar high",
+                    "the latest M5 true range exceeds 1.25 times the prior median true range",
+                    "price range expansion and upper-boundary escape occurred together",
+                ),
+                measurements={**common, "escaped_boundary": "prior_20bar_high"},
+                source_bar=last,
+            )]
+        if last.close < low - 0.05 * av:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest completed M5 close is below the prior 20-bar low",
+                    "the latest M5 true range exceeds 1.25 times the prior median true range",
+                    "price range expansion and lower-boundary escape occurred together",
+                ),
+                measurements={**common, "escaped_boundary": "prior_20bar_low"},
+                source_bar=last,
+            )]
         return []
 
 
-class FailedBreakoutTrap:
-    pattern_id = "failed_breakout_trap"
+class FailedBreakoutDetector:
+    """Measure an attempted range break whose close returns inside the boundary."""
+    pattern_id = "failed_breakout"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("M5")
-        if len(bars) < 16:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 16:
             return []
         av = atr(bars)
         if av is None:
             return []
         last, prior = bars[-1], bars[-11:-1]
-        ceiling, floor = max(b.high for b in prior), min(b.low for b in prior)
+        high, low = max(bar.high for bar in prior), min(bar.low for bar in prior)
         body = max(abs(last.close - last.open), 0.02 * av)
         upper_wick = last.high - max(last.open, last.close)
         lower_wick = min(last.open, last.close) - last.low
-        if last.high > ceiling + 0.10 * av and last.close < ceiling and last.close < last.open and upper_wick >= 1.2 * body:
-            stop = last.high + 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.7)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=target, atr_value=av, quality=64,
-                         rationale="Upside breakout attempt failed: wick outside range, close returned inside.",
-                         evidence=("range-high false break", "upper rejection wick", "close back inside range"))
-            return [idea] if idea else []
-        if last.low < floor - 0.10 * av and last.close > floor and last.close > last.open and lower_wick >= 1.2 * body:
-            stop = last.low - 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.7)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=target, atr_value=av, quality=64,
-                         rationale="Downside breakout attempt failed: wick outside range, close returned inside.",
-                         evidence=("range-low false break", "lower rejection wick", "close back inside range"))
-            return [idea] if idea else []
+        common = {
+            "atr14": av, "prior_10bar_high": high, "prior_10bar_low": low,
+            "body_size": abs(last.close - last.open), "upper_wick_size": upper_wick,
+            "lower_wick_size": lower_wick, "upper_wick_to_body": upper_wick / body,
+            "lower_wick_to_body": lower_wick / body, "close": last.close,
+        }
+        if last.high > high + 0.10 * av and last.close < high and upper_wick >= 1.2 * body:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest M5 candle traded above the prior 10-bar high",
+                    "the completed candle closed back below the prior 10-bar high",
+                    "the rejection wick above the range is at least 1.2 times the candle body",
+                ),
+                measurements={**common, "failed_boundary": "prior_10bar_high"},
+                source_bar=last,
+            )]
+        if last.low < low - 0.10 * av and last.close > low and lower_wick >= 1.2 * body:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    "latest M5 candle traded below the prior 10-bar low",
+                    "the completed candle closed back above the prior 10-bar low",
+                    "the rejection wick below the range is at least 1.2 times the candle body",
+                ),
+                measurements={**common, "failed_boundary": "prior_10bar_low"},
+                source_bar=last,
+            )]
         return []
 
 
-class StatisticalMeanReversion:
-    pattern_id = "statistical_mean_reversion"
+class StatisticalReversionDetector:
+    """Measure statistical displacement only when the EMA spread is contained."""
+    pattern_id = "statistical_displacement"
 
     def __init__(self, z_threshold: float = 2.0, max_trend_atr: float = 1.5) -> None:
+        if z_threshold <= 0 or max_trend_atr <= 0:
+            raise ValueError("thresholds must be positive")
         self.z_threshold = z_threshold
         self.max_trend_atr = max_trend_atr
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("M15")
-        if len(bars) < 55:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 55:
             return []
-        closes = _closes(bars)
-        z = rolling_zscore(closes, 30)
-        av = atr(bars)
-        fast, slow = ema(closes, 20), ema(closes, 50)
+        values = _closes(bars)
+        z = rolling_zscore(values, 30)
+        av, fast, slow = atr(bars), ema(values, 20), ema(values, 50)
         if z is None or av is None or fast is None or slow is None:
             return []
-        score, mean, _std = z
-        if abs(fast - slow) / av > self.max_trend_atr:
+        score, mean, deviation = z
+        trend_spread = abs(fast - slow) / av
+        if abs(score) < self.z_threshold or trend_spread > self.max_trend_atr:
             return []
-        if score >= self.z_threshold and mean < snapshot.mid:
-            stop = snapshot.mid + 1.25 * av
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=mean, atr_value=av, quality=59,
-                         rationale=f"Price is {score:.2f} standard deviations above the 30-bar mean in a non-strong trend regime.",
-                         evidence=("30-bar z-score extreme", "trend-strength filter passed", "mean is below entry"),
-                         timeframe="M15", ttl_minutes=30)
-            return [idea] if idea and idea.reward_to_risk >= 1.2 else []
-        if score <= -self.z_threshold and mean > snapshot.mid:
-            stop = snapshot.mid - 1.25 * av
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=mean, atr_value=av, quality=59,
-                         rationale=f"Price is {abs(score):.2f} standard deviations below the 30-bar mean in a non-strong trend regime.",
-                         evidence=("30-bar z-score extreme", "trend-strength filter passed", "mean is above entry"),
-                         timeframe="M15", ttl_minutes=30)
-            return [idea] if idea and idea.reward_to_risk >= 1.2 else []
-        return []
+        relation = "above_mean" if score > 0 else "below_mean"
+        return [_observation(
+            snapshot, pattern_id=self.pattern_id, timeframe="M15",
+            facts=(
+                f"latest M15 close is {abs(score):.2f} rolling standard deviations {relation}",
+                "EMA20-to-EMA50 separation is within the configured ATR-normalized containment threshold",
+                "the 30-close statistical window is available and has non-zero dispersion",
+            ),
+            measurements={
+                "rolling_zscore_30": score, "rolling_mean_30": mean,
+                "rolling_stddev_30": deviation, "ema20": fast, "ema50": slow,
+                "ema_spread_atr": trend_spread, "atr14": av, "last_close": bars[-1].close,
+                "observed_relation": relation,
+            },
+            source_bar=bars[-1],
+        )]
 
 
-class TrendExhaustionReversal:
-    pattern_id = "trend_exhaustion_reversal"
+class TrendExhaustionDetector:
+    """Measure price/RSI non-confirmation plus a completed H1 structure break."""
+    pattern_id = "trend_exhaustion"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         bars = snapshot.bars("H1")
-        if len(bars) < 32:
+        if not snapshot.data_quality_ok or not snapshot.market_open or len(bars) < 32:
             return []
         av = atr(bars)
         if av is None:
             return []
         prior, recent = bars[-16:-6], bars[-6:]
-        prior_rsi = rsi(_closes(prior), 5)
-        recent_rsi = rsi(_closes(recent), 5)
+        prior_rsi, recent_rsi = rsi(_closes(prior), 5), rsi(_closes(recent), 5)
         last, previous = bars[-1], bars[-2]
         if prior_rsi is None or recent_rsi is None:
             return []
-        old_high = max(b.high for b in prior)
-        new_high = max(b.high for b in recent)
-        old_low = min(b.low for b in prior)
-        new_low = min(b.low for b in recent)
-        if new_high > old_high + 0.10 * av and recent_rsi < prior_rsi - 3 and last.close < previous.low:
-            stop = max(b.high for b in recent) + 0.20 * av
-            target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=target, atr_value=av, quality=62,
-                         rationale="Higher high with weaker RSI and a close below the prior H1 low suggests bullish momentum exhaustion.",
-                         evidence=("price made a higher high", "RSI momentum failed to confirm", "H1 close broke prior low"),
-                         timeframe="H1", ttl_minutes=60)
-            return [idea] if idea else []
-        if new_low < old_low - 0.10 * av and recent_rsi > prior_rsi + 3 and last.close > previous.high:
-            stop = min(b.low for b in recent) - 0.20 * av
-            target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=target, atr_value=av, quality=62,
-                         rationale="Lower low with stronger RSI and a close above the prior H1 high suggests bearish momentum exhaustion.",
-                         evidence=("price made a lower low", "RSI momentum failed to confirm", "H1 close broke prior high"),
-                         timeframe="H1", ttl_minutes=60)
-            return [idea] if idea else []
+        prior_high, recent_high = max(b.high for b in prior), max(b.high for b in recent)
+        prior_low, recent_low = min(b.low for b in prior), min(b.low for b in recent)
+        common = {
+            "atr14": av, "prior_window_rsi5": prior_rsi, "recent_window_rsi5": recent_rsi,
+            "prior_window_high": prior_high, "recent_window_high": recent_high,
+            "prior_window_low": prior_low, "recent_window_low": recent_low,
+            "last_close": last.close, "previous_high": previous.high, "previous_low": previous.low,
+        }
+        if recent_high > prior_high + 0.10 * av and recent_rsi < prior_rsi - 3 and last.close < previous.low:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="H1",
+                facts=(
+                    "the recent six H1 bars made a higher high than the preceding ten-bar window",
+                    "RSI(5) in the recent window is lower than RSI(5) in the preceding window",
+                    "the latest completed H1 candle closed below the preceding H1 low",
+                ),
+                measurements={**common, "price_extreme_relation": "recent_high_above_prior_high",
+                              "momentum_relation": "recent_rsi_below_prior_rsi"},
+                source_bar=last,
+            )]
+        if recent_low < prior_low - 0.10 * av and recent_rsi > prior_rsi + 3 and last.close > previous.high:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="H1",
+                facts=(
+                    "the recent six H1 bars made a lower low than the preceding ten-bar window",
+                    "RSI(5) in the recent window is higher than RSI(5) in the preceding window",
+                    "the latest completed H1 candle closed above the preceding H1 high",
+                ),
+                measurements={**common, "price_extreme_relation": "recent_low_below_prior_low",
+                              "momentum_relation": "recent_rsi_above_prior_rsi"},
+                source_bar=last,
+            )]
         return []
 
 
-class EventDrivenGoldBreakout:
-    pattern_id = "event_driven_gold_breakout"
+class EventWindowBreakoutDetector:
+    """Measure break of a verified high-impact event's pre-event range."""
+    pattern_id = "event_window_breakout"
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         event = snapshot.event_window
         bars = snapshot.bars("M5")
-        if event is None or not event.is_active(snapshot.observed_at) or len(bars) < 15:
+        if (not snapshot.data_quality_ok or not snapshot.market_open or event is None
+                or not event.is_active(snapshot.observed_at) or len(bars) < 15
+                or event.impact.upper() not in {"HIGH", "CRITICAL"}):
             return []
         av = atr(bars)
-        if av is None or event.impact.upper() not in {"HIGH", "CRITICAL"}:
+        if av is None:
             return []
         last = bars[-1]
         buffer = 0.12 * av
-        if last.close > event.pre_event_high + buffer and last.close > last.open:
-            stop = event.pre_event_high - 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=target, atr_value=av, quality=63,
-                         rationale=f"{event.name}: close-confirmed break above the verified pre-event range.",
-                         evidence=("verified event window active", "pre-event high broken", "true range and close confirmation"))
-            return [idea] if idea else []
-        if last.close < event.pre_event_low - buffer and last.close < last.open:
-            stop = event.pre_event_low + 0.15 * av
-            target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=target, atr_value=av, quality=63,
-                         rationale=f"{event.name}: close-confirmed break below the verified pre-event range.",
-                         evidence=("verified event window active", "pre-event low broken", "true range and close confirmation"))
-            return [idea] if idea else []
+        common = {
+            "event_name": event.name, "event_impact": event.impact,
+            "pre_event_high": event.pre_event_high, "pre_event_low": event.pre_event_low,
+            "atr14": av, "break_buffer": buffer, "last_close": last.close,
+        }
+        if last.close > event.pre_event_high + buffer:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    f"verified event window is active for {event.name}",
+                    "latest completed M5 close is above the supplied pre-event high plus buffer",
+                    "event timestamps and pre-event boundaries came from the calendar/data adapter",
+                ),
+                measurements={**common, "escaped_boundary": "pre_event_high"},
+                source_bar=last,
+            )]
+        if last.close < event.pre_event_low - buffer:
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    f"verified event window is active for {event.name}",
+                    "latest completed M5 close is below the supplied pre-event low minus buffer",
+                    "event timestamps and pre-event boundaries came from the calendar/data adapter",
+                ),
+                measurements={**common, "escaped_boundary": "pre_event_low"},
+                source_bar=last,
+            )]
         return []
 
 
-class CandleRangeTheory:
-    """CRT: closed anchor candle, sweep-and-reclaim, then lower-TF structure shift.
-
-    The first objective is the anchor candle's midpoint. The system will not
-    force a target when that midpoint does not offer acceptable reward-to-risk.
-    """
-    pattern_id = "crt"
+class CandleRangeTheoryDetector:
+    """Measure CRT anchor sweep/reclaim and LTF structure facts; no CRT trade vote."""
+    pattern_id = "crt_range_observation"
 
     def __init__(self, anchor_timeframe: str = "H1", sweep_atr_buffer: float = 0.05) -> None:
         if anchor_timeframe.upper() not in {"H1", "H4", "D1"}:
@@ -338,9 +392,9 @@ class CandleRangeTheory:
         self.anchor_timeframe = anchor_timeframe.upper()
         self.sweep_atr_buffer = sweep_atr_buffer
 
-    def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
+    def observe(self, snapshot: MarketSnapshot) -> list[PatternObservation]:
         anchors, bars = snapshot.bars(self.anchor_timeframe), snapshot.bars("M5")
-        if len(anchors) < 1 or len(bars) < 16:
+        if not snapshot.data_quality_ok or not snapshot.market_open or not anchors or len(bars) < 16:
             return []
         anchor, last, previous = anchors[-1], bars[-1], bars[-2]
         av = atr(bars)
@@ -348,38 +402,58 @@ class CandleRangeTheory:
             return []
         midpoint = (anchor.high + anchor.low) / 2.0
         buffer = self.sweep_atr_buffer * av
-        # A wick alone is insufficient. The sweep must reclaim the range boundary
-        # and the M5 close must break the previous M5 candle's structure.
+        common = {
+            "anchor_timeframe": self.anchor_timeframe,
+            "anchor_high": anchor.high, "anchor_low": anchor.low, "anchor_midpoint": midpoint,
+            "anchor_close_time": anchor.timestamp.isoformat(), "atr14_m5": av,
+            "sweep_buffer": buffer, "current_high": last.high, "current_low": last.low,
+            "current_close": last.close, "previous_m5_high": previous.high,
+            "previous_m5_low": previous.low,
+        }
+        # These are factual boundary/structure relationships only. There is no
+        # emitted trade side, entry, target, score or stop.
         if (last.low < anchor.low - buffer and last.close > anchor.low
                 and last.close > last.open and last.close > previous.high):
-            stop = last.low - 0.15 * av
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
-                         stop=stop, target=midpoint, atr_value=av, quality=70,
-                         rationale=f"{self.anchor_timeframe} CRT bullish sweep/reclaim with M5 bullish structure shift; midpoint is first objective.",
-                         evidence=(f"completed {self.anchor_timeframe} anchor range", "sell-side sweep", "close reclaimed anchor low", "M5 close broke prior high"),
-                         ttl_minutes=20)
-            return [idea] if idea and idea.reward_to_risk >= 1.2 else []
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    f"completed {self.anchor_timeframe} anchor low was swept by the latest M5 candle",
+                    "the M5 candle closed back above the anchor low",
+                    "the completed M5 close exceeded the preceding M5 high after the sweep",
+                    "the anchor midpoint is a measurable reference level, not an automatic target",
+                ),
+                measurements={**common, "swept_boundary": "anchor_low",
+                              "reclaimed_boundary": "anchor_low",
+                              "structure_boundary_broken": "previous_m5_high"},
+                source_bar=last,
+            )]
         if (last.high > anchor.high + buffer and last.close < anchor.high
                 and last.close < last.open and last.close < previous.low):
-            stop = last.high + 0.15 * av
-            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
-                         stop=stop, target=midpoint, atr_value=av, quality=70,
-                         rationale=f"{self.anchor_timeframe} CRT bearish sweep/reclaim with M5 bearish structure shift; midpoint is first objective.",
-                         evidence=(f"completed {self.anchor_timeframe} anchor range", "buy-side sweep", "close reclaimed anchor high", "M5 close broke prior low"),
-                         ttl_minutes=20)
-            return [idea] if idea and idea.reward_to_risk >= 1.2 else []
+            return [_observation(
+                snapshot, pattern_id=self.pattern_id, timeframe="M5",
+                facts=(
+                    f"completed {self.anchor_timeframe} anchor high was swept by the latest M5 candle",
+                    "the M5 candle closed back below the anchor high",
+                    "the completed M5 close fell below the preceding M5 low after the sweep",
+                    "the anchor midpoint is a measurable reference level, not an automatic target",
+                ),
+                measurements={**common, "swept_boundary": "anchor_high",
+                              "reclaimed_boundary": "anchor_high",
+                              "structure_boundary_broken": "previous_m5_low"},
+                source_bar=last,
+            )]
         return []
 
 
 def default_pattern_detectors() -> list[PatternDetector]:
-    """Run all evidence detectors regardless of AI/provider availability."""
+    """Register measurements, not autonomous strategies or decision-makers."""
     return [
-        TrendContinuation(),
-        LiquiditySweepReversal(),
-        VolatilityExpansionBreakout(),
-        FailedBreakoutTrap(),
-        StatisticalMeanReversion(),
-        TrendExhaustionReversal(),
-        EventDrivenGoldBreakout(),
-        CandleRangeTheory(),
+        TrendContinuationDetector(),
+        LiquiditySweepDetector(),
+        VolatilityExpansionDetector(),
+        FailedBreakoutDetector(),
+        StatisticalReversionDetector(),
+        TrendExhaustionDetector(),
+        EventWindowBreakoutDetector(),
+        CandleRangeTheoryDetector(),
     ]
