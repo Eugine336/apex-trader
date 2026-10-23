@@ -720,19 +720,132 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
             "overlap_policy": "single_brain_synthesis_no_vote_summing",
             "orders_sent": False,
         }
-        return [Evidence(
+        timestamp_iso = stamp.astimezone(timezone.utc).isoformat()
+        data_quality_ok = bool(data.get("data_quality_ok", False))
+        confidence = 0.95 if data_quality_ok else 0.0
+        uncertainty = 0.05 if data_quality_ok else 1.0
+        evidence: list[Evidence] = [Evidence(
             source_module="gold_market_desk",
             domain=EvidenceDomain.MULTI_TIMEFRAME,
             symbol=requested_symbol,
             observation=" ".join(observation_parts)[:4000],
-            confidence=0.95 if bool(data.get("data_quality_ok", False)) else 0.0,
-            uncertainty=0.05 if bool(data.get("data_quality_ok", False)) else 1.0,
+            confidence=confidence,
+            uncertainty=uncertainty,
             polarity=0.0,
             measurements=measurements,
             relevance_horizon_seconds=15.0,
-            timestamp_iso=stamp.astimezone(timezone.utc).isoformat(),
+            timestamp_iso=timestamp_iso,
             timestamp_epoch=observed_epoch,
         )]
+
+        # Give the SAME Brain the structured dimensions its native pattern rules
+        # require. These remain observations, not votes or strategies: polarity is
+        # zero, all records share the original tick timestamp, and no executable
+        # fields are created. The root record above retains the complete picture;
+        # domain records merely classify the facts so liquidity/structure/momentum
+        # rules can reason about them without an LLM.
+        primary_domains = {
+            "trend_continuation": EvidenceDomain.STRUCTURE,
+            "liquidity_sweep": EvidenceDomain.LIQUIDITY,
+            "volatility_expansion": EvidenceDomain.VOLATILITY,
+            "failed_breakout": EvidenceDomain.LIQUIDITY,
+            "statistical_displacement": EvidenceDomain.MOMENTUM,
+            "trend_exhaustion": EvidenceDomain.MOMENTUM,
+            "event_window_breakout": EvidenceDomain.MACRO,
+            "crt_range_observation": EvidenceDomain.LIQUIDITY,
+        }
+        structural_families = {
+            "volatility_expansion", "trend_exhaustion",
+            "event_window_breakout", "crt_range_observation",
+        }
+        forbidden = {
+            "direction", "entry", "stop", "target", "quality_score",
+            "reward_to_risk", "position_size", "risk_budget_pct",
+        }
+        for item in clean_patterns:
+            family = item["family"]
+            primary_domain = primary_domains.get(family)
+            if primary_domain is None:
+                continue
+            raw = dict(item.get("measurements") or {})
+            structured: dict[str, Any] = {
+                "gold_pattern_family": family,
+                "gold_pattern_facts": list(item.get("facts") or []),
+                "source_timeframe": str(item.get("timeframe", "") or ""),
+                "source_bar_time": str(item.get("source_bar_time", "") or ""),
+            }
+            for key, value in raw.items():
+                if str(key).strip().lower() in forbidden:
+                    continue
+                structured[str(key)] = value
+
+            if family in {"liquidity_sweep", "failed_breakout", "crt_range_observation"}:
+                if raw.get("sweep") is True:
+                    structured["sweep"] = True
+                if raw.get("absorption") is True:
+                    structured["absorption"] = True
+                side = str(raw.get("sweep_side", "") or "").lower()
+                if side in {"buy", "sell"}:
+                    structured["sweep_side"] = side
+            elif family == "trend_exhaustion":
+                if raw.get("divergence") is True:
+                    structured["divergence"] = True
+            elif family == "volatility_expansion":
+                structured["expansion"] = True
+                structured["volatility_state"] = "expanding"
+
+            facts_text = "; ".join(item.get("facts") or [])
+            evidence.append(Evidence(
+                source_module=f"gold_market_desk.pattern.{family}",
+                domain=primary_domain,
+                symbol=requested_symbol,
+                observation=f"Gold market fact ({family}): {facts_text}"[:1200],
+                confidence=confidence,
+                uncertainty=uncertainty,
+                polarity=0.0,
+                measurements=structured,
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=observed_epoch,
+            ))
+
+            # Some detectors observe two separate facts at once (e.g. CRT =
+            # liquidity sweep/reclaim + a subsequent structure break). Surface
+            # the structure fact as its own domain reading so the Brain sees both
+            # dimensions, but do not create a second decision or score.
+            if family in structural_families and raw.get("bos") is True:
+                displacement = _safe_number(raw.get("displacement"))
+                structure_measurements = {
+                    "gold_pattern_family": family,
+                    "gold_pattern_facts": list(item.get("facts") or []),
+                    "bos": True,
+                    "source_timeframe": str(item.get("timeframe", "") or ""),
+                    "source_bar_time": str(item.get("source_bar_time", "") or ""),
+                }
+                if displacement is not None:
+                    structure_measurements["displacement"] = displacement
+                for key in ("anchor_high", "anchor_low", "previous_m5_high",
+                            "previous_m5_low", "prior_20bar_high", "prior_20bar_low",
+                            "prior_10bar_high", "prior_10bar_low", "pre_event_high",
+                            "pre_event_low", "current_close", "last_close"):
+                    value = raw.get(key)
+                    safe = _safe_number(value)
+                    if safe is not None:
+                        structure_measurements[key] = safe
+                evidence.append(Evidence(
+                    source_module=f"gold_market_desk.structure.{family}",
+                    domain=EvidenceDomain.STRUCTURE,
+                    symbol=requested_symbol,
+                    observation=f"Gold structural fact ({family}): {facts_text}"[:1200],
+                    confidence=confidence,
+                    uncertainty=uncertainty,
+                    polarity=0.0,
+                    measurements=structure_measurements,
+                    relevance_horizon_seconds=15.0,
+                    timestamp_iso=timestamp_iso,
+                    timestamp_epoch=observed_epoch,
+                ))
+        return evidence
     except Exception:  # noqa: BLE001 — evidence conversion must never break cognition
         return []
 
