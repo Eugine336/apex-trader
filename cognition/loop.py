@@ -819,11 +819,24 @@ class CognitionLoop:
                     getattr(getattr(_dec, "decision_type", None), "value", None)
                     or str(getattr(_dec, "decision_type", "?"))
                 )
+                _qa = getattr(_dec, "questions_answered", {}) or {}
+                _provider_available = bool(getattr(self._brain, "available", False))
+                _reasoning_mode = str(
+                    _qa.get("reasoning_mode", "") or
+                    ("advisor_assisted" if _provider_available else "native_fallback")
+                )
+                _external_advisor = str(
+                    _qa.get("external_advisor_status", "") or
+                    ("available" if _provider_available else "unavailable")
+                )
+                _native_status = str(_qa.get("native_fallback_status", "") or "")
                 logger.info(
-                    "[cognition] %s -> %s (conf=%.2f) reasoner=%s",
+                    "[cognition] %s -> %s (conf=%.2f) reasoning_mode=%s external_advisor=%s%s",
                     symbol, _summary,
                     float(getattr(_dec, "confidence", 0.0) or 0.0),
-                    "live" if getattr(self._brain, "available", False) else "unavailable",
+                    _reasoning_mode,
+                    _external_advisor,
+                    f" native_status={_native_status}" if _native_status else "",
                 )
             except Exception:  # noqa: BLE001 — logging must never break the cycle
                 pass
