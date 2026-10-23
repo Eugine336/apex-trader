@@ -112,14 +112,21 @@ def test_v3_brain_acts_when_two_advisors_responded():
     assert out.decision.questions_answered.get("advisor_quorum", "").startswith("MET")
 
 
-def test_v3_quorum_unenforced_without_council_metadata():
-    # No reasoning Evidence carrying counts ⇒ gate not enforced (backward compat).
+def test_v3_brain_declines_when_council_metadata_is_missing():
+    # Missing council metadata must fail closed instead of pretending quorum passed.
     ms = MarketState(symbol="XAUUSD")
-    for dom in ("structure", "momentum"):
+    for dom in ("structure", "momentum", "liquidity"):
         ms.add(Evidence(source_module=f"m_{dom}", domain=dom, confidence=0.9,
                         uncertainty=0.1, relevance_horizon_seconds=900.0))
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8))).reason(ms)
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        min_advisors_for_action=1,
+        min_evidence_domains=2,
+    ).reason(ms)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "quorum not met or unconfirmed" in out.decision.risk_rationale
+    assert out.decision.questions_answered["advisor_quorum"].startswith("UNCONFIRMED")
 
 
 # ── V4 — degraded-mode enforcement (V-013: partial council attenuates) ──────
@@ -191,10 +198,19 @@ def test_v10_evidence_with_no_horizon_expires_after_default():
 def _state_domains(n, *, symbol="XAUUSD"):
     domains = ("structure", "momentum", "liquidity", "volume")[:max(1, n)]
     ms = MarketState(symbol=symbol)
-    for dom in domains:
-        ms.add(Evidence(source_module=f"m_{dom}", domain=dom, symbol=symbol,
-                        observation="reading", confidence=0.9, uncertainty=0.1,
-                        relevance_horizon_seconds=900.0))
+    for index, dom in enumerate(domains):
+        measurements = {}
+        if index == 0:
+            measurements = {
+                "advisors_responded": 2,
+                "advisors_available": 2,
+                "advisors_total": 2,
+            }
+        ms.add(Evidence(
+            source_module=f"m_{dom}", domain=dom, symbol=symbol,
+            observation="reading", confidence=0.9, uncertainty=0.1,
+            measurements=measurements, relevance_horizon_seconds=900.0,
+        ))
     return ms
 
 
