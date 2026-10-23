@@ -2556,7 +2556,22 @@ class EventDrivenSystem:
                 ticks=recent_ticks, depth=depth, now_epoch=_time.time(),
                 max_bars=6,
             )
-            return snapshot_to_evidence(symbol, snap)
+            evidence = snapshot_to_evidence(symbol, snap)
+            # Retain the legacy M1 pattern vocabulary as contextual evidence in
+            # the shared Brain path (all supported instruments), not as a second
+            # entry authority. This snapshot includes the forming bar, so any
+            # pattern derived from it is explicitly marked provisional.
+            try:
+                from cognition.price_action_patterns import evidence_from_m1_candles
+                m1_frame = data.get("M1")
+                m1_evidence = evidence_from_m1_candles(
+                    symbol, m1_frame, provisional=True,
+                )
+                if m1_evidence is not None:
+                    evidence.append(m1_evidence)
+            except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
+                logger.debug("[cognition] M1 price-action evidence failed for {}: {}", symbol, exc)
+            return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
             return []
