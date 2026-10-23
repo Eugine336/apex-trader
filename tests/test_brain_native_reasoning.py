@@ -100,6 +100,7 @@ def _strong_long_state(symbol="EURUSD"):
     ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8}))
     ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
     ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1}))
+    ms.add(_ev("execution_quality", {"estimated_total_cost_r": 0.05}))
     return _with_verified_council(ms)
 
 
@@ -271,6 +272,18 @@ def test_brain_originates_natively_when_no_external_reasoner_is_configured():
     assert out.decision.questions_answered["external_advisor_status"] == "not_configured"
     assert brain.get_status()["independent_originations"] == 1
 
+
+
+def test_native_fallback_stands_down_without_execution_cost_evidence():
+    state = _strong_long_state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "execution_quality"
+    ]
+    brain = CognitiveBrain(reasoner=None, reward_r_default=2.0)
+    out = brain.reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 
 def test_brain_originates_independently_when_advisor_unavailable():
