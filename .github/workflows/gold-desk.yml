@@ -7,6 +7,9 @@ on:
       - "tests/test_gold_desk_core.py"
       - "tests/test_action_executor.py"
       - "tests/test_brain_native_reasoning.py"
+      - "tests/test_persistence_recovery_history.py"
+      - "persistence/recovery.py"
+      - "persistence/domain_events.py"
       - "execution/action_executor.py"
       - "cognition/brain.py"
       - "event_driven_bootstrap.py"
@@ -51,8 +54,9 @@ jobs:
           gold_desk/strategies.py gold_desk/symbols.py
           cognition/brain.py cognition/brain_reasoning.py cognition/evidence_adapters.py
           cognition/loop.py cognition/pattern_rules.py
+          persistence/recovery.py persistence/domain_events.py
           execution/action_executor.py event_driven_bootstrap.py
       - name: Test deterministic Gold desk kernel
-        run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py -q
+        run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py tests/test_persistence_recovery_history.py -q
       - name: Lint new implementation
         run: ruff check gold_desk tests/test_gold_desk_core.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
