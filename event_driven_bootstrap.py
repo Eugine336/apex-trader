@@ -2364,14 +2364,14 @@ class EventDrivenSystem:
             except Exception:  # noqa: BLE001
                 return None
 
-        def _sink(action: Any, position: Any) -> None:
+        def _sink(action: Any, position: Any) -> bool:
             try:
                 symbol = str(getattr(action, "symbol", "") or "")
                 kind = str(getattr(action, "kind", "") or "")
                 held = str(getattr(action, "direction", "") or "").upper()
                 reason = str(getattr(action, "reason", "") or "brain_management")[:200]
                 if not symbol or not kind:
-                    return
+                    return False
                 intents: list = []
 
                 if kind == "scale_in":
@@ -2386,16 +2386,16 @@ class EventDrivenSystem:
                         "first-class opportunity and whole-book admission contract",
                         symbol,
                     )
-                    return
+                    return False
 
                 pos = _open_position_for(symbol, held)
                 if pos is None:
                     logger.info("[mgmt-sink] {} {} skipped — no matching open position",
                                 symbol, kind)
-                    return
+                    return False
                 ticket = str(getattr(pos, "order_id", "") or "")
                 if not ticket:
-                    return
+                    return False
 
                 if kind == "close":
                     intents.append(Intent.close(
@@ -2405,7 +2405,7 @@ class EventDrivenSystem:
                 elif kind == "partial_close":
                     frac = float(getattr(action, "fraction", 0.0) or 0.0)
                     if not (0.0 < frac < 1.0):
-                        return
+                        return False
                     intents.append(Intent.partial_close(
                         symbol=symbol, ticket=ticket, fraction=frac,
                         source="ai_brain", reason=reason,
@@ -2414,7 +2414,7 @@ class EventDrivenSystem:
                     new_sl = _protective_sl(pos, kind)
                     if new_sl is None:
                         logger.info("[mgmt-sink] {} {} — no safer stop available", symbol, kind)
-                        return
+                        return False
                     intents.append(Intent.modify_sl(
                         symbol=symbol, ticket=ticket, new_sl=float(new_sl),
                         source="ai_brain", reason=reason,
@@ -2422,7 +2422,7 @@ class EventDrivenSystem:
                 elif kind == "reverse":
                     target = str(getattr(action, "target_direction", "") or "").upper()
                     if target not in ("LONG", "SHORT") or target == held:
-                        return
+                        return False
                     # Close the invalidated held thesis, but do not smuggle the
                     # opposite-side OPEN through management. After the close is
                     # reconciled, the loop re-wakes the Brain; a new-side entry
@@ -2439,13 +2439,16 @@ class EventDrivenSystem:
                         symbol, held, target,
                     )
                 else:
-                    return
+                    return False
 
-                if intents:
-                    self._aggregator.submit(intents)
-                    logger.info("[mgmt-sink] submitted {} {} (ticket={})", symbol, kind, ticket)
+                if not intents:
+                    return False
+                self._aggregator.submit(intents)
+                logger.info("[mgmt-sink] submitted {} {} (ticket={})", symbol, kind, ticket)
+                return True
             except Exception as exc:  # noqa: BLE001 — sink must never break the loop
                 logger.warning("[mgmt-sink] submit failed: {}", exc)
+                return False
 
         return _sink
 
