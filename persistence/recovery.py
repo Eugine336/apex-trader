@@ -26,7 +26,7 @@ from persistence.event_replayer import EventReplayer
 # Lifecycle signals.  An order_id is "open" once an entry event is seen and
 # "closed" once a close event is seen, folded in seq order.
 _OPEN_TYPES = frozenset({DE.ORDER_FILLED, DE.TRADE_OPEN})
-_CLOSE_TYPES = frozenset({DE.TRADE_CLOSE, DE.TRADE_CLOSE_DERIVED})
+_CLOSE_TYPES = frozenset({DE.TRADE_CLOSE, DE.TRADE_CLOSE_DERIVED, DE.TRADE_RECONCILED_CLOSED})
 
 
 def _order_id(event: Dict[str, Any]) -> str:
@@ -108,6 +108,39 @@ def reconcile(
         missing_from_broker=lo - bo,
         orphan_at_broker=bo - lo,
     )
+
+
+def find_confirmed_close_deals(
+    missing_from_broker: Iterable[str],
+    history_deals: Iterable[Dict[str, Any]],
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Index broker-confirmed MT5 exit deals for log-open IDs absent at broker.
+
+    MT5 DEAL_ENTRY_OUT (1) and DEAL_ENTRY_OUT_BY (3) are exit-side deals.
+    This helper only confirms lifecycle closure when a position identifier
+    exactly matches and an exit deal exists. It does not infer closure from an
+    empty/failed history query and does not calculate P&L.
+    """
+    wanted = {str(value).strip() for value in missing_from_broker if str(value).strip()}
+    confirmed: Dict[str, list[Dict[str, Any]]] = {}
+    for raw in history_deals or []:
+        if not isinstance(raw, dict):
+            continue
+        raw_id = raw.get("position_id")
+        try:
+            position_id = str(int(raw_id))
+        except (TypeError, ValueError, OverflowError):
+            position_id = str(raw_id or "").strip()
+        if not position_id or position_id not in wanted:
+            continue
+        try:
+            entry_type = int(raw.get("entry", -1))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if entry_type not in (1, 3):
+            continue
+        confirmed.setdefault(position_id, []).append(dict(raw))
+    return confirmed
 
 
 def build_log_open_set(
