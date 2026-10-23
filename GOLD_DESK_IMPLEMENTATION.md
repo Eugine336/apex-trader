@@ -63,7 +63,7 @@ thresholds pass; otherwise it observes rather than fabricating a trade.
 - Evidence is freshness-limited at the CognitiveLoop adapter; an expired or unavailable Gold feed is reported as degraded evidence, not as a no-opportunity market conclusion.
 - The observer queues a single-Brain re-read when completed-bar/pattern evidence changes or price/spread moves materially. Per-symbol throttling prevents a reasoner call on every tick; the request executes on the CognitionLoop thread, not the market-data thread.
 - Pattern data is provided as one neutral Evidence object. Overlapping modules are not votes, and no additive score or coordinator chooses a winner.
-- A final Gold-only check in the shared ActionExecutor rejects any non-allowlisted OPEN intent before the broker call; the event-driven runtime enables it explicitly. It does not block risk-reducing closes or management of any legacy open position.
+- A final Gold-only check in the shared ActionExecutor rejects any non-allowlisted OPEN intent before the broker call; the event-driven runtime enables it explicitly. It also fails closed unless the observer has a fresh, open-market quote and completed M5 data. These new-exposure checks do not block risk-reducing closes or management of any legacy open position.
 - The direct pending-order helper has its own exact Gold allowlist because pending orders do not pass through ActionExecutor. The legacy NewsPlanner OCO staging update is suppressed while `CognitionConfig.single_path` is enabled, so a second independent strategy cannot stage entries beside the Brain.
 - No parallel strategy selector or duplicate risk engine was introduced. Position sizing, portfolio exposure, the existing execution RiskGate, ActionExecutor and broker routing remain the authoritative execution controls.
 
@@ -71,12 +71,12 @@ thresholds pass; otherwise it observes rather than fabricating a trade.
 
 The focused tests cover evidence-only detector registration, CRT range/sweep/
 reclaim observations, strict Gold symbol mapping, candle time integrity,
-one-record neutral evidence conversion with factual measurements, event-context
-verification, stale evidence rejection, venue-routing mismatch, material market
-updates waking the existing Brain with a debounce, and proof that no pattern
-detector output contains trade direction or execution geometry. A separate
-ActionExecutor regression test covers the Gold-only OPEN invariant and preserves
-risk-reducing exits.
+neutral evidence conversion with factual measurements, event-context verification,
+stale evidence rejection, venue-routing mismatch, material market updates waking
+the existing Brain with a debounce, and proof that no pattern detector output
+contains trade direction or execution geometry. ActionExecutor regression tests
+cover the Gold-only OPEN invariant, fail-closed feed-health validation, callback
+failure, and preservation of risk-reducing exits.
 
 Run:
 
@@ -99,6 +99,9 @@ live orders. Before enabling live trading:
 2. Complete an end-to-end audit proving no direct/legacy order path bypasses
    the Gold-only ActionExecutor guard or pending-order allowlist, including
    re-entry, restart recovery, news OCO cleanup and AI-originated requests.
+   Cancel any pending orders created by a previous deployment before rollout:
+   the legacy planner's in-memory OCO registry is not a broker-side order
+   reconciliation service after a process restart.
 3. Add Gold-specific tick-quality backtests with real spread, commission, swap,
    slippage, partial/rejected fills, gaps and broker stop/volume constraints.
 4. Use rolling walk-forward tests plus a final untouched holdout; report net
