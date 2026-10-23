@@ -267,8 +267,13 @@ class ApexGoldDeskShadowObserver:
                 for tf, bars in (payload.get("completed_bars") or {}).items()
             }
             copied["pattern_observations"] = [
-                {"family": item["family"], "facts": list(item["facts"]),
-                 "source_bar_time": item["source_bar_time"]}
+                {
+                    "family": item["family"],
+                    "facts": list(item["facts"]),
+                    "measurements": dict(item.get("measurements") or {}),
+                    "timeframe": item.get("timeframe", ""),
+                    "source_bar_time": item["source_bar_time"],
+                }
                 for item in payload.get("pattern_observations", [])
             ]
         return copied
@@ -402,22 +407,21 @@ class ApexGoldDeskShadowObserver:
             data_quality_ok=bool(candle_map.get("M5")) and quote_age <= self.max_tick_age_seconds,
         )
 
-        # Run each measurement instrument, but do not elect a strategy winner.
-        # Candidate direction, score, entry, stop and target are intentionally
-        # stripped; only raw pattern facts and their source bar remain.
+        # Each module emits facts only. The interface has no direction, entry,
+        # stop, target, strategy score, or order object to compete with the Brain.
         observations: list[dict[str, Any]] = []
         for detector in self._pattern_detectors:
             family = str(getattr(detector, "pattern_id", type(detector).__name__) or type(detector).__name__)
             try:
-                for finding in detector.evaluate(snapshot) or ():
-                    facts = tuple(str(item)[:240] for item in getattr(finding, "evidence", ()) if str(item).strip())
-                    if not facts:
-                        facts = ("pattern preconditions detected on completed bars",)
-                    source_time = getattr(finding, "source_bar_time", observed_at)
+                for finding in detector.observe(snapshot) or ():
+                    facts = tuple(str(item)[:240] for item in finding.facts if str(item).strip())
+                    measurements = dict(finding.measurements)
                     observations.append({
-                        "family": family,
-                        "facts": list(facts[:8]),
-                        "source_bar_time": source_time.isoformat() if hasattr(source_time, "isoformat") else str(source_time),
+                        "family": finding.pattern_id,
+                        "facts": list(facts[:12]),
+                        "measurements": measurements,
+                        "timeframe": finding.timeframe,
+                        "source_bar_time": finding.source_bar_time.isoformat(),
                     })
             except Exception as exc:
                 self.detector_errors += 1
