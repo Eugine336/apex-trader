@@ -2249,6 +2249,70 @@ class CognitiveBrain:
                 f"Brain discovered opportunity from native analysis without advisor "
                 f"confirmation — {lead.statement}")
             considered = self._compare_opportunities(lead, symbol, [])
+
+            # Native-only origination must still produce the same first-class
+            # opportunity contract as advisor-assisted origination. The opportunity
+            # is marked ACTIVE only because the native path above required an
+            # observed composite activation pattern, sufficient evidence breadth,
+            # fresh execution-cost evidence and positive net EV.
+            pattern_domain_map = {
+                "displacement_confirmed": {"structure", "volume"},
+                "volume_confirmed_breakout": {"structure", "volume", "volatility"},
+                "liquidity_sweep_absorbed": {"liquidity", "order_flow"},
+                "liquidity_sweep_with_momentum_exhaustion": {"liquidity", "momentum"},
+                "liquidity_sweep_reclaimed": {"liquidity", "structure"},
+                "failed_breakout": {"structure", "liquidity", "volatility"},
+                "fvg_liquidity_confluence": {"structure", "liquidity", "order_flow"},
+                "order_flow_at_structure": {"order_flow", "structure"},
+                "volatility_expansion_breakout": {"volatility", "structure", "volume"},
+                "event_window_breakout": {"volatility", "structure", "macro"},
+            }
+            supporting_domains: set[str] = set()
+            for pattern in supporting:
+                supporting_domains.update(pattern_domain_map.get(pattern, set()))
+            supporting_evidence_ids = [
+                str(getattr(item, "evidence_id", "") or "")
+                for item in market_state.fresh_evidence()
+                if str(getattr(getattr(item, "domain", None), "value",
+                               getattr(item, "domain", ""))).lower() in supporting_domains
+                and getattr(item, "evidence_id", "")
+            ]
+            competing_statements = [
+                item.statement for item in hypotheses if item is not lead
+            ]
+            evidence_strength = (
+                sum(analysis.domain_coverage.values()) / len(analysis.domain_coverage)
+                if analysis.domain_coverage else 0.0
+            )
+            native_opportunity_id = (
+                f"native:{symbol}:{'+'.join(sorted(supporting))}"
+            )[:160]
+            native_opportunity = Opportunity.from_reply(
+                {
+                    "id": native_opportunity_id,
+                    "direction": direction,
+                    "state": "ACTIVE",
+                    "thesis": lead.statement,
+                    "why_now": "; ".join(analysis.observations[:4]) or lead.statement,
+                    "entry_conditions": [
+                        "Native composite activation pattern is present in fresh evidence",
+                        "Fresh quote, broker feasibility and protective-risk checks must pass before submission",
+                    ],
+                    "confirmation_conditions": [
+                        "The activation evidence remains valid at final execution admission",
+                    ],
+                    "invalidation_conditions": [lead.invalidation] if lead.invalidation else [],
+                    "target_logic": (
+                        f"Screening geometry assumes {reward_r:.2f}R reward / {risk_r:.2f}R risk; "
+                        "the execution plane must resolve broker-valid protection and prices"
+                    ),
+                    "quality": lead_conf,
+                    "asymmetry": reward_r / max(0.01, reward_r + risk_r),
+                    "evidence_strength": evidence_strength,
+                    "competing_opportunities": competing_statements[:6],
+                },
+                preferred_id=native_opportunity_id,
+            )
             questions = {
                 "what_is_happening": lead.statement,
                 "reasoning_mode": "native_only",
@@ -2274,6 +2338,8 @@ class CognitiveBrain:
                     for h in hypotheses)[:1000],
                 "brain_self_criticism": lead.criticism or "no material criticism",
                 "brain_book_comparison": considered,
+                "brain_independent_opportunity_id": native_opportunity.opportunity_id,
+                "brain_independent_opportunity_state": native_opportunity.state.value,
                 "reasoner_state": reason_txt,
             }
             if pattern_mod_note:
@@ -2293,18 +2359,21 @@ class CognitiveBrain:
             )
             brain_hyps = self._build_hypotheses(
                 direction, lead_conf, reward_r, risk_r,
-                lead.statement, [h.statement for h in hypotheses if h is not lead],
-                lead.invalidation, [], [],
+                lead.statement, competing_statements,
+                lead.invalidation, supporting_evidence_ids, [],
             )
             decision = DecisionPackage(
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
+                supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
                 invalidation_conditions=invalidation_conditions,
                 hypotheses=brain_hyps,
+                opportunities=[native_opportunity],
+                preferred_opportunity_id=native_opportunity.opportunity_id,
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
@@ -2314,9 +2383,12 @@ class CognitiveBrain:
                 initial_execution_intent={"kind": "market",
                                           "confidence": round(lead_conf, 4),
                                           "independent_origination": True},
+                supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
+                opportunity_id=native_opportunity.opportunity_id,
+                opportunity_state=native_opportunity.state.value,
                 decision_id=decision.decision_id,
             )
             with self._lock:
