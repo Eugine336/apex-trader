@@ -382,6 +382,16 @@ class MarketState:
         total = len(self.evidence)
         n = len(fresh)
         domains = {e.domain.value for e in fresh}
+        # Infrastructure, execution feasibility, portfolio state and unknown
+        # adapter buckets are not independent market-analysis domains. They can
+        # be mandatory safety inputs, but must not pad market-evidence breadth.
+        non_market_domains = {
+            EvidenceDomain.EXECUTION_QUALITY.value,
+            EvidenceDomain.REASONING.value,
+            EvidenceDomain.PORTFOLIO.value,
+            EvidenceDomain.OTHER.value,
+        }
+        market_domains = domains - non_market_domains
         weights = self.influence_weights
         if not weights:
             # Unweighted (default) — every source counts equally.
@@ -413,6 +423,8 @@ class MarketState:
             "evidence_fresh": n,
             "domains_present": sorted(domains),
             "domain_count": len(domains),
+            "market_domains_present": sorted(market_domains),
+            "market_domain_count": len(market_domains),
             "conflict_ratio": round(conflict, 4),
             "mean_confidence": round(mean_conf, 4),
             "mean_uncertainty": round(mean_unc, 4),
