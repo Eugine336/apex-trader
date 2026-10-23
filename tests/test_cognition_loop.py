@@ -369,6 +369,38 @@ def test_origination_suppressed_when_portfolio_authority_is_missing():
     assert loop.get_status()["orig_intended"] == 0
 
 
+def test_event_driven_origination_runs_portfolio_review():
+    brain = _OpenBrain()
+    submitted = []
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    assert loop.reason_symbol_now("EURUSD") == 1
+    assert brain.reviewed_book == []
+    assert len(submitted) == 1
+
+
+def test_portfolio_review_fault_suppresses_new_campaign():
+    class _FaultingPortfolioBrain(_OpenBrain):
+        def reason_portfolio(self, outputs, existing_positions):
+            raise RuntimeError("book review unavailable")
+
+    submitted = []
+    loop = CognitionLoop(
+        _FaultingPortfolioBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    loop.run_once()
+    assert submitted == []
+    assert loop.get_status()["orig_submitted"] == 0
+    assert loop.get_status()["orig_intended"] == 0
+
+
 def test_origination_off_never_originates():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
