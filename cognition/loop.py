@@ -806,12 +806,24 @@ class CognitionLoop:
             result = fn(list(cycle_outputs), existing)
             if result is None:
                 raise RuntimeError("Brain portfolio review returned no result")
-            reviewed = list(result)
+            result_items = list(result)
+            source_by_id = {id(item): item for item in cycle_outputs}
+            reviewed = [
+                item for item in result_items if id(item) in source_by_id
+            ]
             reviewed_ids = {id(item) for item in reviewed}
             for output in candidates:
                 if id(output) not in reviewed_ids:
                     self._demote_unreviewed_campaign(
                         output, "portfolio review omitted campaign — exposure suppressed",
+                    )
+            # Do not originate a replacement/cloned candidate that was not an
+            # input to the audited portfolio pass. Only reviewed original objects
+            # may progress to execution admission.
+            for item in result_items:
+                if id(item) not in source_by_id and self._is_open_campaign_candidate(item):
+                    self._demote_unreviewed_campaign(
+                        item, "portfolio review returned an untracked candidate — exposure suppressed",
                     )
             return reviewed
         except Exception as exc:  # noqa: BLE001 — a failed book review cannot authorize a trade
