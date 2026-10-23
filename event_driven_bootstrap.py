@@ -2932,6 +2932,17 @@ class EventDrivenSystem:
                     _cog_loop.set_price_source(self._cognition_price_snapshot)
                 except Exception as exc:
                     logger.debug("[event-driven] price-source wiring failed: {}", exc)
+
+                # Single Brain architecture: the Gold desk contributes one
+                # neutral, broker-backed market evidence record. Pattern modules
+                # cannot originate independent trades or compete for direction.
+                try:
+                    gold_observer = getattr(self, "_gold_desk_observer", None)
+                    _cog_loop.set_gold_market_source(
+                        gold_observer.evidence_for if gold_observer is not None else None
+                    )
+                except Exception as exc:
+                    logger.debug("[event-driven] Gold market evidence wiring failed: {}", exc)
                 # Violation #2 — wire the inter-candle structural interactions in
                 # as an evidence source, and give the detector the Brain-wake
                 # handle, then subscribe it to the tick stream. Now a swept pool
