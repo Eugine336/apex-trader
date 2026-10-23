@@ -67,7 +67,7 @@ class _Reasoner:
 
 
 def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
-                         extra_domains=("structure", "momentum")):
+                         extra_domains=("structure", "momentum", "liquidity")):
     """A MarketState carrying reasoning Evidence with council-coverage counts
     plus enough distinct domains to clear the minimum-coverage gate."""
     ms = MarketState(symbol=symbol)
@@ -85,6 +85,13 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
             "advisors_total": total,
         },
         relevance_horizon_seconds=600.0,
+    ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol, observation="fresh test execution-cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
     ))
     return ms
 
@@ -136,6 +143,7 @@ def test_v3_brain_declines_when_evidence_domain_count_is_missing():
     def omit_domain_count(now=None):
         result = base_consolidation(now)
         result.pop("domain_count", None)
+        result.pop("market_domain_count", None)
         return result
 
     ms.consolidation = omit_domain_count
@@ -236,6 +244,13 @@ def _state_domains(n, *, symbol="XAUUSD"):
         },
         relevance_horizon_seconds=600.0,
     ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol, observation="fresh test execution-cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
@@ -252,7 +267,7 @@ def test_v12_brain_declines_when_too_few_domains():
 def test_v12_brain_acts_with_adequate_domains():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                            min_evidence_domains=3)
-    out = brain.reason(_state_domains(2))
+    out = brain.reason(_state_domains(3))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.questions_answered.get("evidence_coverage", "").startswith("ADEQUATE")
 
