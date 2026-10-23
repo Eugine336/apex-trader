@@ -141,7 +141,7 @@ class ApexGoldDeskShadowObserver:
         self._pattern_detectors = list(pattern_detectors or default_strategies())
         self.max_tick_age_seconds = float(max_tick_age_seconds)
 
-        from gold_desk.coordinator import GoldOnlyGuard
+        from gold_desk.symbols import GoldOnlyGuard
         self.gold_guard = GoldOnlyGuard()
         self.symbols = tuple(sorted({
             str(symbol).strip()
