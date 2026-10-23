@@ -774,3 +774,38 @@ class TestPerInstrumentIsolation:
             "EURUSD modify was blocked by the NZDUSD modify breaker — "
             "per-instrument isolation failed"
         )
+
+
+def test_gold_only_execution_guard_rejects_non_gold_new_exposure():
+    broker = FakeBroker()
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(gold_only=True),
+    )
+
+    rejected = executor.execute(_open_intent("EURUSD"), {})
+    assert not rejected.success
+    assert rejected.rejected_by_gate
+    assert "gold_only_invariant" in rejected.gate_reason
+    assert broker.open_calls == []
+
+    # Exact broker aliases are allowed; prefix lookalikes are not.
+    xau = executor.execute(_open_intent("XAUUSDm"), {})
+    assert xau.success, xau.error
+    assert broker.open_calls[-1]["symbol"] == "XAUUSDm"
+
+    fake = executor.execute(_open_intent("XAUUSD_FAKE"), {})
+    assert not fake.success
+    assert fake.rejected_by_gate
+    assert len(broker.open_calls) == 1
+
+
+def test_gold_only_guard_does_not_block_risk_reducing_exit_on_legacy_position():
+    broker = FakeBroker()
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(gold_only=True),
+    )
+    result = executor.execute(_close_intent(), _positions())
+    assert result.success
+    assert broker.close_calls[0]["order_id"] == "12345"
