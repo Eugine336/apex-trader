@@ -1009,6 +1009,28 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — no fresh valid spread/"
                     "slippage or total-cost evidence is available"
                 )
+            elif (
+                self.ev_primary_gate
+                and directional
+                and not ev_ok
+                and confidence >= self.min_confidence_to_act
+                and limiting_dim in ("timing", "execution")
+            ):
+                # A thesis can remain valid while timing/execution conditions are
+                # temporarily poor. Do not relabel that conditional wait as a
+                # rejected market thesis merely because the weakest execution
+                # dimension lowered effective EV at this instant.
+                reason_txt = (
+                    f"{limiting_dim} conditions insufficient — waiting "
+                    f"(thesis holds at {confidence:.2f}, "
+                    f"{limiting_dim} {conf_dims[limiting_dim]:.2f}); "
+                    "reassess when execution/timing evidence improves"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    f"evaluated: doing nothing is correct — {limiting_dim} "
+                    "conditions are not executable now; preserve the thesis and wait"
+                )
             elif (directional_and_qualified and not ev_ok) or (
                 self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
             ):
