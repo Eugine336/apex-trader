@@ -1,5 +1,7 @@
 """Apex identity and contextual M1 observations."""
 
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 
 from cognition.brain import CognitiveBrain
@@ -196,6 +198,8 @@ def test_universal_market_lenses_emit_structured_facts_for_all_supported_timefra
     )
     assert structure.measurements["bos"] is True
     assert structure.measurements["provisional"] is False
+    assert structure.measurements["source_timestamp_known"] is False
+    assert structure.confidence < 0.7
     assert structure.polarity == 0.0
     assert "direction" not in structure.measurements
     assert "entry" not in structure.measurements
@@ -240,3 +244,24 @@ def test_native_rules_create_multiple_market_hypotheses_from_completed_bar_evide
     assert len(hypotheses) >= 2
     assert any(h.direction_implication in {"LONG", "SHORT"} for h in hypotheses)
     assert any("counter" in h.opportunity_implication.lower() for h in hypotheses)
+
+
+def test_market_lens_evidence_expires_from_original_broker_candle_time():
+    frame = _frames_with_breakout()
+    now = datetime.now(timezone.utc)
+    frame["time"] = pd.date_range(
+        end=now - timedelta(hours=2),
+        periods=len(frame),
+        freq="5min",
+    )
+    evidence = analyze_market_frames(
+        "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
+    )
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+        and item.measurements.get("timeframe") == "M5"
+    )
+    assert structure.measurements["source_timestamp_known"] is True
+    assert structure.timestamp_epoch < now.timestamp() - 2 * 3600 + 1
+    assert structure.is_fresh(now.timestamp()) is False
