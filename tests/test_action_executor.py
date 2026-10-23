@@ -804,8 +804,14 @@ def test_gold_only_guard_does_not_block_risk_reducing_exit_on_legacy_position():
     broker = FakeBroker()
     executor = ActionExecutor(
         broker=broker,
-        config=ExecutorConfig(gold_only=True),
+        config=ExecutorConfig(
+            gold_only=True,
+            require_gold_feed_health=True,
+            gold_feed_health_check=lambda _symbol: False,
+        ),
     )
+    # An unhealthy Gold feed blocks new entries, but must not stop reducing an
+    # already-open position; exits remain available during feed degradation.
     result = executor.execute(_close_intent(), _positions())
     assert result.success
     assert broker.close_calls[0]["order_id"] == "12345"
