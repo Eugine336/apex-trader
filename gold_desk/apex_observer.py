@@ -295,6 +295,51 @@ class ApexGoldDeskShadowObserver:
         """
         self._evidence_change_callback = callback
 
+    def is_feed_healthy(
+        self,
+        symbol: str,
+        *,
+        max_age_seconds: float = 15.0,
+        now_epoch: float | None = None,
+    ) -> bool:
+        """Fail closed unless a recent, open-market Gold quote/bar snapshot exists.
+
+        Used by the shared ActionExecutor immediately before a new OPEN. This is
+        operational data-integrity validation, not a pattern score or decision.
+        It intentionally does not block CLOSE or other risk-reducing intents.
+        """
+        if not self.gold_guard.is_gold(symbol) or max_age_seconds <= 0:
+            return False
+        key = str(symbol or "").strip().upper()
+        with self._lock:
+            payload = self._latest_market_evidence.get(key)
+            if payload is None:
+                payload = self._latest_market_evidence.get("XAUUSD")
+            if payload is None:
+                return False
+            # Copy only primitive fields while holding the lock.
+            observed_at = str(payload.get("observed_at", "") or "")
+            quality_ok = bool(payload.get("data_quality_ok", False))
+            market_open = bool(payload.get("market_open", False))
+            quote = dict(payload.get("quote") or {})
+            bars = dict(payload.get("completed_bars") or {})
+        try:
+            stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None or stamp.utcoffset() is None:
+                return False
+            age = (time.time() if now_epoch is None else float(now_epoch)) - stamp.timestamp()
+            bid, ask = float(quote["bid"]), float(quote["ask"])
+        except (TypeError, ValueError, KeyError, OverflowError, OSError):
+            return False
+        return bool(
+            quality_ok
+            and market_open
+            and -1.0 <= age <= float(max_age_seconds)
+            and bid > 0.0
+            and ask >= bid
+            and bool(bars.get("M5"))
+        )
+
     def _on_tick(self, tick: Any) -> None:
         """Non-blocking callback; all analysis runs off the tick-routing thread."""
         if not self._running:
