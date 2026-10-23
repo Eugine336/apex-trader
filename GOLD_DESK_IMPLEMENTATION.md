@@ -58,6 +58,7 @@ does not determine whether the deterministic market measurements are calculated.
 - The chosen venue must match the connector selected by `PlatformManager`; mixed MT5/Deriv ticks are discarded.
 - The observer uses broker-fetch history with `include_forming=False`, filters forming/future bars, checks tick freshness, and updates a cached evidence payload.
 - Evidence is freshness-limited at the CognitiveLoop adapter; an expired or unavailable Gold feed is reported as degraded evidence, not as a no-opportunity market conclusion.
+- The observer queues a single-Brain re-read when completed-bar/pattern evidence changes or price/spread moves materially. Per-symbol throttling prevents a reasoner call on every tick; the request executes on the CognitionLoop thread, not the market-data thread.
 - Pattern data is provided as one neutral Evidence object. Overlapping modules are not votes, and no additive score or coordinator chooses a winner.
 - No new Gold-specific risk gate or execution path exists in this branch. Position sizing, portfolio exposure, the existing execution RiskGate, ActionExecutor and broker routing remain Apex's authoritative execution controls.
 
