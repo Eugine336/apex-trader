@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 
-from gold_desk.coordinator import GoldOnlyGuard
+from gold_desk.symbols import GoldOnlyGuard
 from gold_desk.models import Direction, MarketSnapshot, TradeIdea
 
 
