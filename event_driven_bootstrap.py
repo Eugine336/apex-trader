@@ -2256,18 +2256,20 @@ class EventDrivenSystem:
     ) -> bool:
         """Gate an entry/scale on positive expected NET value (Part XIX Art 1/7/8).
 
-        Fail-closed: when the cost or money conversion cannot be estimated
-        (missing broker spec / spread), the gate DECLINES the trade — expected
-        value cannot be established, so the opportunity does not qualify. Gated
-        off via config (opportunity_qualification_enabled=False restores the
-        unconditional pass).
+        Fail-closed and mandatory: when the cost or money conversion cannot be
+        estimated (missing broker spec / spread), the gate DECLINES the trade.
+        The legacy config flag is retained for compatibility but cannot disable
+        net-EV qualification under the canonical Apex identity.
         """
         try:
             cog = getattr(self._config, "cognition", None)
             if cog is not None and not bool(
                 getattr(cog, "opportunity_qualification_enabled", True)
             ):
-                return True
+                logger.warning(
+                    "[opportunity] COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED=false "
+                    "is ignored; net-EV qualification is mandatory under Apex identity"
+                )
             tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
             is_long = str(direction or "").upper() == "LONG"
             entry = 0.0
@@ -2373,42 +2375,17 @@ class EventDrivenSystem:
                 intents: list = []
 
                 if kind == "scale_in":
-                    # Part XVIII Art 11 — never stack correlated risk: skip a
-                    # scale when the symbol's currency/asset leg is already
-                    # carried by an over-concentrated cluster of campaigns.
-                    reg = getattr(self._ctx, "campaign_registry", None) \
-                        if self._ctx is not None else None
-                    if reg is not None:
-                        try:
-                            if reg.is_component_saturated(symbol):
-                                logger.info(
-                                    "[mgmt-sink] {} scale_in skipped — correlated "
-                                    "cluster saturated (Art 11)", symbol,
-                                )
-                                return
-                        except Exception:  # noqa: BLE001
-                            pass
-                    sl, tp = self._derive_origination_levels(symbol, held)
-                    if sl is None or tp is None:
-                        logger.info("[mgmt-sink] {} scale_in skipped — no protective stop", symbol)
-                        return
-                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
-                    add_lots = self._origination_lot_size(symbol, held, sl, conf)
-                    if add_lots <= 0:
-                        logger.info("[mgmt-sink] {} scale_in skipped — no broker-valid lot", symbol)
-                        return
-                    # Part XIX Art 7 — a scale must also clear positive net EV.
-                    if not self._opportunity_qualifies(symbol, held, sl, tp, add_lots, conf):
-                        return
-                    idem = generate_idempotency_key(symbol, held, add_lots)
-                    intents.append(Intent.open(
-                        symbol=symbol, direction=held, lots=add_lots, sl=float(sl), tp=float(tp),
-                        source="ai_brain", reason="brain_scale_in", stake_usd=None,
-                        comment=build_order_comment("APEX", idem), idempotency_key=idem,
-                    ))
-                    self._aggregator.submit(intents)
-                    logger.info("[mgmt-sink] submitted scale_in {} {} ({:.2f} lots)",
-                                symbol, held, add_lots)
+                    # V-IDENTITY: a management verb is not itself a new-entry
+                    # opportunity. This adapter receives no first-class active
+                    # Opportunity or whole-book approval record, so it may not
+                    # increase exposure directly. Scale-ins must be represented
+                    # and admitted through the Brain's normal market/opportunity
+                    # and portfolio path before a future execution can be wired.
+                    logger.warning(
+                        "[mgmt-sink] {} scale_in suppressed — missing the "
+                        "first-class opportunity and whole-book admission contract",
+                        symbol,
+                    )
                     return
 
                 pos = _open_position_for(symbol, held)
@@ -2444,27 +2421,23 @@ class EventDrivenSystem:
                     ))
                 elif kind == "reverse":
                     target = str(getattr(action, "target_direction", "") or "").upper()
-                    if target not in ("LONG", "SHORT"):
+                    if target not in ("LONG", "SHORT") or target == held:
                         return
+                    # Close the invalidated held thesis, but do not smuggle the
+                    # opposite-side OPEN through management. After the close is
+                    # reconciled, the loop re-wakes the Brain; a new-side entry
+                    # must have its own active opportunity, verified costs and
+                    # whole-book portfolio approval through the standard path.
                     intents.append(Intent.close(
                         symbol=symbol, ticket=ticket, source="ai_brain",
-                        reason="brain_reverse_close", direction=held,
+                        reason="brain_reverse_close_then_reassess",
+                        direction=held,
                     ))
-                    sl, tp = self._derive_origination_levels(symbol, target)
-                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
-                    new_lots = (self._origination_lot_size(symbol, target, sl, conf)
-                                if sl is not None else 0.0)
-                    if sl is not None and tp is not None and new_lots > 0:
-                        idem = generate_idempotency_key(symbol, target, new_lots)
-                        intents.append(Intent.open(
-                            symbol=symbol, direction=target, lots=new_lots,
-                            sl=float(sl), tp=float(tp), source="ai_brain",
-                            reason="brain_reverse_open", stake_usd=None,
-                            comment=build_order_comment("APEX", idem), idempotency_key=idem,
-                        ))
-                    else:
-                        logger.info("[mgmt-sink] {} reverse — closing only (no re-entry lot/stop)",
-                                    symbol)
+                    logger.info(
+                        "[mgmt-sink] {} reverse requested {}→{}; closing held side "
+                        "only. New-side entry awaits a fresh Brain/portfolio decision.",
+                        symbol, held, target,
+                    )
                 else:
                     return
 
