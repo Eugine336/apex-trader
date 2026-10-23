@@ -957,7 +957,8 @@ class CognitiveBrain:
                 )
                 reason_txt = (
                     f"advisor quorum not met or unconfirmed: {quorum_status} "
-                    "— cognitive coverage insufficient for action"
+                    "— cognitive coverage insufficient for action; evidence coverage "
+                    "must also be adequate before capital is exposed"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
