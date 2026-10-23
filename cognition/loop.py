@@ -11,11 +11,13 @@ system without disturbing the hot path:
   fail-safe view — it never triggers analysis or touches execution.
 * :class:`CognitionLoop` — a background daemon (never the tick loop) that, per
   symbol, consolidates evidence → asks the Brain to reason → records the
-  resulting DecisionPackage/CampaignSpecification. Runs in **shadow mode** by
-  default: it produces and surfaces decisions for observability without driving
-  execution, so the legacy path stays authoritative until the cutover is
-  validated (Part XIII/XV). ``latest()`` exposes the Brain's read for the
-  eventual execution bridge.
+  resulting DecisionPackage/CampaignSpecification. Its constructor is safely
+  shadow-by-default, while production `CognitionConfig` explicitly supplies the
+  effective gate, origination and management modes. A mode flag is routing
+  configuration, not proof of readiness: new campaigns still require structured
+  activated opportunities, fresh multi-domain evidence, net EV, book-wide
+  portfolio review and shared execution/risk admission. ``latest()`` exposes the
+  Brain's read for observability and governed consumers.
 * :class:`BrainActionBridge` — turns notable Brain decisions into governed
   Composio objectives (Part IX: AI creates objectives → governance authorises →
   Composio executes). Ecosystem actions only; never broker orders.
