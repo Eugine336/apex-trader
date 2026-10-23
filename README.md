@@ -59,10 +59,10 @@ apex-trader/
 │   ├── spread_monitor.py     # Spread spike protection
 │   └── risk_reporter.py      # Aggregated risk health reporting
 │
-├── adaptive/                 # Adaptive optimizer (statistical heuristics)
+├── adaptive/                 # Statistical learning and adaptation; individual modules require live-wiring verification
 │   ├── optimizer.py          # Master controller — coordinates all learners
 │   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
-│   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
+│   ├── score_optimizer.py    # Legacy scoring-weight tuner; not the Brain's identity or sole decision authority
 │   ├── regime_learner.py     # Regime-specific strategy adaptation
 │   ├── pair_learner.py       # Pair-specific confidence multipliers
 │   ├── session_learner.py    # Session aggression levels
@@ -203,7 +203,7 @@ The effective values depend on config.py plus environment overrides. Review runt
 |---|---|
 | `COGNITION_GATE_MODE` | Whether the cognition gate is off, shadow, veto or authoritative |
 | `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
-| `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled |
+| `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled; verify its effective runtime value before relying on it |
 | `APEX_GOLD_DESK_SHADOW_ENABLED` | Enables/disables the Gold-specific observation layer; the observer itself cannot place orders |
 
 A live origination setting does not prove that the advisor, feed, broker or strategy is healthy and does not establish profitability. Follow the rollout runbook and identity audit.
