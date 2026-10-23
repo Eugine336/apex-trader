@@ -298,6 +298,37 @@ def rule_order_flow_imbalance(evidence: "list[Evidence]") -> Optional[str]:
     return None
 
 
+def rule_m1_price_action_at_boundary(evidence: "list[Evidence]") -> Optional[str]:
+    """Surface M1 patterns only when the observer reports local-boundary context.
+
+    The candle remains evidence, not a universal entry trigger. A forming bar may
+    repaint; that uncertainty is carried by the source measurements.
+    """
+    for item in evidence or []:
+        measurements = _measurements(item)
+        if measurements.get("source_kind") != "m1_price_action":
+            continue
+        if not measurements.get("near_range_boundary"):
+            continue
+        tags = measurements.get("pattern_tags", [])
+        if not isinstance(tags, (list, tuple, set)) or not tags:
+            continue
+        recognised = {
+            "engulfing", "pin_bar", "rejection_wick",
+            "inside_bar_breakout", "range_rejection", "volume_spike_at_boundary",
+        }
+        used = sorted({str(tag) for tag in tags if str(tag) in recognised})
+        if used:
+            state = "provisional" if measurements.get("provisional") else "observed"
+            return (
+                "m1_price_action_at_boundary: M1 price-action evidence ("
+                + ", ".join(used)
+                + f") is {state} near a measured local range boundary — contextual "
+                "evidence only; higher-context confirmation and invalidation remain necessary"
+            )
+    return None
+
+
 # Ordered registry of every rule (Article X). Extend by appending a new rule
 # function; the Brain iterates this list to build its detected-pattern set.
 _PATTERN_RULES: "list[Callable[[list[Evidence]], Optional[str]]]" = [
@@ -317,6 +348,7 @@ _PATTERN_RULES: "list[Callable[[list[Evidence]], Optional[str]]]" = [
     rule_execution_degraded,
     rule_portfolio_concentrated,
     rule_order_flow_imbalance,
+    rule_m1_price_action_at_boundary,
 ]
 
 
