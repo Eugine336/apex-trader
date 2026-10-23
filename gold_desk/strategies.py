@@ -7,8 +7,6 @@ are simply observations for Apex's single CognitiveBrain to interpret.
 """
 from __future__ import annotations
 
-from datetime import timedelta
-from statistics import median
 from typing import Protocol, Sequence
 
 from gold_desk.indicators import atr, ema, median_true_range, rsi, rolling_zscore, true_ranges
