@@ -9,6 +9,7 @@ on:
       - "config.py"
       - "tests/test_env_template_security.py"
       - "tests/test_constitution_compliance_v2.py"
+      - "tests/test_brain_ev_primary_gate.py"
       - "tests/test_env_local_classification.py"
       - "tests/test_hosted_provider_roster.py"
       - "tests/test_gold_desk_core.py"
@@ -49,6 +50,7 @@ on:
       - "config.py"
       - "tests/test_env_template_security.py"
       - "tests/test_constitution_compliance_v2.py"
+      - "tests/test_brain_ev_primary_gate.py"
       - "tests/test_env_local_classification.py"
       - "tests/test_hosted_provider_roster.py"
       - "tests/test_gold_desk_core.py"
@@ -101,6 +103,7 @@ jobs:
           cognition/price_action_patterns.py cognition/market_lenses.py
           tests/test_apex_identity_and_contextual_patterns.py
           tests/test_developing_analysis.py tests/test_env_template_security.py
+          tests/test_brain_ev_primary_gate.py
           config.py
           persistence/recovery.py persistence/domain_events.py
           execution/action_executor.py event_driven_bootstrap.py
@@ -108,6 +111,6 @@ jobs:
         # Includes universal market-lens freshness, native-hypothesis, and developing-loop contract regressions.
         run: >-
           python -c "import tick, pytest;
-          raise SystemExit(pytest.main(['tests/test_gold_desk_core.py','tests/test_action_executor.py','tests/test_brain_native_reasoning.py','tests/test_persistence_recovery_history.py','tests/test_apex_identity_and_contextual_patterns.py','tests/test_developing_analysis.py','tests/test_env_template_security.py','tests/test_constitution_compliance_v2.py','-q']))"
+          raise SystemExit(pytest.main(['tests/test_gold_desk_core.py','tests/test_action_executor.py','tests/test_brain_native_reasoning.py','tests/test_persistence_recovery_history.py','tests/test_apex_identity_and_contextual_patterns.py','tests/test_developing_analysis.py','tests/test_env_template_security.py','tests/test_constitution_compliance_v2.py','tests/test_brain_ev_primary_gate.py','-q']))"
       - name: Lint new implementation
-        run: ruff check gold_desk cognition/identity.py cognition/strategy_knowledge.py cognition/price_action_patterns.py cognition/market_lenses.py cognition/pattern_rules.py cognition/brain_reasoning.py cognition/brain.py event_driven_bootstrap.py adaptive/param_evolution.py dashboard/state_brain.py execution/lifecycle_loops.py infra/modal_vllm_deploy.py llm/reasoning_orchestrator.py scripts/recover_apex_db.py tests/test_cognition_loop.py tests/test_apex_identity_and_contextual_patterns.py tests/test_developing_analysis.py tests/test_env_template_security.py config.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
+        run: ruff check gold_desk cognition/identity.py cognition/strategy_knowledge.py cognition/price_action_patterns.py cognition/market_lenses.py cognition/pattern_rules.py cognition/brain_reasoning.py cognition/brain.py event_driven_bootstrap.py adaptive/param_evolution.py dashboard/state_brain.py execution/lifecycle_loops.py infra/modal_vllm_deploy.py llm/reasoning_orchestrator.py scripts/recover_apex_db.py tests/test_cognition_loop.py tests/test_apex_identity_and_contextual_patterns.py tests/test_developing_analysis.py tests/test_env_template_security.py tests/test_brain_ev_primary_gate.py tests/test_constitution_compliance_v2.py config.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
