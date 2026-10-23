@@ -544,7 +544,9 @@ class CognitionLoop:
         # hands it to the wired sink for execution. Default shadow (safe).
         m2 = str(management_mode or "shadow").strip().lower()
         self.management_mode = m2 if m2 in ("off", "shadow", "live") else "shadow"
-        self._management_sink: Optional[Callable[[Any, Any], None]] = None
+        # A sink may return False to report an explicit safety/identity
+        # suppression; None remains accepted for legacy void-return callbacks.
+        self._management_sink: Optional[Callable[[Any, Any], Optional[bool]]] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -575,6 +577,7 @@ class CognitionLoop:
         self._event_throttled = 0
         self._manage_intended = 0
         self._manage_submitted = 0
+        self._manage_suppressed = 0
         # Part XVIII Art 13 — management follows evidence, not clocks. A per-
         # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
         # from re-managing the same campaign on every micro-event, while the
@@ -620,7 +623,9 @@ class CognitionLoop:
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
 
-    def set_management_sink(self, sink: Optional[Callable[[Any, Any], None]]) -> None:
+    def set_management_sink(
+        self, sink: Optional[Callable[[Any, Any], Optional[bool]]],
+    ) -> None:
         """Wire the live management-execution sink.
 
         Called with ``(ManagementAction, PositionView)``; the owner resolves the
@@ -1586,7 +1591,15 @@ class CognitionLoop:
                 return  # HOLD / observe — nothing to do
             self._manage_intended += 1
             if self.management_mode == "live" and self._management_sink is not None:
-                self._management_sink(action, position)
+                sink_result = self._management_sink(action, position)
+                if sink_result is False:
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
+                        "execution sink rejected the action",
+                        action.symbol, action.kind, action.direction,
+                    )
+                    return
                 self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
@@ -1677,6 +1690,7 @@ class CognitionLoop:
             "management_sink_wired": self._management_sink is not None,
             "manage_intended": self._manage_intended,
             "manage_submitted": self._manage_submitted,
+            "manage_suppressed": self._manage_suppressed,
             "campaign_registry_wired": self._campaigns is not None,
             "live_campaigns": (
                 len(self._campaigns.live_campaigns())
