@@ -78,6 +78,8 @@ class TrendContinuationDetector:
                         "last_close": last.close, "previous_high": previous.high,
                         "recent_pullback_low": min(bar.low for bar in pullback),
                         "last_close_above_ema20": True,
+                        "bos": True,
+                        "displacement": last.close - previous.high,
                     },
                     source_bar=last,
                 )]
@@ -96,6 +98,8 @@ class TrendContinuationDetector:
                         "last_close": last.close, "previous_low": previous.low,
                         "recent_pullback_high": max(bar.high for bar in pullback),
                         "last_close_below_ema20": True,
+                        "bos": True,
+                        "displacement": last.close - previous.low,
                     },
                     source_bar=last,
                 )]
@@ -130,7 +134,8 @@ class LiquiditySweepDetector:
                     "the lower range boundary was swept and reclaimed within one completed candle",
                 ),
                 measurements={**measurements, "boundary_swept": "prior_20bar_low",
-                              "reclaimed_boundary": "prior_20bar_low"},
+                              "reclaimed_boundary": "prior_20bar_low",
+                              "sweep": True, "absorption": True, "sweep_side": "sell"},
                 source_bar=last,
             )]
         if last.high > high + 0.05 * av and last.close < high:
@@ -142,7 +147,8 @@ class LiquiditySweepDetector:
                     "the upper range boundary was swept and reclaimed within one completed candle",
                 ),
                 measurements={**measurements, "boundary_swept": "prior_20bar_high",
-                              "reclaimed_boundary": "prior_20bar_high"},
+                              "reclaimed_boundary": "prior_20bar_high",
+                              "sweep": True, "absorption": True, "sweep_side": "buy"},
                 source_bar=last,
             )]
         return []
@@ -178,7 +184,8 @@ class VolatilityExpansionDetector:
                     "the latest M5 true range exceeds 1.25 times the prior median true range",
                     "price range expansion and upper-boundary escape occurred together",
                 ),
-                measurements={**common, "escaped_boundary": "prior_20bar_high"},
+                measurements={**common, "escaped_boundary": "prior_20bar_high",
+                              "bos": True, "displacement": last.close - high},
                 source_bar=last,
             )]
         if last.close < low - 0.05 * av:
@@ -189,7 +196,8 @@ class VolatilityExpansionDetector:
                     "the latest M5 true range exceeds 1.25 times the prior median true range",
                     "price range expansion and lower-boundary escape occurred together",
                 ),
-                measurements={**common, "escaped_boundary": "prior_20bar_low"},
+                measurements={**common, "escaped_boundary": "prior_20bar_low",
+                              "bos": True, "displacement": last.close - low},
                 source_bar=last,
             )]
         return []
@@ -225,7 +233,9 @@ class FailedBreakoutDetector:
                     "the completed candle closed back below the prior 10-bar high",
                     "the rejection wick above the range is at least 1.2 times the candle body",
                 ),
-                measurements={**common, "failed_boundary": "prior_10bar_high"},
+                measurements={**common, "failed_boundary": "prior_10bar_high",
+                              "failed_breakout": True, "sweep": True,
+                              "absorption": True, "sweep_side": "buy"},
                 source_bar=last,
             )]
         if last.low < low - 0.10 * av and last.close > low and lower_wick >= 1.2 * body:
@@ -236,7 +246,9 @@ class FailedBreakoutDetector:
                     "the completed candle closed back above the prior 10-bar low",
                     "the rejection wick below the range is at least 1.2 times the candle body",
                 ),
-                measurements={**common, "failed_boundary": "prior_10bar_low"},
+                measurements={**common, "failed_boundary": "prior_10bar_low",
+                              "failed_breakout": True, "sweep": True,
+                              "absorption": True, "sweep_side": "sell"},
                 source_bar=last,
             )]
         return []
@@ -316,7 +328,9 @@ class TrendExhaustionDetector:
                     "the latest completed H1 candle closed below the preceding H1 low",
                 ),
                 measurements={**common, "price_extreme_relation": "recent_high_above_prior_high",
-                              "momentum_relation": "recent_rsi_below_prior_rsi"},
+                              "momentum_relation": "recent_rsi_below_prior_rsi",
+                              "divergence": True, "trend_exhaustion": True,
+                              "bos": True, "displacement": last.close - previous.low},
                 source_bar=last,
             )]
         if recent_low < prior_low - 0.10 * av and recent_rsi > prior_rsi + 3 and last.close > previous.high:
@@ -328,7 +342,9 @@ class TrendExhaustionDetector:
                     "the latest completed H1 candle closed above the preceding H1 high",
                 ),
                 measurements={**common, "price_extreme_relation": "recent_low_below_prior_low",
-                              "momentum_relation": "recent_rsi_above_prior_rsi"},
+                              "momentum_relation": "recent_rsi_above_prior_rsi",
+                              "divergence": True, "trend_exhaustion": True,
+                              "bos": True, "displacement": last.close - previous.high},
                 source_bar=last,
             )]
         return []
@@ -363,7 +379,8 @@ class EventWindowBreakoutDetector:
                     "latest completed M5 close is above the supplied pre-event high plus buffer",
                     "event timestamps and pre-event boundaries came from the calendar/data adapter",
                 ),
-                measurements={**common, "escaped_boundary": "pre_event_high"},
+                measurements={**common, "escaped_boundary": "pre_event_high",
+                              "bos": True, "displacement": last.close - event.pre_event_high},
                 source_bar=last,
             )]
         if last.close < event.pre_event_low - buffer:
@@ -374,7 +391,8 @@ class EventWindowBreakoutDetector:
                     "latest completed M5 close is below the supplied pre-event low minus buffer",
                     "event timestamps and pre-event boundaries came from the calendar/data adapter",
                 ),
-                measurements={**common, "escaped_boundary": "pre_event_low"},
+                measurements={**common, "escaped_boundary": "pre_event_low",
+                              "bos": True, "displacement": last.close - event.pre_event_low},
                 source_bar=last,
             )]
         return []
@@ -424,7 +442,9 @@ class CandleRangeTheoryDetector:
                 ),
                 measurements={**common, "swept_boundary": "anchor_low",
                               "reclaimed_boundary": "anchor_low",
-                              "structure_boundary_broken": "previous_m5_high"},
+                              "sweep": True, "absorption": True, "sweep_side": "sell",
+                              "structure_boundary_broken": "previous_m5_high",
+                              "bos": True, "displacement": last.close - previous.high},
                 source_bar=last,
             )]
         if (last.high > anchor.high + buffer and last.close < anchor.high
@@ -439,7 +459,9 @@ class CandleRangeTheoryDetector:
                 ),
                 measurements={**common, "swept_boundary": "anchor_high",
                               "reclaimed_boundary": "anchor_high",
-                              "structure_boundary_broken": "previous_m5_low"},
+                              "sweep": True, "absorption": True, "sweep_side": "buy",
+                              "structure_boundary_broken": "previous_m5_low",
+                              "bos": True, "displacement": last.close - previous.low},
                 source_bar=last,
             )]
         return []
