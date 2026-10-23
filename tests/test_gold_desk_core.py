@@ -21,7 +21,7 @@ def _snapshot(symbol: str = "XAUUSD") -> MarketSnapshot:
         elif i == 18:
             bars.append(Candle(close_time, open=2090.0, high=2092.0, low=2082.0, close=2088.0, volume=80))
         else:
-            bars.append(Candle(close_time, open=2084.0, high=2092.0, low=2080.0, close=2085.0, volume=50))
+            bars.append(Candle(close_time, open=2084.0, high=2092.0, low=2060.0, close=2085.0, volume=50))
     anchor = Candle(now - timedelta(minutes=40), open=2020.0, high=2100.0, low=1900.0, close=2050.0, volume=500)
     return MarketSnapshot(
         symbol=symbol,
