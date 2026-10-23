@@ -1,5 +1,8 @@
 # APEX TRADER — Organizational Redesign: Department Map & Implementation Plan
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — this plan's raw-code findings are important historical evidence, but should be revalidated against the current branch before a live-runtime claim. Apex's binding identity is docs/APEX_IDENTITY.md; the current evidence-backed implementation gaps and migration gates are tracked in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 > Source of truth: **raw code** at the current HEAD (read file-by-file, comments/READMEs ignored).
 > Goal: restructure the event-driven trading organism into 8 accountable departments where
 > **the intelligence layer decides — the system is market-driven, not zone-gated** — and the only
