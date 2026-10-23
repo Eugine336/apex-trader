@@ -305,7 +305,7 @@ def rule_liquidity_sweep_reclaimed(evidence: "list[Evidence]") -> Optional[str]:
         measurements = _measurements(item)
         if not bool(measurements.get("sweep")):
             continue
-        if measurements.get("reclaimed_boundary") or measurements.get("reclaimed_boundary") == "":
+        if str(measurements.get("reclaimed_boundary", "") or "").strip():
             return (
                 "liquidity_sweep_reclaimed: price swept a measured range boundary and "
                 "closed back inside it; possible reversal context, not confirmed absorption"
