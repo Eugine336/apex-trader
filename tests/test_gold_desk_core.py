@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cognition.evidence_adapters import evidence_from_gold_market
+from cognition.loop import EvidenceConsolidator
 from gold_desk.apex_observer import (
     ApexGoldDeskShadowObserver,
     _frame_to_closed_candles,
@@ -305,3 +306,42 @@ def test_observer_sends_only_facts_to_the_single_brain():
     assert "stop" not in payload
     assert "target" not in payload
     assert "quality_score" not in payload
+
+
+
+def test_gold_observations_enter_the_existing_market_state_not_a_parallel_decider():
+    now = datetime.now(timezone.utc)
+    payload = {
+        "observed_at": now.isoformat(),
+        "symbol": "XAUUSD",
+        "venue": "MT5",
+        "market_open": True,
+        "data_quality_ok": True,
+        "quote": {"bid": 2000.0, "ask": 2000.2, "spread": 0.2},
+        "completed_bars": {},
+        "pattern_observations": [{
+            "family": "crt",
+            "facts": ["anchor boundary swept", "completed candle reclaimed the range"],
+            "source_bar_time": now.isoformat(),
+        }],
+        "orders_sent": False,
+    }
+    calls = []
+
+    def source(symbol):
+        calls.append(symbol)
+        return payload
+
+    consolidator = EvidenceConsolidator()
+    consolidator.set_gold_market_source(source)
+    state = consolidator.build("XAUUSD")
+    gold_records = [item for item in state.evidence if item.source_module == "gold_market_desk"]
+    assert calls == ["XAUUSD"]
+    assert len(gold_records) == 1
+    assert gold_records[0].polarity == 0.0
+    assert gold_records[0].measurements["orders_sent"] is False
+
+    # The Gold-only evidence source must not run for other instruments when
+    # the general CognitionLoop is evaluating its whole configured universe.
+    consolidator.build("EURUSD")
+    assert calls == ["XAUUSD"]
