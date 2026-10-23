@@ -10,7 +10,7 @@ unchanged (every dimension resolves to it) — zero regression.
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
-from cognition.contracts import DecisionType, MarketState
+from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.evidence_adapters import evidence_from_reasoning
 from cognition.expected_value import effective_confidence
 from llm.reasoner import LLMOpinion
@@ -35,9 +35,35 @@ def _decide(opinion, uncertainty=0.1):
             "evidence_strength": opinion.confidence,
         }]
         opinion.preferred_opportunity_id = "auto"
+    ms = MarketState(symbol="BTCUSD")
+    for domain in ("structure", "momentum", "liquidity"):
+        ms.add(Evidence(
+            source_module=f"test_{domain}", domain=domain, symbol="BTCUSD",
+            observation="test market evidence", confidence=0.9, uncertainty=0.1,
+            relevance_horizon_seconds=600.0,
+        ))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council", domain="reasoning",
+        symbol="BTCUSD", observation="verified test council coverage",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain="execution_quality",
+        symbol="BTCUSD", observation="verified test execution cost",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
+    consolidation = ms.consolidation()
+    consolidation["aggregate_uncertainty"] = uncertainty
     return _brain()._from_opinion(
-        "BTCUSD", MarketState(symbol="BTCUSD"),
-        {"aggregate_uncertainty": uncertainty}, opinion, None,
+        "BTCUSD", ms, consolidation, opinion, None,
     )
 
 
