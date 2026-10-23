@@ -55,6 +55,14 @@ def _payload(symbol: str = "XAUUSD", observed_at: datetime | None = None) -> dic
                 "volume": 100.0,
             }],
         },
+        "event_context": {
+            "name": "US CPI",
+            "impact": "HIGH",
+            "starts_at": (now - timedelta(minutes=15)).isoformat(),
+            "ends_at": (now + timedelta(minutes=5)).isoformat(),
+            "pre_event_high": 2010.0,
+            "pre_event_low": 1990.0,
+        },
         "pattern_observations": [{
             "family": "crt_range_observation",
             "facts": ["anchor boundary was swept", "completed candle reclaimed the range"],
@@ -135,6 +143,8 @@ def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements
     assert item.measurements["orders_sent"] is False
     observation = item.measurements["pattern_observations"][0]
     assert observation["measurements"]["anchor_high"] == 2001.0
+    assert item.measurements["event_context"]["pre_event_high"] == 2010.0
+    assert "Verified news context: US CPI" in item.observation
     forbidden = {"direction", "entry", "stop", "target", "quality_score", "reward_to_risk"}
     assert forbidden.isdisjoint(item.measurements)
     assert "NOT independent votes" in item.observation
