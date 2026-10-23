@@ -652,6 +652,13 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_price_source ignored a fault: %s", exc)
 
+    def set_gold_market_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire Gold observations into the existing CognitiveBrain input."""
+        try:
+            self._consolidator.set_gold_market_source(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] Gold market source wiring failed: %s", exc)
+
     def set_structural_interaction_source(
         self, source: Optional[Callable[[str], Any]],
     ) -> None:
