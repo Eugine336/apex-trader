@@ -48,8 +48,11 @@ The deterministic pattern-observation library includes:
 These are detector families, not eight trading authorities. A detected pattern is
 a measurement for the Brain to consider alongside the actual chart, structural
 interactions, portfolio state, execution cost, memory and optional advisory
-context. The Brain may reject the setup or keep observing. AI-provider availability
-does not determine whether the deterministic market measurements are calculated.
+context. The Brain may reject the setup or keep observing. The existing CognitiveBrain
+uses its native deterministic reasoning path to form and criticize hypotheses
+even when no external reasoner is configured. It only originates without an
+advisor when its structured-pattern, confidence, uncertainty and expected-value
+thresholds pass; otherwise it observes rather than fabricating a trade.
 
 ## Runtime details
 
@@ -60,15 +63,20 @@ does not determine whether the deterministic market measurements are calculated.
 - Evidence is freshness-limited at the CognitiveLoop adapter; an expired or unavailable Gold feed is reported as degraded evidence, not as a no-opportunity market conclusion.
 - The observer queues a single-Brain re-read when completed-bar/pattern evidence changes or price/spread moves materially. Per-symbol throttling prevents a reasoner call on every tick; the request executes on the CognitionLoop thread, not the market-data thread.
 - Pattern data is provided as one neutral Evidence object. Overlapping modules are not votes, and no additive score or coordinator chooses a winner.
-- No new Gold-specific risk gate or execution path exists in this branch. Position sizing, portfolio exposure, the existing execution RiskGate, ActionExecutor and broker routing remain Apex's authoritative execution controls.
+- A final Gold-only check in the shared ActionExecutor rejects any non-allowlisted OPEN intent before the broker call; the event-driven runtime enables it explicitly. It does not block risk-reducing closes or management of any legacy open position.
+- The direct pending-order helper has its own exact Gold allowlist because pending orders do not pass through ActionExecutor. The legacy NewsPlanner OCO staging update is suppressed while `CognitionConfig.single_path` is enabled, so a second independent strategy cannot stage entries beside the Brain.
+- No parallel strategy selector or duplicate risk engine was introduced. Position sizing, portfolio exposure, the existing execution RiskGate, ActionExecutor and broker routing remain the authoritative execution controls.
 
 ## Validation
 
 The focused tests cover evidence-only detector registration, CRT range/sweep/
 reclaim observations, strict Gold symbol mapping, candle time integrity,
-one-record neutral evidence conversion with factual measurements, stale evidence
-rejection, venue-routing mismatch, and proof that no pattern detector output
-contains trade direction or execution geometry.
+one-record neutral evidence conversion with factual measurements, event-context
+verification, stale evidence rejection, venue-routing mismatch, material market
+updates waking the existing Brain with a debounce, and proof that no pattern
+detector output contains trade direction or execution geometry. A separate
+ActionExecutor regression test covers the Gold-only OPEN invariant and preserves
+risk-reducing exits.
 
 Run:
 
@@ -88,9 +96,9 @@ This branch is not evidence of a profitable strategy and is not ready to send
 live orders. Before enabling live trading:
 
 1. Run a complete regression suite after resolving the repository-wide CI failures.
-2. Verify all real market/pending order paths, re-entry, news OCO, restart recovery
-   and AI-originated requests are guarded against non-Gold exposure at the
-   ActionExecutor/order boundary.
+2. Complete an end-to-end audit proving no direct/legacy order path bypasses
+   the Gold-only ActionExecutor guard or pending-order allowlist, including
+   re-entry, restart recovery, news OCO cleanup and AI-originated requests.
 3. Add Gold-specific tick-quality backtests with real spread, commission, swap,
    slippage, partial/rejected fills, gaps and broker stop/volume constraints.
 4. Use rolling walk-forward tests plus a final untouched holdout; report net
@@ -99,8 +107,9 @@ live orders. Before enabling live trading:
 5. Run shadow mode and broker-demo validation using the same position sizing,
    portfolio risk, execution RiskGate, ActionExecutor and recovery path as live.
 6. Define operational risk limits, an independent kill switch, alerts and rollback.
-   A broken/stale/uncertain market feed must stop new entries. AI outage must not
-   stop deterministic observation.
+   A broken/stale/uncertain market feed must stop new entries. The native Brain
+   can reason without AI, but provider-outage and no-provider behavior must be
+   validated in an end-to-end runtime test, not inferred from unit tests alone.
 
 ## Environment file
 
