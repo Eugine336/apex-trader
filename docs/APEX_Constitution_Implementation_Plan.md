@@ -1,77 +1,16 @@
-# APEX Constitution — Implementation Plan (1:1 Closure)
+# APEX Constitution — Implementation Plan
 
-> **Status:** BINDING execution plan. This document maps the APEX Constitution
-> (`docs/APEX_Constitution.md`) against the **current code** and enumerates every
-> gap that is not yet 1:1. It is followed **strictly and in order** until the
-> Definition of Done (Part XIV) is fully met. Each phase is one PR.
+> **Status: ACTIVE MIGRATION PLAN.** The plan below contains historical phases and implementation notes; do not interpret earlier checkmarks as proof that the whole identity is now live. For the current acceptance baseline, use docs/APEX_IDENTITY.md and docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
 >
-> Legend: ✅ = 1:1 in code · 🟡 = partial · ❌ = not started.
+> **Canonical non-negotiable identity**
 >
-> **Progress:** Phases A–L are all shipped and merged. **Single-path cutover in
-> progress:**
-> - **Stage 1 (entry authority) — done:** `CognitionConfig.single_path` (default
->   on, env `COGNITION_SINGLE_PATH`) severs the legacy entry emitters at the live
->   funnel (`event_driven_bootstrap._on_entry_decision` refuses any entry whose
->   `source != "ai_brain"` via `cognition/single_path.legacy_entry_suppressed`),
->   and `.env` sets `COGNITION_ORIGINATION_MODE=live` so the AI Brain is the SOLE
->   entry authority (loop → origination sink → aggregator → RiskGate → broker).
->   **Second entry route closed:** the legacy pending-order path
->   (`entry/zone_order_staging.ZoneOrderStager`, which staged BUY/SELL_LIMIT
->   orders directly, bypassing `_on_entry_decision`) is now fully disabled while
->   single-path is active — `_enabled()` returns False, so it stages nothing and
->   `on_zone_update` reaps any resting orders.
->   **Third entry route closed (legacy pipeline no longer RUNS):** when
->   single-path is active, `EventDrivenSystem` no longer subscribes the legacy
->   `EntryOrchestrator` to the `tick` / `candle_close:M1` / `world_model_update`
->   events, so the entire legacy entry-decision pipeline (zone-touch → M1 confirm
->   → gates → emit) is **inert** — the `[tick-entry]`/`[m1-confirm]`/`[entry-orch]`/
->   `[entry-gate]` activity stops. Shared analysis (WorldModel / developing /
->   scanner) that feeds the Brain's Evidence, plus management / execution / safety,
->   are untouched. Runtime is now genuinely one entry path (the Brain). Physical
->   deletion of the now-dormant legacy pipeline files is the demo-gated follow-up.
-> - **Stage 2a (first legacy decider deleted) — done:** `brain/thesis_engine.py`
->   is **physically removed** (with its 5 unit tests). Its two constructors
->   (`core/system_context.py`, `brain/backtest_engine.py`) are gone; every live
->   consumer already read it via `getattr(ctx,"thesis_engine",None)` and now
->   degrades cleanly to the Brain + mechanical stops. `cognition.legacy_audit`
->   now reports **2 present / 1 removed** (was 3 present).
-> - **Stage 2b (legacy sizing decider deleted) — done:** `brain/orchestrator.py`
->   (the graded-sizing / physics-veto round table + candidate grading) is
->   **physically removed** (with its 5 unit tests). Constructors dropped
->   (`system_context`, `backtest_engine`); `ctx.orchestrator` stays `None` and all
->   consumers were already `None`-guarded → neutral sizing (×1.0), no veto. The
->   one pure helper (`gate_quality_multiplier`) is inlined in `trigger/entry_engine`.
->   (Not an audit-tracked verdict/vote emitter, so the audit count is unchanged.)
-> - **Stage 2c (god-file exit verdict retired) — done:** the candidate-scoped
->   thesis exit (`event_driven_bootstrap._check_candidate_thesis`) emitted
->   `CLOSE/HOLD` market-judgment verdicts; it is neutralised to `return None`
->   (the Brain owns exit judgment; mechanical stops own safety).
-> - **Stage 2d (consensus vote-Evidence separated) — done → `clean=True`:** the
->   vote-Evidence production (the `Vote`/`VoteResult` types + all `vote_from_*`
->   extractors) is relocated from `brain/directional_consensus.py` into a new,
->   dedicated Evidence module **`brain/vote_evidence.py`** (directional-lean votes
->   are Constitution III.4 *Evidence*, not III.2 decisions — so that module is a
->   sanctioned Evidence producer in `cognition/legacy_audit`). `directional_consensus`
->   now holds only the consensus `decide`/`form_thesis`/`decide_opportunities`
->   helpers (which construct **no** `VoteResult` and emit **no** lifecycle verdict)
->   and re-exports the vote machinery so every existing importer resolves unchanged.
->   Those helpers are runtime-severed from trading by single-path (the Brain is the
->   sole decider); they feed analysis/candidate-display only.
+> > Apex is a continuously operating, market-aware trading intelligence. It does not belong to one strategy, timeframe or trading style. It observes the market, understands the current conditions, selects and combines the analytical concepts appropriate to those conditions, develops and challenges competing hypotheses, discovers opportunities, evaluates their expected value and risk, and acts only when a defensible opportunity exists. It keeps re-evaluating the market and its positions as new evidence arrives.
 >
-> **`cognition.legacy_audit` now reports `clean=True`** (0 present / 3 removed /
-> 0 unexpected) — the Constitution Part XIV "no competing decision code remains"
-> gate is met: no module outside the sanctioned Brain/Evidence layer emits a
-> buy/sell/hold/close/reverse verdict.
+> **Current verified position:** one CognitiveBrain and evidence-consolidation architecture exist; native reasoning and an optional external adviser exist; Gold Desk emits evidence rather than orders. This branch begins exposing the identity as a machine-readable contract, adds context-sensitive strategy-lens assessments, and restores M1 price-action observations into the shared Brain evidence path. These are foundations, not closure of the complete redesign.
 >
-> Deterministic safety/feasibility (Part X) and position closing/de-risking are
-> retained untouched. **Validation note (Part XV):** the Stage 1/2 changes alter
-> live control flow and were verified offline only (`py_compile`, import/re-export
-> resolution, audit + unit tests). They MUST be smoke-tested on the demo with a
-> valid `LLM_API_KEY` before they are trusted (with no reasoning the single path
-> fail-safes to NO entries). The one remaining *structural* item is the optional
-> physical decomposition of the two coupled cores (`PositionEvaluator`,
-> `EventDrivenSystem`) — a maintainability refactor, not a competing-decision
-> concern (the audit is already clean).
+> **Known blockers:** native hypothesis generation remains narrower than the desired analytical breadth; live reachability of legacy modules and direct/pending-order routes requires full call-graph verification; the full risk-engine path has been reported as inconsistently wired; repository-wide CI has existing lint/import-collection failures; and an end-to-end broker demo has not been demonstrated by this branch.
+>
+> Historical rollout notes below remain useful for understanding prior work, but any claim that conflicts with current source inspection or the identity audit is superseded by the audit. Full completion requires every migration phase, tests, static runtime-path audit, cost-aware out-of-sample evaluation, demo execution evidence, and rollback verification.
 
 ---
 
