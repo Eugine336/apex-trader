@@ -3798,12 +3798,12 @@ class ComposioConfig:
 class CognitionConfig:
     """The AI Cognitive Brain loop (Single Reasoner) — Constitution Parts I/II/IV.
 
-    Runs the one Brain over consolidated Evidence on a background loop and, by
-    default, DRIVES execution: it originates and manages live trades from its
-    DecisionPackages with no external gate veto (origination_mode="live",
-    management_mode="live", gate_mode="off"). The Brain's own EV / confidence /
-    uncertainty qualification and the deterministic risk + feasibility layer
-    (Parts IX/X) still constrain every order. Env overrides:
+    Runs the one Brain over consolidated Evidence on a background loop and,
+    when explicitly configured for live origination, may drive execution from
+    qualified DecisionPackages. The shipped identity-safe defaults require the
+    authoritative cognition gate, net-EV qualification and multi-domain evidence;
+    deterministic risk + broker feasibility (Parts IX/X) still constrain every
+    order. Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
     COGNITION_MEMORY_ENABLED (default true),
@@ -3815,9 +3815,9 @@ class CognitionConfig:
 
     enabled: bool = True
     shadow_mode: bool = False
-    # "off" = the Brain acts un-gated: its DecisionPackages drive execution
-    # directly with no CognitionGate/ManagementGate veto layer in front.
-    gate_mode: str = "off"   # off | shadow | veto | authoritative (Brain = sole decider)
+    # The production default is authoritative: absent/stale cognition cannot
+    # silently permit a legacy exposure-increasing path.
+    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
     # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
     # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
     # at runtime — the AI Cognitive Brain, via its origination path, is the sole
