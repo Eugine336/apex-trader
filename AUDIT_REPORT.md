@@ -1,5 +1,8 @@
 # APEX TRADER — COMPREHENSIVE CODE AUDIT
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — this report contains historical subsystem descriptions. The binding product identity is in docs/APEX_IDENTITY.md; current runtime gaps and validation requirements are in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md. Treat older fixed-score/zone-first descriptions as historical unless re-verified against the current source and runtime.
+
 **Audit Date:** 2026-06-18
 **Auditor:** Bits Code (automated raw-code analysis)
 **Scope:** Every source file in the repository. README/docs/comments NOT trusted — findings from code execution paths ONLY.

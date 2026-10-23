@@ -2,6 +2,16 @@
 
 Audit date: 2026-08-15
 
+> **Historical snapshot, not current-head sign-off.** This register captured the
+> runtime and source state observed on 2026-08-15. Since then, the identity-led
+> branch has changed the CognitiveBrain's native admission rules, evidence model,
+> portfolio admission, runtime management sinks and execution-cost qualification.
+> Some findings below are stale or partially resolved; others may still apply.
+> Do not treat old line numbers, counts or CRITICAL/HIGH labels as a freshly
+> verified verdict on today's branch. The current acceptance register is
+> `docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md`; every old finding needs a
+> current-head call-graph/test recheck before it is marked resolved.
+
 Scope audited:
 - All Python files under `brain/`, `cognition/`, `llm/`, `management/`, `execution/`, `tick/`, `scanner/`, `adaptive/`, `decision/`, `trigger/`, `entry/`, `governor/`, `risk/`, and `planning/`.
 - `dashboard/state_brain.py` was also inspected because the starting context identified legacy vote display there.
@@ -10,7 +20,7 @@ Method:
 - Searched every scoped Python file for `LONG`, `SHORT`, `FLAT`, `vote`, `consensus`, `direction`, `lean`, and `bias`.
 - Traced the reachable runtime paths through the cognition loop, Brain, LLM provider layer, management loop, execution worker, planning layer, scanner/candle-close path, and adaptive learning layer.
 - Distinguished live/default behavior from initialized legacy/shadow code and dormant compatibility APIs.
-- This file is documentation only. No violations were fixed in this session.
+- In the original 2026-08-15 audit session, this file was documentation only and no violations were fixed then. Subsequent fixes and remaining gates are tracked in the current identity audit linked above.
 
 Severity rubric:
 - CRITICAL: live runtime path can originate, manage, or reject opportunities from a constitutionally forbidden representation.

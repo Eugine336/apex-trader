@@ -1,4 +1,3 @@
-@'
 """APEX TRADER - Modal.com serverless-GPU inference.
 
 DEPRECATED: This custom vLLM deploy script is superseded by Modal's managed

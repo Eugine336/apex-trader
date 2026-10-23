@@ -1,5 +1,8 @@
 # Apex Gold Desk — single-Brain integration
 
+
+> **Identity migration status (2026-10-23):** System-wide identity applies here too: the Gold Desk is an observation layer for the shared CognitiveBrain, not the scope of Apex's identity. See docs/APEX_IDENTITY.md. Gold-specific wiring/guardrails do not prove that the same full intelligence is implemented across all instruments; remaining system-wide gaps are in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 ## Architecture rule
 
 Apex has one market decision authority: the existing `CognitiveBrain`, driven
@@ -132,10 +135,16 @@ live orders. Before enabling live trading:
    can reason without AI, but provider-outage and no-provider behavior must be
    validated in an end-to-end runtime test, not inferred from unit tests alone.
 
-## Environment file
+## Environment file and credential hygiene
 
-The `.env` file has been restored on this feature branch from the exact blob
-present on `main`. Do not delete it as part of the Gold desk work. This update
-did not print or rewrite its contents. If that file contains live credentials,
-rotate them separately if they have been exposed in a shared repository; restoring
-the tracked file does not remove prior Git history.
+`.env` was restored on this branch exactly from `main` at the user's explicit
+instruction and is not to be edited again. The contents and blob SHA were verified
+to match `main`. The separate `.env.example` remains a sanitized template and the
+secret-template regression test checks that no credential-like values are placed
+there. The restored `.env` remains tracked, so credentials inside it may be visible
+to repository readers. This document does not change or rewrite that file.
+
+Any active credentials that may have been exposed should be rotated in their
+provider consoles independently of `.env` edits. `.gitignore` rules do not untrack
+an already tracked file. Future secret-management cleanup must be coordinated as a
+separate decision; it must not mutate `.env` against the user's instruction.

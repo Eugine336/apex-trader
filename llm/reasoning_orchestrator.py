@@ -599,25 +599,23 @@ class ReasoningOrchestrator:
                 # Show the advisor's THESIS, not "name direction(conf)": the
                 # council is a panel of thinkers, not a directional vote.
                 name = getattr(o, "engine", "?")
-                conf = float(getattr(o, "confidence", 0.0) or 0.0)
                 cog = getattr(o, "cognition", None) or {}
-                # V-027 — lead with the advisor's opportunity + thesis (the
-                # constitutional framing), not its direction. Direction + confidence
-                # trail as supplementary operator context.
+                # Lead with the independent thesis only. Direction/confidence
+                # projections are not ballots and do not belong in the panel line.
                 lead = []
                 opp = str(cog.get("opportunity", "") or "").strip()
                 if opp and opp.lower() != "none":
-                    lead.append(f"opp:{opp[:40]}")
+                    lead.append(f"opportunity:{opp[:80]}")
                 thesis = str(cog.get("primary_hypothesis", "") or "").strip()
                 if thesis:
-                    lead.append(f"thesis:{thesis[:60]}")
+                    lead.append(f"thesis:{thesis[:80]}")
                 regime = str(cog.get("regime", "") or "").strip()
                 if regime:
-                    lead.append(regime)
-                head = f"{name} " + "; ".join(lead) if lead else name
-                return f"{head} [{getattr(o, 'direction', '?')}({conf:.2f})]"
+                    lead.append(f"regime:{regime[:40]}")
+                head = f"{name}: " + "; ".join(lead) if lead else name
+                return head
 
-            advising = ", ".join(_render(o) for o in result.opinions)
+            contributing = ", ".join(_render(o) for o in result.opinions)
             logger.info(
                 "[council] {} — {}/{} advisors contributing: {}{}",
                 result.symbol, len(result.opinions), len(asked),

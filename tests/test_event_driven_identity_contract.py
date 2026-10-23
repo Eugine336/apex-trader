@@ -1,0 +1,101 @@
+"""Static admission-contract checks for exposure-increasing runtime routes.
+
+These tests intentionally use the standard library only, so they run in the
+focused cognition workflow without importing the full broker bootstrap. They
+protect the architectural boundary, not market profitability.
+"""
+
+import ast
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _parse(relative_path: str) -> ast.Module:
+    return ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+def _function(node: ast.AST, name: str) -> ast.FunctionDef:
+    found = [
+        item for item in ast.walk(node)
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name == name
+    ]
+    assert len(found) == 1, f"expected one {name} definition, found {len(found)}"
+    return found[0]
+
+
+def _calls(node: ast.AST, *, attribute: str | None = None, function: str | None = None) -> list[ast.Call]:
+    matches = []
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Call):
+            continue
+        if attribute and isinstance(item.func, ast.Attribute) and item.func.attr == attribute:
+            matches.append(item)
+        if function and isinstance(item.func, ast.Name) and item.func.id == function:
+            matches.append(item)
+    return matches
+
+
+def _kind_branch(sink: ast.FunctionDef, kind: str) -> ast.If:
+    for item in ast.walk(sink):
+        if not isinstance(item, ast.If) or not isinstance(item.test, ast.Compare):
+            continue
+        test = item.test
+        if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+            continue
+        if not isinstance(test.left, ast.Name) or test.left.id != "kind":
+            continue
+        if len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Constant):
+            if test.comparators[0].value == kind:
+                return item
+    raise AssertionError(f"management sink has no explicit kind == {kind!r} branch")
+
+
+def test_management_reverse_can_close_but_cannot_open_directly():
+    module = _parse("event_driven_bootstrap.py")
+    management_factory = _function(module, "_make_management_sink")
+    sink = _function(management_factory, "_sink")
+    reverse = _kind_branch(sink, "reverse")
+    # Reverse is a management/close decision. The other side must be opened only
+    # after a fresh Brain opportunity and whole-book admission pass.
+    assert not _calls(reverse, attribute="open")
+    assert _calls(reverse, attribute="close")
+    assert _calls(reverse, attribute="warning") or _calls(reverse, attribute="info")
+
+
+def test_management_scale_in_cannot_submit_exposure_without_entry_admission():
+    module = _parse("event_driven_bootstrap.py")
+    management_factory = _function(module, "_make_management_sink")
+    sink = _function(management_factory, "_sink")
+    scale = _kind_branch(sink, "scale_in")
+    assert not _calls(scale, attribute="open")
+    assert _calls(scale, attribute="warning") or _calls(scale, attribute="info")
+
+
+def test_execution_sink_cannot_disable_net_expected_value_qualification():
+    module = _parse("event_driven_bootstrap.py")
+    method = _function(module, "_opportunity_qualifies")
+    # Disabling the historical config flag must not create a return-True bypass.
+    true_returns = [
+        item for item in ast.walk(method)
+        if isinstance(item, ast.Return)
+        and isinstance(item.value, ast.Constant)
+        and item.value.value is True
+    ]
+    assert not true_returns
+    assert _calls(method, function="qualify_net_ev")
+    assert _calls(method, attribute="warning")
+
+
+def test_legacy_atomic_reversal_runtime_wiring_is_disabled():
+    module = _parse("core/system_context.py")
+    calls = [
+        call for call in _calls(module, function="_ReversalManager")
+        if any(keyword.arg == "enabled" for keyword in call.keywords)
+    ]
+    assert calls, "expected an explicit reversal-manager runtime wiring site"
+    assert any(
+        isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+        for call in calls for keyword in call.keywords if keyword.arg == "enabled"
+    ), "the legacy reversal manager must not open the opposite side itself"

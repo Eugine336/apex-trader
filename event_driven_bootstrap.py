@@ -2256,18 +2256,20 @@ class EventDrivenSystem:
     ) -> bool:
         """Gate an entry/scale on positive expected NET value (Part XIX Art 1/7/8).
 
-        Fail-closed: when the cost or money conversion cannot be estimated
-        (missing broker spec / spread), the gate DECLINES the trade — expected
-        value cannot be established, so the opportunity does not qualify. Gated
-        off via config (opportunity_qualification_enabled=False restores the
-        unconditional pass).
+        Fail-closed and mandatory: when the cost or money conversion cannot be
+        estimated (missing broker spec / spread), the gate DECLINES the trade.
+        The legacy config flag is retained for compatibility but cannot disable
+        net-EV qualification under the canonical Apex identity.
         """
         try:
             cog = getattr(self._config, "cognition", None)
             if cog is not None and not bool(
                 getattr(cog, "opportunity_qualification_enabled", True)
             ):
-                return True
+                logger.warning(
+                    "[opportunity] COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED=false "
+                    "is ignored; net-EV qualification is mandatory under Apex identity"
+                )
             tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
             is_long = str(direction or "").upper() == "LONG"
             entry = 0.0
@@ -2362,63 +2364,38 @@ class EventDrivenSystem:
             except Exception:  # noqa: BLE001
                 return None
 
-        def _sink(action: Any, position: Any) -> None:
+        def _sink(action: Any, position: Any) -> bool:
             try:
                 symbol = str(getattr(action, "symbol", "") or "")
                 kind = str(getattr(action, "kind", "") or "")
                 held = str(getattr(action, "direction", "") or "").upper()
                 reason = str(getattr(action, "reason", "") or "brain_management")[:200]
                 if not symbol or not kind:
-                    return
+                    return False
                 intents: list = []
 
                 if kind == "scale_in":
-                    # Part XVIII Art 11 — never stack correlated risk: skip a
-                    # scale when the symbol's currency/asset leg is already
-                    # carried by an over-concentrated cluster of campaigns.
-                    reg = getattr(self._ctx, "campaign_registry", None) \
-                        if self._ctx is not None else None
-                    if reg is not None:
-                        try:
-                            if reg.is_component_saturated(symbol):
-                                logger.info(
-                                    "[mgmt-sink] {} scale_in skipped — correlated "
-                                    "cluster saturated (Art 11)", symbol,
-                                )
-                                return
-                        except Exception:  # noqa: BLE001
-                            pass
-                    sl, tp = self._derive_origination_levels(symbol, held)
-                    if sl is None or tp is None:
-                        logger.info("[mgmt-sink] {} scale_in skipped — no protective stop", symbol)
-                        return
-                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
-                    add_lots = self._origination_lot_size(symbol, held, sl, conf)
-                    if add_lots <= 0:
-                        logger.info("[mgmt-sink] {} scale_in skipped — no broker-valid lot", symbol)
-                        return
-                    # Part XIX Art 7 — a scale must also clear positive net EV.
-                    if not self._opportunity_qualifies(symbol, held, sl, tp, add_lots, conf):
-                        return
-                    idem = generate_idempotency_key(symbol, held, add_lots)
-                    intents.append(Intent.open(
-                        symbol=symbol, direction=held, lots=add_lots, sl=float(sl), tp=float(tp),
-                        source="ai_brain", reason="brain_scale_in", stake_usd=None,
-                        comment=build_order_comment("APEX", idem), idempotency_key=idem,
-                    ))
-                    self._aggregator.submit(intents)
-                    logger.info("[mgmt-sink] submitted scale_in {} {} ({:.2f} lots)",
-                                symbol, held, add_lots)
-                    return
+                    # V-IDENTITY: a management verb is not itself a new-entry
+                    # opportunity. This adapter receives no first-class active
+                    # Opportunity or whole-book approval record, so it may not
+                    # increase exposure directly. Scale-ins must be represented
+                    # and admitted through the Brain's normal market/opportunity
+                    # and portfolio path before a future execution can be wired.
+                    logger.warning(
+                        "[mgmt-sink] {} scale_in suppressed — missing the "
+                        "first-class opportunity and whole-book admission contract",
+                        symbol,
+                    )
+                    return False
 
                 pos = _open_position_for(symbol, held)
                 if pos is None:
                     logger.info("[mgmt-sink] {} {} skipped — no matching open position",
                                 symbol, kind)
-                    return
+                    return False
                 ticket = str(getattr(pos, "order_id", "") or "")
                 if not ticket:
-                    return
+                    return False
 
                 if kind == "close":
                     intents.append(Intent.close(
@@ -2428,7 +2405,7 @@ class EventDrivenSystem:
                 elif kind == "partial_close":
                     frac = float(getattr(action, "fraction", 0.0) or 0.0)
                     if not (0.0 < frac < 1.0):
-                        return
+                        return False
                     intents.append(Intent.partial_close(
                         symbol=symbol, ticket=ticket, fraction=frac,
                         source="ai_brain", reason=reason,
@@ -2437,42 +2414,41 @@ class EventDrivenSystem:
                     new_sl = _protective_sl(pos, kind)
                     if new_sl is None:
                         logger.info("[mgmt-sink] {} {} — no safer stop available", symbol, kind)
-                        return
+                        return False
                     intents.append(Intent.modify_sl(
                         symbol=symbol, ticket=ticket, new_sl=float(new_sl),
                         source="ai_brain", reason=reason,
                     ))
                 elif kind == "reverse":
                     target = str(getattr(action, "target_direction", "") or "").upper()
-                    if target not in ("LONG", "SHORT"):
-                        return
+                    if target not in ("LONG", "SHORT") or target == held:
+                        return False
+                    # Close the invalidated held thesis, but do not smuggle the
+                    # opposite-side OPEN through management. After the close is
+                    # reconciled, the loop re-wakes the Brain; a new-side entry
+                    # must have its own active opportunity, verified costs and
+                    # whole-book portfolio approval through the standard path.
                     intents.append(Intent.close(
                         symbol=symbol, ticket=ticket, source="ai_brain",
-                        reason="brain_reverse_close", direction=held,
+                        reason="brain_reverse_close_then_reassess",
+                        direction=held,
                     ))
-                    sl, tp = self._derive_origination_levels(symbol, target)
-                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
-                    new_lots = (self._origination_lot_size(symbol, target, sl, conf)
-                                if sl is not None else 0.0)
-                    if sl is not None and tp is not None and new_lots > 0:
-                        idem = generate_idempotency_key(symbol, target, new_lots)
-                        intents.append(Intent.open(
-                            symbol=symbol, direction=target, lots=new_lots,
-                            sl=float(sl), tp=float(tp), source="ai_brain",
-                            reason="brain_reverse_open", stake_usd=None,
-                            comment=build_order_comment("APEX", idem), idempotency_key=idem,
-                        ))
-                    else:
-                        logger.info("[mgmt-sink] {} reverse — closing only (no re-entry lot/stop)",
-                                    symbol)
+                    logger.info(
+                        "[mgmt-sink] {} reverse requested {}→{}; closing held side "
+                        "only. New-side entry awaits a fresh Brain/portfolio decision.",
+                        symbol, held, target,
+                    )
                 else:
-                    return
+                    return False
 
-                if intents:
-                    self._aggregator.submit(intents)
-                    logger.info("[mgmt-sink] submitted {} {} (ticket={})", symbol, kind, ticket)
+                if not intents:
+                    return False
+                self._aggregator.submit(intents)
+                logger.info("[mgmt-sink] submitted {} {} (ticket={})", symbol, kind, ticket)
+                return True
             except Exception as exc:  # noqa: BLE001 — sink must never break the loop
                 logger.warning("[mgmt-sink] submit failed: {}", exc)
+                return False
 
         return _sink
 
@@ -2519,8 +2495,11 @@ class EventDrivenSystem:
                 return []
             tfs = ["D1", "H4", "H1", "M15", "M5", "M1"]
             try:
+                # Thirty-two bars support the native rolling range/volume
+                # measurements and the legacy M1 pattern vocabulary. The chart
+                # snapshot below still caps per-timeframe payload size separately.
                 data = self._pm.fetch_market_data(
-                    symbol, tfs, count=16, include_forming=True,
+                    symbol, tfs, count=32, include_forming=True,
                 ) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition] price fetch failed for {}: {}", symbol, exc)
@@ -2556,7 +2535,31 @@ class EventDrivenSystem:
                 ticks=recent_ticks, depth=depth, now_epoch=_time.time(),
                 max_bars=6,
             )
-            return snapshot_to_evidence(symbol, snap)
+            evidence = snapshot_to_evidence(symbol, snap)
+            # Universal OHLC(V) measurements keep native cognition useful across
+            # instruments even when no external adviser is configured. They are
+            # derived from completed bars, preserve domain/provenance, and never
+            # choose direction or issue orders.
+            try:
+                from cognition.market_lenses import analyze_market_frames
+                evidence.extend(analyze_market_frames(
+                    symbol, data, source_includes_forming_bar=True,
+                ))
+            except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
+                logger.debug("[cognition] universal market-lens evidence failed for {}: {}", symbol, exc)
+            # Retain the legacy M1 pattern vocabulary as provisional contextual
+            # evidence for all supported instruments, not as a second entry path.
+            try:
+                from cognition.price_action_patterns import evidence_from_m1_candles
+                m1_frame = data.get("M1")
+                m1_evidence = evidence_from_m1_candles(
+                    symbol, m1_frame, provisional=True,
+                )
+                if m1_evidence is not None:
+                    evidence.append(m1_evidence)
+            except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
+                logger.debug("[cognition] M1 price-action evidence failed for {}: {}", symbol, exc)
+            return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
             return []

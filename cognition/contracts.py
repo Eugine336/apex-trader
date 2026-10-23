@@ -382,30 +382,81 @@ class MarketState:
         total = len(self.evidence)
         n = len(fresh)
         domains = {e.domain.value for e in fresh}
+        # Infrastructure, execution feasibility, portfolio state and unknown
+        # adapter buckets are not independent market-analysis domains. They can
+        # be mandatory safety inputs, but must not pad market-evidence breadth.
+        non_market_domains = {
+            EvidenceDomain.EXECUTION_QUALITY.value,
+            EvidenceDomain.REASONING.value,
+            EvidenceDomain.PORTFOLIO.value,
+            EvidenceDomain.OTHER.value,
+        }
+        # These OHLC observers can retain an unknown-time reading for qualitative
+        # context, but that reading cannot satisfy a mandatory breadth gate: it
+        # might be cached or stale and cannot prove a current market condition.
+        market_fresh = []
+        for item in fresh:
+            if item.domain.value in non_market_domains:
+                continue
+            measurements = getattr(item, "measurements", None)
+            if isinstance(measurements, dict):
+                source_kind = measurements.get("source_kind")
+                if (
+                    source_kind in {"market_lens", "m1_price_action"}
+                    and measurements.get("source_timestamp_known") is not True
+                ):
+                    continue
+            market_fresh.append(item)
+        market_domains = {item.domain.value for item in market_fresh}
         weights = self.influence_weights
+        def _w(e: Evidence) -> float:
+            try:
+                return max(0.0, float((weights or {}).get(e.source_module, 1.0)))
+            except Exception:  # noqa: BLE001
+                return 1.0
+
+        # Keep general source diagnostics, while computing market uncertainty from
+        # market evidence alone. A healthy council or a low-cost quote cannot
+        # compensate for a missing or stale market picture.
         if not weights:
-            # Unweighted (default) — every source counts equally.
             mean_conf = sum(e.confidence for e in fresh) / n if n else 0.0
             mean_unc = sum(e.uncertainty for e in fresh) / n if n else 1.0
+            market_mean_conf = (
+                sum(e.confidence for e in market_fresh) / len(market_fresh)
+                if market_fresh else 0.0
+            )
+            market_mean_unc = (
+                sum(e.uncertainty for e in market_fresh) / len(market_fresh)
+                if market_fresh else 1.0
+            )
         else:
-            # Part VIII — weight each source's contribution by learned influence.
-            def _w(e: Evidence) -> float:
-                try:
-                    return max(0.0, float(weights.get(e.source_module, 1.0)))
-                except Exception:  # noqa: BLE001
-                    return 1.0
-            wsum = sum(_w(e) for e in fresh)
-            mean_conf = (sum(_w(e) * e.confidence for e in fresh) / wsum) if wsum else 0.0
-            mean_unc = (sum(_w(e) * e.uncertainty for e in fresh) / wsum) if wsum else 1.0
+            all_weight = sum(_w(e) for e in fresh)
+            mean_conf = (
+                sum(_w(e) * e.confidence for e in fresh) / all_weight
+                if all_weight else 0.0
+            )
+            mean_unc = (
+                sum(_w(e) * e.uncertainty for e in fresh) / all_weight
+                if all_weight else 1.0
+            )
+            market_weight = sum(_w(e) for e in market_fresh)
+            market_mean_conf = (
+                sum(_w(e) * e.confidence for e in market_fresh) / market_weight
+                if market_weight else 0.0
+            )
+            market_mean_unc = (
+                sum(_w(e) * e.uncertainty for e in market_fresh) / market_weight
+                if market_weight else 1.0
+            )
+
         # Part XXV — evidence carries no directional reading, so there is no
         # directional "conflict" to measure before the Brain has reasoned.
-        # Uncertainty derives from the sources' own doubt, their confidence, and
-        # how little of the market picture is present (missing evidence ⇒ doubt).
         conflict = 0.0
-        coverage_gap = 1.0 - min(1.0, len(domains) / 6.0)
-        # No evidence ⇒ maximal uncertainty (Part IV, Article 2).
-        aggregate_uncertainty = 1.0 if n == 0 else _clamp01(
-            0.5 * mean_unc + 0.3 * (1.0 - mean_conf) + 0.2 * coverage_gap
+        coverage_gap = 1.0 - min(1.0, len(market_domains) / 6.0)
+        aggregate_uncertainty = 1.0 if not market_fresh else _clamp01(
+            0.5 * market_mean_unc
+            + 0.3 * (1.0 - market_mean_conf)
+            + 0.2 * coverage_gap
         )
         return {
             "symbol": self.symbol,
@@ -413,9 +464,14 @@ class MarketState:
             "evidence_fresh": n,
             "domains_present": sorted(domains),
             "domain_count": len(domains),
+            "market_domains_present": sorted(market_domains),
+            "market_domain_count": len(market_domains),
             "conflict_ratio": round(conflict, 4),
             "mean_confidence": round(mean_conf, 4),
             "mean_uncertainty": round(mean_unc, 4),
+            "market_mean_confidence": round(market_mean_conf, 4),
+            "market_mean_uncertainty": round(market_mean_unc, 4),
+            "market_coverage_gap": round(coverage_gap, 4),
             "aggregate_uncertainty": round(aggregate_uncertainty, 4),
             "influence_weighted": bool(weights),
         }

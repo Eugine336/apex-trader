@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -133,7 +133,7 @@ class ReplayEvaluation:
 
 
 def _apply_candidate(
-    attribution: TradeAttribution, candidate: ParameterCandidate,
+    attribution: Any, candidate: ParameterCandidate,
 ) -> tuple[dict, dict]:
     """Return (thresholds, ranker_kwargs) with the candidate value substituted."""
     thresholds = dict(attribution.thresholds or {})
@@ -146,7 +146,7 @@ def _apply_candidate(
 
 
 def candidate_retains_trade(
-    attribution: TradeAttribution, candidate: ParameterCandidate,
+    attribution: Any, candidate: ParameterCandidate,
 ) -> bool:
     """Inert: the consensus-replay foundation this depended on has been retired,
     so no candidate can be replayed. Fail-safe — always report the trade as
@@ -156,7 +156,7 @@ def candidate_retains_trade(
 
 def evaluate_candidate(
     candidate: ParameterCandidate,
-    trades: list[TradeAttribution],
+    trades: list[Any],
     *,
     walk_forward_split: float = 0.7,
 ) -> ReplayEvaluation:
@@ -553,7 +553,7 @@ class ParameterEvolver:
         return decisions
 
     def _update_shadow(
-        self, shadow: ShadowCandidate, recent: list[TradeAttribution],
+        self, shadow: ShadowCandidate, recent: list[Any],
     ) -> bool:
         """Fold trades that closed since the shadow last saw them into its
         running candidate-vs-actual R.  Returns True if anything changed."""

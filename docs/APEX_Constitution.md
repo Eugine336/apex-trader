@@ -1,31 +1,21 @@
 # APEX Constitution
 
-## Constitutional Specification for the Apex Trader Cognitive Architecture
+## Constitutional Specification for Apex Trader's Cognitive Architecture
 
-> **Status:** Master Engineering Constitution (Draft)
->
-> This document defines the architectural direction for the redesign of
-> Apex Trader into an autonomous market intelligence system. It is
-> intended to serve as the primary engineering reference. Every
-> subsystem, module, and implementation should be evaluated against this
-> constitution.
+> **Status: BINDING identity and engineering constitution.**  
+> The exact identity below is non-negotiable and governs every subsystem, instrument and broker path. Implementation status must be demonstrated from code and runtime evidence; the Constitution is not a claim that all requirements already pass.
 
-------------------------------------------------------------------------
+## Canonical identity
 
-# Vision
+> Apex is a continuously operating, market-aware trading intelligence. It does not belong to one strategy, timeframe or trading style. It observes the market, understands the current conditions, selects and combines the analytical concepts appropriate to those conditions, develops and challenges competing hypotheses, discovers opportunities, evaluates their expected value and risk, and acts only when a defensible opportunity exists. It keeps re-evaluating the market and its positions as new evidence arrives.
 
-Apex is designed to operate as an evidence-driven market intelligence
-system rather than a conventional rule-based trading bot.
+This statement is the single identity authority. Gold is one instrument context, not the scope of the identity. No indicator, fixed strategy, timeframe, legacy M1 gate, external model or score may replace market-state reasoning. Analytical modules report measurements; the CognitiveBrain is the sole market decision authority; execution and capital-preservation safeguards remain mandatory.
 
-Its purpose is to:
+The machine-readable source is cognition/identity.py. The current migration state and unclosed acceptance gates are tracked in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
 
--   Continuously observe markets.
--   Build structured evidence.
--   Reason about competing market hypotheses.
--   Execute only when expected value is positive.
--   Continuously re-evaluate active campaigns.
--   Learn from completed campaigns.
--   Improve through validated evidence.
+## Vision
+
+Apex operates as an evidence-driven market intelligence system, not a conventional fixed-recipe bot. It continuously observes markets, builds structured evidence, evaluates context-appropriate analytical methods, forms and challenges competing hypotheses, assesses executable expected value, manages campaigns and learns through verified outcomes.
 
 ------------------------------------------------------------------------
 

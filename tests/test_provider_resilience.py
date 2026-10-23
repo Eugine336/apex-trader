@@ -58,10 +58,17 @@ def _no_council_state(symbol="XAUUSD", conf=0.9):
     """Strong directional evidence but NO reasoning Evidence carrying advisor
     counts — i.e. council coverage is unknown."""
     ms = MarketState(symbol=symbol)
-    for dom in ("structure", "momentum"):
+    for dom in ("structure", "momentum", "liquidity"):
         ms.add(Evidence(source_module=f"m_{dom}", domain=dom, symbol=symbol,
                         observation="reading", confidence=conf, uncertainty=0.1,
                         relevance_horizon_seconds=900.0))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain="execution_quality",
+        symbol=symbol, observation="verified test execution cost",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
@@ -90,7 +97,10 @@ def test_v013_unknown_council_not_penalised_by_default():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_no_council_state())
     assert abs(out.decision.confidence - 0.8) < 1e-6
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    # Unknown council coverage is not penalized by default, but cannot meet the
+    # minimum advisory quorum and therefore cannot authorize a new campaign.
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 
 def test_v013_unknown_council_penalised_when_enabled():

@@ -1,5 +1,8 @@
 # APEX TRADER — PRINCIPAL INTELLIGENCE-LAYER FORENSIC AUDIT
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — conclusions here describe an earlier code snapshot and must not be treated as a current architecture verdict without re-running the checks against the current head. Apex's binding identity is docs/APEX_IDENTITY.md; the live-path and native-intelligence gaps are listed in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 **Mandate:** Determine whether the intelligence layer actually generates positive decision-making value, and where exactly that value comes from. Trust nothing but execution paths.
 
 **Method:** Static reconstruction of every live call chain from `main.py` → `platforms/main_loop.py` and its mixins, cross-checked against `scanner/`, `brain/`, `decision/`, `planning/`, `risk/`, `governor/`, `adaptive/`, `ml/`, `rl/`, `management/`. Every claim cites `file:line`. No code was changed.
