@@ -327,17 +327,27 @@ class ApexGoldDeskShadowObserver:
             stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
             if stamp.tzinfo is None or stamp.utcoffset() is None:
                 return False
-            age = (time.time() if now_epoch is None else float(now_epoch)) - stamp.timestamp()
+            current_epoch = time.time() if now_epoch is None else float(now_epoch)
+            age = current_epoch - stamp.timestamp()
             bid, ask = float(quote["bid"]), float(quote["ask"])
+            m5_bars = bars.get("M5")
+            if not isinstance(m5_bars, list) or not m5_bars or not isinstance(m5_bars[-1], dict):
+                return False
+            latest_m5 = datetime.fromisoformat(
+                str(m5_bars[-1].get("close_time", "")).replace("Z", "+00:00")
+            )
+            if latest_m5.tzinfo is None or latest_m5.utcoffset() is None:
+                return False
+            bar_age = current_epoch - latest_m5.timestamp()
         except (TypeError, ValueError, KeyError, OverflowError, OSError):
             return False
         return bool(
             quality_ok
             and market_open
             and -1.0 <= age <= float(max_age_seconds)
+            and -1.0 <= bar_age <= 2.0 * _TIMEFRAMES["M5"] + 15.0
             and bid > 0.0
             and ask >= bid
-            and bool(bars.get("M5"))
         )
 
     def _on_tick(self, tick: Any) -> None:
