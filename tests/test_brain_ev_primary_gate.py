@@ -54,12 +54,24 @@ class _Reasoner:
 
 
 def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
-    # Two evidence domains so the minimum-coverage gate (default 2) is satisfied.
+    # Two market-analysis domains plus explicit reasoning/council metadata. Tests
+    # should not accidentally rely on missing coverage being treated as healthy.
     ms = MarketState(symbol=symbol)
     ms.add(Evidence(source_module="s", domain="momentum",
                     confidence=0.9, uncertainty=0.1, polarity=polarity))
     ms.add(Evidence(source_module="s2", domain="structure",
                     confidence=0.9, uncertainty=0.1, polarity=polarity))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council", domain="reasoning",
+        symbol=symbol, observation="verified test council coverage",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
     return ms
 
 
