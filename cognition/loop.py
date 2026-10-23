@@ -103,6 +103,8 @@ class EvidenceConsolidator:
         self._execution_cost_source = execution_cost_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
+        # Gold detectors add one neutral evidence record; they are not trade authorities.
+        self._gold_market_source: Optional[Callable[[str], Any]] = None
         # Violation #2 — a ``symbol -> list[Evidence]`` source of INTER-CANDLE
         # structural interactions (level touch/sweep/break, FVG fill) detected on
         # the live tick stream, so the Brain sees a swept pool or filled gap the
@@ -141,6 +143,10 @@ class EvidenceConsolidator:
         pre-digested module verdicts. Fail-safe callable; never invoked eagerly.
         """
         self._price_source = price_source
+
+    def set_gold_market_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire a single consolidated Gold market-read payload into MarketState."""
+        self._gold_market_source = source
 
     def set_structural_interaction_source(
         self, source: Optional[Callable[[str], Any]],
