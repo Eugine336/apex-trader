@@ -20,6 +20,7 @@ from cognition.price_action_patterns import (
 )
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
 from cognition.market_lenses import analyze_market_frames
+from config import CognitionConfig
 
 
 def _m1_frame(*, rejection: bool = True) -> pd.DataFrame:
@@ -62,6 +63,19 @@ def test_identity_is_one_exact_machine_readable_contract():
     assert brain.identity_statement == IDENTITY_STATEMENT
     assert brain.identity_version == IDENTITY_VERSION
     assert brain.identity_contract()["identity"] == IDENTITY_STATEMENT
+
+
+def test_identity_safe_configuration_defaults_require_authoritative_net_ev_and_broad_evidence(monkeypatch):
+    for name in (
+        "COGNITION_GATE_MODE",
+        "COGNITION_EV_PRIMARY_GATE",
+        "COGNITION_MIN_EVIDENCE_DOMAINS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    cfg = CognitionConfig()
+    assert cfg.gate_mode == "authoritative"
+    assert cfg.ev_primary_gate is True
+    assert cfg.min_evidence_domains >= 3
 
 
 def test_m1_rejection_patterns_become_neutral_provisional_evidence():
