@@ -806,29 +806,34 @@ class CognitiveBrain:
                 "UNCONFIRMED: no council metadata — quorum cannot be verified "
                 f"(required: {self.min_advisors_for_action}); treated as degraded cognition"
             )
-        # Article XXXIV — minimum evidence-domain coverage. Missing, malformed or
-        # stale metadata is not adequate evidence coverage.
-        raw_domain_count = consolidation.get("domain_count")
+        # Article XXXIV — minimum *market evidence* domains. Council metadata,
+        # execution-cost quotes, portfolio state and unknown buckets do not count
+        # as independent market-analysis domains. Missing count metadata fails closed.
+        raw_market_domain_count = consolidation.get("market_domain_count")
         try:
-            domain_count = int(raw_domain_count) if raw_domain_count is not None else None
+            market_domain_count = (
+                int(raw_market_domain_count)
+                if raw_market_domain_count is not None else None
+            )
         except (TypeError, ValueError, OverflowError):
-            domain_count = None
+            market_domain_count = None
         domain_ok = (
-            domain_count is not None and domain_count >= self.min_evidence_domains
+            market_domain_count is not None
+            and market_domain_count >= self.min_evidence_domains
         )
-        if domain_count is None:
+        if market_domain_count is None:
             questions["evidence_coverage"] = (
-                "UNCONFIRMED: evidence-domain count is missing or invalid; "
+                "UNCONFIRMED: market evidence-domain count is missing or invalid; "
                 f"required minimum: {self.min_evidence_domains}"
             )
         elif domain_ok:
             questions["evidence_coverage"] = (
-                f"ADEQUATE: {domain_count} domains present "
+                f"ADEQUATE: {market_domain_count} market domains present "
                 f"(minimum: {self.min_evidence_domains})"
             )
         else:
             questions["evidence_coverage"] = (
-                f"INSUFFICIENT: {domain_count} domains present, "
+                f"INSUFFICIENT: {market_domain_count} market domains present, "
                 f"minimum {self.min_evidence_domains} required"
             )
         questions["execution_cost_verification"] = questions_cost_verification
@@ -981,9 +986,9 @@ class CognitiveBrain:
                 # Article XXXIV — a qualified opportunity on too few evidence
                 # domains: cannot determine whether an opportunity exists.
                 coverage_status = (
-                    f"{domain_count}/{self.min_evidence_domains} domains"
-                    if domain_count is not None
-                    else f"unknown; {self.min_evidence_domains} domains required"
+                    f"{market_domain_count}/{self.min_evidence_domains} market domains"
+                    if market_domain_count is not None
+                    else f"unknown; {self.min_evidence_domains} market domains required"
                 )
                 reason_txt = (
                     f"insufficient evidence coverage (or unconfirmed coverage): {coverage_status} "
@@ -2235,11 +2240,17 @@ class CognitiveBrain:
             if lead is None or not lead.is_directional:
                 return None
 
-            # Apply the same minimum evidence breadth to native fallback as to the
-            # advisor-assisted path. Reasoning evidence counts only when it is
-            # fresh; the analysis already operates on MarketState.fresh_evidence().
+            # Apply the same market-domain breadth to native fallback. Council,
+            # execution-cost and portfolio metadata cannot inflate the count.
             required_domains = max(3, int(self.min_evidence_domains))
-            if len(analysis.domain_coverage) < required_domains:
+            raw_market_domains = (consolidation or {}).get("market_domain_count")
+            try:
+                available_market_domains = (
+                    int(raw_market_domains) if raw_market_domains is not None else None
+                )
+            except (TypeError, ValueError, OverflowError):
+                available_market_domains = None
+            if available_market_domains is None or available_market_domains < required_domains:
                 return None
 
             # A pattern must describe a multi-dimensional activation event. Simple
@@ -2327,9 +2338,13 @@ class CognitiveBrain:
             competing_statements = [
                 item.statement for item in hypotheses if item is not lead
             ]
+            market_coverage = {
+                key: value for key, value in analysis.domain_coverage.items()
+                if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+            }
             evidence_strength = (
-                sum(analysis.domain_coverage.values()) / len(analysis.domain_coverage)
-                if analysis.domain_coverage else 0.0
+                sum(market_coverage.values()) / len(market_coverage)
+                if market_coverage else 0.0
             )
             native_opportunity_id = (
                 f"native:{symbol}:{'+'.join(sorted(supporting))}"
