@@ -199,7 +199,7 @@ class ApexGoldDeskShadowObserver:
                     symbol, self.venue, resolved or "unknown",
                 )
                 continue
-            selected.add(symbol.upper())
+            selected.add(self.gold_guard.canonical_symbol(symbol) or symbol.upper())
 
         if not selected:
             logger.warning("[gold-desk] observer disabled: no Gold symbol on selected {} venue", self.venue)
@@ -208,7 +208,7 @@ class ApexGoldDeskShadowObserver:
         self._selected_symbols = selected
         now = datetime.now(timezone.utc)
         for symbol in self.symbols:
-            if symbol.upper() not in selected:
+            if (self.gold_guard.canonical_symbol(symbol) or symbol.upper()) not in selected:
                 continue
             for timeframe in _TIMEFRAMES:
                 self._refresh(symbol, timeframe, now)
