@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
 from cognition.pattern_rules import detect_patterns, pattern_name
+from cognition.strategy_knowledge import assess_strategy_lenses
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -88,16 +89,24 @@ class EvidenceAnalysis:
     # Overall uncertainty from the evidence alone.
     evidence_uncertainty: float = 1.0
 
+    # Context-sensitive analytical lenses. These are not trade signals.
+    strategy_lenses: list[dict] = field(default_factory=list)
+
     def summary(self) -> str:
         cov = ", ".join(f"{k} {v:.2f}" for k, v in sorted(self.domain_coverage.items()))
         pats = "; ".join(pattern_name(p) for p in self.detected_patterns) or "none"
         regime = self.regime_indicators
         structure = str(regime.get("structure", "") or "none")
         order_flow = str(regime.get("order_flow", "") or "balanced")
+        lens_names = [
+            str(item.get("name", "")) for item in self.strategy_lenses
+            if isinstance(item, dict) and item.get("status") in ("relevant", "watch")
+        ][:5]
+        lens_text = ", ".join(lens_names) or "none assessable"
         return (
             f"{len(self.domain_coverage)} domains ({cov or 'none'}); "
             f"patterns: {pats}; structure {structure}, order flow {order_flow}; "
-            f"agreement {self.agreement_score:.2f}; "
+            f"lenses: {lens_text}; agreement {self.agreement_score:.2f}; "
             f"uncertainty {self.evidence_uncertainty:.2f}"
         )
 
@@ -112,6 +121,7 @@ class EvidenceAnalysis:
             "regime_indicators": dict(self.regime_indicators),
             "missing_information": list(self.missing_information),
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
+            "strategy_lenses": [dict(item) for item in self.strategy_lenses],
         }
 
 
@@ -209,6 +219,7 @@ class BrainReasoner:
         contradictions = self._contradictions(fresh, names, regime)
         missing = self._missing(domain_coverage)
         agreement = self._agreement(names, contradictions, regime)
+        strategy_lenses = assess_strategy_lenses(fresh, names, regime)
 
         ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", None)) \
             if consolidation.get("aggregate_uncertainty", None) is not None \
@@ -225,6 +236,7 @@ class BrainReasoner:
             regime_indicators=regime,
             missing_information=missing,
             evidence_uncertainty=ev_unc,
+            strategy_lenses=strategy_lenses,
         )
 
     def _classify_regime(self, fresh: "list[Evidence]", names: "list[str]") -> dict:
@@ -236,6 +248,28 @@ class BrainReasoner:
         vlt = in_domain(fresh, EvidenceDomain.VOLATILITY)
         flow = in_domain(fresh, EvidenceDomain.ORDER_FLOW)
         liq = in_domain(fresh, EvidenceDomain.LIQUIDITY)
+        m1_records: list[dict] = []
+        for item in fresh:
+            measurements = getattr(item, "measurements", {})
+            if isinstance(measurements, dict) and measurements.get("source_kind") == "m1_price_action":
+                m1_records.append(measurements)
+        m1_tags: list[str] = []
+        m1_bullish: list[str] = []
+        m1_bearish: list[str] = []
+        for item in m1_records:
+            for key, dest in (("pattern_tags", m1_tags),
+                              ("bullish_patterns", m1_bullish),
+                              ("bearish_patterns", m1_bearish)):
+                values = item.get(key, [])
+                if isinstance(values, (list, tuple, set)):
+                    dest.extend(str(value) for value in values if value)
+        m1_price_action = {
+            "pattern_tags": list(dict.fromkeys(m1_tags)),
+            "bullish_patterns": list(dict.fromkeys(m1_bullish)),
+            "bearish_patterns": list(dict.fromkeys(m1_bearish)),
+            "near_range_boundary": any(bool(item.get("near_range_boundary")) for item in m1_records),
+            "provisional": any(bool(item.get("provisional")) for item in m1_records),
+        }
 
         # Volatility regime.
         if "volatility_compression" in names or state_is(vlt, "volatility_state", "compressing", "contracting"):
@@ -304,6 +338,7 @@ class BrainReasoner:
             # mean-reversion counter-thesis from its signed z-score.
             "statistical_zscore": numeric(mom, "rolling_zscore_30"),
             "ema_spread_atr": numeric(mom, "ema_spread_atr"),
+            "m1_price_action": m1_price_action,
         }
 
     @staticmethod
@@ -458,6 +493,40 @@ class BrainReasoner:
                     direction=direction,
                     invalidation="The structural level fails and flow reverses through it",
                     opportunity=f"{direction} reaction at structure" if direction in (LONG, SHORT) else "reaction",
+                ))
+
+            # M1 price-action is contextual evidence, not a universal trigger.
+            # Only consider a native hypothesis when an observed pattern is at a
+            # measured local boundary; forming candles remain explicitly provisional.
+            if "m1_price_action_at_boundary" in names:
+                m1 = regime.get("m1_price_action", {})
+                bullish_patterns = list(m1.get("bullish_patterns", []) or [])
+                bearish_patterns = list(m1.get("bearish_patterns", []) or [])
+                if bullish_patterns and not bearish_patterns:
+                    direction = LONG
+                elif bearish_patterns and not bullish_patterns:
+                    direction = SHORT
+                else:
+                    direction = FLAT
+                provisional_note = " The latest M1 read is provisional." if m1.get("provisional") else ""
+                hyps.append(self._make(
+                    statement=(
+                        f"M1 price action near a measured local range boundary on {symbol}: "
+                        f"observations={', '.join(m1.get('pattern_tags', []) or [])}. "
+                        "This is a contextual microstructure hypothesis, not an entry instruction."
+                        + provisional_note
+                    ),
+                    support=["m1_price_action_at_boundary"],
+                    against=[name for name in names if name in (
+                        "structural_break", "multi_tf_conflict", "momentum_divergence",
+                    )],
+                    analysis=analysis,
+                    direction=direction,
+                    invalidation="Price accepts beyond the observed local boundary or subsequent evidence rejects the candle interpretation",
+                    opportunity=(
+                        f"{direction} M1 reaction hypothesis requiring broader market confirmation"
+                        if direction in (LONG, SHORT) else "mixed M1 reaction; await clarifying evidence"
+                    ),
                 ))
 
             # 4) Consolidation / no-edge thesis (when nothing exploitable was found).
