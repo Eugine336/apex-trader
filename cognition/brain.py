@@ -457,8 +457,24 @@ class CognitiveBrain:
                     analysis=analysis,
                     hypotheses=hypotheses,
                 )
+            # Give the adviser the Brain's current native analysis and its
+            # context-selected strategy lenses. They are analysis context, not
+            # votes; the Brain still synthesises, challenges and qualifies the
+            # resulting opportunity set.
+            advisor_payload = dict(self._evidence_payload(market_state, consolidation))
+            if analysis is not None:
+                native_analysis = analysis.to_dict()
+                native_analysis["strategy_lenses"] = [
+                    lens for lens in native_analysis.get("strategy_lenses", [])
+                    if isinstance(lens, dict) and lens.get("status") in ("relevant", "watch")
+                ][:8]
+                advisor_payload["native_analysis"] = native_analysis
+            if hypotheses:
+                advisor_payload["native_hypotheses"] = [
+                    item.to_dict() for item in hypotheses[:8]
+                ]
             opinion = self._reasoner.reason(
-                symbol, self._evidence_payload(market_state, consolidation), now=now,
+                symbol, advisor_payload, now=now,
             )
             if opinion is None:
                 # An AVAILABLE reasoner that yields no opinion did NOT form a
