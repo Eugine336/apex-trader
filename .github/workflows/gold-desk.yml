@@ -87,6 +87,7 @@ jobs:
           persistence/recovery.py persistence/domain_events.py
           execution/action_executor.py event_driven_bootstrap.py
       - name: Test deterministic Gold desk kernel
+        # Includes universal market-lens source-time freshness and native-hypothesis regression tests.
         run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py tests/test_persistence_recovery_history.py tests/test_apex_identity_and_contextual_patterns.py -q
       - name: Lint new implementation
         run: ruff check gold_desk cognition/identity.py cognition/strategy_knowledge.py cognition/price_action_patterns.py cognition/market_lenses.py cognition/pattern_rules.py cognition/brain_reasoning.py cognition/brain.py event_driven_bootstrap.py adaptive/param_evolution.py dashboard/state_brain.py execution/lifecycle_loops.py infra/modal_vllm_deploy.py llm/reasoning_orchestrator.py scripts/recover_apex_db.py tests/test_cognition_loop.py tests/test_apex_identity_and_contextual_patterns.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
