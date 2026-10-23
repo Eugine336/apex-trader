@@ -999,7 +999,7 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — evidence coverage is "
                     f"insufficient or unconfirmed ({coverage_status})"
                 )
-            elif directional_and_qualified and ev_ok and not cost_verified:
+            elif directional and not cost_verified:
                 reason_txt = (
                     "execution costs are unverified — configured defaults are "
                     "diagnostic only and cannot authorize new exposure"
