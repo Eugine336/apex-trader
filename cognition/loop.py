@@ -244,7 +244,12 @@ class EvidenceConsolidator:
             # One unified Gold market-read evidence object. Pattern detectors
             # do not choose a direction or compete for authority; the Brain
             # interprets their factual observations alongside the actual chart.
-            if self._gold_market_source is not None:
+            if (
+                self._gold_market_source is not None
+                and str(ms.symbol or "").strip().upper() in {
+                    "XAUUSD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A", "GOLD",
+                }
+            ):
                 attempted_sources += 1
                 try:
                     payload = self._gold_market_source(ms.symbol)
