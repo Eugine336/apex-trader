@@ -63,10 +63,14 @@ jobs:
           PY
 
       - name: Verify test collection
-        run: python -m pytest -p pytest_asyncio.plugin tests/ --collect-only -q
+        run: >-
+          python -c "import tick, pytest;
+          raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','--collect-only','-q']))"
 
       - name: Run tests
-        run: python -m pytest -p pytest_asyncio.plugin tests/ -v --tb=short
+        run: >-
+          python -c "import tick, pytest;
+          raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','-v','--tb=short']))"
 
       - name: Check imports
         run: |
