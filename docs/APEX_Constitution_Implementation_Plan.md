@@ -8,7 +8,7 @@
 >
 > **Current verified position:** one CognitiveBrain and evidence-consolidation architecture exist; native reasoning and an optional external adviser exist; Gold Desk emits evidence rather than orders. This branch exposes the identity as a machine-readable contract, adds context-sensitive strategy-lens assessments, wires universal completed-bar structure/liquidity/momentum/volatility/available-volume evidence into the shared Brain input, preserves source bar timestamps where supplied, and restores M1 price-action observations as provisional context. These are foundations, not closure of the complete redesign.
 >
-> **Known blockers:** native hypothesis generation remains narrower than the desired analytical breadth; live reachability of legacy modules and direct/pending-order routes requires full call-graph verification; the full risk-engine path has been reported as inconsistently wired; repository-wide CI has existing lint/import-collection failures; and an end-to-end broker demo has not been demonstrated by this branch.
+> **Known blockers:** native hypothesis generation remains narrower than the desired analytical breadth; live reachability of legacy modules and direct/pending-order routes requires full call-graph verification; the full risk-engine path has been reported as inconsistently wired; repository-wide Ruff lint is now green and CI test collection has progressed, but full-suite tests still fail across legacy contracts, environment/dependency expectations, and stale fixtures; and an end-to-end broker demo has not been demonstrated by this branch.
 >
 > Historical rollout notes below remain useful for understanding prior work, but any claim that conflicts with current source inspection or the identity audit is superseded by the audit. Full completion requires every migration phase, tests, static runtime-path audit, cost-aware out-of-sample evaluation, demo execution evidence, and rollback verification.
 
@@ -37,7 +37,7 @@
 
 ---
 
-## 1. Compliance matrix (Constitution → code → status)
+## 1. Historical compliance matrix (superseded by current identity audit)
 
 | Constitution | Requirement | Status | Where in code | Closed by |
 |---|---|---|---|---|
