@@ -81,6 +81,25 @@ def test_identity_safe_configuration_defaults_require_authoritative_net_ev_and_b
     assert CognitiveBrain(reasoner=None).min_evidence_domains == 3
 
 
+def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
+    # Runtime .env remains operator-owned; config code enforces the product
+    # identity even if a stale env file contains permissive legacy values.
+    monkeypatch.setenv("COGNITION_SINGLE_PATH", "false")
+    monkeypatch.setenv("COGNITION_EV_PRIMARY_GATE", "false")
+    monkeypatch.setenv("COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED", "false")
+    monkeypatch.setenv("COGNITION_EVENT_DRIVEN", "false")
+    monkeypatch.setenv("COGNITION_MIN_EVIDENCE_DOMAINS", "1")
+    monkeypatch.setenv("COGNITION_MIN_ADVISORS_FOR_ACTION", "0")
+
+    cfg = CognitionConfig()
+    assert cfg.single_path is True
+    assert cfg.ev_primary_gate is True
+    assert cfg.opportunity_qualification_enabled is True
+    assert cfg.event_driven is True
+    assert cfg.min_evidence_domains >= 3
+    assert cfg.min_advisors_for_action >= 1
+
+
 def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
     frame = _m1_frame()
     now = datetime.now(timezone.utc)
