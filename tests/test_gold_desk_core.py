@@ -7,14 +7,10 @@ import pytest
 
 from cognition.evidence_adapters import evidence_from_gold_market
 from cognition.loop import EvidenceConsolidator
-from gold_desk.apex_observer import (
-    ApexGoldDeskShadowObserver,
-    _frame_to_closed_candles,
-)
+from gold_desk.apex_observer import ApexGoldDeskShadowObserver, _frame_to_closed_candles
 from gold_desk.indicators import atr
-from gold_desk.models import Candle, Direction, MarketSnapshot, TradeIdea, Venue
-from gold_desk.risk import GoldExecutionGate, RiskState
-from gold_desk.strategies import CandleRangeTheory, default_pattern_detectors
+from gold_desk.models import Candle, MarketSnapshot, PatternObservation, Venue
+from gold_desk.strategies import CandleRangeTheoryDetector, default_pattern_detectors
 from gold_desk.symbols import GoldOnlyGuard
 
 
@@ -40,87 +36,11 @@ def _snapshot(symbol: str = "XAUUSD") -> MarketSnapshot:
     )
 
 
-def test_all_eight_pattern_detectors_are_registered():
-    ids = {detector.pattern_id for detector in default_pattern_detectors()}
-    assert ids == {
-        "trend_continuation",
-        "liquidity_sweep_reversal",
-        "volatility_expansion_breakout",
-        "failed_breakout_trap",
-        "statistical_mean_reversion",
-        "trend_exhaustion_reversal",
-        "event_driven_gold_breakout",
-        "crt",
-    }
-
-
-def test_crt_detector_requires_completed_anchor_sweep_reclaim_and_structure_shift():
-    snapshot = _snapshot()
-    findings = CandleRangeTheory(anchor_timeframe="H1").evaluate(snapshot)
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.strategy_id == "crt"  # internal detector result; not exposed as a trade
-    assert finding.direction is Direction.SHORT
-    assert finding.target < finding.entry < finding.stop
-    assert finding.reward_to_risk >= 1.2
-    assert any("M5 close broke prior low" in item for item in finding.evidence)
-
-
-def test_gold_symbol_guard_uses_exact_allowlist_not_prefix_matching():
-    guard = GoldOnlyGuard()
-    assert guard.canonical_symbol("XAUUSD") == "XAUUSD"
-    assert guard.canonical_symbol("xauusdm") == "XAUUSD"
-    assert guard.canonical_symbol("GOLD") == "XAUUSD"
-    assert guard.canonical_symbol("XAUUSD_FAKE") is None
-    assert guard.canonical_symbol("EURUSD") is None
-
-
-def test_gate_defaults_to_shadow_only_even_for_valid_crt_candidate():
-    snapshot = _snapshot()
-    finding = CandleRangeTheory().evaluate(snapshot)[0]
-    state = RiskState(equity=10_000, peak_equity=10_000, day_start_equity=10_000)
-    gate = GoldExecutionGate()
-    blocked = gate.authorize(finding, snapshot, state, now=snapshot.observed_at)
-    assert not blocked.allowed
-    assert "shadow-only" in blocked.reason
-
-    allowed = gate.authorize(
-        finding, snapshot, state, live_armed=True, now=snapshot.observed_at,
-    )
-    assert allowed.allowed, allowed.reason
-
-
-def test_gate_rejects_when_daily_drawdown_cap_is_reached():
-    snapshot = _snapshot()
-    finding = CandleRangeTheory().evaluate(snapshot)[0]
-    state = RiskState(equity=9_700, peak_equity=10_000, day_start_equity=10_000)
-    result = GoldExecutionGate().authorize(
-        finding, snapshot, state, live_armed=True, now=snapshot.observed_at,
-    )
-    assert not result.allowed
-    assert "daily drawdown" in result.reason
-
-
-def test_snapshot_rejects_future_candles_and_naive_timestamps():
-    now = datetime.now(timezone.utc)
-    with pytest.raises(ValueError):
-        Candle(datetime.now(), 10, 11, 9, 10)
-    future = Candle(now + timedelta(minutes=1), 10, 11, 9, 10)
-    with pytest.raises(ValueError, match="after the snapshot time"):
-        MarketSnapshot("XAUUSD", "MT5", now, 10, 10.1, {"M5": [future]})
-
-
-def test_atr_is_deterministic_and_positive_for_valid_bars():
-    snapshot = _snapshot()
-    value = atr(snapshot.bars("M5"), 14)
-    assert value is not None and value > 0
-
-
-def test_gold_market_adapter_emits_one_neutral_evidence_record():
-    now = datetime.now(timezone.utc)
-    payload = {
+def _payload(symbol: str = "XAUUSD", observed_at: datetime | None = None) -> dict:
+    now = observed_at or datetime.now(timezone.utc)
+    return {
         "observed_at": now.isoformat(),
-        "symbol": "XAUUSD",
+        "symbol": symbol,
         "venue": "MT5",
         "market_open": True,
         "data_quality_ok": True,
@@ -136,41 +56,94 @@ def test_gold_market_adapter_emits_one_neutral_evidence_record():
             }],
         },
         "pattern_observations": [{
-            "family": "crt",
-            "facts": ["anchor high swept", "close reclaimed inside the range"],
+            "family": "crt_range_observation",
+            "facts": ["anchor boundary was swept", "completed candle reclaimed the range"],
+            "measurements": {"anchor_high": 2001.0, "anchor_low": 1990.0, "sweep_buffer": 0.2},
+            "timeframe": "M5",
             "source_bar_time": now.isoformat(),
         }],
+        "decision_authority": "CognitiveBrain",
+        "overlap_policy": "evidence_only_no_vote_summing",
         "orders_sent": False,
     }
-    evidence = evidence_from_gold_market("XAUUSD", payload)
+
+
+def test_eight_detectors_are_evidence_sources_not_strategies():
+    detectors = default_pattern_detectors()
+    assert {detector.pattern_id for detector in detectors} == {
+        "trend_continuation",
+        "liquidity_sweep",
+        "volatility_expansion",
+        "failed_breakout",
+        "statistical_displacement",
+        "trend_exhaustion",
+        "event_window_breakout",
+        "crt_range_observation",
+    }
+    assert len(detectors) == 8
+    for detector in detectors:
+        assert callable(detector.observe)
+        assert not hasattr(detector, "decide")
+        assert not hasattr(detector, "execute")
+
+
+def test_crt_emits_facts_and_measurements_without_trade_geometry():
+    snapshot = _snapshot()
+    findings = CandleRangeTheoryDetector(anchor_timeframe="H1").observe(snapshot)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert isinstance(finding, PatternObservation)
+    assert finding.pattern_id == "crt_range_observation"
+    assert finding.measurements["swept_boundary"] == "anchor_high"
+    assert finding.measurements["structure_boundary_broken"] == "previous_m5_low"
+    assert any("anchor high was swept" in fact for fact in finding.facts)
+    for forbidden in ("direction", "entry", "stop", "target", "quality_score", "reward_to_risk"):
+        assert not hasattr(finding, forbidden)
+
+
+def test_gold_symbol_guard_uses_exact_allowlist_not_prefix_matching():
+    guard = GoldOnlyGuard()
+    assert guard.canonical_symbol("XAUUSD") == "XAUUSD"
+    assert guard.canonical_symbol("xauusdm") == "XAUUSD"
+    assert guard.canonical_symbol("GOLD") == "XAUUSD"
+    assert guard.canonical_symbol("XAUUSD_FAKE") is None
+    assert guard.canonical_symbol("EURUSD") is None
+
+
+def test_snapshot_rejects_future_candles_and_naive_timestamps():
+    now = datetime.now(timezone.utc)
+    with pytest.raises(ValueError):
+        Candle(datetime.now(), 10, 11, 9, 10)
+    future = Candle(now + timedelta(minutes=1), 10, 11, 9, 10)
+    with pytest.raises(ValueError, match="after the snapshot time"):
+        MarketSnapshot("XAUUSD", "MT5", now, 10, 10.1, {"M5": [future]})
+
+
+def test_atr_is_deterministic_and_positive_for_valid_bars():
+    value = atr(_snapshot().bars("M5"), 14)
+    assert value is not None and value > 0
+
+
+def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements():
+    evidence = evidence_from_gold_market("XAUUSD", _payload())
     assert len(evidence) == 1
     item = evidence[0]
     assert item.source_module == "gold_market_desk"
     assert item.polarity == 0.0
-    assert item.measurements["pattern_families"] == ["crt"]
+    assert item.measurements["pattern_families"] == ["crt_range_observation"]
     assert item.measurements["overlap_policy"] == "single_brain_synthesis_no_vote_summing"
     assert item.measurements["orders_sent"] is False
+    observation = item.measurements["pattern_observations"][0]
+    assert observation["measurements"]["anchor_high"] == 2001.0
     forbidden = {"direction", "entry", "stop", "target", "quality_score", "reward_to_risk"}
     assert forbidden.isdisjoint(item.measurements)
     assert "NOT independent votes" in item.observation
 
 
-def test_gold_market_adapter_rejects_stale_payload_and_non_gold_symbol():
+def test_gold_market_adapter_rejects_stale_and_non_gold_payloads():
     old = datetime.now(timezone.utc) - timedelta(seconds=30)
-    payload = {
-        "observed_at": old.isoformat(),
-        "symbol": "XAUUSD",
-        "venue": "MT5",
-        "market_open": True,
-        "data_quality_ok": True,
-        "quote": {"bid": 2000.0, "ask": 2000.2, "spread": 0.2},
-        "completed_bars": {},
-        "pattern_observations": [],
-    }
-    assert evidence_from_gold_market("XAUUSD", payload) == []
-    payload["observed_at"] = datetime.now(timezone.utc).isoformat()
-    payload["symbol"] = "EURUSD"
-    assert evidence_from_gold_market("EURUSD", payload) == []
+    assert evidence_from_gold_market("XAUUSD", _payload(observed_at=old)) == []
+    assert evidence_from_gold_market("EURUSD", _payload(symbol="EURUSD")) == []
 
 
 class _FakeFrame:
@@ -231,7 +204,7 @@ def test_observer_wont_start_if_platform_route_disagrees_with_selected_venue():
     assert router.callbacks == []
 
 
-def test_observer_sends_only_facts_to_the_single_brain():
+def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
     snapshot = _snapshot()
 
     class FakeRouter:
@@ -248,25 +221,19 @@ def test_observer_sends_only_facts_to_the_single_brain():
         def publish(self, event_type, payload):
             self.events.append((event_type, payload))
 
-    class OneFindingDetector:
+    class OneObservationDetector:
         pattern_id = "test_pattern"
 
-        def evaluate(self, market):
-            return [TradeIdea(
+        def observe(self, market):
+            return [PatternObservation(
                 symbol="XAUUSD",
                 venue="MT5",
-                direction=Direction.LONG,
-                strategy_id="test_pattern",
-                entry=market.mid,
-                stop=market.mid - 10,
-                target=market.mid + 20,
-                created_at=market.observed_at,
-                expires_at=market.observed_at + timedelta(minutes=5),
+                pattern_id="test_pattern",
+                timeframe="M5",
+                observed_at=market.observed_at,
                 source_bar_time=market.latest_bar("M5").timestamp,
-                atr=10,
-                quality_score=88,
-                rationale="private detector-only thesis",
-                evidence=("completed bar closed above the prior high",),
+                facts=("completed bar closed above the prior high",),
+                measurements={"prior_high": 2079.0, "close": 2080.0},
             )]
 
     bus = FakeBus()
@@ -278,7 +245,7 @@ def test_observer_sends_only_facts_to_the_single_brain():
         candle_fetcher=lambda _symbol, _timeframe, _count: None,
         venue_resolver=lambda _symbol: "MT5Connector",
         market_open=lambda _symbol: True,
-        pattern_detectors=[OneFindingDetector()],
+        pattern_detectors=[OneObservationDetector()],
     )
     observer._selected_symbols = {"XAUUSD"}
     observer._bars = {
@@ -299,33 +266,16 @@ def test_observer_sends_only_facts_to_the_single_brain():
     assert event_type == "gold_market_evidence"
     assert payload["decision_authority"] == "CognitiveBrain"
     assert payload["orders_sent"] is False
-    assert payload["pattern_observations"][0]["family"] == "test_pattern"
-    assert "completed bar closed above the prior high" in payload["pattern_observations"][0]["facts"]
-    assert "direction" not in payload
-    assert "entry" not in payload
-    assert "stop" not in payload
-    assert "target" not in payload
-    assert "quality_score" not in payload
+    observation = payload["pattern_observations"][0]
+    assert observation["family"] == "test_pattern"
+    assert observation["measurements"]["prior_high"] == 2079.0
+    for forbidden in ("direction", "entry", "stop", "target", "quality_score"):
+        assert forbidden not in payload
+        assert forbidden not in observation
 
 
-
-def test_gold_observations_enter_the_existing_market_state_not_a_parallel_decider():
-    now = datetime.now(timezone.utc)
-    payload = {
-        "observed_at": now.isoformat(),
-        "symbol": "XAUUSD",
-        "venue": "MT5",
-        "market_open": True,
-        "data_quality_ok": True,
-        "quote": {"bid": 2000.0, "ask": 2000.2, "spread": 0.2},
-        "completed_bars": {},
-        "pattern_observations": [{
-            "family": "crt",
-            "facts": ["anchor boundary swept", "completed candle reclaimed the range"],
-            "source_bar_time": now.isoformat(),
-        }],
-        "orders_sent": False,
-    }
+def test_gold_observations_enter_existing_market_state_not_a_parallel_decider():
+    payload = _payload()
     calls = []
 
     def source(symbol):
@@ -341,7 +291,5 @@ def test_gold_observations_enter_the_existing_market_state_not_a_parallel_decide
     assert gold_records[0].polarity == 0.0
     assert gold_records[0].measurements["orders_sent"] is False
 
-    # The Gold-only evidence source must not run for other instruments when
-    # the general CognitionLoop is evaluating its whole configured universe.
     consolidator.build("EURUSD")
     assert calls == ["XAUUSD"]
