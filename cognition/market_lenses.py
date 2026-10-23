@@ -111,7 +111,15 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
             source_time = raw_value("time", "timestamp", "datetime", "date")
             epoch = _timestamp_epoch(source_time)
             if epoch is None:
-                epoch = _timestamp_epoch(row_index)
+                # DataFrame RangeIndex/ordinary integer indexes are row numbers,
+                # not timestamps. Only trust a datetime-like or ISO-string index.
+                index_is_datetime_like = callable(getattr(row_index, "timestamp", None))
+                index_is_string_time = (
+                    isinstance(row_index, str)
+                    and any(marker in row_index for marker in ("-", "T", ":"))
+                )
+                if index_is_datetime_like or index_is_string_time:
+                    epoch = _timestamp_epoch(row_index)
             if epoch is not None:
                 row_data["timestamp_epoch"] = epoch
             volume = value("volume", "tick_volume", "real_volume")
