@@ -145,7 +145,6 @@ def analyze_market_frames(
             continue
 
         current = bars[-1]
-        previous = bars[-2]
         ranges = [max(0.0, bar["high"] - bar["low"]) for bar in bars]
         current_range = ranges[-1]
         baseline_ranges = ranges[-11:-1]
