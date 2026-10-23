@@ -149,18 +149,13 @@ def find_confirmed_close_deals(
     return confirmed
 
 
-def build_log_open_set(
+def build_log_open_details(
     store: Any,
     *,
     consumer: str = "startup_recovery",
     checkpoint_db: Optional[str] = None,
-) -> Set[str]:
-    """Full-fold the event log into the order_ids it believes are open.
-
-    Drives the replayable log via ``EventReplayer`` reset to ``seq`` 0 so each
-    call reconstructs the *current* open set (a one-shot reconstruction, not a
-    resume-from-checkpoint).
-    """
+) -> Dict[str, Dict[str, Any]]:
+    """Full-fold the event log into details for positions it believes remain open."""
     proj = PositionLifecycleProjection()
     replayer = EventReplayer(store, consumer=consumer, checkpoint_db=checkpoint_db)
     try:
@@ -168,7 +163,19 @@ def build_log_open_set(
         replayer.drain(proj.apply)
     finally:
         replayer.close()
-    return proj.open_order_ids()
+    return proj.details()
+
+
+def build_log_open_set(
+    store: Any,
+    *,
+    consumer: str = "startup_recovery",
+    checkpoint_db: Optional[str] = None,
+) -> Set[str]:
+    """Full-fold the event log into the order_ids it believes are still open."""
+    return set(build_log_open_details(
+        store, consumer=consumer, checkpoint_db=checkpoint_db,
+    ))
 
 
 def run_startup_recovery(
