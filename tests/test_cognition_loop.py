@@ -427,7 +427,6 @@ def test_consolidator_injects_analogue_evidence_from_memory():
     from cognition.memory import fingerprint_from_market_state
 
     store = CampaignMemoryStore(db_path=":memory:")
-    fp = fingerprint_from_market_state(MarketState(symbol="EURUSD"))
     # Seed a completed winning LONG campaign with a momentum-heavy fingerprint.
     ms_seed = MarketState(symbol="EURUSD")
     ms_seed.add(Evidence(source_module="m", domain=EvidenceDomain.MOMENTUM,
