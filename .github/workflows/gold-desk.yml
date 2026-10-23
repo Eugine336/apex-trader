@@ -90,7 +90,7 @@ jobs:
           persistence/recovery.py persistence/domain_events.py
           execution/action_executor.py event_driven_bootstrap.py
       - name: Test deterministic Gold desk kernel
-        # Includes universal market-lens source-time freshness and native-hypothesis regression tests.
+        # Includes universal market-lens freshness, native-hypothesis, and developing-loop contract regressions.
         run: >-
           python -c "import tick, pytest;
           raise SystemExit(pytest.main(['tests/test_gold_desk_core.py','tests/test_action_executor.py','tests/test_brain_native_reasoning.py','tests/test_persistence_recovery_history.py','tests/test_apex_identity_and_contextual_patterns.py','tests/test_developing_analysis.py','-q']))"
