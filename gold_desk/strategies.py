@@ -258,7 +258,7 @@ class TrendExhaustionReversal:
         av = atr(bars)
         if av is None:
             return []
-        prior, recent = bars[-15:-5], bars[-5:]
+        prior, recent = bars[-16:-6], bars[-6:]
         prior_rsi = rsi(_closes(prior), 5)
         recent_rsi = rsi(_closes(recent), 5)
         last, previous = bars[-1], bars[-2]
