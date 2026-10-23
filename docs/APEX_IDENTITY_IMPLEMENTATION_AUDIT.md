@@ -24,7 +24,8 @@ The identity is canonical in source and documentation in this branch. The shared
 | Portfolio | Whole-cycle opportunity comparison, campaign registry and exposure context exist | Need prove new positions, reversals, scales and reallocation all use same whole-book truth and cost-aware EV | Whole-book scenario tests plus broker-truth reconciliation |
 | Learning | Outcome memory, influence/calibration and pattern tracking exist | Samples, censoring, costs and strategy attribution must be validated; learning cannot promote itself into authority | Out-of-sample replay, calibration metrics and governed promotion/rollback |
 | Docs and operations | Constitution, rollout runbook, audit registers and README exist | Prior docs contain conflicting statuses and outdated fixed-pipeline claims | Every contradictory claim corrected or clearly marked historical/superseded; runtime map kept current |
-| Production readiness | Latest focused workflow passed on Python 3.11 and 3.12 (113 tests each); repository-wide Ruff lint passed; the full suite now collects but has numerous failures in stale/retired contracts, dependency compatibility, environment expectations and fixture/runtime mismatches | No full-suite green run, no end-to-end broker-demo evidence, and unresolved legacy/direct/pending order paths and risk wiring remain | Green full CI, fresh demo cycle, broker/execution validation, roll-forward and rollback proof |
+| Secrets / runtime configuration | The tracked `.env` was removed from this branch and replaced with a secret-free `.env.example`; runtime files are now ignored and a security regression test covers template hygiene | Git history still contains past versions of the file. Rotate exposed broker/provider/API credentials; back up local `.env` before updating any checkout where Git still tracks it | Confirm the repository head has no `.env`, rotate affected credentials, audit recent history for active keys, and keep every runtime `.env` local/ignored |
+| Production readiness | Latest completed focused workflow passed on Python 3.11 and 3.12 (113 tests each); repository-wide Ruff lint passed. The last completed full-suite run before the latest security/configuration commits collected successfully but reported 182 failed / 3,696 passed / 12 skipped | Full-suite failures span stale/retired API assertions, dependency compatibility, environment expectations, and fixture/runtime mismatches; no full-suite green run or end-to-end broker demo on the latest head | Fresh full-suite result, broker/execution validation, live-route audit, roll-forward and rollback proof |
 
 ## Core architecture target
 
@@ -99,6 +100,7 @@ Outcome attribution → memory/calibration → validated adaptation
 ## Constraints and honesty rules
 
 - No source, test, backtest or log can prove guaranteed profitability or capture of every profitable movement.
+- Deleting `.env` from the current tree does not purge Git history; rotate credentials previously committed in that file.
 - Do not enable a data feed, provider, strategy family or execution path simply because the name exists in the repository.
 - The M1 pattern module added alongside this audit is a neutral observer; it does not make the old M1 entry pipeline authoritative.
 - COGNITION_ORIGINATION_MODE=live only permits a qualified Brain campaign to reach the configured sink. It is not proof that the external provider is healthy, the Brain can qualify a trade on the current market, every symbol is data-complete, or the broker path has passed a live demo.
