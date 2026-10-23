@@ -15,7 +15,7 @@ It never opens or closes anything; remediation is left to a human/operator.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 from loguru import logger
@@ -90,6 +90,7 @@ class ReconciliationReport:
     missing_from_broker: Set[str]  # log says open, broker doesn't show
     orphan_at_broker: Set[str]  # broker shows, no entry in the log
     store_degraded: bool = False  # backing event DB is corrupt/unwritable
+    log_open_details: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def is_clean(self) -> bool:
@@ -190,8 +191,9 @@ def run_startup_recovery(
     Read-only: logs discrepancies (and optionally calls *emit* with the report
     for telemetry); never opens or closes positions.
     """
-    log_open = build_log_open_set(store, checkpoint_db=checkpoint_db)
-    report = reconcile(log_open, broker_order_ids)
+    log_open_details = build_log_open_details(store, checkpoint_db=checkpoint_db)
+    report = reconcile(log_open_details.keys(), broker_order_ids)
+    report.log_open_details = log_open_details
     # If the event DB is corrupt, the folded "open" set is unreliable: a
     # malformed DB yields zero log-open and would otherwise report "clean".
     # Surface it loudly so the caller can degrade safety rather than trust an
