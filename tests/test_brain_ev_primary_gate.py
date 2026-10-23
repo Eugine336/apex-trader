@@ -69,6 +69,13 @@ def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
         },
         relevance_horizon_seconds=600.0,
     ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain="execution_quality",
+        symbol=symbol, observation="fresh test spread and slippage quote",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
@@ -141,3 +148,15 @@ def test_status_exposes_gate_fields():
     st = _brain(0.80, ev_primary=True, threshold=0.1).get_status()
     assert st["ev_primary_gate"] is True
     assert st["ev_action_threshold_r"] == 0.1
+
+
+def test_positive_ev_does_not_authorize_when_execution_cost_is_unverified():
+    state = _state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "execution_quality"
+    ]
+    out = _brain(0.80).reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "UNVERIFIED" in out.decision.questions_answered["execution_cost_verification"]
