@@ -116,6 +116,30 @@ def test_analysis_detects_patterns_and_regime():
     assert analysis.evidence_uncertainty < 0.5
 
 
+def test_statistical_displacement_becomes_a_competing_native_mean_reversion_hypothesis():
+    ms = MarketState(symbol="XAUUSD")
+    ms.add(_ev("multi_timeframe", {"clarity": 0.9}, conf=0.9))
+    ms.add(_ev("momentum", {
+        "rolling_zscore_30": 2.4,
+        "ema_spread_atr": 0.8,
+        "last_close": 2085.0,
+    }, conf=0.9, module="gold_market_desk.pattern.statistical_displacement"))
+    brain = CognitiveBrain(reasoner=None)
+    analysis = brain._analyze_evidence(ms, ms.consolidation())
+    names = [pattern_name(p) for p in analysis.detected_patterns]
+    assert "statistical_displacement" in names
+
+    hypotheses = brain._generate_hypotheses(analysis, "XAUUSD")
+    mean_reversion = next(
+        h for h in hypotheses if "statistical_displacement" in h.supporting_patterns
+    )
+    assert mean_reversion.direction_implication == SHORT
+    assert "rolling mean" in mean_reversion.statement
+    # The detector's z-score is context; only the Brain creates the hypothesis.
+    assert mean_reversion.is_directional
+
+
+
 def test_hypothesis_direction_emerges_from_structured_evidence_short():
     # V-001 — no pre-collapsed lean: a structurally-SHORT picture (negative
     # displacement + selling order flow) yields a SHORT leading hypothesis purely
