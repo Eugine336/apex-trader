@@ -617,7 +617,7 @@ class ReasoningOrchestrator:
                 head = f"{name} " + "; ".join(lead) if lead else name
                 return f"{head} [{getattr(o, 'direction', '?')}({conf:.2f})]"
 
-            advising = ", ".join(_render(o) for o in result.opinions)
+            contributing = ", ".join(_render(o) for o in result.opinions)
             logger.info(
                 "[council] {} — {}/{} advisors contributing: {}{}",
                 result.symbol, len(result.opinions), len(asked),
