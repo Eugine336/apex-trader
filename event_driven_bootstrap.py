@@ -2519,8 +2519,11 @@ class EventDrivenSystem:
                 return []
             tfs = ["D1", "H4", "H1", "M15", "M5", "M1"]
             try:
+                # Thirty-two bars support the native rolling range/volume
+                # measurements and the legacy M1 pattern vocabulary. The chart
+                # snapshot below still caps per-timeframe payload size separately.
                 data = self._pm.fetch_market_data(
-                    symbol, tfs, count=16, include_forming=True,
+                    symbol, tfs, count=32, include_forming=True,
                 ) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition] price fetch failed for {}: {}", symbol, exc)
@@ -2557,10 +2560,19 @@ class EventDrivenSystem:
                 max_bars=6,
             )
             evidence = snapshot_to_evidence(symbol, snap)
-            # Retain the legacy M1 pattern vocabulary as contextual evidence in
-            # the shared Brain path (all supported instruments), not as a second
-            # entry authority. This snapshot includes the forming bar, so any
-            # pattern derived from it is explicitly marked provisional.
+            # Universal OHLC(V) measurements keep native cognition useful across
+            # instruments even when no external adviser is configured. They are
+            # derived from completed bars, preserve domain/provenance, and never
+            # choose direction or issue orders.
+            try:
+                from cognition.market_lenses import analyze_market_frames
+                evidence.extend(analyze_market_frames(
+                    symbol, data, source_includes_forming_bar=True,
+                ))
+            except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
+                logger.debug("[cognition] universal market-lens evidence failed for {}: {}", symbol, exc)
+            # Retain the legacy M1 pattern vocabulary as provisional contextual
+            # evidence for all supported instruments, not as a second entry path.
             try:
                 from cognition.price_action_patterns import evidence_from_m1_candles
                 m1_frame = data.get("M1")
