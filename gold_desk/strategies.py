@@ -1,8 +1,10 @@
-"""Eight independent deterministic XAUUSD opportunity families.
+"""Deterministic Gold pattern detectors used as evidence instruments.
 
-All detectors consume a single immutable MarketSnapshot. They use completed
-bars only, produce hypotheses with invalidation/SL/TP, and never place orders.
-Quality scores are heuristic ranking values, not calibrated probabilities.
+These modules are not competing trading strategies in the active Apex runtime.
+They inspect completed broker candles and expose factual conditions. The
+runtime strips internal candidate geometry before sending a single neutral
+evidence record to the existing CognitiveBrain. No module places orders or
+owns the final directional decision.
 """
 from __future__ import annotations
 
@@ -14,8 +16,8 @@ from gold_desk.indicators import atr, ema, median_true_range, rsi, rolling_zscor
 from gold_desk.models import Candle, Direction, MarketSnapshot, TradeIdea
 
 
-class Strategy(Protocol):
-    strategy_id: str
+class PatternDetector(Protocol):
+    pattern_id: str
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]: ...
 
@@ -369,8 +371,8 @@ class CandleRangeTheory:
         return []
 
 
-def default_strategies() -> list[Strategy]:
-    """All strategy families are always evaluated; AI/provider availability is irrelevant."""
+def default_pattern_detectors() -> list[PatternDetector]:
+    """Run all evidence detectors regardless of AI/provider availability."""
     return [
         TrendContinuation(),
         LiquiditySweepReversal(),
