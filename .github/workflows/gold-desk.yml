@@ -116,8 +116,7 @@ jobs:
           cognition/price_action_patterns.py cognition/market_lenses.py
           tests/test_apex_identity_and_contextual_patterns.py
           tests/test_developing_analysis.py tests/test_env_template_security.py
-          tests/test_event_driven_identity_contract.py
-          tests/test_brain_ev_primary_gate.py
+          tests/test_event_driven_identity_contract.py tests/test_brain_ev_primary_gate.py
           tests/test_multidimensional_confidence.py tests/test_opportunity_harvesting.py
           tests/test_opportunity_set_reasoning.py tests/test_provider_resilience.py
           config.py
