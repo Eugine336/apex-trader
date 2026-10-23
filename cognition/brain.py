@@ -45,6 +45,7 @@ from cognition.contracts import (
     Opportunity,
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -193,6 +194,12 @@ class CognitiveBrain:
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
     ) -> None:
+        self.identity_statement = IDENTITY_STATEMENT
+        self.identity_version = IDENTITY_VERSION
+        logger.info(
+            "[apex-identity] version=%s statement=%s",
+            self.identity_version, self.identity_statement,
+        )
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
         self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
@@ -326,6 +333,11 @@ class CognitiveBrain:
         # (only present after the symbol has been reasoned in harvesting format).
         self._last_opportunities: dict[str, list[Opportunity]] = {}
         self._lock = threading.Lock()
+
+    @staticmethod
+    def identity_contract() -> dict[str, object]:
+        """Return Apex's canonical, machine-readable non-negotiable identity."""
+        return identity_contract()
 
     @property
     def available(self) -> bool:
