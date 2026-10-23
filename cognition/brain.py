@@ -974,7 +974,7 @@ class CognitiveBrain:
                     else f"unknown; {self.min_evidence_domains} domains required"
                 )
                 reason_txt = (
-                    f"insufficient or unconfirmed evidence coverage: {coverage_status} "
+                    f"insufficient evidence coverage (or unconfirmed coverage): {coverage_status} "
                     "— cannot determine whether opportunity exists"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
