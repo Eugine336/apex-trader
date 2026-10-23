@@ -2734,6 +2734,7 @@ class EventDrivenSystem:
         # is visible; never opens or closes anything.  Best-effort.
         try:
             from persistence.recovery import (
+                build_log_open_details,
                 find_confirmed_close_deals,
                 run_startup_recovery,
             )
@@ -2744,24 +2745,41 @@ class EventDrivenSystem:
             }
             broker_ids = [t for t in pos_by_ticket if t]
             report = run_startup_recovery(get_event_store(), broker_ids)
-            # Resolve a log-only open record only when the connected MT5 account's
-            # own history explicitly contains an exit deal for the exact position
-            # identifier. Absence from open positions alone is NOT enough. This
-            # writes a lifecycle-only event (no P&L attribution, no broker order)
-            # so stale closed records do not trigger the same warning every boot.
+            # Resolve a log-only open record only when its symbol is MT5-routed
+            # and a connected single-account MT5 connector's own history has an
+            # explicit exit deal for that exact position identifier. With multiple
+            # MT5 accounts we cannot safely map a historical ticket to an account
+            # from the ticket alone, so automatic reconciliation is skipped.
+            # Absence from open positions, or failed/empty history, is never proof
+            # of closure. This emits lifecycle-only bookkeeping, never broker orders.
             if report is not None and report.missing_from_broker:
                 try:
-                    _mt5 = getattr(self._pm, "mt5", None)
-                    _is_connected = getattr(_mt5, "is_connected", None)
-                    _history_reader = getattr(_mt5, "get_deal_history", None)
+                    _mt5_connectors = list(getattr(self._pm, "mt5_connectors", []) or [])
+                    _log_details = build_log_open_details(get_event_store())
+                    _mt5_missing: set[str] = set()
+                    if len(_mt5_connectors) == 1:
+                        for _ticket in report.missing_from_broker:
+                            _detail = _log_details.get(_ticket, {}) or {}
+                            _symbol = str(_detail.get("symbol", "") or "")
+                            if not _symbol:
+                                continue
+                            try:
+                                _routed_platform = self._pm.get_platform_name(_symbol)
+                            except Exception:
+                                continue
+                            if str(_routed_platform).lower() == "mt5":
+                                _mt5_missing.add(_ticket)
+
                     _history = []
-                    if callable(_is_connected) and _is_connected() and callable(_history_reader):
-                        _history_end = datetime.now(timezone.utc)
-                        _history_start = _history_end - timedelta(days=365)
-                        _history = _history_reader(_history_start, _history_end) or []
-                    _confirmed = find_confirmed_close_deals(
-                        report.missing_from_broker, _history,
-                    )
+                    if len(_mt5_connectors) == 1 and _mt5_missing:
+                        _mt5 = _mt5_connectors[0]
+                        _is_connected = getattr(_mt5, "is_connected", None)
+                        _history_reader = getattr(_mt5, "get_deal_history", None)
+                        if callable(_is_connected) and _is_connected() and callable(_history_reader):
+                            _history_end = datetime.now(timezone.utc)
+                            _history_start = _history_end - timedelta(days=365)
+                            _history = _history_reader(_history_start, _history_end) or []
+                    _confirmed = find_confirmed_close_deals(_mt5_missing, _history)
                     if _confirmed:
                         _es = get_event_store()
                         _reconciled: list[str] = []
@@ -2770,7 +2788,8 @@ class EventDrivenSystem:
                                 _exit_deals,
                                 key=lambda deal: int(deal.get("time", 0) or 0),
                             )
-                            _symbol = str(_last_exit.get("symbol", "") or "")
+                            _symbol = str(_log_details.get(_ticket, {}).get("symbol", "") or
+                                          _last_exit.get("symbol", "") or "")
                             _deal_ids = sorted({
                                 str(deal.get("ticket"))
                                 for deal in _exit_deals if deal.get("ticket")
@@ -2793,9 +2812,8 @@ class EventDrivenSystem:
                         report.log_open.difference_update(_reconciled)
                         report.missing_from_broker.difference_update(_reconciled)
                         logger.warning(
-                            "[recovery] reconciled {} stale log-open position record(s) "
-                            "using matching MT5 exit history; no broker order sent and "
-                            "no P&L was inferred",
+                            "[recovery] reconciled {} stale log-open MT5 position record(s) "
+                            "using matching exit history; no broker order sent and no P&L inferred",
                             len(_reconciled),
                         )
                 except Exception as exc:
