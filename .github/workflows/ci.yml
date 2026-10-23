@@ -45,6 +45,20 @@ jobs:
       - name: Check for dependency conflicts
         run: pip check || echo "::warning::pip check reported dependency conflicts"
 
+      - name: Diagnose project package resolution
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          workspace = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+          print("workspace:", workspace)
+          print("tick package path exists:", os.path.isfile(os.path.join(workspace, "tick", "__init__.py")))
+          sys.path.insert(0, workspace)
+          import tick
+          print("tick module file:", getattr(tick, "__file__", None))
+          print("tick module path:", list(getattr(tick, "__path__", [])))
+          PY
+
       - name: Verify test collection
         run: python -m pytest tests/ --collect-only -q
 
