@@ -65,3 +65,42 @@ def test_reconciled_close_event_removes_stale_position_from_projection():
         },
     })
     assert projection.open_order_ids() == set()
+
+
+def test_startup_report_retains_symbols_for_broker_scoped_reconciliation(tmp_path):
+    from persistence.recovery import run_startup_recovery
+
+    class MemoryEventStore:
+        is_degraded = False
+
+        def __init__(self):
+            self.events = [
+                {
+                    "seq": 1,
+                    "event_type": DE.TRADE_OPEN,
+                    "symbol": "XAUUSD",
+                    "payload_json": {"order_id": "7001"},
+                },
+                {
+                    "seq": 2,
+                    "event_type": DE.TRADE_OPEN,
+                    "symbol": "R_100",
+                    "payload_json": {"order_id": "9001"},
+                },
+            ]
+
+        def replay(self, *, after_seq, limit):
+            return [
+                event for event in self.events
+                if event["seq"] > after_seq
+            ][:limit]
+
+    report = run_startup_recovery(
+        MemoryEventStore(),
+        broker_order_ids=[],
+        checkpoint_db=str(tmp_path / "recovery-checkpoints.db"),
+    )
+
+    assert report.missing_from_broker == {"7001", "9001"}
+    assert report.log_open_details["7001"]["symbol"] == "XAUUSD"
+    assert report.log_open_details["9001"]["symbol"] == "R_100"
