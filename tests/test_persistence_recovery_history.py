@@ -35,14 +35,13 @@ def test_empty_or_unavailable_history_never_confirms_closure():
     ) == {}
 
 
-def test_position_ids_are_matched_exactly_after_numeric_normalization():
+def test_numeric_position_ids_are_normalized_on_both_sides():
     confirmed = find_confirmed_close_deals(
         {"00123"},
         [{"position_id": 123, "entry": 1, "ticket": 9}],
     )
-    # The requested ID remains an exact string identifier: numeric broker IDs
-    # are normalized, but we don't fuzzy-match distinct strings.
-    assert confirmed == {}
+    assert set(confirmed) == {"123"}
+    assert confirmed["123"][0]["ticket"] == 9
 
 
 def test_reconciled_close_event_removes_stale_position_from_projection():
