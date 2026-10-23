@@ -291,6 +291,12 @@ def test_universal_market_lenses_emit_structured_facts_for_all_supported_timefra
         and item.measurements.get("expansion") is True
         for item in evidence
     )
+    # Frames without broker timestamps can remain visible as low-confidence
+    # observations, but must not count as verified independent market domains.
+    snapshot = MarketState(symbol="EURUSD")
+    for item in evidence:
+        snapshot.add(item)
+    assert snapshot.consolidation()["market_domain_count"] == 0
 
 
 def test_universal_market_lenses_report_sweep_reclaim_without_claiming_absorption():
