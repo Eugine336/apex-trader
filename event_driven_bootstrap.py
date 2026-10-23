@@ -18,7 +18,7 @@ import threading
 import time as _time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import pandas as pd
@@ -2733,7 +2733,10 @@ class EventDrivenSystem:
         # any mismatch (missed closes / orphan positions) so an unclean restart
         # is visible; never opens or closes anything.  Best-effort.
         try:
-            from persistence.recovery import run_startup_recovery
+            from persistence.recovery import (
+                find_confirmed_close_deals,
+                run_startup_recovery,
+            )
             open_positions = self._pm.get_all_open_positions()
             pos_by_ticket = {
                 str(getattr(p, "order_id", getattr(p, "ticket", ""))): p
@@ -2741,6 +2744,65 @@ class EventDrivenSystem:
             }
             broker_ids = [t for t in pos_by_ticket if t]
             report = run_startup_recovery(get_event_store(), broker_ids)
+            # Resolve a log-only open record only when the connected MT5 account's
+            # own history explicitly contains an exit deal for the exact position
+            # identifier. Absence from open positions alone is NOT enough. This
+            # writes a lifecycle-only event (no P&L attribution, no broker order)
+            # so stale closed records do not trigger the same warning every boot.
+            if report is not None and report.missing_from_broker:
+                try:
+                    _mt5 = getattr(self._pm, "mt5", None)
+                    _is_connected = getattr(_mt5, "is_connected", None)
+                    _history_reader = getattr(_mt5, "get_deal_history", None)
+                    _history = []
+                    if callable(_is_connected) and _is_connected() and callable(_history_reader):
+                        _history_end = datetime.now(timezone.utc)
+                        _history_start = _history_end - timedelta(days=365)
+                        _history = _history_reader(_history_start, _history_end) or []
+                    _confirmed = find_confirmed_close_deals(
+                        report.missing_from_broker, _history,
+                    )
+                    if _confirmed:
+                        _es = get_event_store()
+                        _reconciled: list[str] = []
+                        for _ticket, _exit_deals in sorted(_confirmed.items()):
+                            _last_exit = max(
+                                _exit_deals,
+                                key=lambda deal: int(deal.get("time", 0) or 0),
+                            )
+                            _symbol = str(_last_exit.get("symbol", "") or "")
+                            _deal_ids = sorted({
+                                str(deal.get("ticket"))
+                                for deal in _exit_deals if deal.get("ticket")
+                            })
+                            _es.emit(
+                                DE.TRADE_RECONCILED_CLOSED, "INFO",
+                                symbol=_symbol,
+                                source_module="startup_history_reconciliation",
+                                payload={
+                                    "order_id": _ticket,
+                                    "symbol": _symbol,
+                                    "reason": "mt5_history_confirms_position_closed",
+                                    "broker_history_verified": True,
+                                    "exit_deal_ids": _deal_ids,
+                                    "last_exit_time": int(_last_exit.get("time", 0) or 0),
+                                    "financial_attribution": "not_reconstructed",
+                                },
+                            )
+                            _reconciled.append(_ticket)
+                        report.log_open.difference_update(_reconciled)
+                        report.missing_from_broker.difference_update(_reconciled)
+                        logger.warning(
+                            "[recovery] reconciled {} stale log-open position record(s) "
+                            "using matching MT5 exit history; no broker order sent and "
+                            "no P&L was inferred",
+                            len(_reconciled),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[recovery] history-based lifecycle reconciliation skipped: {}",
+                        exc,
+                    )
             # A corrupt event DB makes crash-window reconciliation unreliable
             # (a malformed DB folds to zero open positions and looks "clean").
             # Degrade safety so new OPEN entries are refused until restarted on
