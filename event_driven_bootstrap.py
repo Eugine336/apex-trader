@@ -2734,7 +2734,6 @@ class EventDrivenSystem:
         # is visible; never opens or closes anything.  Best-effort.
         try:
             from persistence.recovery import (
-                build_log_open_details,
                 find_confirmed_close_deals,
                 run_startup_recovery,
             )
@@ -2755,7 +2754,7 @@ class EventDrivenSystem:
             if report is not None and report.missing_from_broker:
                 try:
                     _mt5_connectors = list(getattr(self._pm, "mt5_connectors", []) or [])
-                    _log_details = build_log_open_details(get_event_store())
+                    _log_details = dict(getattr(report, "log_open_details", {}) or {})
                     _mt5_missing: set[str] = set()
                     if len(_mt5_connectors) == 1:
                         for _ticket in report.missing_from_broker:
