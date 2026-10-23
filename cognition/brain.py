@@ -105,7 +105,7 @@ class BrainOutput:
     # working), and this property overlays the V-026 deprecation getter. Ruff's
     # F811 "redefinition" is expected and suppressed for exactly this recipe.
     @property
-    def direction(self) -> str:  # noqa: F811
+    def direction(self) -> Optional[str]:  # noqa: F811
         """DEPRECATED (V-026) — the collapsed top-level trade side.
 
         Kept for backward compatibility only; logs a deprecation notice on
@@ -120,9 +120,20 @@ class BrainOutput:
         # During dataclass ``__init__`` the class-level default resolves to the
         # ``property`` object itself when no ``direction=`` was passed; normalise
         # that (and ``None``) to FLAT so the stored value stays a plain string.
-        if value is None or isinstance(value, property):
+        if isinstance(value, property):
             value = FLAT
-        self._direction = str(value)
+        self._direction = None if value is None else str(value)
+
+    @property
+    def decision_type(self) -> str:
+        """Stable convenience field for dashboards and integrations."""
+        value = getattr(getattr(self.decision, "decision_type", None), "value", None)
+        return str(value or "unknown")
+
+    @property
+    def provider_unavailable(self) -> bool:
+        """True only for an infrastructure-unavailable decision, never a flat market."""
+        return self.decision_type == DecisionType.REASONER_UNAVAILABLE.value
 
     def decision_summary(self) -> str:
         """Human-readable decision framed in the constitutional vocabulary.
@@ -142,6 +153,7 @@ class BrainOutput:
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "decision_type": self.decision.decision_type.value,
+            "provider_unavailable": self.provider_unavailable,
             "decision_summary": self.decision_summary(),
             # Deprecated (V-026): retained for back-compat. Read the backing field
             # directly so serialisation does not self-trip the deprecation notice.
