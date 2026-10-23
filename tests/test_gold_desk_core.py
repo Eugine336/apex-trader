@@ -9,8 +9,9 @@ from cognition.evidence_adapters import evidence_from_gold_market
 from cognition.loop import CognitionLoop, EvidenceConsolidator
 from gold_desk.apex_observer import ApexGoldDeskShadowObserver, _frame_to_closed_candles
 from gold_desk.indicators import atr
-from gold_desk.models import Candle, MarketSnapshot, PatternObservation, Venue
-from gold_desk.strategies import CandleRangeTheoryDetector, default_pattern_detectors
+from gold_desk.models import Candle, EventWindow, MarketSnapshot, PatternObservation, Venue
+from gold_desk.news_context import build_verified_event_window
+from gold_desk.strategies import CandleRangeTheoryDetector, EventWindowBreakoutDetector, default_pattern_detectors
 from gold_desk.symbols import GoldOnlyGuard
 
 
@@ -307,6 +308,95 @@ def test_cognition_loop_can_wake_on_material_market_change_even_without_global_e
     # call on every small market update.
     assert loop.request_reason("XAUUSD", reason="small_repeat", now=101.0) is False
     assert loop.request_reason("XAUUSD", reason="new_material_change", now=109.0) is True
+
+
+
+
+def test_event_window_uses_newsguard_time_and_pre_event_completed_candles():
+    snapshot = _snapshot()
+    event_time = snapshot.observed_at + timedelta(minutes=2)
+
+    class FakeNewsGuard:
+        pause_before = 15
+        pause_after = 5
+
+        def __init__(self):
+            self.calls = []
+
+        def check(self, symbols, now):
+            self.calls.append((symbols, now))
+            event = SimpleNamespace(
+                title="US CPI",
+                impact="HIGH",
+                time_utc=event_time,
+            )
+            return SimpleNamespace(events_nearby=[event])
+
+    guard = FakeNewsGuard()
+    bars = list(snapshot.bars("M5"))
+    # This bar is after the current observation (and still before the event),
+    # so it must not leak into a pre-event range.
+    future_bar = Candle(
+        snapshot.observed_at + timedelta(minutes=1),
+        open=2100.0, high=2300.0, low=2000.0, close=2200.0, volume=10,
+    )
+    candles = {"M5": [*bars, future_bar]}
+    window = build_verified_event_window("XAUUSD", snapshot.observed_at, candles, guard)
+
+    assert window is not None
+    assert window.name == "US CPI"
+    assert window.impact == "HIGH"
+    assert window.is_active(snapshot.observed_at)
+    assert window.pre_event_high == max(bar.high for bar in bars[-12:])
+    assert window.pre_event_low == min(bar.low for bar in bars[-12:])
+    assert guard.calls == [(["XAUUSD"], snapshot.observed_at)]
+    assert window.pre_event_high < future_bar.high
+
+
+def test_event_window_breakout_is_a_factual_observation_not_a_trade_signal():
+    snapshot = _snapshot()
+    event_window = EventWindow(
+        name="US CPI",
+        starts_at=snapshot.observed_at - timedelta(minutes=1),
+        ends_at=snapshot.observed_at + timedelta(minutes=5),
+        pre_event_high=2050.0,
+        pre_event_low=2000.0,
+        impact="HIGH",
+    )
+    with_window = MarketSnapshot(
+        symbol="XAUUSD",
+        venue="MT5",
+        observed_at=snapshot.observed_at,
+        bid=snapshot.bid,
+        ask=snapshot.ask,
+        candles=snapshot.candles,
+        event_window=event_window,
+        market_open=True,
+        data_quality_ok=True,
+    )
+    findings = EventWindowBreakoutDetector().observe(with_window)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.pattern_id == "event_window_breakout"
+    assert finding.measurements["escaped_boundary"] == "pre_event_high"
+    assert any("verified event window is active" in fact for fact in finding.facts)
+    for forbidden in ("direction", "entry", "stop", "target", "quality_score"):
+        assert not hasattr(finding, forbidden)
+
+    inactive = EventWindow(
+        name="US CPI",
+        starts_at=snapshot.observed_at + timedelta(minutes=1),
+        ends_at=snapshot.observed_at + timedelta(minutes=5),
+        pre_event_high=2050.0,
+        pre_event_low=2000.0,
+        impact="HIGH",
+    )
+    inactive_snapshot = MarketSnapshot(
+        symbol="XAUUSD", venue="MT5", observed_at=snapshot.observed_at,
+        bid=snapshot.bid, ask=snapshot.ask, candles=snapshot.candles,
+        event_window=inactive, market_open=True, data_quality_ok=True,
+    )
+    assert EventWindowBreakoutDetector().observe(inactive_snapshot) == []
 
 
 
