@@ -1,4 +1,8 @@
-import sqlite3, os, sys, shutil, datetime
+import sqlite3
+import os
+import sys
+import shutil
+import datetime
 
 src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'apex_events.db'))
 if not os.path.exists(src):
