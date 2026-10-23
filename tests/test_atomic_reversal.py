@@ -195,7 +195,7 @@ def test_from_reason_maps_reversal_before_flip():
 
 def test_reversal_config_defaults():
     c = ThesisConfig()
-    assert c.atomic_reversal_enabled is True
+    assert c.atomic_reversal_enabled is False
     assert c.reversal_min_thesis_ev == 0.1
     assert c.reversal_cooldown == 300.0
     assert c.max_reversals_per_session == 3
