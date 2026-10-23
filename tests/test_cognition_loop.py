@@ -306,11 +306,17 @@ class _OpenBrain:
         )
         return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
 
+    def reason_portfolio(self, outputs, existing_positions):
+        # The test double models a successful Brain book-review pass.
+        self.reviewed_book = list(existing_positions)
+        return list(outputs)
+
 
 def test_origination_shadow_records_intended_submits_nothing():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     st = loop.get_status()
@@ -324,6 +330,7 @@ def test_origination_live_calls_sink():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: submitted.append(intent))
     loop.run_once()
@@ -338,9 +345,28 @@ def test_origination_live_without_sink_degrades_to_shadow():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     assert loop.get_status()["orig_intended"] == 1
+
+
+def test_origination_suppressed_when_portfolio_authority_is_missing():
+    class _NoPortfolioBrain:
+        def reason(self, market_state, now=None):
+            return _OpenBrain().reason(market_state, now=now)
+
+    loop = CognitionLoop(
+        _NoPortfolioBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    submitted = []
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    loop.run_once()
+    assert submitted == []
+    assert loop.get_status()["orig_submitted"] == 0
+    assert loop.get_status()["orig_intended"] == 0
 
 
 def test_origination_off_never_originates():
@@ -370,6 +396,7 @@ def test_origination_deduplicates_within_cycle():
         _OpenBrain(direction="LONG"), _StubConsolidator(),
         lambda: ["EURUSD", "EURUSD"],
         origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     assert loop.get_status()["orig_intended"] == 1
@@ -745,6 +772,7 @@ def test_origination_live_births_campaign():
     loop = CognitionLoop(
         _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", campaign_registry=reg,
+        position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: None)
     loop.run_once()
