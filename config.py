@@ -670,7 +670,9 @@ class RiskConfig:
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
     tp3_close_ratio: float = 0.25
-    scale_in_enabled: bool = True
+    # Legacy mechanical scaling is disabled; additional exposure must pass
+    # the Brain's first-class opportunity and whole-book admission path.
+    scale_in_enabled: bool = False
     scale_in_max_adds: int = 1
     scale_in_min_profit_r: float = 1.0
     scale_in_add_ratio: float = 0.5
@@ -3125,16 +3127,13 @@ class ThesisConfig:
     # cannot immediately close a fresh position (the mechanical stop still
     # protects it during this window).
     evidence_exit_min_hold_time: float = 60.0
-    # ── Session 29: atomic reversal (close + reverse in one decision) ──────
-    # When a ``thesis_flip`` fires (the OPPOSING thesis is the dominant,
-    # actionable read), instead of merely exiting to flat the system can close
-    # the current side AND open the opposite direction as one atomic decision —
-    # so there is no gap between "I should be short" and being short. The new
-    # opposite entry still passes the full entry pipeline (Compliance /
-    # Portfolio / Governor / EV / DecisionEngine) and is sized independently from
-    # the competing thesis; a reversal earns no free pass. When disabled, a
-    # ``thesis_flip`` just triggers the Session-28 evidence exit (flat).
-    atomic_reversal_enabled: bool = True
+    # Legacy Session 29 atomic reversal is disabled under the canonical identity.
+    # The management path may close an invalidated position, but an opposite-side
+    # entry must be separately discovered/activated by CognitiveBrain and pass the
+    # same market-evidence, net-EV, portfolio and execution admission gates.
+    # This compatibility flag is retained for serialized configs; runtime wiring
+    # must not use it to authorize a new side directly from a management signal.
+    atomic_reversal_enabled: bool = False
     # The competing thesis's effective EV over the Flat baseline (R) must clear
     # this before a reversal is permitted — the same do-nothing margin a fresh
     # entry beats. Defaults to ``opportunity_cost_threshold``.
@@ -3879,12 +3878,9 @@ class CognitionConfig:
     # extra cost across scanning. env COGNITION_MANAGE_MIN_INTERVAL_SECONDS.
     manage_min_interval_seconds: float = 8.0
     # Phase F — Brain-driven management thresholds.
-    # allow_scale_in: the Brain may ADD to a winning campaign (Part XVIII Art 1 —
-    # one campaign spans multiple entries). Enabled by default; the management
-    # sink still requires a protective stop + a broker-valid lot, and a scale is
-    # suppressed when the symbol's correlated cluster is over-concentrated
-    # (Art 11). Set false to forbid scaling entirely.
-    allow_scale_in: bool = True
+    # Retained for compatibility, but live management-sink scaling is suppressed
+    # until it carries a first-class activated opportunity and whole-book review.
+    allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
     # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
@@ -4106,6 +4102,12 @@ class CognitionConfig:
                 "[config] disabling opportunity cost qualification is incompatible with the Apex identity; forcing true"
             )
             self.opportunity_qualification_enabled = True
+        if self.allow_scale_in:
+            logger.warning(
+                "[config] COGNITION_ALLOW_SCALE_IN=true is not supported until scale-ins "
+                "use the first-class opportunity and whole-book admission path; forcing false"
+            )
+            self.allow_scale_in = False
         if not self.event_driven:
             logger.warning(
                 "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
