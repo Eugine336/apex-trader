@@ -254,7 +254,6 @@ class TrendExhaustionReversal:
         bars = snapshot.bars("H1")
         if len(bars) < 32:
             return []
-        closes = _closes(bars)
         av = atr(bars)
         if av is None:
             return []
