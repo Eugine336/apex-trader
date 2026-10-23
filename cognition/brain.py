@@ -2420,7 +2420,7 @@ class CognitiveBrain:
         })
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
-            thesis="external advisor unavailable; native analysis ran but no independent campaign qualified",
+            thesis="external advisor unavailable; native analysis ran but no qualified independent campaign was found",
             confidence=0.0, uncertainty=uncertainty,
             campaign_recommendation="stand_down",
             risk_rationale=reason_txt,
