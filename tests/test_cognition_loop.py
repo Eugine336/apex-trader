@@ -683,6 +683,19 @@ def test_management_live_calls_sink():
     assert len(calls) == 1 and calls[0].kind == "close"
 
 
+def test_explicit_management_sink_suppression_is_not_counted_as_submitted():
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: False)
+    loop.run_once()
+    status = loop.get_status()
+    assert status["manage_intended"] == 1
+    assert status["manage_submitted"] == 0
+    assert status["manage_suppressed"] == 1
+
+
 def test_management_hold_is_noop():
     calls = []
     loop = CognitionLoop(
