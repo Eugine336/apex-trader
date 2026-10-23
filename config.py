@@ -4084,6 +4084,46 @@ class CognitionConfig:
                 "CognitionConfig.min_evidence_domains must be >= 0, got "
                 f"{self.min_evidence_domains!r}"
             )
+
+        # These are product-identity invariants, not tuning preferences. Keep the
+        # .env file operator-owned, but do not let an old/permissive env override
+        # silently disable the sole-Brain path, net-EV gate, source-cost
+        # qualification, continuous event waking, or minimum evidence breadth.
+        # Operators can still adjust thresholds upward; these safety floors are
+        # deliberately one-way.
+        if not self.single_path:
+            logger.warning(
+                "[config] COGNITION_SINGLE_PATH=false is incompatible with the Apex identity; forcing true"
+            )
+            self.single_path = True
+        if not self.ev_primary_gate:
+            logger.warning(
+                "[config] COGNITION_EV_PRIMARY_GATE=false is incompatible with the Apex identity; forcing true"
+            )
+            self.ev_primary_gate = True
+        if not self.opportunity_qualification_enabled:
+            logger.warning(
+                "[config] disabling opportunity cost qualification is incompatible with the Apex identity; forcing true"
+            )
+            self.opportunity_qualification_enabled = True
+        if not self.event_driven:
+            logger.warning(
+                "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
+            )
+            self.event_driven = True
+        if self.min_evidence_domains < 3:
+            logger.warning(
+                "[config] minimum evidence domains %s is below the identity floor of 3; forcing 3",
+                self.min_evidence_domains,
+            )
+            self.min_evidence_domains = 3
+        if self.min_advisors_for_action < 1:
+            logger.warning(
+                "[config] minimum advisors %s is below the identity floor of 1; forcing 1",
+                self.min_advisors_for_action,
+            )
+            self.min_advisors_for_action = 1
+
         if not (0.0 <= float(self.degraded_confidence_multiplier) <= 1.0):
             raise ValueError(
                 "CognitionConfig.degraded_confidence_multiplier must be in [0, 1], got "
