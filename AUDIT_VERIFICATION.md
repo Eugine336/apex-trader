@@ -1,5 +1,8 @@
 # APEX TRADER — CONSTITUTIONAL VERIFICATION AUDIT
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — this audit is a historical static review, not proof that the current runtime fully satisfies Apex's identity. Use docs/APEX_IDENTITY.md as binding identity and docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md for current gaps and required fresh checks. Prior line numbers, violation counts, and verdicts must be re-run against the current head before claiming closure.
+
 **Post-fix 1:1 philosophy-mirror check.** Adversarial re-audit of the live
 execution path after the eight category fix-PRs (V-001…V-027) merged.
 
