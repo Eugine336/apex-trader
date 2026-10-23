@@ -19,7 +19,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from loguru import logger
 
@@ -147,6 +147,10 @@ class ExecutorConfig:
     gold_symbol_aliases: tuple[str, ...] = (
         "XAUUSD", "GOLD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
     )
+    # Gold-specialist runtime can require current broker-backed OHLC/quote data.
+    # Generic executor consumers leave this off unless they supply a health callback.
+    require_gold_feed_health: bool = False
+    gold_feed_health_check: Optional[Callable[[str], bool]] = None
 
 
 class ActionExecutor:
@@ -289,6 +293,28 @@ class ActionExecutor:
                     gate_reason=reason,
                     error=reason,
                 )
+
+            if self._cfg.require_gold_feed_health:
+                health_check = self._cfg.gold_feed_health_check
+                try:
+                    feed_healthy = bool(health_check(intent.symbol)) if callable(health_check) else False
+                except Exception as exc:  # noqa: BLE001 — feed health must fail closed
+                    logger.warning("[gold-only] feed health check failed for {}: {}", intent.symbol, exc)
+                    feed_healthy = False
+                if not feed_healthy:
+                    reason = (
+                        f"gold_feed_unhealthy: rejected new exposure for {intent.symbol!r}; "
+                        "a fresh, valid broker quote and completed M5 bars are required"
+                    )
+                    self._inc("intents_rejected")
+                    logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                    return ExecutionResult(
+                        intent=intent,
+                        success=False,
+                        rejected_by_gate=True,
+                        gate_reason=reason,
+                        error=reason,
+                    )
 
         # PARTIAL_CLOSE idempotency guard: skip a repeat partial for the same
         # ticket within the dedup window so a re-submitted (or lost-ack) partial
