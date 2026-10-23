@@ -8,6 +8,7 @@ from a forming candle are explicitly provisional and can repaint.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
 
@@ -36,8 +37,51 @@ def _row_value(row: Any, keys: tuple[str, ...]) -> float | None:
     return None
 
 
-def _rows(frame: Any, limit: int = 30) -> list[dict[str, float]]:
-    """Read OHLC(V) from a pandas-like frame without importing pandas."""
+def _timestamp_epoch(value: Any) -> float | None:
+    """Parse source timestamps without mistaking an ordinary row number for time."""
+    if value is None:
+        return None
+    stamp = getattr(value, "timestamp", None)
+    if callable(stamp):
+        try:
+            parsed = float(stamp())
+            return parsed if isfinite(parsed) and parsed > 0 else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+    try:
+        numeric = float(value)
+        if isfinite(numeric) and numeric > 0:
+            if numeric > 100_000_000_000:
+                numeric /= 1000.0
+            return numeric
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed_dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed_dt.tzinfo is None:
+            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+        parsed = parsed_dt.timestamp()
+        return parsed if isfinite(parsed) and parsed > 0 else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _raw_row_value(row: Any, keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        try:
+            value = row.get(key, None) if callable(getattr(row, "get", None)) else row[key]
+            if value is not None:
+                return value
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+    return None
+
+
+def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
+    """Read OHLC(V) and source time from a pandas-like frame without importing pandas."""
     if frame is None:
         return []
     try:
@@ -46,8 +90,8 @@ def _rows(frame: Any, limit: int = 30) -> list[dict[str, float]]:
         tail = frame.tail(limit) if callable(getattr(frame, "tail", None)) else frame
         iterator = tail.iterrows() if callable(getattr(tail, "iterrows", None)) else enumerate(tail)
         columns = {str(col).lower(): str(col) for col in getattr(tail, "columns", [])}
-        out: list[dict[str, float]] = []
-        for _, row in iterator:
+        out: list[dict[str, Any]] = []
+        for row_index, row in iterator:
             def value(*names: str) -> float | None:
                 aliases = tuple(columns[name] for name in names if name in columns) + names
                 return _row_value(row, aliases)
@@ -59,7 +103,25 @@ def _rows(frame: Any, limit: int = 30) -> list[dict[str, float]]:
                 continue
             if min(opening, high, low, close) < 0 or high < low:
                 continue
-            item = {"open": opening, "high": high, "low": low, "close": close}
+            item: dict[str, Any] = {
+                "open": opening, "high": high, "low": low, "close": close,
+            }
+            time_keys = tuple(
+                columns[name] for name in ("time", "timestamp", "datetime", "date")
+                if name in columns
+            ) + ("time", "timestamp", "datetime", "date")
+            source_time = _raw_row_value(row, time_keys)
+            source_epoch = _timestamp_epoch(source_time)
+            if source_epoch is None:
+                index_is_datetime = callable(getattr(row_index, "timestamp", None))
+                index_is_iso_string = (
+                    isinstance(row_index, str)
+                    and any(marker in row_index for marker in ("-", "T", ":"))
+                )
+                if index_is_datetime or index_is_iso_string:
+                    source_epoch = _timestamp_epoch(row_index)
+            if source_epoch is not None:
+                item["timestamp_epoch"] = source_epoch
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None:
                 item["volume"] = max(0.0, volume)
@@ -180,6 +242,8 @@ def detect_m1_price_action(frame: Any) -> dict[str, Any]:
         "current_range": candle_range,
         "average_prior_range": average_range,
         "volume_spike_multiple": volume_multiple,
+        "source_bar_epoch": current.get("timestamp_epoch"),
+        "source_timestamp_known": bool(current.get("timestamp_epoch")),
         "facts": facts,
     }
 
@@ -200,15 +264,31 @@ def evidence_from_m1_candles(
             + suffix
         )
         measurements["provisional"] = bool(provisional)
+        source_epoch = _number(measurements.get("source_bar_epoch"), 0.0)
+        known_source_time = (
+            bool(measurements.get("source_timestamp_known"))
+            and source_epoch > 0
+        )
+        sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
+        timestamp_iso = datetime.fromtimestamp(
+            sampled_at, tz=timezone.utc,
+        ).isoformat()
+        # Unknown source time is itself a material data-quality gap. Keep the
+        # observation available for context, but substantially raise uncertainty
+        # so it cannot masquerade as a timestamp-verified live M1 candle.
+        confidence = (0.50 if provisional else 0.62) if known_source_time else 0.25
+        uncertainty = (0.50 if provisional else 0.38) if known_source_time else 0.75
         return Evidence(
             source_module="price_action.m1",
             domain=EvidenceDomain.STRUCTURE,
             symbol=str(symbol or ""),
             observation=obs[:1600],
-            confidence=0.65 if provisional else 0.75,
-            uncertainty=0.35 if provisional else 0.25,
+            confidence=confidence,
+            uncertainty=uncertainty,
             polarity=0.0,
             measurements=measurements,
+            timestamp_epoch=sampled_at,
+            timestamp_iso=timestamp_iso,
             relevance_horizon_seconds=60.0,
         )
     except Exception:  # noqa: BLE001
