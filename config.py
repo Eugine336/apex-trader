@@ -3828,24 +3828,23 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
-    # V-01 (§I/§VI/§VIII) — EV-primary actionability gate (OPT-IN, default off).
-    # When true, the Brain opens a campaign on a positive EXPECTED VALUE (net of
-    # cost, over flat) rather than a raw confidence floor, so a genuine positive-
-    # expectancy opportunity is not vetoed merely because mixed evidence pulled
-    # confidence below a threshold ("conflicting evidence ⇒ FLAT" is forbidden).
-    # ``ev_action_threshold_r`` is the minimum EV in R to act on (default 0.0 ⇒
-    # any strictly positive EV). Confidence still feeds the EV and the sizing.
+    # Identity requirement: net expected value is the default actionability gate,
+    # not an optional upgrade to a raw confidence floor. A market thesis cannot
+    # originate exposure without positive EV after estimated costs.
+    # ``ev_action_threshold_r`` is the minimum net EV in R (0.0 means strictly
+    # positive EV); confidence still contributes to EV and sizing.
     # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
-    ev_primary_gate: bool = False
+    ev_primary_gate: bool = True
     ev_action_threshold_r: float = 0.0
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
     min_advisors_for_action: int = 1
-    # Article XXXIV — minimum evidence-domain coverage before the Brain may act
-    # ("cannot determine whether an opportunity exists" ≠ "no opportunity").
+    # Identity requirement: market action needs a minimum breadth of independent
+    # evidence domains. Three permits lean but multi-dimensional market reads while
+    # rejecting single-domain direction proxies; the runtime may require more.
     # env COGNITION_MIN_EVIDENCE_DOMAINS.
-    min_evidence_domains: int = 1
+    min_evidence_domains: int = 3
     # Article XXI / V-013 — when the council under-delivers (most available
     # advisors did not respond) the Brain attenuates its effective confidence by
     # this multiplier: degraded cognition is ENFORCED, not merely observed.
