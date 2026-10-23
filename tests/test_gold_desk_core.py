@@ -67,7 +67,11 @@ def _payload(symbol: str = "XAUUSD", observed_at: datetime | None = None) -> dic
         "pattern_observations": [{
             "family": "crt_range_observation",
             "facts": ["anchor boundary was swept", "completed candle reclaimed the range"],
-            "measurements": {"anchor_high": 2001.0, "anchor_low": 1990.0, "sweep_buffer": 0.2},
+            "measurements": {
+                "anchor_high": 2001.0, "anchor_low": 1990.0, "sweep_buffer": 0.2,
+                "sweep": True, "absorption": True, "sweep_side": "buy", "bos": True,
+                "displacement": -2.0,
+            },
             "timeframe": "M5",
             "source_bar_time": now.isoformat(),
         }],
@@ -135,20 +139,26 @@ def test_atr_is_deterministic_and_positive_for_valid_bars():
 
 def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements():
     evidence = evidence_from_gold_market("XAUUSD", _payload())
-    assert len(evidence) == 1
-    item = evidence[0]
-    assert item.source_module == "gold_market_desk"
-    assert item.polarity == 0.0
-    assert item.measurements["pattern_families"] == ["crt_range_observation"]
-    assert item.measurements["overlap_policy"] == "single_brain_synthesis_no_vote_summing"
-    assert item.measurements["orders_sent"] is False
-    observation = item.measurements["pattern_observations"][0]
+    assert len(evidence) == 3
+    root = next(item for item in evidence if item.source_module == "gold_market_desk")
+    assert all(item.polarity == 0.0 for item in evidence)
+    assert root.measurements["pattern_families"] == ["crt_range_observation"]
+    assert root.measurements["overlap_policy"] == "single_brain_synthesis_no_vote_summing"
+    assert root.measurements["orders_sent"] is False
+    observation = root.measurements["pattern_observations"][0]
     assert observation["measurements"]["anchor_high"] == 2001.0
-    assert item.measurements["event_context"]["pre_event_high"] == 2010.0
-    assert "Verified news context: US CPI" in item.observation
+    assert root.measurements["event_context"]["pre_event_high"] == 2010.0
+    assert "Verified news context: US CPI" in root.observation
+    assert {item.domain.value for item in evidence} == {"multi_timeframe", "liquidity", "structure"}
+    liquidity = next(item for item in evidence if item.domain.value == "liquidity")
+    structure = next(item for item in evidence if item.domain.value == "structure")
+    assert liquidity.measurements["sweep"] is True
+    assert liquidity.measurements["sweep_side"] == "buy"
+    assert structure.measurements["bos"] is True
+    assert structure.measurements["displacement"] == -2.0
     forbidden = {"direction", "entry", "stop", "target", "quality_score", "reward_to_risk"}
-    assert forbidden.isdisjoint(item.measurements)
-    assert "NOT independent votes" in item.observation
+    assert forbidden.isdisjoint(root.measurements)
+    assert "NOT independent votes" in root.observation
 
 
 def test_gold_market_adapter_rejects_stale_and_non_gold_payloads():
@@ -411,11 +421,14 @@ def test_gold_observations_enter_existing_market_state_not_a_parallel_decider():
     consolidator = EvidenceConsolidator()
     consolidator.set_gold_market_source(source)
     state = consolidator.build("XAUUSD")
-    gold_records = [item for item in state.evidence if item.source_module == "gold_market_desk"]
+    gold_records = [item for item in state.evidence if item.source_module.startswith("gold_market_desk")]
     assert calls == ["XAUUSD"]
-    assert len(gold_records) == 1
-    assert gold_records[0].polarity == 0.0
-    assert gold_records[0].measurements["orders_sent"] is False
+    assert len(gold_records) == 3
+    assert all(item.polarity == 0.0 for item in gold_records)
+    root = next(item for item in gold_records if item.source_module == "gold_market_desk")
+    assert root.measurements["orders_sent"] is False
+    assert any(item.domain.value == "liquidity" for item in gold_records)
+    assert any(item.domain.value == "structure" for item in gold_records)
 
     consolidator.build("EURUSD")
     assert calls == ["XAUUSD"]
