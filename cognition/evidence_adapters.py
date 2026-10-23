@@ -627,9 +627,9 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
         age = time.time() - observed_epoch
         if age < -1.0 or age > 15.0:
             return []
-        if requested_symbol != payload_symbol and not (
-            requested_symbol == "XAUUSD" and payload_symbol in accepted
-        ):
+        if requested_symbol not in accepted:
+            return []
+        if payload_symbol not in accepted:
             return []
         patterns = data.get("pattern_observations")
         patterns = patterns if isinstance(patterns, list) else []
@@ -668,6 +668,8 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
             observation_parts.append(f"{item['family']}: {facts}")
         measurements = {
             "venue": str(data.get("venue", "") or ""),
+            "market_open": bool(data.get("market_open", False)),
+            "data_quality_ok": bool(data.get("data_quality_ok", False)),
             "quote": {
                 "bid": _safe_number(quote.get("bid")),
                 "ask": _safe_number(quote.get("ask")),
