@@ -3864,7 +3864,9 @@ class CognitionConfig:
     # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
     # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
     event_driven: bool = True
-    event_min_interval_seconds: float = 8.0
+    # Material tick/structure changes can trigger a fresh native analysis at most
+    # once per second per symbol. Provider calls remain independently rate-limited.
+    event_min_interval_seconds: float = 1.0
     # Lowered 0.15 → 0.10 so smaller (still meaningful) forming-bar shifts wake
     # the Brain — more responsive entries/management. Extra wakes hit the
     # per-symbol reasoner throttle (origination + council keep their global
