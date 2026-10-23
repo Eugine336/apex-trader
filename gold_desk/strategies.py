@@ -70,7 +70,7 @@ def _rr_target(entry: float, stop: float, direction: Direction, multiple: float)
 
 
 class TrendContinuation:
-    strategy_id = "trend_continuation"
+    pattern_id = "trend_continuation"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         bars = snapshot.bars("M15")
@@ -87,7 +87,7 @@ class TrendContinuation:
             if min(b.low for b in recent) <= fast + 0.45 * av:
                 stop = min(b.low for b in bars[-6:]) - 0.20 * av
                 target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.7)
-                idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+                idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                              stop=stop, target=target, atr_value=av, quality=68,
                              rationale="H1/M15 trend proxy with M15 pullback reclaim and close-confirmed continuation.",
                              evidence=("EMA20 above EMA50", "pullback into EMA20 zone", "close above prior high"),
@@ -97,7 +97,7 @@ class TrendContinuation:
             if max(b.high for b in recent) >= fast - 0.45 * av:
                 stop = max(b.high for b in bars[-6:]) + 0.20 * av
                 target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.7)
-                idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+                idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                              stop=stop, target=target, atr_value=av, quality=68,
                              rationale="H1/M15 trend proxy with M15 pullback rejection and close-confirmed continuation.",
                              evidence=("EMA20 below EMA50", "pullback into EMA20 zone", "close below prior low"),
@@ -107,7 +107,7 @@ class TrendContinuation:
 
 
 class LiquiditySweepReversal:
-    strategy_id = "liquidity_sweep_reversal"
+    pattern_id = "liquidity_sweep_reversal"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         bars = snapshot.bars("M5")
@@ -122,7 +122,7 @@ class LiquiditySweepReversal:
         if last.low < range_low - 0.05 * av and last.close > range_low and last.close > last.open:
             stop = last.low - 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.8)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=target, atr_value=av, quality=66,
                          rationale="Sell-side liquidity was swept and price closed back above the prior range low.",
                          evidence=("prior-range low swept", "close reclaimed range", "bullish rejection candle"))
@@ -130,7 +130,7 @@ class LiquiditySweepReversal:
         if last.high > range_high + 0.05 * av and last.close < range_high and last.close < last.open:
             stop = last.high + 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.8)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=target, atr_value=av, quality=66,
                          rationale="Buy-side liquidity was swept and price closed back below the prior range high.",
                          evidence=("prior-range high swept", "close reclaimed range", "bearish rejection candle"))
@@ -139,7 +139,7 @@ class LiquiditySweepReversal:
 
 
 class VolatilityExpansionBreakout:
-    strategy_id = "volatility_expansion_breakout"
+    pattern_id = "volatility_expansion_breakout"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         bars = snapshot.bars("M5")
@@ -158,7 +158,7 @@ class VolatilityExpansionBreakout:
         if last.close > ceiling + 0.05 * av and last.close > last.open:
             stop = ceiling - 0.25 * av
             target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=target, atr_value=av, quality=65,
                          rationale="Range breakout accompanied by an expansion in true range.",
                          evidence=("close above prior 20-bar range", "true range expansion", "close-confirmed"))
@@ -166,7 +166,7 @@ class VolatilityExpansionBreakout:
         if last.close < floor - 0.05 * av and last.close < last.open:
             stop = floor + 0.25 * av
             target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=target, atr_value=av, quality=65,
                          rationale="Range breakdown accompanied by an expansion in true range.",
                          evidence=("close below prior 20-bar range", "true range expansion", "close-confirmed"))
@@ -175,7 +175,7 @@ class VolatilityExpansionBreakout:
 
 
 class FailedBreakoutTrap:
-    strategy_id = "failed_breakout_trap"
+    pattern_id = "failed_breakout_trap"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         bars = snapshot.bars("M5")
@@ -192,7 +192,7 @@ class FailedBreakoutTrap:
         if last.high > ceiling + 0.10 * av and last.close < ceiling and last.close < last.open and upper_wick >= 1.2 * body:
             stop = last.high + 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.7)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=target, atr_value=av, quality=64,
                          rationale="Upside breakout attempt failed: wick outside range, close returned inside.",
                          evidence=("range-high false break", "upper rejection wick", "close back inside range"))
@@ -200,7 +200,7 @@ class FailedBreakoutTrap:
         if last.low < floor - 0.10 * av and last.close > floor and last.close > last.open and lower_wick >= 1.2 * body:
             stop = last.low - 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.7)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=target, atr_value=av, quality=64,
                          rationale="Downside breakout attempt failed: wick outside range, close returned inside.",
                          evidence=("range-low false break", "lower rejection wick", "close back inside range"))
@@ -209,7 +209,7 @@ class FailedBreakoutTrap:
 
 
 class StatisticalMeanReversion:
-    strategy_id = "statistical_mean_reversion"
+    pattern_id = "statistical_mean_reversion"
 
     def __init__(self, z_threshold: float = 2.0, max_trend_atr: float = 1.5) -> None:
         self.z_threshold = z_threshold
@@ -230,7 +230,7 @@ class StatisticalMeanReversion:
             return []
         if score >= self.z_threshold and mean < snapshot.mid:
             stop = snapshot.mid + 1.25 * av
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=mean, atr_value=av, quality=59,
                          rationale=f"Price is {score:.2f} standard deviations above the 30-bar mean in a non-strong trend regime.",
                          evidence=("30-bar z-score extreme", "trend-strength filter passed", "mean is below entry"),
@@ -238,7 +238,7 @@ class StatisticalMeanReversion:
             return [idea] if idea and idea.reward_to_risk >= 1.2 else []
         if score <= -self.z_threshold and mean > snapshot.mid:
             stop = snapshot.mid - 1.25 * av
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=mean, atr_value=av, quality=59,
                          rationale=f"Price is {abs(score):.2f} standard deviations below the 30-bar mean in a non-strong trend regime.",
                          evidence=("30-bar z-score extreme", "trend-strength filter passed", "mean is above entry"),
@@ -248,7 +248,7 @@ class StatisticalMeanReversion:
 
 
 class TrendExhaustionReversal:
-    strategy_id = "trend_exhaustion_reversal"
+    pattern_id = "trend_exhaustion_reversal"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         bars = snapshot.bars("H1")
@@ -270,7 +270,7 @@ class TrendExhaustionReversal:
         if new_high > old_high + 0.10 * av and recent_rsi < prior_rsi - 3 and last.close < previous.low:
             stop = max(b.high for b in recent) + 0.20 * av
             target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=target, atr_value=av, quality=62,
                          rationale="Higher high with weaker RSI and a close below the prior H1 low suggests bullish momentum exhaustion.",
                          evidence=("price made a higher high", "RSI momentum failed to confirm", "H1 close broke prior low"),
@@ -279,7 +279,7 @@ class TrendExhaustionReversal:
         if new_low < old_low - 0.10 * av and recent_rsi > prior_rsi + 3 and last.close > previous.high:
             stop = min(b.low for b in recent) - 0.20 * av
             target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=target, atr_value=av, quality=62,
                          rationale="Lower low with stronger RSI and a close above the prior H1 high suggests bearish momentum exhaustion.",
                          evidence=("price made a lower low", "RSI momentum failed to confirm", "H1 close broke prior high"),
@@ -289,7 +289,7 @@ class TrendExhaustionReversal:
 
 
 class EventDrivenGoldBreakout:
-    strategy_id = "event_driven_gold_breakout"
+    pattern_id = "event_driven_gold_breakout"
 
     def evaluate(self, snapshot: MarketSnapshot) -> list[TradeIdea]:
         event = snapshot.event_window
@@ -304,7 +304,7 @@ class EventDrivenGoldBreakout:
         if last.close > event.pre_event_high + buffer and last.close > last.open:
             stop = event.pre_event_high - 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.LONG, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=target, atr_value=av, quality=63,
                          rationale=f"{event.name}: close-confirmed break above the verified pre-event range.",
                          evidence=("verified event window active", "pre-event high broken", "true range and close confirmation"))
@@ -312,7 +312,7 @@ class EventDrivenGoldBreakout:
         if last.close < event.pre_event_low - buffer and last.close < last.open:
             stop = event.pre_event_low + 0.15 * av
             target = _rr_target(snapshot.mid, stop, Direction.SHORT, 1.6)
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=target, atr_value=av, quality=63,
                          rationale=f"{event.name}: close-confirmed break below the verified pre-event range.",
                          evidence=("verified event window active", "pre-event low broken", "true range and close confirmation"))
@@ -326,7 +326,7 @@ class CandleRangeTheory:
     The first objective is the anchor candle's midpoint. The system will not
     force a target when that midpoint does not offer acceptable reward-to-risk.
     """
-    strategy_id = "crt"
+    pattern_id = "crt"
 
     def __init__(self, anchor_timeframe: str = "H1", sweep_atr_buffer: float = 0.05) -> None:
         if anchor_timeframe.upper() not in {"H1", "H4", "D1"}:
@@ -351,7 +351,7 @@ class CandleRangeTheory:
         if (last.low < anchor.low - buffer and last.close > anchor.low
                 and last.close > last.open and last.close > previous.high):
             stop = last.low - 0.15 * av
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.LONG,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.LONG,
                          stop=stop, target=midpoint, atr_value=av, quality=70,
                          rationale=f"{self.anchor_timeframe} CRT bullish sweep/reclaim with M5 bullish structure shift; midpoint is first objective.",
                          evidence=(f"completed {self.anchor_timeframe} anchor range", "sell-side sweep", "close reclaimed anchor low", "M5 close broke prior high"),
@@ -360,7 +360,7 @@ class CandleRangeTheory:
         if (last.high > anchor.high + buffer and last.close < anchor.high
                 and last.close < last.open and last.close < previous.low):
             stop = last.high + 0.15 * av
-            idea = _idea(snapshot, strategy_id=self.strategy_id, direction=Direction.SHORT,
+            idea = _idea(snapshot, strategy_id=self.pattern_id, direction=Direction.SHORT,
                          stop=stop, target=midpoint, atr_value=av, quality=70,
                          rationale=f"{self.anchor_timeframe} CRT bearish sweep/reclaim with M5 bearish structure shift; midpoint is first objective.",
                          evidence=(f"completed {self.anchor_timeframe} anchor range", "buy-side sweep", "close reclaimed anchor high", "M5 close broke prior low"),
