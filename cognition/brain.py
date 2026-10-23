@@ -181,7 +181,7 @@ class CognitiveBrain:
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
-        min_evidence_domains: int = 2,
+        min_evidence_domains: int = 3,
         degraded_confidence_multiplier: float = 0.7,
         degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
@@ -432,6 +432,7 @@ class CognitiveBrain:
                 independent = self._originate_independent(
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="no external advisor configured — native Brain-only decision",
+                    market_state=market_state,
                 )
                 if independent is not None:
                     return independent
@@ -447,6 +448,7 @@ class CognitiveBrain:
                 independent = self._originate_independent(
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="reasoner unavailable — provider down (not a market view)",
+                    market_state=market_state,
                 )
                 if independent is not None:
                     return independent
@@ -489,6 +491,7 @@ class CognitiveBrain:
                         symbol, consolidation, analysis, hypotheses,
                         reason_txt=("reasoner returned no usable opinion — provider "
                                     "failure / unparsable output (not a market view)"),
+                        market_state=market_state,
                     )
                     if independent is not None:
                         return independent
@@ -2158,34 +2161,74 @@ class CognitiveBrain:
     def _originate_independent(
         self, symbol: str, consolidation: dict,
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
-        *, reason_txt: str,
+        *, reason_txt: str, market_state: Optional[MarketState] = None,
     ) -> Optional[BrainOutput]:
         """Discover an opportunity from native analysis when no advisor is available.
 
-        Article X — APEX must be able to discover opportunities that were never
-        explicitly programmed, even when every LLM provider is down. When the
-        Brain's leading hypothesis is confident (>= threshold), directional and
-        the evidence uncertainty is acceptable, the Brain originates a campaign
-        WITHOUT any advisor, sized conservatively. Otherwise returns ``None`` and
-        the caller stands down (REASONER_UNAVAILABLE). Never raises.
+        Native-only reasoning can still discover opportunities during provider
+        failure, but discovery is not activation. Require sufficient independent
+        evidence domains, a multi-source activation pattern, fresh executable-cost
+        evidence, calibrated confidence, acceptable uncertainty, and positive net
+        EV. Never substitute a bare directional hypothesis for an opportunity.
         """
-        if analysis is None or not hypotheses:
+        if analysis is None or not hypotheses or market_state is None:
             return None
         try:
             lead = self._native.leading(hypotheses)
             if lead is None or not lead.is_directional:
                 return None
-            # V-001 — independent origination requires STRUCTURED EVIDENCE backing
-            # the leading hypothesis, not merely a directional implication. A
-            # directional hypothesis with no detected structural patterns is a
-            # bare direction, not a discovered opportunity, and must never open a
-            # campaign on its own when no advisor is available.
+
+            # Apply the same minimum evidence breadth to native fallback as to the
+            # advisor-assisted path. Reasoning evidence counts only when it is
+            # fresh; the analysis already operates on MarketState.fresh_evidence().
+            required_domains = max(3, int(self.min_evidence_domains))
+            if len(analysis.domain_coverage) < required_domains:
+                return None
+
+            # A pattern must describe a multi-dimensional activation event. Simple
+            # directional context (trend, momentum, one candle) may inform a
+            # hypothesis but cannot independently activate a native-only campaign.
+            activation_patterns = {
+                "displacement_confirmed",
+                "volume_confirmed_breakout",
+                "liquidity_sweep_absorbed",
+                "liquidity_sweep_with_momentum_exhaustion",
+                "liquidity_sweep_reclaimed",
+                "failed_breakout",
+                "fvg_liquidity_confluence",
+                "order_flow_at_structure",
+                "volatility_expansion_breakout",
+                "event_window_breakout",
+            }
+            supporting = {pattern_name(p) for p in lead.supporting_patterns}
+            if not supporting.intersection(activation_patterns):
+                return None
+
+            # A directional hypothesis without structured support remains
+            # observational, not execution authority.
             if not lead.supporting_patterns:
                 return None
             if lead.confidence < self._native.independent_min_confidence:
                 return None
             if analysis.evidence_uncertainty >= self._native.independent_max_uncertainty:
                 return None
+
+            # Native fallback may not invent a cost estimate. A current execution
+            # cost observation from the shared consolidator is mandatory; use its
+            # actual net round-trip estimate for EV rather than a constant default.
+            cost_evidence = [
+                item for item in market_state.fresh_evidence()
+                if getattr(item, "domain", None) == EvidenceDomain.EXECUTION_QUALITY
+                and isinstance(getattr(item, "measurements", None), dict)
+                and (
+                    "estimated_total_cost_r" in item.measurements
+                    or "estimated_spread_r" in item.measurements
+                    or "estimated_slippage_r" in item.measurements
+                )
+            ]
+            if not cost_evidence:
+                return None
+
             direction = lead.direction_implication
             uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
                 if consolidation else analysis.evidence_uncertainty
@@ -2194,7 +2237,7 @@ class CognitiveBrain:
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 _clamp01(lead.confidence), lead)
             reward_r, risk_r = self.reward_r_default, 1.0
-            cost_r = self.default_cost_r
+            cost_r = self._execution_cost_r(market_state)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
