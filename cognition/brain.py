@@ -2003,7 +2003,10 @@ class CognitiveBrain:
             n_fresh = int(consolidation.get("evidence_fresh", 0) or 0)
             if n_fresh <= 0:
                 return effective_confidence, "no fresh evidence to cross-check advisor against"
-            ev_mean = _clamp01(consolidation.get("mean_confidence", 0.0))
+            ev_mean = _clamp01(consolidation.get(
+                "market_mean_confidence",
+                consolidation.get("mean_confidence", 0.0),
+            ))
             ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
             gap = advisor_confidence - ev_mean
             # Advisor markedly more confident than the evidence's own mean.
