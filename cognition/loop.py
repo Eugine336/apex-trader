@@ -876,6 +876,46 @@ class CognitionLoop:
         self._event_reasons += made
         return made
 
+    def request_reason(
+        self,
+        symbol: str,
+        *,
+        reason: str = "explicit_market_observation",
+        now: Optional[float] = None,
+    ) -> bool:
+        """Queue one Brain read for an explicit, material market observation.
+
+        Unlike maybe_reason_on_change, this explicit request is not disabled
+        by the general event-driven toggle. The caller has already decided the
+        market observation changed materially (for example, a Gold price move
+        or a newly completed candle). Per-symbol throttling still applies, and
+        all reasoning runs on the CognitionLoop thread.
+        """
+        try:
+            sym = str(symbol or "").strip()
+            if not sym:
+                return False
+            current = self._clock() if now is None else float(now)
+            last = self._event_last_reason_at.get(sym)
+            if (
+                last is not None
+                and self.event_min_interval_seconds > 0.0
+                and current - last < self.event_min_interval_seconds
+            ):
+                self._event_throttled += 1
+                return False
+            self._event_last_reason_at[sym] = current
+            with self._pending_lock:
+                self._pending.add(sym)
+            self._wake.set()
+            logger.debug(
+                "[cognition-loop] queued explicit market observation for %s (%s)",
+                sym, str(reason or "explicit_market_observation")[:80],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — observation signals must never break the caller
+            logger.debug("[cognition-loop] request_reason(%s) failed: %s", symbol, exc)
+            return False
     def maybe_reason_on_change(
         self, symbol: str, change_magnitude: Any = None, *, now: Optional[float] = None,
     ) -> bool:
