@@ -241,6 +241,24 @@ class EvidenceConsolidator:
                     logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
                     failed_sources.append("price")
                     _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
+            # One unified Gold market-read evidence object. Pattern detectors
+            # do not choose a direction or compete for authority; the Brain
+            # interprets their factual observations alongside the actual chart.
+            if self._gold_market_source is not None:
+                attempted_sources += 1
+                try:
+                    payload = self._gold_market_source(ms.symbol)
+                    gold_evidence = evidence_from_gold_market(ms.symbol, payload)
+                    if gold_evidence:
+                        for e in gold_evidence:
+                            ms.add(e)
+                    else:
+                        _integrity("GOLD MARKET READ STALE OR UNAVAILABLE — verify broker feed")
+                        failed_sources.append("gold_market")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[consolidator] Gold market source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("gold_market")
+                    _integrity("GOLD MARKET READ UNAVAILABLE — verify broker feed")
             # Violation #2 — inter-candle structural interactions (a swept pool,
             # a filled FVG, a broken/tested level) observed on the live tick
             # stream since the last close. Added right after the chart so the
