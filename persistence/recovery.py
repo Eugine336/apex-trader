@@ -121,16 +121,22 @@ def find_confirmed_close_deals(
     exactly matches and an exit deal exists. It does not infer closure from an
     empty/failed history query and does not calculate P&L.
     """
-    wanted = {str(value).strip() for value in missing_from_broker if str(value).strip()}
+    def _normalise_position_id(value: Any) -> str:
+        try:
+            return str(int(value))
+        except (TypeError, ValueError, OverflowError):
+            return str(value or "").strip()
+
+    wanted = {
+        normalised for normalised in
+        (_normalise_position_id(value) for value in missing_from_broker)
+        if normalised
+    }
     confirmed: Dict[str, list[Dict[str, Any]]] = {}
     for raw in history_deals or []:
         if not isinstance(raw, dict):
             continue
-        raw_id = raw.get("position_id")
-        try:
-            position_id = str(int(raw_id))
-        except (TypeError, ValueError, OverflowError):
-            position_id = str(raw_id or "").strip()
+        position_id = _normalise_position_id(raw.get("position_id"))
         if not position_id or position_id not in wanted:
             continue
         try:
