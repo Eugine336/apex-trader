@@ -645,9 +645,28 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
             if not isinstance(facts, (list, tuple)):
                 facts = []
             clean_facts = [str(fact).strip()[:240] for fact in facts[:8] if str(fact).strip()]
+            raw_measurements = item.get("measurements", {})
+            if not isinstance(raw_measurements, dict):
+                raw_measurements = {}
+            clean_measurements: dict[str, Any] = {}
+            for key, value in list(raw_measurements.items())[:24]:
+                key_name = str(key).strip()[:80]
+                if not key_name or key_name.lower() in {
+                    "direction", "entry", "stop", "target", "quality_score",
+                    "reward_to_risk", "position_size", "risk_budget_pct",
+                }:
+                    continue
+                if isinstance(value, bool):
+                    clean_measurements[key_name] = value
+                elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+                    clean_measurements[key_name] = float(value)
+                elif isinstance(value, str):
+                    clean_measurements[key_name] = value[:240]
             clean_patterns.append({
                 "family": family,
                 "facts": clean_facts,
+                "measurements": clean_measurements,
+                "timeframe": str(item.get("timeframe", "") or "")[:12],
                 "source_bar_time": str(item.get("source_bar_time", "") or "")[:40],
             })
             if family not in family_names:
