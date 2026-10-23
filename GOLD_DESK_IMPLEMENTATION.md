@@ -137,15 +137,14 @@ live orders. Before enabling live trading:
 
 ## Environment file and credential hygiene
 
-The repository must not track runtime `.env` files. This branch removes the
-previously tracked `.env`, adds a sanitized `.env.example`, and tests that
-secret-like variables in the example remain blank. On a local checkout, back up
-any existing runtime `.env` before pulling, then recreate it from the template
-and enter credentials locally. Never copy credentials into the template or commit
-the runtime file.
+`.env` was restored on this branch exactly from `main` at the user's explicit
+instruction and is not to be edited again. The contents and blob SHA were verified
+to match `main`. The separate `.env.example` remains a sanitized template and the
+secret-template regression test checks that no credential-like values are placed
+there. The restored `.env` remains tracked, so credentials inside it may be visible
+to repository readers. This document does not change or rewrite that file.
 
-The former tracked file contained a non-empty Deriv access token and an inline
-Modal inference key. Revoke/rotate those credentials in their provider consoles,
-and rotate any other credential that may have been used while this history was
-public. Deleting the current file does not erase prior Git history. This security
-cleanup applies to all of Apex, not only Gold Desk.
+Any active credentials that may have been exposed should be rotated in their
+provider consoles independently of `.env` edits. `.gitignore` rules do not untrack
+an already tracked file. Future secret-management cleanup must be coordinated as a
+separate decision; it must not mutate `.env` against the user's instruction.
