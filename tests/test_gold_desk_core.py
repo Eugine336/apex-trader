@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cognition.evidence_adapters import evidence_from_gold_market
-from cognition.loop import EvidenceConsolidator
+from cognition.loop import CognitionLoop, EvidenceConsolidator
 from gold_desk.apex_observer import ApexGoldDeskShadowObserver, _frame_to_closed_candles
 from gold_desk.indicators import atr
 from gold_desk.models import Candle, MarketSnapshot, PatternObservation, Venue
@@ -237,6 +237,7 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
             )]
 
     bus = FakeBus()
+    wake_requests = []
     observer = ApexGoldDeskShadowObserver(
         symbols=["XAUUSD"],
         venue="MT5",
@@ -247,6 +248,7 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
         market_open=lambda _symbol: True,
         pattern_detectors=[OneObservationDetector()],
     )
+    observer.set_evidence_change_callback(wake_requests.append)
     observer._selected_symbols = {"XAUUSD"}
     observer._bars = {
         ("XAUUSD", "M5"): snapshot.bars("M5"),
@@ -272,6 +274,30 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
     for forbidden in ("direction", "entry", "stop", "target", "quality_score"):
         assert forbidden not in payload
         assert forbidden not in observation
+    assert wake_requests == ["XAUUSD"]
+
+
+
+def test_cognition_loop_can_wake_on_material_market_change_even_without_global_event_mode():
+    clock_now = [100.0]
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: ["XAUUSD"],
+        event_driven=False,
+        event_min_interval_seconds=8.0,
+        clock=lambda: clock_now[0],
+    )
+    assert loop.event_driven is False
+    assert loop.request_reason("XAUUSD", reason="gold_market_evidence_changed", now=100.0) is True
+    assert "XAUUSD" in loop._pending
+    assert loop._wake.is_set()
+
+    # The per-symbol debounce prevents a fast quote feed from forcing a reasoner
+    # call on every small market update.
+    assert loop.request_reason("XAUUSD", reason="small_repeat", now=101.0) is False
+    assert loop.request_reason("XAUUSD", reason="new_material_change", now=109.0) is True
+
 
 
 def test_gold_observations_enter_existing_market_state_not_a_parallel_decider():
