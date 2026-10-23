@@ -219,25 +219,29 @@ def test_v10_evidence_with_no_horizon_expires_after_default():
 def _state_domains(n, *, symbol="XAUUSD"):
     domains = ("structure", "momentum", "liquidity", "volume")[:max(1, n)]
     ms = MarketState(symbol=symbol)
-    for index, dom in enumerate(domains):
-        measurements = {}
-        if index == 0:
-            measurements = {
-                "advisors_responded": 2,
-                "advisors_available": 2,
-                "advisors_total": 2,
-            }
+    for dom in domains:
         ms.add(Evidence(
             source_module=f"m_{dom}", domain=dom, symbol=symbol,
             observation="reading", confidence=0.9, uncertainty=0.1,
-            measurements=measurements, relevance_horizon_seconds=900.0,
+            relevance_horizon_seconds=900.0,
         ))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="verified test council coverage",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
     return ms
 
 
 def test_v12_brain_declines_when_too_few_domains():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=2)
+                           min_evidence_domains=3)
     out = brain.reason(_state_domains(1))
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert "insufficient evidence coverage" in out.decision.risk_rationale
@@ -247,7 +251,7 @@ def test_v12_brain_declines_when_too_few_domains():
 
 def test_v12_brain_acts_with_adequate_domains():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=2)
+                           min_evidence_domains=3)
     out = brain.reason(_state_domains(2))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.questions_answered.get("evidence_coverage", "").startswith("ADEQUATE")
