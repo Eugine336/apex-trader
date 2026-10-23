@@ -7,14 +7,13 @@ permitted to reason about the market. It consumes a consolidated
 :class:`~cognition.contracts.CampaignSpecification`. It never places orders and
 never reinterprets execution results; it reasons and decides, nothing else.
 
-It is backed by a reasoner (the LLM reasoner) but is decoupled from any specific
-provider: it only requires a duck-typed object exposing ``available`` and
-``reason(symbol, evidence, now=None)`` returning an opinion with ``direction``,
-``confidence``, ``rationale``, ``competing_hypotheses`` and
-``missing_information``. When no reasoner is available — or it errors, or the
-evidence is inadequate — the Brain lawfully defaults to **CONTINUE_OBSERVING**
-(Part IV Art 7: there is no obligation to trade; Part II Art 3: if the required
-questions cannot be answered with confidence, do not initiate a campaign).
+It may consult an optional advisor through a duck-typed
+``reason(symbol, evidence, now=None)`` interface. The Brain's native
+``BrainReasoner`` always analyses evidence, forms and challenges hypotheses,
+and can independently originate a campaign when a sufficiently strong,
+structured opportunity exists. An unavailable/missing AI advisor therefore does
+not stop market reasoning; when native evidence is not strong enough, the Brain
+stands down rather than inventing an opportunity (Part IV Art 7).
 
 Fail-safe: :meth:`reason` never raises; on any fault it returns a do-nothing
 decision. Pure standard library (no third-party imports) so it is natively
@@ -412,8 +411,22 @@ class CognitiveBrain:
             # surfaced as a market view (Part XVIII Art 5 / Q78/Q80): it is a
             # distinct REASONER_UNAVAILABLE state, not a FLAT/observe conclusion.
             if self._reasoner is None:
+                # AI is an optional advisor, not the source of truth. The native
+                # Brain has already analysed the market and challenged its own
+                # hypotheses above, so it may originate independently only when
+                # structured patterns, confidence, uncertainty and net EV pass
+                # the same conservative native-only thresholds used on provider
+                # outage. A missing advisor must not disable deterministic trading.
+                independent = self._originate_independent(
+                    symbol, consolidation, analysis, hypotheses,
+                    reason_txt="no external advisor configured — native Brain-only decision",
+                )
+                if independent is not None:
+                    return independent
                 return self._observe(
-                    symbol, "no reasoner configured — no obligation to trade", consolidation,
+                    symbol,
+                    "native Brain-only analysis did not find an action-qualified opportunity",
+                    consolidation,
                 )
             if not getattr(self._reasoner, "available", False):
                 # Article X — the Brain can still DISCOVER an opportunity from its
