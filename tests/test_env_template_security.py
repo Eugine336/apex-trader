@@ -1,5 +1,6 @@
 """Environment templates are shareable; runtime credentials are not."""
 
+import json
 from pathlib import Path
 import re
 
@@ -26,6 +27,29 @@ def test_secret_like_environment_values_are_blank_in_example():
         key, value = line.split("=", 1)
         if _SECRET_KEY.search(key.strip()):
             assert not value.strip(), f"{key.strip()} must not contain a committed credential"
+
+
+def test_model_roster_has_no_inline_credentials():
+    roster_lines = [
+        line.partition("=")[2].strip()
+        for line in EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line.startswith("LLM_EXTRA_MODELS=")
+    ]
+    assert len(roster_lines) == 1, "exactly one LLM_EXTRA_MODELS roster must be provided"
+    roster = json.loads(roster_lines[0])
+    assert isinstance(roster, list)
+    sensitive_fields = {
+        "api_key", "api-key", "token", "access_token", "secret", "password",
+        "client_secret", "authorization", "bearer_token",
+    }
+    for spec in roster:
+        assert isinstance(spec, dict), "provider roster entries must be objects"
+        for key, value in spec.items():
+            if key.strip().lower() in sensitive_fields:
+                assert not str(value or "").strip(), (
+                    f"provider {spec.get('name', spec.get('provider', 'unknown'))!r} "
+                    f"contains inline credential field {key!r}"
+                )
 
 
 def test_gitignore_ignores_runtime_environment_but_allows_example():
