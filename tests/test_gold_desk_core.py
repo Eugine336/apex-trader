@@ -299,6 +299,40 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
 
 
 
+
+def test_observer_feed_health_requires_fresh_open_quote_and_completed_m5_data():
+    now = datetime.now(timezone.utc)
+    observer = ApexGoldDeskShadowObserver(
+        symbols=["XAUUSD"],
+        venue="MT5",
+        tick_router=object(),
+        event_bus=object(),
+        candle_fetcher=lambda _symbol, _timeframe, _count: None,
+        venue_resolver=lambda _symbol: "MT5Connector",
+        market_open=lambda _symbol: True,
+    )
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
+
+    payload = _payload(observed_at=now)
+    observer._latest_market_evidence["XAUUSD"] = payload
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is True
+
+    stale = _payload(observed_at=now - timedelta(seconds=20))
+    observer._latest_market_evidence["XAUUSD"] = stale
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
+
+    closed = _payload(observed_at=now)
+    closed["market_open"] = False
+    observer._latest_market_evidence["XAUUSD"] = closed
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
+
+    bad_quote = _payload(observed_at=now)
+    bad_quote["quote"] = {"bid": 2001.0, "ask": 2000.0, "spread": -1.0}
+    observer._latest_market_evidence["XAUUSD"] = bad_quote
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
+
+
+
 def test_cognition_loop_can_wake_on_material_market_change_even_without_global_event_mode():
     clock_now = [100.0]
     loop = CognitionLoop(
