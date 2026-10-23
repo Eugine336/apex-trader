@@ -78,6 +78,29 @@ def test_identity_safe_configuration_defaults_require_authoritative_net_ev_and_b
     assert cfg.min_evidence_domains >= 3
 
 
+def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
+    frame = _m1_frame()
+    now = datetime.now(timezone.utc)
+    frame["time"] = pd.date_range(
+        end=now - timedelta(minutes=5),
+        periods=len(frame),
+        freq="min",
+    )
+    evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
+    assert evidence is not None
+    assert evidence.measurements["source_timestamp_known"] is True
+    assert evidence.timestamp_epoch < now.timestamp() - 4 * 60
+    assert evidence.is_fresh(now.timestamp()) is False
+
+
+def test_m1_price_action_with_unknown_source_time_is_explicitly_uncertain():
+    evidence = evidence_from_m1_candles("XAUUSD", _m1_frame(), provisional=True)
+    assert evidence is not None
+    assert evidence.measurements["source_timestamp_known"] is False
+    assert evidence.confidence == 0.25
+    assert evidence.uncertainty == 0.75
+
+
 def test_m1_rejection_patterns_become_neutral_provisional_evidence():
     frame = _m1_frame()
     measurements = detect_m1_price_action(frame)
