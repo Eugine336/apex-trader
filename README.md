@@ -156,11 +156,10 @@ cd apex-trader
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure (runtime credentials stay local and are ignored by Git)
-cp .env.example .env
-# Fill broker/provider credentials in .env on your machine only
-# Never commit .env. Credentials committed in the past must be revoked/rotated;
-# deleting a secret from the current file does not erase Git history.
+# Runtime configuration note
+# `.env` is currently tracked and restored exactly from `main` per operator instruction.
+# Do not edit `.env` through this migration. `.env.example` is a separate sanitized template.
+# Because tracked files are visible to repository readers, rotate exposed active credentials separately.
 
 # Run headless
 python main.py
@@ -206,6 +205,7 @@ The effective values depend on config.py plus environment overrides. Review runt
 | `COGNITION_GATE_MODE` | Default `authoritative`: stale/missing cognition cannot silently authorize a legacy exposure-increasing route |
 | `COGNITION_EV_PRIMARY_GATE` | Default `true`: requires positive net expected value after estimated costs, not only confidence |
 | `COGNITION_MIN_EVIDENCE_DOMAINS` | Default `3`: requires multi-domain evidence before advisor-assisted origination |
+| `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes can wake native cognition once per second per symbol; provider calls have separate throttles |
 | `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes may wake native cognition once per second per symbol; provider calls have separate throttles |
 | `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
 | `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled; verify its effective runtime value before relying on it |
