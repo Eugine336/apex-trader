@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -671,12 +672,16 @@ class CognitiveBrain:
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
-        # Violation V9 — subtract the round-trip execution cost (spread/slippage,
-        # in R) so a theoretical thesis that cannot clear its cost is declined at
-        # the EV gate (Part XXIV/XXV). Sourced from fresh EXECUTION_QUALITY
-        # evidence when present, else the configured default.
-        cost_r = self._execution_cost_r(market_state)
+        # Net EV includes the best available cost estimate. The configured
+        # default remains diagnostic only; it cannot substitute for verified,
+        # fresh execution-cost evidence when the Brain authorizes a campaign.
+        cost_verified, cost_r, cost_source = self._execution_cost_estimate(market_state)
         expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
+        questions_cost_verification = (
+            f"VERIFIED: {cost_source} = {cost_r:.4f}R"
+            if cost_verified else
+            f"UNVERIFIED: no fresh valid execution cost; diagnostic default {cost_r:.4f}R"
+        )
         hypotheses = self._build_hypotheses(
             direction, eff_conf, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
@@ -801,8 +806,8 @@ class CognitiveBrain:
                 "UNCONFIRMED: no council metadata — quorum cannot be verified "
                 f"(required: {self.min_advisors_for_action}); treated as degraded cognition"
             )
-        # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
-        # consolidation omits the count (a hand-built consolidation dict).
+        # Article XXXIV — minimum evidence-domain coverage. Missing, malformed or
+        # stale metadata is not adequate evidence coverage.
         raw_domain_count = consolidation.get("domain_count")
         try:
             domain_count = int(raw_domain_count) if raw_domain_count is not None else None
@@ -826,6 +831,7 @@ class CognitiveBrain:
                 f"INSUFFICIENT: {domain_count} domains present, "
                 f"minimum {self.min_evidence_domains} required"
             )
+        questions["execution_cost_verification"] = questions_cost_verification
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
         # Article IX — the Brain's OWN leading-hypothesis invalidation leads the
@@ -898,6 +904,7 @@ class CognitiveBrain:
             and ev_ok
             and quorum_ok
             and domain_ok
+            and cost_verified
             and has_actionable_opportunity
         )
         if not act:
@@ -986,6 +993,16 @@ class CognitiveBrain:
                 do_nothing_txt = (
                     "evaluated: doing nothing is correct — evidence coverage is "
                     f"insufficient or unconfirmed ({coverage_status})"
+                )
+            elif directional_and_qualified and ev_ok and not cost_verified:
+                reason_txt = (
+                    "execution costs are unverified — configured defaults are "
+                    "diagnostic only and cannot authorize new exposure"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no fresh valid spread/"
+                    "slippage or total-cost evidence is available"
                 )
             elif (directional_and_qualified and not ev_ok) or (
                 self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
@@ -1901,36 +1918,63 @@ class CognitiveBrain:
         limiting = min(dims, key=dims.get)
         return dims, eff, limiting
 
-    def _execution_cost_r(self, market_state: MarketState) -> float:
-        """Round-trip execution cost in R for the Brain's EV (Violation V9).
+    @staticmethod
+    def _cost_value(value: Any) -> Optional[float]:
+        """Parse a non-negative finite execution cost measured in R."""
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
-        Reads the freshest EXECUTION_QUALITY evidence's ``estimated_total_cost_r``
-        measurement (emitted by the consolidator's execution-cost source) so the
-        strategic EV is net of spread/slippage — a theoretical thesis that cannot
-        clear its cost is correctly declined at the EV gate. Falls back to
-        ``self.default_cost_r`` when no execution-quality evidence is present.
-        Never raises.
+    def _execution_cost_estimate(
+        self, market_state: MarketState,
+    ) -> tuple[bool, float, str]:
+        """Return (verified, round-trip cost R, source) from fresh broker-cost evidence.
+
+        A configured default is useful for diagnostic EV calculations only. It is
+        not a substitute for fresh execution-cost evidence when authorizing a new
+        campaign. Prefer an explicit total; otherwise combine verified spread and
+        slippage estimates. Costs above 1R remain above 1R (and normally make the
+        candidate non-executable) rather than being silently clipped.
         """
         try:
-            best: Optional[float] = None
-            for e in market_state.fresh_evidence():
-                if getattr(e, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
+            candidates: list[tuple[float, float, str]] = []
+            for item in market_state.fresh_evidence():
+                if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
                     continue
-                m = getattr(e, "measurements", None)
-                if not isinstance(m, dict):
+                measurements = getattr(item, "measurements", None)
+                if not isinstance(measurements, dict):
                     continue
-                if "estimated_total_cost_r" in m:
-                    best = _clamp01(m.get("estimated_total_cost_r"))
-                elif "estimated_spread_r" in m or "estimated_slippage_r" in m:
-                    best = _clamp01(
-                        _clamp01(m.get("estimated_spread_r"))
-                        + _clamp01(m.get("estimated_slippage_r"))
-                    )
-            if best is not None:
-                return best
+                timestamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+
+                total = self._cost_value(measurements.get("estimated_total_cost_r"))
+                if total is not None:
+                    candidates.append((timestamp, total, "estimated_total_cost_r"))
+                    continue
+
+                spread = self._cost_value(measurements.get("estimated_spread_r"))
+                slippage = self._cost_value(measurements.get("estimated_slippage_r"))
+                if spread is not None or slippage is not None:
+                    candidates.append((
+                        timestamp,
+                        (spread or 0.0) + (slippage or 0.0),
+                        "estimated_spread_r + estimated_slippage_r",
+                    ))
+            if candidates:
+                _, cost, source = max(candidates, key=lambda item: item[0])
+                return True, cost, source
         except Exception:  # noqa: BLE001 — cost estimation must never break reasoning
             pass
-        return self.default_cost_r
+        return False, max(0.0, float(self.default_cost_r)), "configured default (not verified)"
+
+    def _execution_cost_r(self, market_state: MarketState) -> float:
+        """Return the best current cost estimate, for diagnostics and EV only."""
+        return self._execution_cost_estimate(market_state)[1]
+
+    def _has_current_execution_cost_evidence(self, market_state: MarketState) -> bool:
+        """True only when a fresh, finite, non-negative cost measurement exists."""
+        return self._execution_cost_estimate(market_state)[0]
 
     def _synthesize_from_evidence(
         self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
@@ -2229,17 +2273,8 @@ class CognitiveBrain:
             # Native fallback may not invent a cost estimate. A current execution
             # cost observation from the shared consolidator is mandatory; use its
             # actual net round-trip estimate for EV rather than a constant default.
-            cost_evidence = [
-                item for item in market_state.fresh_evidence()
-                if getattr(item, "domain", None) == EvidenceDomain.EXECUTION_QUALITY
-                and isinstance(getattr(item, "measurements", None), dict)
-                and (
-                    "estimated_total_cost_r" in item.measurements
-                    or "estimated_spread_r" in item.measurements
-                    or "estimated_slippage_r" in item.measurements
-                )
-            ]
-            if not cost_evidence:
+            cost_verified, _, _ = self._execution_cost_estimate(market_state)
+            if not cost_verified:
                 return None
 
             direction = lead.direction_implication
