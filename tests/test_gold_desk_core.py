@@ -14,8 +14,8 @@ from gold_desk.strategies import CandleRangeTheory, Strategy, default_strategies
 def _snapshot(symbol: str = "XAUUSD") -> MarketSnapshot:
     now = datetime.now(timezone.utc)
     bars = []
-    for i in range(20):
-        close_time = now - timedelta(minutes=5 * (20 - i))
+    for i in range(24):
+        close_time = now - timedelta(minutes=5 * (24 - i))
         if i == 19:
             bars.append(Candle(close_time, open=2088.0, high=2105.0, low=2075.0, close=2080.0, volume=100))
         elif i == 18:
