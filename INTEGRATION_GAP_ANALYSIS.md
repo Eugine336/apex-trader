@@ -1,5 +1,8 @@
 # Apex Trader — Event-Driven Integration Gap Analysis
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — the findings below describe a prior integration snapshot. The target is now explicitly a market-aware, strategy-adaptive intelligence with one CognitiveBrain. Consult docs/APEX_IDENTITY.md and docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md before treating a listed pathway as live, retired, or fixed.
+
 **Audit Date:** 2026-06-18
 **Scope:** Full code read of `TradingLoop` (8,535 lines, 49+ subsystems) vs `EventDrivenSystem` (828 lines, 8 components)
 **Method:** Raw code execution path tracing — no README/docs trusted
