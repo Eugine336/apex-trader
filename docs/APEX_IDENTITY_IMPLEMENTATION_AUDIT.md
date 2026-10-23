@@ -6,7 +6,7 @@
 
 ## Executive status
 
-The identity is canonical in source and documentation in this branch. The shared cognition snapshot now includes universal completed-bar OHLC observations and contextual M1 patterns when data is available. That does **not** mean the full identity is implemented. Existing code already has strong pieces (one CognitiveBrain, evidence consolidation, event-driven nudges, MTF chart/tick snapshots, competing native hypotheses, campaign memory, portfolio context and risk/execution gates), but these pieces do not yet prove a complete market-aware trader.
+The identity is canonical in source and documentation in this branch. The shared cognition snapshot now includes universal completed-bar OHLC observations and contextual M1 patterns when data is available. The focused workflow has passed on Python 3.11 and 3.12 (113 tests per version, compilation and scoped lint). A repository-wide Ruff run is green; the full suite now completes collection but still has numerous failures in legacy-contract, environment/dependency, and test-fixture areas. That does **not** mean the full identity is implemented. Existing code already has strong pieces (one CognitiveBrain, evidence consolidation, event-driven nudges, MTF chart/tick snapshots, competing native hypotheses, campaign memory, portfolio context and risk/execution gates), but these pieces do not yet prove a complete market-aware trader.
 
 ## Findings from actual source inspection
 
@@ -24,7 +24,7 @@ The identity is canonical in source and documentation in this branch. The shared
 | Portfolio | Whole-cycle opportunity comparison, campaign registry and exposure context exist | Need prove new positions, reversals, scales and reallocation all use same whole-book truth and cost-aware EV | Whole-book scenario tests plus broker-truth reconciliation |
 | Learning | Outcome memory, influence/calibration and pattern tracking exist | Samples, censoring, costs and strategy attribution must be validated; learning cannot promote itself into authority | Out-of-sample replay, calibration metrics and governed promotion/rollback |
 | Docs and operations | Constitution, rollout runbook, audit registers and README exist | Prior docs contain conflicting statuses and outdated fixed-pipeline claims | Every contradictory claim corrected or clearly marked historical/superseded; runtime map kept current |
-| Production readiness | Focused tests for recent Gold changes have passed historically | Repository-wide CI has existing lint and test-collection problems; no fresh full pass or complete demo evidence | Green full CI, fresh demo cycle, broker/execution validation, roll-forward and rollback proof |
+| Production readiness | Latest focused workflow passed on Python 3.11 and 3.12 (113 tests each); repository-wide Ruff lint passed; the full suite now collects but has numerous failures in stale/retired contracts, dependency compatibility, environment expectations and fixture/runtime mismatches | No full-suite green run, no end-to-end broker-demo evidence, and unresolved legacy/direct/pending order paths and risk wiring remain | Green full CI, fresh demo cycle, broker/execution validation, roll-forward and rollback proof |
 
 ## Core architecture target
 
