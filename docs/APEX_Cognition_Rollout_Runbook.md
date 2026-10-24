@@ -1,13 +1,10 @@
-# APEX — Cognition Controlled-Rollout Runbook
+# APEX — Cognition and Identity Rollout Runbook
 
-> Constitution Parts XII (Observability) & XIII (Validation). Companion to
-> `docs/APEX_Constitution_Implementation_Plan.md` (Phase L).
+> Companion to the binding identity in docs/APEX_IDENTITY.md and the current source-backed gates in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
 
-This runbook governs how the AI Cognitive Brain is promoted from observation to
-sole decision authority **safely and reversibly**, per symbol group, with a
-one-switch rollback. It is the discipline that lets the remaining Phase K work
-(coupled-core decomposition + legacy-decider physical deletion) happen only
-*after* the Brain-driven path is proven on the demo.
+Apex's identity is market-aware reasoning, not merely flipping a configuration flag to route orders through a Brain. Promotion requires proof that the full market state reaches the Brain, the Brain can form and criticize relevant hypotheses, opportunities are qualified net of costs, all exposure paths share risk controls, positions are re-evaluated, and outcomes are measured.
+
+The repository has previously used shadow, veto and authoritative gate modes plus a separate origination switch. These controls describe runtime routing only; they do not certify market-data completeness, provider availability, strategy quality, expected profitability or demo readiness. Provider failures and stale evidence must remain visible, not be misreported as a market no-opportunity result.
 
 ## The single control: `COGNITION_GATE_MODE`
 

@@ -25,6 +25,7 @@ from persistence import domain_events as DE
 from persistence.event_store import get_event_store
 
 if TYPE_CHECKING:  # type hints only — not needed (and not imported) at runtime
+    from platforms.platform_manager import PlatformManager
     from execution.action_executor import ActionExecutor
     from execution.intent_aggregator import IntentAggregator
     from execution.management_scheduler import ManagementScheduler

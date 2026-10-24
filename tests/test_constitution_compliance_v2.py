@@ -67,7 +67,7 @@ class _Reasoner:
 
 
 def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
-                         extra_domains=("structure", "momentum")):
+                         extra_domains=("structure", "momentum", "liquidity")):
     """A MarketState carrying reasoning Evidence with council-coverage counts
     plus enough distinct domains to clear the minimum-coverage gate."""
     ms = MarketState(symbol=symbol)
@@ -85,6 +85,13 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
             "advisors_total": total,
         },
         relevance_horizon_seconds=600.0,
+    ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol, observation="fresh test execution-cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
     ))
     return ms
 
@@ -112,14 +119,43 @@ def test_v3_brain_acts_when_two_advisors_responded():
     assert out.decision.questions_answered.get("advisor_quorum", "").startswith("MET")
 
 
-def test_v3_quorum_unenforced_without_council_metadata():
-    # No reasoning Evidence carrying counts ⇒ gate not enforced (backward compat).
+def test_v3_brain_declines_when_council_metadata_is_missing():
+    # Missing council metadata must fail closed instead of pretending quorum passed.
     ms = MarketState(symbol="XAUUSD")
-    for dom in ("structure", "momentum"):
+    for dom in ("structure", "momentum", "liquidity"):
         ms.add(Evidence(source_module=f"m_{dom}", domain=dom, confidence=0.9,
                         uncertainty=0.1, relevance_horizon_seconds=900.0))
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8))).reason(ms)
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        min_advisors_for_action=1,
+        min_evidence_domains=2,
+    ).reason(ms)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "quorum not met or unconfirmed" in out.decision.risk_rationale
+    assert out.decision.questions_answered["advisor_quorum"].startswith("UNCONFIRMED")
+
+
+def test_v3_brain_declines_when_evidence_domain_count_is_missing():
+    ms = _state_with_advisors(2, 2, 2, extra_domains=("structure", "momentum", "liquidity"))
+    base_consolidation = ms.consolidation
+
+    def omit_domain_count(now=None):
+        result = base_consolidation(now)
+        result.pop("domain_count", None)
+        result.pop("market_domain_count", None)
+        return result
+
+    ms.consolidation = omit_domain_count
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        min_advisors_for_action=2,
+        min_evidence_domains=2,
+    ).reason(ms)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "coverage" in out.decision.risk_rationale
+    assert out.decision.questions_answered["evidence_coverage"].startswith("UNCONFIRMED")
 
 
 # ── V4 — degraded-mode enforcement (V-013: partial council attenuates) ──────
@@ -192,15 +228,35 @@ def _state_domains(n, *, symbol="XAUUSD"):
     domains = ("structure", "momentum", "liquidity", "volume")[:max(1, n)]
     ms = MarketState(symbol=symbol)
     for dom in domains:
-        ms.add(Evidence(source_module=f"m_{dom}", domain=dom, symbol=symbol,
-                        observation="reading", confidence=0.9, uncertainty=0.1,
-                        relevance_horizon_seconds=900.0))
+        ms.add(Evidence(
+            source_module=f"m_{dom}", domain=dom, symbol=symbol,
+            observation="reading", confidence=0.9, uncertainty=0.1,
+            relevance_horizon_seconds=900.0,
+        ))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="verified test council coverage",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol, observation="fresh test execution-cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
 def test_v12_brain_declines_when_too_few_domains():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=2)
+                           min_evidence_domains=3)
     out = brain.reason(_state_domains(1))
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert "insufficient evidence coverage" in out.decision.risk_rationale
@@ -210,8 +266,8 @@ def test_v12_brain_declines_when_too_few_domains():
 
 def test_v12_brain_acts_with_adequate_domains():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=2)
-    out = brain.reason(_state_domains(2))
+                           min_evidence_domains=3)
+    out = brain.reason(_state_domains(3))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.questions_answered.get("evidence_coverage", "").startswith("ADEQUATE")
 

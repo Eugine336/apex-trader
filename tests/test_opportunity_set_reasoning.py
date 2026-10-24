@@ -99,13 +99,33 @@ def _confident_state(symbol="ETHUSD", polarity=0.8):
                     uncertainty=0.1, polarity=polarity))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
                     uncertainty=0.1, polarity=polarity))
+    ms.add(Evidence(source_module="s3", domain="liquidity", confidence=0.85,
+                    uncertainty=0.15, polarity=0.0))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council", domain="reasoning",
+        symbol=symbol, observation="verified test council coverage",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
+    ms.add(Evidence(
+        source_module="execution.test_cost", domain="execution_quality",
+        symbol=symbol, observation="measured test round-trip execution cost",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=300.0,
+    ))
     return ms
 
 
 def _brain(reply):
     return CognitiveBrain(
         reasoner=_PassThroughReasoner(reply),
-        min_confidence_to_act=0.5, min_advisors_for_action=0, min_evidence_domains=0,
+        min_confidence_to_act=0.5,
     )
 
 

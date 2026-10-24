@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
 from cognition.pattern_rules import detect_patterns, pattern_name
+from cognition.strategy_knowledge import assess_strategy_lenses
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -88,16 +89,24 @@ class EvidenceAnalysis:
     # Overall uncertainty from the evidence alone.
     evidence_uncertainty: float = 1.0
 
+    # Context-sensitive analytical lenses. These are not trade signals.
+    strategy_lenses: list[dict] = field(default_factory=list)
+
     def summary(self) -> str:
         cov = ", ".join(f"{k} {v:.2f}" for k, v in sorted(self.domain_coverage.items()))
         pats = "; ".join(pattern_name(p) for p in self.detected_patterns) or "none"
         regime = self.regime_indicators
         structure = str(regime.get("structure", "") or "none")
         order_flow = str(regime.get("order_flow", "") or "balanced")
+        lens_names = [
+            str(item.get("name", "")) for item in self.strategy_lenses
+            if isinstance(item, dict) and item.get("status") in ("relevant", "watch")
+        ][:5]
+        lens_text = ", ".join(lens_names) or "none assessable"
         return (
             f"{len(self.domain_coverage)} domains ({cov or 'none'}); "
             f"patterns: {pats}; structure {structure}, order flow {order_flow}; "
-            f"agreement {self.agreement_score:.2f}; "
+            f"lenses: {lens_text}; agreement {self.agreement_score:.2f}; "
             f"uncertainty {self.evidence_uncertainty:.2f}"
         )
 
@@ -112,6 +121,7 @@ class EvidenceAnalysis:
             "regime_indicators": dict(self.regime_indicators),
             "missing_information": list(self.missing_information),
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
+            "strategy_lenses": [dict(item) for item in self.strategy_lenses],
         }
 
 
@@ -152,16 +162,20 @@ class BrainHypothesis:
 
 # Patterns that, if present, argue AGAINST a directional continuation thesis.
 _CONTRA_PATTERNS = frozenset({
-    "momentum_divergence", "multi_tf_conflict", "liquidity_sweep_absorbed",
-    "liquidity_sweep_with_momentum_exhaustion", "volatility_compression",
-    "statistical_displacement", "execution_degraded", "portfolio_concentrated",
+    "momentum_divergence", "trend_exhaustion", "multi_tf_conflict",
+    "liquidity_sweep_absorbed", "liquidity_sweep_reclaimed",
+    "liquidity_sweep_with_momentum_exhaustion", "failed_breakout",
+    "volatility_compression", "range_rotation", "statistical_displacement",
+    "execution_degraded", "portfolio_concentrated",
 })
 
 # Patterns that reinforce a directional continuation thesis.
 _CONTINUATION_PATTERNS = frozenset({
     "displacement_confirmed", "volume_confirmed_breakout", "structural_break",
-    "momentum_acceleration", "order_flow_at_structure", "multi_tf_aligned",
-    "fvg_liquidity_confluence", "order_flow_imbalance",
+    "momentum_acceleration", "trend_following_context",
+    "volatility_expansion_breakout", "event_window_breakout",
+    "order_flow_at_structure", "multi_tf_aligned", "fvg_liquidity_confluence",
+    "order_flow_imbalance",
 })
 
 
@@ -209,6 +223,7 @@ class BrainReasoner:
         contradictions = self._contradictions(fresh, names, regime)
         missing = self._missing(domain_coverage)
         agreement = self._agreement(names, contradictions, regime)
+        strategy_lenses = assess_strategy_lenses(fresh, names, regime)
 
         ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", None)) \
             if consolidation.get("aggregate_uncertainty", None) is not None \
@@ -225,6 +240,7 @@ class BrainReasoner:
             regime_indicators=regime,
             missing_information=missing,
             evidence_uncertainty=ev_unc,
+            strategy_lenses=strategy_lenses,
         )
 
     def _classify_regime(self, fresh: "list[Evidence]", names: "list[str]") -> dict:
@@ -236,6 +252,51 @@ class BrainReasoner:
         vlt = in_domain(fresh, EvidenceDomain.VOLATILITY)
         flow = in_domain(fresh, EvidenceDomain.ORDER_FLOW)
         liq = in_domain(fresh, EvidenceDomain.LIQUIDITY)
+        m1_records: list[dict] = []
+        for item in fresh:
+            measurements = getattr(item, "measurements", {})
+            if isinstance(measurements, dict) and measurements.get("source_kind") == "m1_price_action":
+                m1_records.append(measurements)
+        m1_tags: list[str] = []
+        m1_bullish: list[str] = []
+        m1_bearish: list[str] = []
+        for item in m1_records:
+            for key, dest in (("pattern_tags", m1_tags),
+                              ("bullish_patterns", m1_bullish),
+                              ("bearish_patterns", m1_bearish)):
+                values = item.get(key, [])
+                if isinstance(values, (list, tuple, set)):
+                    dest.extend(str(value) for value in values if value)
+        m1_price_action = {
+            "pattern_tags": list(dict.fromkeys(m1_tags)),
+            "bullish_patterns": list(dict.fromkeys(m1_bullish)),
+            "bearish_patterns": list(dict.fromkeys(m1_bearish)),
+            "near_range_boundary": any(bool(item.get("near_range_boundary")) for item in m1_records),
+            "provisional": any(bool(item.get("provisional")) for item in m1_records),
+        }
+        # Keep each timeframe's directional structure observation separate. The
+        # aggregate here reports only whether a repeated trend context exists;
+        # it does not choose a LONG/SHORT market bias.
+        trend_states: dict[str, str] = {}
+        ranged_timeframes: set[str] = set()
+        for item in struct:
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict) or measurements.get("source_kind") != "market_lens":
+                continue
+            tf = str(measurements.get("timeframe", "") or "")
+            state = str(measurements.get("trend_state", "") or "").lower()
+            if tf and state in {"uptrend", "downtrend"}:
+                trend_states[tf] = state
+            if tf and bool(measurements.get("range_rotation")):
+                ranged_timeframes.add(tf)
+        up_n = sum(value == "uptrend" for value in trend_states.values())
+        down_n = sum(value == "downtrend" for value in trend_states.values())
+        if len(trend_states) >= 2 and max(up_n, down_n) / len(trend_states) >= 0.67:
+            trend_context = "uptrend" if up_n > down_n else "downtrend"
+        elif len(ranged_timeframes) >= 2:
+            trend_context = "range"
+        else:
+            trend_context = "mixed"
 
         # Volatility regime.
         if "volatility_compression" in names or state_is(vlt, "volatility_state", "compressing", "contracting"):
@@ -304,6 +365,10 @@ class BrainReasoner:
             # mean-reversion counter-thesis from its signed z-score.
             "statistical_zscore": numeric(mom, "rolling_zscore_30"),
             "ema_spread_atr": numeric(mom, "ema_spread_atr"),
+            "trend_context": trend_context,
+            "trend_timeframes": len(trend_states),
+            "range_timeframes": len(ranged_timeframes),
+            "m1_price_action": m1_price_action,
         }
 
     @staticmethod
@@ -372,8 +437,11 @@ class BrainReasoner:
             against = [n for n in names if n in _CONTRA_PATTERNS]
 
             # 1) Displacement / continuation thesis.
-            if "displacement_confirmed" in names or "volume_confirmed_breakout" in names \
-                    or "structural_break" in names or "momentum_acceleration" in names:
+            if ("displacement_confirmed" in names or "volume_confirmed_breakout" in names
+                    or "structural_break" in names or "momentum_acceleration" in names
+                    or "trend_following_context" in names
+                    or "volatility_expansion_breakout" in names
+                    or "event_window_breakout" in names):
                 direction = self._continuation_direction(regime)
                 hyps.append(self._make(
                     statement=(
@@ -389,7 +457,10 @@ class BrainReasoner:
                 ))
 
             # 2) Liquidity-sweep reversal thesis.
-            if "liquidity_sweep_absorbed" in names or "liquidity_sweep_with_momentum_exhaustion" in names:
+            if any(name in names for name in (
+                "liquidity_sweep_absorbed", "liquidity_sweep_with_momentum_exhaustion",
+                "liquidity_sweep_reclaimed", "failed_breakout",
+            )):
                 side = regime.get("liquidity_sweep_side")
                 if side == "sell":
                     direction = LONG
@@ -407,12 +478,67 @@ class BrainReasoner:
                         "the move was a liquidity grab, not genuine directional flow, so price "
                         "may reverse."),
                     support=[n for n in names if n in (
-                        "liquidity_sweep_absorbed", "liquidity_sweep_with_momentum_exhaustion")],
-                    against=[n for n in names if n in ("displacement_confirmed", "momentum_acceleration")],
+                        "liquidity_sweep_absorbed", "liquidity_sweep_with_momentum_exhaustion",
+                        "liquidity_sweep_reclaimed", "failed_breakout")],
+                    against=[n for n in names if n in (
+                        "displacement_confirmed", "volume_confirmed_breakout",
+                        "momentum_acceleration", "trend_following_context")],
                     analysis=analysis,
                     direction=direction,
                     invalidation="Fresh flow breaks decisively beyond the swept level",
                     opportunity=f"{direction} reversal off the sweep" if direction in (LONG, SHORT) else "reversal",
+                ))
+
+            # Trend exhaustion is a competing, context-dependent hypothesis.
+            # It is never a command to fade strong price discovery merely because
+            # one momentum reading weakened.
+            if "trend_exhaustion" in names or "momentum_divergence" in names:
+                structure_state = str(regime.get("structure", "") or "").upper()
+                if structure_state in (LONG, SHORT):
+                    direction = SHORT if structure_state == LONG else LONG
+                else:
+                    flow_state = str(regime.get("order_flow", "") or "")
+                    direction = SHORT if flow_state == "buying" else (
+                        LONG if flow_state == "selling" else FLAT
+                    )
+                hyps.append(self._make(
+                    statement=(
+                        f"Price/momentum evidence on {symbol} suggests the current "
+                        "move may be losing participation. Exhaustion is one explanation; "
+                        "continued price discovery remains a competing explanation."
+                    ),
+                    support=[name for name in names if name in ("trend_exhaustion", "momentum_divergence")],
+                    against=[name for name in names if name in (
+                        "displacement_confirmed", "volume_confirmed_breakout",
+                        "momentum_acceleration", "trend_following_context",
+                    )],
+                    analysis=analysis,
+                    direction=direction,
+                    invalidation="Momentum re-accelerates and completed price closes extend beyond the current structural extreme",
+                    opportunity=(
+                        f"{direction} exhaustion/reversal hypothesis requiring a confirmed structural response"
+                        if direction in (LONG, SHORT) else "exhaustion hypothesis with direction unresolved"
+                    ),
+                ))
+
+            # A range is a market state, not an instruction to trade. The Brain
+            # may separately consider range-edge reactions when they are present.
+            if "range_rotation" in names:
+                hyps.append(self._make(
+                    statement=(
+                        f"Multiple completed timeframes on {symbol} are rotating inside "
+                        "recent ranges while volatility contracts; a range-edge reaction "
+                        "and a genuine breakout are both possible."
+                    ),
+                    support=["range_rotation"],
+                    against=[name for name in names if name in (
+                        "volatility_expansion_breakout", "event_window_breakout",
+                        "volume_confirmed_breakout",
+                    )],
+                    analysis=analysis,
+                    direction=FLAT,
+                    invalidation="A completed candle accepts beyond the range with sustained expansion",
+                    opportunity="monitor both range-edge reactions and conditional breakout alternatives",
                 ))
 
             # 3) Statistical displacement / mean-reversion hypothesis.
@@ -458,6 +584,40 @@ class BrainReasoner:
                     direction=direction,
                     invalidation="The structural level fails and flow reverses through it",
                     opportunity=f"{direction} reaction at structure" if direction in (LONG, SHORT) else "reaction",
+                ))
+
+            # M1 price-action is contextual evidence, not a universal trigger.
+            # Only consider a native hypothesis when an observed pattern is at a
+            # measured local boundary; forming candles remain explicitly provisional.
+            if "m1_price_action_at_boundary" in names:
+                m1 = regime.get("m1_price_action", {})
+                bullish_patterns = list(m1.get("bullish_patterns", []) or [])
+                bearish_patterns = list(m1.get("bearish_patterns", []) or [])
+                if bullish_patterns and not bearish_patterns:
+                    direction = LONG
+                elif bearish_patterns and not bullish_patterns:
+                    direction = SHORT
+                else:
+                    direction = FLAT
+                provisional_note = " The latest M1 read is provisional." if m1.get("provisional") else ""
+                hyps.append(self._make(
+                    statement=(
+                        f"M1 price action near a measured local range boundary on {symbol}: "
+                        f"observations={', '.join(m1.get('pattern_tags', []) or [])}. "
+                        "This is a contextual microstructure hypothesis, not an entry instruction."
+                        + provisional_note
+                    ),
+                    support=["m1_price_action_at_boundary"],
+                    against=[name for name in names if name in (
+                        "structural_break", "multi_tf_conflict", "momentum_divergence",
+                    )],
+                    analysis=analysis,
+                    direction=direction,
+                    invalidation="Price accepts beyond the observed local boundary or subsequent evidence rejects the candle interpretation",
+                    opportunity=(
+                        f"{direction} M1 reaction hypothesis requiring broader market confirmation"
+                        if direction in (LONG, SHORT) else "mixed M1 reaction; await clarifying evidence"
+                    ),
                 ))
 
             # 4) Consolidation / no-edge thesis (when nothing exploitable was found).

@@ -11,11 +11,13 @@ system without disturbing the hot path:
   fail-safe view — it never triggers analysis or touches execution.
 * :class:`CognitionLoop` — a background daemon (never the tick loop) that, per
   symbol, consolidates evidence → asks the Brain to reason → records the
-  resulting DecisionPackage/CampaignSpecification. Runs in **shadow mode** by
-  default: it produces and surfaces decisions for observability without driving
-  execution, so the legacy path stays authoritative until the cutover is
-  validated (Part XIII/XV). ``latest()`` exposes the Brain's read for the
-  eventual execution bridge.
+  resulting DecisionPackage/CampaignSpecification. Its constructor is safely
+  shadow-by-default, while production `CognitionConfig` explicitly supplies the
+  effective gate, origination and management modes. A mode flag is routing
+  configuration, not proof of readiness: new campaigns still require structured
+  activated opportunities, fresh multi-domain evidence, net EV, book-wide
+  portfolio review and shared execution/risk admission. ``latest()`` exposes the
+  Brain's read for observability and governed consumers.
 * :class:`BrainActionBridge` — turns notable Brain decisions into governed
   Composio objectives (Part IX: AI creates objectives → governance authorises →
   Composio executes). Ecosystem actions only; never broker orders.
@@ -542,7 +544,9 @@ class CognitionLoop:
         # hands it to the wired sink for execution. Default shadow (safe).
         m2 = str(management_mode or "shadow").strip().lower()
         self.management_mode = m2 if m2 in ("off", "shadow", "live") else "shadow"
-        self._management_sink: Optional[Callable[[Any, Any], None]] = None
+        # A sink may return False to report an explicit safety/identity
+        # suppression; None remains accepted for legacy void-return callbacks.
+        self._management_sink: Optional[Callable[[Any, Any], Optional[bool]]] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -573,6 +577,7 @@ class CognitionLoop:
         self._event_throttled = 0
         self._manage_intended = 0
         self._manage_submitted = 0
+        self._manage_suppressed = 0
         # Part XVIII Art 13 — management follows evidence, not clocks. A per-
         # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
         # from re-managing the same campaign on every micro-event, while the
@@ -618,7 +623,9 @@ class CognitionLoop:
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
 
-    def set_management_sink(self, sink: Optional[Callable[[Any, Any], None]]) -> None:
+    def set_management_sink(
+        self, sink: Optional[Callable[[Any, Any], Optional[bool]]],
+    ) -> None:
         """Wire the live management-execution sink.
 
         Called with ``(ManagementAction, PositionView)``; the owner resolves the
@@ -726,9 +733,8 @@ class CognitionLoop:
         # Articles XXVII / XXVIII — reason across the WHOLE book at once before
         # originating: rank this cycle's opportunities by EV and enforce
         # correlated-concentration / total-exposure limits, demoting the
-        # lower-EV opportunities. Only then originate the survivors. Fail-safe:
-        # a brain without ``reason_portfolio`` (or a fault) leaves the per-symbol
-        # outputs untouched.
+        # lower-EV opportunities. Missing/faulting portfolio cognition or unknown
+        # live exposure must not silently authorize new campaigns.
         portfolio_outputs = self._reason_portfolio(cycle_outputs)
         if self.origination_mode != "off":
             for output in portfolio_outputs:
@@ -737,24 +743,101 @@ class CognitionLoop:
         self._maybe_author_operations(now=now)
         return made
 
-    def _reason_portfolio(self, cycle_outputs: list) -> list:
-        """Filter this cycle's outputs through the Brain's book-wide reasoning.
+    @staticmethod
+    def _is_open_campaign_candidate(output: Any) -> bool:
+        """True only for a new exposure-increasing Brain campaign candidate."""
+        try:
+            decision = getattr(output, "decision", None)
+            campaign = getattr(output, "campaign", None)
+            dtype = getattr(getattr(decision, "decision_type", None), "value",
+                            getattr(decision, "decision_type", None))
+            return campaign is not None and str(dtype or "").lower() == "open_campaign"
+        except Exception:  # noqa: BLE001 — classification must never authorize a trade
+            return False
 
-        Fail-safe: returns the inputs unchanged when the brain has no
-        ``reason_portfolio`` method or the call faults."""
+    @staticmethod
+    def _demote_unreviewed_campaign(output: Any, reason: str) -> None:
+        """Turn a candidate into an auditable observe result when book review fails."""
+        try:
+            decision = getattr(output, "decision", None)
+            if decision is not None:
+                decision.decision_type = DecisionType.CONTINUE_OBSERVING
+                decision.campaign_recommendation = "observe"
+                decision.risk_rationale = reason
+                questions = getattr(decision, "questions_answered", None)
+                if isinstance(questions, dict):
+                    questions["portfolio_decision"] = reason
+            if hasattr(output, "campaign"):
+                output.campaign = None
+            if hasattr(output, "direction"):
+                output.direction = "FLAT"
+        except Exception as exc:  # noqa: BLE001 — fallback must not authorize exposure
+            logger.error("[cognition-loop] could not demote an unreviewed campaign: %s", exc)
+
+    def _reason_portfolio(self, cycle_outputs: list) -> list:
+        """Filter outputs through book-wide reasoning before new exposure.
+
+        Existing positions must be known and the Brain must complete its portfolio
+        pass before any OPEN_CAMPAIGN can reach the origination sink. On missing
+        authority, missing book data, or an exception, all new campaign candidates
+        are demoted to CONTINUE_OBSERVING. Risk-reducing management uses its own
+        separate path and is not blocked by this admission check.
+        """
         if not cycle_outputs:
             return cycle_outputs
+
+        candidates = [
+            output for output in cycle_outputs
+            if self._is_open_campaign_candidate(output)
+        ]
+        if not candidates:
+            return cycle_outputs
+
         fn = getattr(self._brain, "reason_portfolio", None)
         if not callable(fn):
+            reason = "portfolio reasoning unavailable — new campaign suppressed"
+            for output in candidates:
+                self._demote_unreviewed_campaign(output, reason)
+            logger.warning("[cognition-loop] %s", reason)
             return cycle_outputs
+
+        if self._position_source is None:
+            reason = "live position book unavailable — cannot qualify portfolio exposure"
+            for output in candidates:
+                self._demote_unreviewed_campaign(output, reason)
+            logger.warning("[cognition-loop] %s", reason)
+            return cycle_outputs
+
         try:
-            existing = []
-            if self._position_source is not None:
-                existing = list(self._position_source() or [])
+            existing = list(self._position_source() or [])
             result = fn(list(cycle_outputs), existing)
-            return list(result) if result is not None else cycle_outputs
-        except Exception as exc:  # noqa: BLE001 — portfolio reasoning must never break the loop
-            logger.debug("[cognition-loop] reason_portfolio fault: %s", exc)
+            if result is None:
+                raise RuntimeError("Brain portfolio review returned no result")
+            result_items = list(result)
+            source_by_id = {id(item): item for item in cycle_outputs}
+            reviewed = [
+                item for item in result_items if id(item) in source_by_id
+            ]
+            reviewed_ids = {id(item) for item in reviewed}
+            for output in candidates:
+                if id(output) not in reviewed_ids:
+                    self._demote_unreviewed_campaign(
+                        output, "portfolio review omitted campaign — exposure suppressed",
+                    )
+            # Do not originate a replacement/cloned candidate that was not an
+            # input to the audited portfolio pass. Only reviewed original objects
+            # may progress to execution admission.
+            for item in result_items:
+                if id(item) not in source_by_id and self._is_open_campaign_candidate(item):
+                    self._demote_unreviewed_campaign(
+                        item, "portfolio review returned an untracked candidate — exposure suppressed",
+                    )
+            return reviewed
+        except Exception as exc:  # noqa: BLE001 — a failed book review cannot authorize a trade
+            reason = f"portfolio review failed ({type(exc).__name__}) — new campaign suppressed"
+            for output in candidates:
+                self._demote_unreviewed_campaign(output, reason)
+            logger.error("[cognition-loop] %s: %s", reason, exc)
             return cycle_outputs
 
     def _select_cycle_batch(self, symbols: list) -> list:
@@ -881,10 +964,13 @@ class CognitionLoop:
             pass
         output = self._reason_over_symbol(symbol, now=now)
         made = 1 if output is not None else 0
-        # Event-driven origination happens per symbol (no cycle-wide book to rank
-        # against); portfolio-level reasoning is a periodic-cycle concern.
+        # Event-driven origination still requires a current book-wide exposure
+        # review. It reviews this fresh candidate against the live book immediately
+        # rather than bypassing the portfolio layer until the periodic cycle.
         if output is not None and self.origination_mode != "off":
-            self._maybe_originate(output, now=now)
+            reviewed = self._reason_portfolio([output])
+            for candidate in reviewed:
+                self._maybe_originate(candidate, now=now)
         self._decisions += made
         self._event_reasons += made
         return made
@@ -1505,7 +1591,15 @@ class CognitionLoop:
                 return  # HOLD / observe — nothing to do
             self._manage_intended += 1
             if self.management_mode == "live" and self._management_sink is not None:
-                self._management_sink(action, position)
+                sink_result = self._management_sink(action, position)
+                if sink_result is False:
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
+                        "execution sink rejected the action",
+                        action.symbol, action.kind, action.direction,
+                    )
+                    return
                 self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
@@ -1596,6 +1690,7 @@ class CognitionLoop:
             "management_sink_wired": self._management_sink is not None,
             "manage_intended": self._manage_intended,
             "manage_submitted": self._manage_submitted,
+            "manage_suppressed": self._manage_suppressed,
             "campaign_registry_wired": self._campaigns is not None,
             "live_campaigns": (
                 len(self._campaigns.live_campaigns())

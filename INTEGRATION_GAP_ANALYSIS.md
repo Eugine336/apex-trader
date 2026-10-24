@@ -1,5 +1,8 @@
 # Apex Trader — Event-Driven Integration Gap Analysis
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — the findings below describe a prior integration snapshot. The target is now explicitly a market-aware, strategy-adaptive intelligence with one CognitiveBrain. Consult docs/APEX_IDENTITY.md and docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md before treating a listed pathway as live, retired, or fixed.
+
 **Audit Date:** 2026-06-18
 **Scope:** Full code read of `TradingLoop` (8,535 lines, 49+ subsystems) vs `EventDrivenSystem` (828 lines, 8 components)
 **Method:** Raw code execution path tracing — no README/docs trusted
@@ -313,17 +316,17 @@ Meanwhile, `LiveState.attach(trading_loop, platform_manager, connection_status)`
 
 | # | Fix | What | Files |
 |---|-----|------|-------|
-| **P4.1** | Wire DecisionEngine for entries | Before placing an order, run `DecisionEngine.decide_entry()` for strategic conviction scoring. Currently ED fires on any zone touch + M1 confirm with no strategic gate. | `event_driven_bootstrap.py` |
-| **P4.2** | Wire Orchestrator for sizing | Replace the simple `PositionSizer` call with the Orchestrator round table — multi-dimensional evidence → graded size multiplier. Currently every entry gets flat sizing. | `event_driven_bootstrap.py` |
-| **P4.3** | Wire EntryEngine for ATR SL/TP | The ED entry path uses zone-based SL/TP from WorldModel. EntryEngine's ATR-based SL/TP calculation produces better risk-adjusted levels. Wire it in parallel and take the tighter of the two. | `event_driven_bootstrap.py` or `entry/entry_orchestrator.py` |
-| **P4.4** | Wire session/news callbacks | Replace stub `is_session_active` and `is_news_clear` callbacks with actual `SessionEngine` and `NewsGuard` calls. | `event_driven_bootstrap.py` |
+| **P4.1 (superseded)** | Verify the single CognitiveBrain authority | Do not re-wire the legacy DecisionEngine or zone+M1 gate as a second strategy authority. Trace every exposure-increasing path to the Brain-originated campaign contract and shared executor; report unverified paths. | event-driven bootstrap, cognition loop, CognitiveBrain |
+| **P4.2 (redesign)** | Verify one execution-feasibility and risk path | The Brain supplies thesis/opportunity/expected value; execution validates quote, broker geometry, size and portfolio/account risk. Do not insert an Orchestrator voting round table or additive strategy score. | ActionExecutor, risk path, event-driven bootstrap |
+| **P4.3 (redesign)** | Reconcile target/stop geometry with the thesis | Use one governed path to translate thesis invalidation and risk constraints to broker-valid protection. Do not run parallel SL/TP calculators and take the tighter result without validating the resulting geometry. | event-driven bootstrap, execution and risk modules |
+| **P4.4 (redesign)** | Feed session/news context into cognition | Wire verified session and news observations into evidence with source time and uncertainty; retain market-closed, news-policy and broker-safety controls as explicit constraints. | event-driven bootstrap, session/news evidence adapters |
 
 ### Priority 5: MANAGEMENT QUALITY — Fix Within 1 Session
 
 | # | Fix | What | Files |
 |---|-----|------|-------|
-| **P5.1** | Wire DecisionEngine for open positions | On each eval cycle, run `DecisionEngine.decide_management()` per position for strategic HOLD/CLOSE/TIGHTEN/SCALE_IN verdicts that override tick-level checks. | `event_driven_bootstrap.py` |
-| **P5.2** | Wire Execution Profiles | Select per-trade execution parameter vectors based on context (horizon × regime × consensus). | `event_driven_bootstrap.py` |
+| **P5.1 (superseded)** | Verify Brain-led campaign management | Do not revive DecisionEngine as another strategic authority. Confirm the open campaign is re-evaluated by CognitiveBrain; deterministic broker/risk protections may only constrain or de-risk it. | cognition, execution and event-driven bootstrap |
+| **P5.2 (bounded)** | Use execution profiles only as execution context | Execution parameter profiles may inform slippage/latency feasibility, but must not become a strategy selector, consensus vote or alternative direction source. | event-driven bootstrap, execution modules |
 
 ### Priority 6: OPS SAFETY — Fix Within 1 Session
 

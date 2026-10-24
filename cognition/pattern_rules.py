@@ -298,6 +298,172 @@ def rule_order_flow_imbalance(evidence: "list[Evidence]") -> Optional[str]:
     return None
 
 
+def rule_liquidity_sweep_reclaimed(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect a measured sweep/reclaim without pretending absorption was proven."""
+    liq = in_domain(evidence, EvidenceDomain.LIQUIDITY)
+    for item in liq:
+        measurements = _measurements(item)
+        if not bool(measurements.get("sweep")):
+            continue
+        if str(measurements.get("reclaimed_boundary", "") or "").strip():
+            return (
+                "liquidity_sweep_reclaimed: price swept a measured range boundary and "
+                "closed back inside it; possible reversal context, not confirmed absorption"
+            )
+        if obs_has([item], "closed back inside", "swept and reclaimed", "closed back above", "closed back below"):
+            return (
+                "liquidity_sweep_reclaimed: price swept a measured range boundary and "
+                "closed back inside it; possible reversal context, not confirmed absorption"
+            )
+    return None
+
+
+def rule_failed_breakout(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect failed acceptance/rejection beyond a boundary."""
+    struct = in_domain(evidence, EvidenceDomain.STRUCTURE)
+    liq = in_domain(evidence, EvidenceDomain.LIQUIDITY)
+    combined = struct + liq
+    if (has_flag(combined, "failed_breakout")
+            or obs_has(combined, "failed breakout", "failed acceptance", "rejection beyond the range")):
+        return (
+            "failed_breakout: price attempted to escape a measured boundary but "
+            "returned inside; continuation and reversal remain competing hypotheses"
+        )
+    return None
+
+
+def rule_trend_following_context(evidence: "list[Evidence]") -> Optional[str]:
+    """Find a repeated trend context across independent confirmed timeframes."""
+    structural = in_domain(evidence, EvidenceDomain.STRUCTURE)
+    readings: dict[str, str] = {}
+    for item in structural:
+        measurements = _measurements(item)
+        if measurements.get("source_kind") != "market_lens":
+            continue
+        timeframe = str(measurements.get("timeframe", "") or "")
+        state = str(measurements.get("trend_state", "") or "").lower()
+        if timeframe and state in {"uptrend", "downtrend"}:
+            readings[timeframe] = state
+    if len(readings) < 2:
+        return None
+    up = sum(state == "uptrend" for state in readings.values())
+    down = sum(state == "downtrend" for state in readings.values())
+    majority = max(up, down)
+    if majority >= 2 and majority / len(readings) >= 0.67:
+        state = "uptrend" if up > down else "downtrend"
+        return (
+            f"trend_following_context: {state} conditions appear in multiple "
+            "completed timeframes; continuation remains conditional on fresh structure"
+        )
+    return None
+
+
+def rule_range_rotation(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect repeated in-range conditions without turning them into a trade."""
+    structural = in_domain(evidence, EvidenceDomain.STRUCTURE)
+    ranged = {
+        str(_measurements(item).get("timeframe", "") or "")
+        for item in structural
+        if _measurements(item).get("source_kind") == "market_lens"
+        and bool(_measurements(item).get("range_rotation"))
+    }
+    volatility = in_domain(evidence, EvidenceDomain.VOLATILITY)
+    compressed = has_flag(volatility, "compression") or state_is(
+        volatility, "volatility_state", "compressing", "contracting",
+    )
+    if len({tf for tf in ranged if tf}) >= 2 and compressed:
+        return (
+            "range_rotation: multiple confirmed timeframes remain inside their "
+            "recent ranges while volatility contracts; await a justified boundary reaction or breakout"
+        )
+    return None
+
+
+def rule_volatility_expansion_breakout(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect completed structural escape with an expanding-range context."""
+    structural = in_domain(evidence, EvidenceDomain.STRUCTURE)
+    volatility = in_domain(evidence, EvidenceDomain.VOLATILITY)
+    escaped = any(
+        bool(_measurements(item).get("bos"))
+        and str(_measurements(item).get("source_kind", "")) == "market_lens"
+        for item in structural
+    )
+    expanded = has_flag(volatility, "expansion") or state_is(
+        volatility, "volatility_state", "expanding",
+    )
+    if escaped and expanded:
+        return (
+            "volatility_expansion_breakout: a completed candle escaped its prior "
+            "range while relative range expanded; test acceptance and execution costs"
+        )
+    return None
+
+
+def rule_trend_exhaustion(evidence: "list[Evidence]") -> Optional[str]:
+    """Find price/momentum non-confirmation or an explicit exhaustion observation."""
+    momentum = in_domain(evidence, EvidenceDomain.MOMENTUM)
+    structure = in_domain(evidence, EvidenceDomain.STRUCTURE)
+    if (has_flag(momentum, "divergence", "trend_exhaustion")
+            or obs_has(momentum, "momentum diverges", "trend exhaustion", "price/momentum non-confirmation")
+            or (
+                has_flag(momentum, "deceleration", "deceleration")
+                and has_flag(structure, "bos")
+                and not has_flag(momentum, "acceleration")
+            )):
+        return (
+            "trend_exhaustion: momentum is weakening or not confirming a structural "
+            "extreme; continuation and reversal are competing hypotheses"
+        )
+    return None
+
+
+def rule_event_window_breakout(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect a breakout from an adapter-verified event window."""
+    macro = in_domain(evidence, EvidenceDomain.MACRO)
+    if any(
+        _measurements(item).get("escaped_boundary")
+        and _measurements(item).get("event_name")
+        and str(_measurements(item).get("event_impact", "")).upper() in {"HIGH", "CRITICAL"}
+        for item in macro
+    ):
+        return (
+            "event_window_breakout: price escaped a verified high-impact event's "
+            "pre-event range; expansion may continue or fail after the release"
+        )
+    return None
+
+
+def rule_m1_price_action_at_boundary(evidence: "list[Evidence]") -> Optional[str]:
+    """Surface M1 patterns only when the observer reports local-boundary context.
+
+    The candle remains evidence, not a universal entry trigger. A forming bar may
+    repaint; that uncertainty is carried by the source measurements.
+    """
+    for item in evidence or []:
+        measurements = _measurements(item)
+        if measurements.get("source_kind") != "m1_price_action":
+            continue
+        if not measurements.get("near_range_boundary"):
+            continue
+        tags = measurements.get("pattern_tags", [])
+        if not isinstance(tags, (list, tuple, set)) or not tags:
+            continue
+        recognised = {
+            "engulfing", "pin_bar", "rejection_wick",
+            "inside_bar_breakout", "range_rejection", "volume_spike_at_boundary",
+        }
+        used = sorted({str(tag) for tag in tags if str(tag) in recognised})
+        if used:
+            state = "provisional" if measurements.get("provisional") else "observed"
+            return (
+                "m1_price_action_at_boundary: M1 price-action evidence ("
+                + ", ".join(used)
+                + f") is {state} near a measured local range boundary — contextual "
+                "evidence only; higher-context confirmation and invalidation remain necessary"
+            )
+    return None
+
+
 # Ordered registry of every rule (Article X). Extend by appending a new rule
 # function; the Brain iterates this list to build its detected-pattern set.
 _PATTERN_RULES: "list[Callable[[list[Evidence]], Optional[str]]]" = [
@@ -317,6 +483,14 @@ _PATTERN_RULES: "list[Callable[[list[Evidence]], Optional[str]]]" = [
     rule_execution_degraded,
     rule_portfolio_concentrated,
     rule_order_flow_imbalance,
+    rule_liquidity_sweep_reclaimed,
+    rule_failed_breakout,
+    rule_trend_following_context,
+    rule_range_rotation,
+    rule_volatility_expansion_breakout,
+    rule_trend_exhaustion,
+    rule_event_window_breakout,
+    rule_m1_price_action_at_boundary,
 ]
 
 

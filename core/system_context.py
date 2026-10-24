@@ -828,10 +828,11 @@ class SystemContext:
 
                 thesis_cfg = getattr(config, "thesis", None)
                 ctx.reversal_manager = _ReversalManager(
-                    enabled=bool(
-                        getattr(thesis_cfg, "atomic_reversal_enabled", True)
-                        if thesis_cfg is not None else True
-                    ),
+                    # Legacy atomic reversal can submit an opposite-side entry
+                    # without a first-class activated opportunity. Under Apex's
+                    # single-Brain identity it stays disabled; the close is
+                    # retained and a fresh entry must be reconsidered by the Brain.
+                    enabled=False,
                     min_thesis_ev=float(
                         getattr(thesis_cfg, "reversal_min_thesis_ev", 0.1)
                         if thesis_cfg is not None else 0.1

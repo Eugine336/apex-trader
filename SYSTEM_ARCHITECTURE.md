@@ -1,5 +1,8 @@
 # APEX TRADER — Multi-Tenant Integration & Instrument Intelligence
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — treat architecture diagrams and module-status claims below as a snapshot until refreshed against current runtime wiring. The whole-system identity is documented in docs/APEX_IDENTITY.md, and unresolved route/authority/testing questions are listed in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 This document records the line-by-line audit that backed the changes in this PR,
 what was implemented, and the precise remaining roadmap. Every claim carries a
 `file:line` anchor so the next engineer can verify against the raw code (not docs).

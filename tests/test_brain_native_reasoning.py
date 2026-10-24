@@ -73,6 +73,31 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
     )
 
 
+def _with_verified_council(ms, *, responded=2, available=2, total=2):
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain="execution_quality",
+        symbol=ms.symbol, observation="fresh test cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council",
+        domain="reasoning",
+        symbol=ms.symbol,
+        observation="test council coverage is explicitly known",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "advisors_responded": responded,
+            "advisors_available": available,
+            "advisors_total": total,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
+    return ms
+
+
 def _strong_long_state(symbol="EURUSD"):
     """A rich, low-uncertainty state whose evidence structurally leans LONG."""
     ms = MarketState(symbol=symbol)
@@ -82,7 +107,8 @@ def _strong_long_state(symbol="EURUSD"):
     ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8}))
     ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
     ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1}))
-    return ms
+    ms.add(_ev("execution_quality", {"estimated_total_cost_r": 0.05}))
+    return _with_verified_council(ms)
 
 
 # ── Article IX: the Brain forms its OWN hypotheses without any LLM ────────────
@@ -227,6 +253,8 @@ def test_flat_brain_defers_without_changing_confidence():
     ms = MarketState(symbol="EURUSD")
     ms.add(_ev("momentum", {}, conf=0.9))
     ms.add(_ev("structure", {}, conf=0.9))
+    ms.add(_ev("liquidity", {}, conf=0.9))
+    _with_verified_council(ms)
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.8)), reward_r_default=2.0)
     out = brain.reason(ms)
     synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
@@ -247,11 +275,43 @@ def test_brain_originates_natively_when_no_external_reasoner_is_configured():
     assert out.campaign is not None
     assert out.campaign.direction == LONG
     assert out.campaign.initial_execution_intent.get("independent_origination") is True
+    preferred = out.decision.preferred_opportunity
+    assert preferred is not None and preferred.is_actionable
+    assert preferred.is_preferred
+    assert out.decision.actionable_opportunities == [preferred]
+    assert out.campaign.opportunity_id == preferred.opportunity_id
+    assert out.campaign.opportunity_state == preferred.state.value
+    assert out.decision.supporting_evidence_ids
     assert "no external advisor configured" in out.decision.questions_answered["reasoner_state"]
     assert out.decision.questions_answered["reasoning_mode"] == "native_only"
     assert out.decision.questions_answered["external_advisor_status"] == "not_configured"
     assert brain.get_status()["independent_originations"] == 1
 
+
+
+def test_native_fallback_does_not_activate_from_simple_directional_context_alone():
+    ms = MarketState(symbol="EURUSD")
+    ms.add(_ev("structure", {"displacement": 150, "bos": True}, conf=0.95))
+    ms.add(_ev("volume", {"volume_z": 0.2}, conf=0.95))
+    ms.add(_ev("order_flow", {"delta": 0.8}, conf=0.95))
+    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}, conf=0.95))
+    ms.add(_ev("multi_timeframe", {"alignment": "aligned"}, conf=0.95))
+    ms.add(_ev("execution_quality", {"estimated_total_cost_r": 0.05}, conf=0.95))
+    out = CognitiveBrain(reasoner=None, reward_r_default=2.0).reason(ms)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+
+
+def test_native_fallback_stands_down_without_execution_cost_evidence():
+    state = _strong_long_state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "execution_quality"
+    ]
+    brain = CognitiveBrain(reasoner=None, reward_r_default=2.0)
+    out = brain.reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 
 def test_brain_originates_independently_when_advisor_unavailable():

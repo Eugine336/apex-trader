@@ -1,5 +1,8 @@
 # APEX TRADER — Full Data-Path Trace (READ-ONLY ANALYSIS)
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — this trace should be re-run after identity-led changes. Do not infer that a source reaches the CognitiveBrain or live executor merely because it appears in this document. Current target and closure evidence are defined in docs/APEX_IDENTITY.md and docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 **Scope:** Trace every field of `EntryContext` and `TradeContext` from the
 WorldModel (single source of truth) through the analysis/extraction helpers into
 the two decision planes (entry adjudication + in-trade management), for both the

@@ -1,4 +1,4 @@
-"""Hosted GPU inference clouds (Cloudflare Workers AI, GMI Cloud) — roster wiring.
+"""Hosted GPU inference clouds (Cloudflare Workers AI, GMI Cloud) — example roster wiring.
 
 These are Tier-2 (hosted open-source) providers that serve open models over
 OpenAI-compatible APIs, offloading the crash-prone local Tier-3 runtime. They
@@ -20,7 +20,7 @@ from llm.provider_credentials import (
 )
 from llm.provider_tiers import ProviderTier, resolve_tier
 
-_ENV = Path(__file__).resolve().parents[1] / ".env"
+_ENV = Path(__file__).resolve().parents[1] / ".env.example"
 _CF_TMPL = "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
 
 
@@ -55,12 +55,12 @@ def test_base_url_without_placeholder_is_unchanged():
     assert resolve_base_url("gmi", plain, env={}) == plain
 
 
-# ── Live .env roster invariant ──────────────────────────────────────────────
+# ── Safe .env.example roster invariant ──────────────────────────────────────
 
 def _roster():
     line = next((ln for ln in _ENV.read_text().split("\n")
                  if ln.startswith("LLM_EXTRA_MODELS=")), None)
-    assert line is not None, "LLM_EXTRA_MODELS must be present in .env"
+    assert line is not None, "LLM_EXTRA_MODELS must be present in .env.example"
     return {m.get("name"): m for m in json.loads(line.partition("=")[2]) if isinstance(m, dict)}
 
 
@@ -68,7 +68,7 @@ def test_env_ships_cloudflare_and_gmi_tier2_entries():
     roster = _roster()
     for name in ("cloudflare", "gmi"):
         spec = roster.get(name)
-        assert spec is not None, f"{name} must be in the .env roster"
+        assert spec is not None, f"{name} must be in the .env.example roster"
         assert int(resolve_tier(spec.get("provider"), spec.get("tier"))) == 2
         assert spec.get("classes"), f"{name} must declare compute classes"
         assert int(spec.get("context_window", 0)) > 0, f"{name} must declare a context_window"

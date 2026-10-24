@@ -306,11 +306,17 @@ class _OpenBrain:
         )
         return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
 
+    def reason_portfolio(self, outputs, existing_positions):
+        # The test double models a successful Brain book-review pass.
+        self.reviewed_book = list(existing_positions)
+        return list(outputs)
+
 
 def test_origination_shadow_records_intended_submits_nothing():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     st = loop.get_status()
@@ -324,6 +330,7 @@ def test_origination_live_calls_sink():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: submitted.append(intent))
     loop.run_once()
@@ -338,9 +345,60 @@ def test_origination_live_without_sink_degrades_to_shadow():
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     assert loop.get_status()["orig_intended"] == 1
+
+
+def test_origination_suppressed_when_portfolio_authority_is_missing():
+    class _NoPortfolioBrain:
+        def reason(self, market_state, now=None):
+            return _OpenBrain().reason(market_state, now=now)
+
+    loop = CognitionLoop(
+        _NoPortfolioBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    submitted = []
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    loop.run_once()
+    assert submitted == []
+    assert loop.get_status()["orig_submitted"] == 0
+    assert loop.get_status()["orig_intended"] == 0
+
+
+def test_event_driven_origination_runs_portfolio_review():
+    brain = _OpenBrain()
+    submitted = []
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    assert loop.reason_symbol_now("EURUSD") == 1
+    assert brain.reviewed_book == []
+    assert len(submitted) == 1
+
+
+def test_portfolio_review_fault_suppresses_new_campaign():
+    class _FaultingPortfolioBrain(_OpenBrain):
+        def reason_portfolio(self, outputs, existing_positions):
+            raise RuntimeError("book review unavailable")
+
+    submitted = []
+    loop = CognitionLoop(
+        _FaultingPortfolioBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    loop.run_once()
+    assert submitted == []
+    assert loop.get_status()["orig_submitted"] == 0
+    assert loop.get_status()["orig_intended"] == 0
 
 
 def test_origination_off_never_originates():
@@ -370,6 +428,7 @@ def test_origination_deduplicates_within_cycle():
         _OpenBrain(direction="LONG"), _StubConsolidator(),
         lambda: ["EURUSD", "EURUSD"],
         origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [],
     )
     loop.run_once()
     assert loop.get_status()["orig_intended"] == 1
@@ -427,7 +486,6 @@ def test_consolidator_injects_analogue_evidence_from_memory():
     from cognition.memory import fingerprint_from_market_state
 
     store = CampaignMemoryStore(db_path=":memory:")
-    fp = fingerprint_from_market_state(MarketState(symbol="EURUSD"))
     # Seed a completed winning LONG campaign with a momentum-heavy fingerprint.
     ms_seed = MarketState(symbol="EURUSD")
     ms_seed.add(Evidence(source_module="m", domain=EvidenceDomain.MOMENTUM,
@@ -625,6 +683,19 @@ def test_management_live_calls_sink():
     assert len(calls) == 1 and calls[0].kind == "close"
 
 
+def test_explicit_management_sink_suppression_is_not_counted_as_submitted():
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: False)
+    loop.run_once()
+    status = loop.get_status()
+    assert status["manage_intended"] == 1
+    assert status["manage_submitted"] == 0
+    assert status["manage_suppressed"] == 1
+
+
 def test_management_hold_is_noop():
     calls = []
     loop = CognitionLoop(
@@ -746,6 +817,7 @@ def test_origination_live_births_campaign():
     loop = CognitionLoop(
         _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", campaign_registry=reg,
+        position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: None)
     loop.run_once()

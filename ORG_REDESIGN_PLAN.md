@@ -1,5 +1,8 @@
 # APEX TRADER — Organizational Redesign: Department Map & Implementation Plan
 
+
+> **Identity migration status (2026-10-23):** Identity migration status — this plan's raw-code findings are important historical evidence, but should be revalidated against the current branch before a live-runtime claim. Apex's binding identity is docs/APEX_IDENTITY.md; the current evidence-backed implementation gaps and migration gates are tracked in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+
 > Source of truth: **raw code** at the current HEAD (read file-by-file, comments/READMEs ignored).
 > Goal: restructure the event-driven trading organism into 8 accountable departments where
 > **the intelligence layer decides — the system is market-driven, not zone-gated** — and the only
@@ -320,14 +323,19 @@ consumes it · **DEAD** = no live caller · **SUPPORT** = infra/plumbing (not a 
 - Fix V3 at the source — preserve per-module structure (no premature scalar collapse); keep `compute_bias` as one input among many, not the direction oracle.
 - **Files:** `brain/*` analysts, `brain/directional_consensus.py` (extractors), `brain/decision_core.py:build_consensus`, `scanner/candle_close_handler.py`.
 
-### Phase 4 — Consensus Division (the central shift: ACTIVE, market-driven trigger)
-**Why fifth:** this is the user's core requirement; safe to flip now that Execution + Compliance + Portfolio + structured Intelligence are ready.
-- Make Consensus emit a **thesis** (direction + conviction + structured support/oppose) every analysis cycle.
-- Add a consensus-driven trigger path so a sufficiently-convicted thesis **initiates an entry independent of any zone**; **demote Zone to one analyst** (remove the hard gate V1/V2: `tick_entry_detector.py:77-79`, `entry_gate.py:222-223`).
-- Unify `build_consensus` vs `decide()`/ranker into one authoritative engine; SL/TP from ATR (`trigger/entry_engine.calculate_stop_loss/targets`) when no zone; conviction from consensus, not `zone.conviction`.
-- Wire V18 inputs (regime/horizon/oq/eq/ev + DE config weights) into `EntryContext`/DecisionEngine; conviction threshold is the trigger — **no hardcoded frequency governor** (Learning tightens conviction organically via outcomes).
-- Keep the necessary vetoes only (delegated to ③ Compliance).
-- **Files:** `brain/directional_consensus.py`, `brain/decision_core.py`, `decision/situation.py`, `decision/engine.py`, `decision/context.py`, `entry/*` (orchestrator/tick_detector/gate), `event_driven_bootstrap.py:_on_entry_decision`, `core/system_context.py`.
+### Phase 4 — Historical consensus-trigger proposal (SUPERSEDED — DO NOT IMPLEMENT)
+
+This phase conflicts with Apex's binding identity. Consensus must not become a
+second direction authority, a vote, or an entry trigger. The target is one
+CognitiveBrain reasoning over raw, non-directional evidence and competing
+hypotheses; zones, SMC, M1 price action, volatility and order flow are analytical
+context only.
+
+- Do not add a consensus-driven order path or restore the legacy zone/M1 route as an alternative authority.
+- Audit every live, pending-order, scale-in, reversal and recovery route to prove it either carries a qualified Brain-originated opportunity or is a strictly risk-reducing/broker-reconciliation action.
+- Keep legacy consensus/rankers observational or retire them after call-graph, test and demo evidence proves no live consumer depends on them.
+- Replace the old EntryContext/DecisionEngine trigger with explicit opportunity activation, net-EV, source-freshness, portfolio and execution-risk qualification under the current identity audit.
+- Current acceptance source: docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md. This section remains only to explain why the earlier plan is superseded.
 
 ### Phase 5 — Operations Division (manage what the new trigger opens)
 - Wire scale-OUT (V13: add `PARTIAL_CLOSE` branch mirroring SCALE_IN).

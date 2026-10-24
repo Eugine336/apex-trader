@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -45,6 +46,8 @@ from cognition.contracts import (
     Opportunity,
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
+from cognition.pattern_rules import pattern_name
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -102,7 +105,7 @@ class BrainOutput:
     # working), and this property overlays the V-026 deprecation getter. Ruff's
     # F811 "redefinition" is expected and suppressed for exactly this recipe.
     @property
-    def direction(self) -> str:  # noqa: F811
+    def direction(self) -> Optional[str]:  # noqa: F811
         """DEPRECATED (V-026) — the collapsed top-level trade side.
 
         Kept for backward compatibility only; logs a deprecation notice on
@@ -117,9 +120,20 @@ class BrainOutput:
         # During dataclass ``__init__`` the class-level default resolves to the
         # ``property`` object itself when no ``direction=`` was passed; normalise
         # that (and ``None``) to FLAT so the stored value stays a plain string.
-        if value is None or isinstance(value, property):
+        if isinstance(value, property):
             value = FLAT
-        self._direction = str(value)
+        self._direction = None if value is None else str(value)
+
+    @property
+    def decision_type(self) -> str:
+        """Stable convenience field for dashboards and integrations."""
+        value = getattr(getattr(self.decision, "decision_type", None), "value", None)
+        return str(value or "unknown")
+
+    @property
+    def provider_unavailable(self) -> bool:
+        """True only for an infrastructure-unavailable decision, never a flat market."""
+        return self.decision_type == DecisionType.REASONER_UNAVAILABLE.value
 
     def decision_summary(self) -> str:
         """Human-readable decision framed in the constitutional vocabulary.
@@ -139,6 +153,7 @@ class BrainOutput:
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "decision_type": self.decision.decision_type.value,
+            "provider_unavailable": self.provider_unavailable,
             "decision_summary": self.decision_summary(),
             # Deprecated (V-026): retained for back-compat. Read the backing field
             # directly so serialisation does not self-trip the deprecation notice.
@@ -169,7 +184,7 @@ class CognitiveBrain:
         *,
         min_confidence_to_act: float = 0.55,
         max_uncertainty_to_act: float = 0.6,
-        ev_primary_gate: bool = False,
+        ev_primary_gate: bool = True,
         ev_action_threshold_r: float = 0.0,
         reasoner_name: str = "ai_brain",
         allow_scale_in: bool = False,
@@ -180,7 +195,7 @@ class CognitiveBrain:
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
-        min_evidence_domains: int = 2,
+        min_evidence_domains: int = 3,
         degraded_confidence_multiplier: float = 0.7,
         degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
@@ -193,19 +208,25 @@ class CognitiveBrain:
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
     ) -> None:
+        self.identity_statement = IDENTITY_STATEMENT
+        self.identity_version = IDENTITY_VERSION
+        logger.info(
+            "[apex-identity] version=%s statement=%s",
+            self.identity_version, self.identity_statement,
+        )
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
         self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
-        # V-01 (§I direction is a CONSEQUENCE of cognition; §VI Q13/Q16/Q17;
-        # §VIII FLAT = "no exploitable opportunity after EV/risk/execution", NOT
-        # "the indicators disagree"). When ``ev_primary_gate`` is on, a campaign
-        # opens on a positive EXPECTED VALUE (net of cost, over flat) rather than
-        # a raw confidence floor — so a genuine positive-expectancy opportunity is
-        # no longer vetoed merely because mixed evidence pulled confidence below a
-        # threshold (the forbidden "conflicting evidence ⇒ FLAT" shortcut).
-        # Confidence/uncertainty still feed the EV and the position sizing either
-        # way. Default False ⇒ the legacy confidence-floor gate is unchanged.
-        self.ev_primary_gate = bool(ev_primary_gate)
+        # Apex identity invariant: exposure is qualified by net expected value,
+        # not a raw confidence-floor shortcut. Keep the argument for constructor
+        # compatibility, but an explicit False cannot restore the legacy gate.
+        # Mixed evidence is analysed through competing hypotheses; it is not a
+        # reason to disable net-EV qualification.
+        if not bool(ev_primary_gate):
+            logger.warning(
+                "[apex-identity] ignoring ev_primary_gate=False; net-EV qualification is mandatory"
+            )
+        self.ev_primary_gate = True
         self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
@@ -219,11 +240,12 @@ class CognitiveBrain:
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
-        self.min_advisors_for_action = max(0, int(min_advisors_for_action))
+        self.min_advisors_for_action = max(1, int(min_advisors_for_action))
         # Article XXXIV — minimum evidence domains: "cannot determine whether an
-        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on too
-        # thin an evidence picture (fewer than this many domains present).
-        self.min_evidence_domains = max(0, int(min_evidence_domains))
+        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on a
+        # thin evidence picture. Three is an identity floor, even for callers that
+        # instantiate CognitiveBrain directly instead of using CognitionConfig.
+        self.min_evidence_domains = max(3, int(min_evidence_domains))
         # Article XXI / V-013 — degraded cognition must be recognised AND
         # enforced. When the council under-delivers (most available advisors did
         # not respond) the Brain attenuates its effective conviction by this
@@ -327,6 +349,11 @@ class CognitiveBrain:
         self._last_opportunities: dict[str, list[Opportunity]] = {}
         self._lock = threading.Lock()
 
+    @staticmethod
+    def identity_contract() -> dict[str, object]:
+        """Return Apex's canonical, machine-readable non-negotiable identity."""
+        return identity_contract()
+
     @property
     def available(self) -> bool:
         return bool(self._reasoner is not None
@@ -420,6 +447,7 @@ class CognitiveBrain:
                 independent = self._originate_independent(
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="no external advisor configured — native Brain-only decision",
+                    market_state=market_state,
                 )
                 if independent is not None:
                     return independent
@@ -435,6 +463,7 @@ class CognitiveBrain:
                 independent = self._originate_independent(
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="reasoner unavailable — provider down (not a market view)",
+                    market_state=market_state,
                 )
                 if independent is not None:
                     return independent
@@ -445,8 +474,24 @@ class CognitiveBrain:
                     analysis=analysis,
                     hypotheses=hypotheses,
                 )
+            # Give the adviser the Brain's current native analysis and its
+            # context-selected strategy lenses. They are analysis context, not
+            # votes; the Brain still synthesises, challenges and qualifies the
+            # resulting opportunity set.
+            advisor_payload = dict(self._evidence_payload(market_state, consolidation))
+            if analysis is not None:
+                native_analysis = analysis.to_dict()
+                native_analysis["strategy_lenses"] = [
+                    lens for lens in native_analysis.get("strategy_lenses", [])
+                    if isinstance(lens, dict) and lens.get("status") in ("relevant", "watch")
+                ][:8]
+                advisor_payload["native_analysis"] = native_analysis
+            if hypotheses:
+                advisor_payload["native_hypotheses"] = [
+                    item.to_dict() for item in hypotheses[:8]
+                ]
             opinion = self._reasoner.reason(
-                symbol, self._evidence_payload(market_state, consolidation), now=now,
+                symbol, advisor_payload, now=now,
             )
             if opinion is None:
                 # An AVAILABLE reasoner that yields no opinion did NOT form a
@@ -461,6 +506,7 @@ class CognitiveBrain:
                         symbol, consolidation, analysis, hypotheses,
                         reason_txt=("reasoner returned no usable opinion — provider "
                                     "failure / unparsable output (not a market view)"),
+                        market_state=market_state,
                     )
                     if independent is not None:
                         return independent
@@ -638,12 +684,16 @@ class CognitiveBrain:
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
-        # Violation V9 — subtract the round-trip execution cost (spread/slippage,
-        # in R) so a theoretical thesis that cannot clear its cost is declined at
-        # the EV gate (Part XXIV/XXV). Sourced from fresh EXECUTION_QUALITY
-        # evidence when present, else the configured default.
-        cost_r = self._execution_cost_r(market_state)
+        # Net EV includes the best available cost estimate. The configured
+        # default remains diagnostic only; it cannot substitute for verified,
+        # fresh execution-cost evidence when the Brain authorizes a campaign.
+        cost_verified, cost_r, cost_source = self._execution_cost_estimate(market_state)
         expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
+        questions_cost_verification = (
+            f"VERIFIED: {cost_source} = {cost_r:.4f}R"
+            if cost_verified else
+            f"UNVERIFIED: no fresh valid execution cost; diagnostic default {cost_r:.4f}R"
+        )
         hypotheses = self._build_hypotheses(
             direction, eff_conf, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
@@ -745,9 +795,11 @@ class CognitiveBrain:
         # of the council must have contributed. When NO council metadata is present
         # the quorum cannot be verified — this no longer passes SILENTLY: it is
         # recorded as UNCONFIRMED (and logged/attenuated as degraded above).
+        # Unknown advisor coverage is not a quorum. Missing metadata cannot
+        # silently grant an exposure-increasing action.
         quorum_ok = (
-            advisors_responded is None
-            or advisors_responded >= self.min_advisors_for_action
+            advisors_responded is not None
+            and advisors_responded >= self.min_advisors_for_action
         )
         if advisors_responded is not None:
             if quorum_ok:
@@ -766,21 +818,37 @@ class CognitiveBrain:
                 "UNCONFIRMED: no council metadata — quorum cannot be verified "
                 f"(required: {self.min_advisors_for_action}); treated as degraded cognition"
             )
-        # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
-        # consolidation omits the count (a hand-built consolidation dict).
-        domain_count = consolidation.get("domain_count")
-        domain_ok = (domain_count is None) or (int(domain_count) >= self.min_evidence_domains)
-        if domain_count is not None:
-            if domain_ok:
-                questions["evidence_coverage"] = (
-                    f"ADEQUATE: {int(domain_count)} domains present "
-                    f"(minimum: {self.min_evidence_domains})"
-                )
-            else:
-                questions["evidence_coverage"] = (
-                    f"INSUFFICIENT: {int(domain_count)} domains present, "
-                    f"minimum {self.min_evidence_domains} required"
-                )
+        # Article XXXIV — minimum *market evidence* domains. Council metadata,
+        # execution-cost quotes, portfolio state and unknown buckets do not count
+        # as independent market-analysis domains. Missing count metadata fails closed.
+        raw_market_domain_count = consolidation.get("market_domain_count")
+        try:
+            market_domain_count = (
+                int(raw_market_domain_count)
+                if raw_market_domain_count is not None else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            market_domain_count = None
+        domain_ok = (
+            market_domain_count is not None
+            and market_domain_count >= self.min_evidence_domains
+        )
+        if market_domain_count is None:
+            questions["evidence_coverage"] = (
+                "UNCONFIRMED: market evidence-domain count is missing or invalid; "
+                f"required minimum: {self.min_evidence_domains}"
+            )
+        elif domain_ok:
+            questions["evidence_coverage"] = (
+                f"ADEQUATE: {market_domain_count} market domains present "
+                f"(minimum: {self.min_evidence_domains})"
+            )
+        else:
+            questions["evidence_coverage"] = (
+                f"INSUFFICIENT: {market_domain_count} market domains present, "
+                f"minimum {self.min_evidence_domains} required"
+            )
+        questions["execution_cost_verification"] = questions_cost_verification
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
         # Article IX — the Brain's OWN leading-hypothesis invalidation leads the
@@ -833,12 +901,12 @@ class CognitiveBrain:
         # unactivated/absent opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
-        # V-01 — actionability criterion. Legacy (default): a confidence floor +
-        # uncertainty ceiling. EV-primary (opt-in): a positive EXPECTED VALUE net
-        # of cost, so a genuine positive-expectancy opportunity is taken (and
-        # sized by confidence downstream) instead of being vetoed because mixed
-        # evidence pulled confidence below a threshold. Confidence still shapes EV
-        # and sizing in both modes.
+        # V-01 — net EV is the mandatory actionability criterion. Confidence
+        # and the weakest thesis/opportunity/timing/execution dimension shape EV
+        # and sizing, but positive EV alone is insufficient: a campaign also needs
+        # an activated first-class opportunity, verified advisor quorum, three
+        # independent market evidence domains, fresh execution costs, acceptable
+        # data quality and whole-book portfolio review.
         if self.ev_primary_gate:
             ev_ok = expected_value > self.ev_action_threshold_r
             directional_and_qualified = directional and ev_ok
@@ -853,6 +921,7 @@ class CognitiveBrain:
             and ev_ok
             and quorum_ok
             and domain_ok
+            and cost_verified
             and has_actionable_opportunity
         )
         if not act:
@@ -910,28 +979,69 @@ class CognitiveBrain:
             elif directional_and_qualified and ev_ok and not quorum_ok:
                 # Article XX — a qualified opportunity backed by too few advisors:
                 # cognitive coverage is insufficient to originate a campaign.
+                quorum_status = (
+                    f"{advisors_responded}/{self.min_advisors_for_action}"
+                    if advisors_responded is not None
+                    else f"unknown (need {self.min_advisors_for_action})"
+                )
                 reason_txt = (
-                    f"advisor quorum not met: {advisors_responded}/"
-                    f"{self.min_advisors_for_action} advisors responded — "
-                    "cognitive coverage insufficient for action"
+                    f"advisor quorum not met or unconfirmed: {quorum_status} "
+                    "— cognitive coverage insufficient for action; evidence coverage "
+                    "must also be adequate before capital is exposed"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — advisor quorum not met "
-                    f"({advisors_responded}/{self.min_advisors_for_action})"
+                    "evaluated: doing nothing is correct — advisor quorum is "
+                    f"not met or unconfirmed ({quorum_status})"
                 )
             elif directional_and_qualified and ev_ok and not domain_ok:
                 # Article XXXIV — a qualified opportunity on too few evidence
                 # domains: cannot determine whether an opportunity exists.
+                coverage_status = (
+                    f"{market_domain_count}/{self.min_evidence_domains} market domains"
+                    if market_domain_count is not None
+                    else f"unknown; {self.min_evidence_domains} market domains required"
+                )
                 reason_txt = (
-                    f"insufficient evidence coverage: {int(domain_count)}/"
-                    f"{self.min_evidence_domains} domains — cannot determine "
-                    "whether opportunity exists"
+                    f"insufficient evidence coverage (or unconfirmed coverage): {coverage_status} "
+                    "— cannot determine whether opportunity exists"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — insufficient evidence "
-                    f"coverage ({int(domain_count)}/{self.min_evidence_domains} domains)"
+                    "evaluated: doing nothing is correct — evidence coverage is "
+                    f"insufficient or unconfirmed ({coverage_status})"
+                )
+            elif directional and not cost_verified:
+                reason_txt = (
+                    "execution costs are unverified — configured defaults are "
+                    "diagnostic only and cannot authorize new exposure"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no fresh valid spread/"
+                    "slippage or total-cost evidence is available"
+                )
+            elif (
+                self.ev_primary_gate
+                and directional
+                and not ev_ok
+                and confidence >= self.min_confidence_to_act
+                and limiting_dim in ("timing", "execution")
+            ):
+                # A thesis can remain valid while timing/execution conditions are
+                # temporarily poor. Do not relabel that conditional wait as a
+                # rejected market thesis merely because the weakest execution
+                # dimension lowered effective EV at this instant.
+                reason_txt = (
+                    f"{limiting_dim} conditions insufficient — waiting "
+                    f"(thesis holds at {confidence:.2f}, "
+                    f"{limiting_dim} {conf_dims[limiting_dim]:.2f}); "
+                    "reassess when execution/timing evidence improves"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    f"evaluated: doing nothing is correct — {limiting_dim} "
+                    "conditions are not executable now; preserve the thesis and wait"
                 )
             elif (directional_and_qualified and not ev_ok) or (
                 self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
@@ -1159,8 +1269,19 @@ class CognitiveBrain:
             # Return every output ranked by EV (demoted ones retain their EV).
             return sorted(outputs, key=self._output_ev, reverse=True)
         except Exception as exc:  # noqa: BLE001 — portfolio reasoning must never break a cycle
-            logger.debug("[brain] reason_portfolio ignored a fault: %s", exc)
-            return list(all_outputs or [])
+            logger.error(
+                "[brain] reason_portfolio FAILED — suppressing new campaigns rather than "
+                "assuming the book is safe: %s", exc,
+            )
+            outputs = [o for o in (all_outputs or []) if o is not None]
+            for output in outputs:
+                if self._is_open_output(output):
+                    self._demote_output(
+                        output,
+                        "portfolio reasoning failed — new campaign suppressed; "
+                        "live exposure could not be qualified",
+                    )
+            return outputs
 
     @staticmethod
     def _is_open_output(output: Any) -> bool:
@@ -1657,9 +1778,10 @@ class CognitiveBrain:
         that on each REASONING Evidence's measurements. Returns
         ``(responded, available, total)`` taken from the reasoning Evidence
         carrying the counts (the maximum ``responded`` seen), or ``(None, None,
-        None)`` when no advisor metadata is present — in which case the quorum /
-        degraded-cognition gates are left unenforced (fail-safe, preserves the
-        behaviour of a Brain wired without a council). Never raises.
+        None)`` when no advisor metadata is present. In that case the quorum is
+        unconfirmed and cannot authorize new exposure; unknown council coverage is
+        recorded as degraded but only confidence-penalized if explicitly configured.
+        Never raises.
         """
         resp: Optional[int] = None
         avail: Optional[int] = None
@@ -1836,36 +1958,63 @@ class CognitiveBrain:
         limiting = min(dims, key=dims.get)
         return dims, eff, limiting
 
-    def _execution_cost_r(self, market_state: MarketState) -> float:
-        """Round-trip execution cost in R for the Brain's EV (Violation V9).
+    @staticmethod
+    def _cost_value(value: Any) -> Optional[float]:
+        """Parse a non-negative finite execution cost measured in R."""
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
-        Reads the freshest EXECUTION_QUALITY evidence's ``estimated_total_cost_r``
-        measurement (emitted by the consolidator's execution-cost source) so the
-        strategic EV is net of spread/slippage — a theoretical thesis that cannot
-        clear its cost is correctly declined at the EV gate. Falls back to
-        ``self.default_cost_r`` when no execution-quality evidence is present.
-        Never raises.
+    def _execution_cost_estimate(
+        self, market_state: MarketState,
+    ) -> tuple[bool, float, str]:
+        """Return (verified, round-trip cost R, source) from fresh broker-cost evidence.
+
+        A configured default is useful for diagnostic EV calculations only. It is
+        not a substitute for fresh execution-cost evidence when authorizing a new
+        campaign. Prefer an explicit total; otherwise combine verified spread and
+        slippage estimates. Costs above 1R remain above 1R (and normally make the
+        candidate non-executable) rather than being silently clipped.
         """
         try:
-            best: Optional[float] = None
-            for e in market_state.fresh_evidence():
-                if getattr(e, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
+            candidates: list[tuple[float, float, str]] = []
+            for item in market_state.fresh_evidence():
+                if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
                     continue
-                m = getattr(e, "measurements", None)
-                if not isinstance(m, dict):
+                measurements = getattr(item, "measurements", None)
+                if not isinstance(measurements, dict):
                     continue
-                if "estimated_total_cost_r" in m:
-                    best = _clamp01(m.get("estimated_total_cost_r"))
-                elif "estimated_spread_r" in m or "estimated_slippage_r" in m:
-                    best = _clamp01(
-                        _clamp01(m.get("estimated_spread_r"))
-                        + _clamp01(m.get("estimated_slippage_r"))
-                    )
-            if best is not None:
-                return best
+                timestamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+
+                total = self._cost_value(measurements.get("estimated_total_cost_r"))
+                if total is not None:
+                    candidates.append((timestamp, total, "estimated_total_cost_r"))
+                    continue
+
+                spread = self._cost_value(measurements.get("estimated_spread_r"))
+                slippage = self._cost_value(measurements.get("estimated_slippage_r"))
+                if spread is not None or slippage is not None:
+                    candidates.append((
+                        timestamp,
+                        (spread or 0.0) + (slippage or 0.0),
+                        "estimated_spread_r + estimated_slippage_r",
+                    ))
+            if candidates:
+                _, cost, source = max(candidates, key=lambda item: item[0])
+                return True, cost, source
         except Exception:  # noqa: BLE001 — cost estimation must never break reasoning
             pass
-        return self.default_cost_r
+        return False, max(0.0, float(self.default_cost_r)), "configured default (not verified)"
+
+    def _execution_cost_r(self, market_state: MarketState) -> float:
+        """Return the best current cost estimate, for diagnostics and EV only."""
+        return self._execution_cost_estimate(market_state)[1]
+
+    def _has_current_execution_cost_evidence(self, market_state: MarketState) -> bool:
+        """True only when a fresh, finite, non-negative cost measurement exists."""
+        return self._execution_cost_estimate(market_state)[0]
 
     def _synthesize_from_evidence(
         self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
@@ -1889,7 +2038,10 @@ class CognitiveBrain:
             n_fresh = int(consolidation.get("evidence_fresh", 0) or 0)
             if n_fresh <= 0:
                 return effective_confidence, "no fresh evidence to cross-check advisor against"
-            ev_mean = _clamp01(consolidation.get("mean_confidence", 0.0))
+            ev_mean = _clamp01(consolidation.get(
+                "market_mean_confidence",
+                consolidation.get("mean_confidence", 0.0),
+            ))
             ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
             gap = advisor_confidence - ev_mean
             # Advisor markedly more confident than the evidence's own mean.
@@ -2109,34 +2261,71 @@ class CognitiveBrain:
     def _originate_independent(
         self, symbol: str, consolidation: dict,
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
-        *, reason_txt: str,
+        *, reason_txt: str, market_state: Optional[MarketState] = None,
     ) -> Optional[BrainOutput]:
         """Discover an opportunity from native analysis when no advisor is available.
 
-        Article X — APEX must be able to discover opportunities that were never
-        explicitly programmed, even when every LLM provider is down. When the
-        Brain's leading hypothesis is confident (>= threshold), directional and
-        the evidence uncertainty is acceptable, the Brain originates a campaign
-        WITHOUT any advisor, sized conservatively. Otherwise returns ``None`` and
-        the caller stands down (REASONER_UNAVAILABLE). Never raises.
+        Native-only reasoning can still discover opportunities during provider
+        failure, but discovery is not activation. Require sufficient independent
+        evidence domains, a multi-source activation pattern, fresh executable-cost
+        evidence, calibrated confidence, acceptable uncertainty, and positive net
+        EV. Never substitute a bare directional hypothesis for an opportunity.
         """
-        if analysis is None or not hypotheses:
+        if analysis is None or not hypotheses or market_state is None:
             return None
         try:
             lead = self._native.leading(hypotheses)
             if lead is None or not lead.is_directional:
                 return None
-            # V-001 — independent origination requires STRUCTURED EVIDENCE backing
-            # the leading hypothesis, not merely a directional implication. A
-            # directional hypothesis with no detected structural patterns is a
-            # bare direction, not a discovered opportunity, and must never open a
-            # campaign on its own when no advisor is available.
+
+            # Apply the same market-domain breadth to native fallback. Council,
+            # execution-cost and portfolio metadata cannot inflate the count.
+            required_domains = max(3, int(self.min_evidence_domains))
+            raw_market_domains = (consolidation or {}).get("market_domain_count")
+            try:
+                available_market_domains = (
+                    int(raw_market_domains) if raw_market_domains is not None else None
+                )
+            except (TypeError, ValueError, OverflowError):
+                available_market_domains = None
+            if available_market_domains is None or available_market_domains < required_domains:
+                return None
+
+            # A pattern must describe a multi-dimensional activation event. Simple
+            # directional context (trend, momentum, one candle) may inform a
+            # hypothesis but cannot independently activate a native-only campaign.
+            activation_patterns = {
+                "displacement_confirmed",
+                "volume_confirmed_breakout",
+                "liquidity_sweep_absorbed",
+                "liquidity_sweep_with_momentum_exhaustion",
+                "liquidity_sweep_reclaimed",
+                "failed_breakout",
+                "fvg_liquidity_confluence",
+                "order_flow_at_structure",
+                "volatility_expansion_breakout",
+                "event_window_breakout",
+            }
+            supporting = {pattern_name(p) for p in lead.supporting_patterns}
+            if not supporting.intersection(activation_patterns):
+                return None
+
+            # A directional hypothesis without structured support remains
+            # observational, not execution authority.
             if not lead.supporting_patterns:
                 return None
             if lead.confidence < self._native.independent_min_confidence:
                 return None
             if analysis.evidence_uncertainty >= self._native.independent_max_uncertainty:
                 return None
+
+            # Native fallback may not invent a cost estimate. A current execution
+            # cost observation from the shared consolidator is mandatory; use its
+            # actual net round-trip estimate for EV rather than a constant default.
+            cost_verified, _, _ = self._execution_cost_estimate(market_state)
+            if not cost_verified:
+                return None
+
             direction = lead.direction_implication
             uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
                 if consolidation else analysis.evidence_uncertainty
@@ -2145,7 +2334,7 @@ class CognitiveBrain:
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 _clamp01(lead.confidence), lead)
             reward_r, risk_r = self.reward_r_default, 1.0
-            cost_r = self.default_cost_r
+            cost_r = self._execution_cost_r(market_state)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
@@ -2156,6 +2345,74 @@ class CognitiveBrain:
                 f"Brain discovered opportunity from native analysis without advisor "
                 f"confirmation — {lead.statement}")
             considered = self._compare_opportunities(lead, symbol, [])
+
+            # Native-only origination must still produce the same first-class
+            # opportunity contract as advisor-assisted origination. The opportunity
+            # is marked ACTIVE only because the native path above required an
+            # observed composite activation pattern, sufficient evidence breadth,
+            # fresh execution-cost evidence and positive net EV.
+            pattern_domain_map = {
+                "displacement_confirmed": {"structure", "volume"},
+                "volume_confirmed_breakout": {"structure", "volume", "volatility"},
+                "liquidity_sweep_absorbed": {"liquidity", "order_flow"},
+                "liquidity_sweep_with_momentum_exhaustion": {"liquidity", "momentum"},
+                "liquidity_sweep_reclaimed": {"liquidity", "structure"},
+                "failed_breakout": {"structure", "liquidity", "volatility"},
+                "fvg_liquidity_confluence": {"structure", "liquidity", "order_flow"},
+                "order_flow_at_structure": {"order_flow", "structure"},
+                "volatility_expansion_breakout": {"volatility", "structure", "volume"},
+                "event_window_breakout": {"volatility", "structure", "macro"},
+            }
+            supporting_domains: set[str] = set()
+            for pattern in supporting:
+                supporting_domains.update(pattern_domain_map.get(pattern, set()))
+            supporting_evidence_ids = [
+                str(getattr(item, "evidence_id", "") or "")
+                for item in market_state.fresh_evidence()
+                if str(getattr(getattr(item, "domain", None), "value",
+                               getattr(item, "domain", ""))).lower() in supporting_domains
+                and getattr(item, "evidence_id", "")
+            ]
+            competing_statements = [
+                item.statement for item in hypotheses if item is not lead
+            ]
+            market_coverage = {
+                key: value for key, value in analysis.domain_coverage.items()
+                if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+            }
+            evidence_strength = (
+                sum(market_coverage.values()) / len(market_coverage)
+                if market_coverage else 0.0
+            )
+            native_opportunity_id = (
+                f"native:{symbol}:{'+'.join(sorted(supporting))}"
+            )[:160]
+            native_opportunity = Opportunity.from_reply(
+                {
+                    "id": native_opportunity_id,
+                    "direction": direction,
+                    "state": "ACTIVE",
+                    "thesis": lead.statement,
+                    "why_now": "; ".join(analysis.observations[:4]) or lead.statement,
+                    "entry_conditions": [
+                        "Native composite activation pattern is present in fresh evidence",
+                        "Fresh quote, broker feasibility and protective-risk checks must pass before submission",
+                    ],
+                    "confirmation_conditions": [
+                        "The activation evidence remains valid at final execution admission",
+                    ],
+                    "invalidation_conditions": [lead.invalidation] if lead.invalidation else [],
+                    "target_logic": (
+                        f"Screening geometry assumes {reward_r:.2f}R reward / {risk_r:.2f}R risk; "
+                        "the execution plane must resolve broker-valid protection and prices"
+                    ),
+                    "quality": lead_conf,
+                    "asymmetry": reward_r / max(0.01, reward_r + risk_r),
+                    "evidence_strength": evidence_strength,
+                    "competing_opportunities": competing_statements[:6],
+                },
+                preferred_id=native_opportunity_id,
+            )
             questions = {
                 "what_is_happening": lead.statement,
                 "reasoning_mode": "native_only",
@@ -2181,6 +2438,8 @@ class CognitiveBrain:
                     for h in hypotheses)[:1000],
                 "brain_self_criticism": lead.criticism or "no material criticism",
                 "brain_book_comparison": considered,
+                "brain_independent_opportunity_id": native_opportunity.opportunity_id,
+                "brain_independent_opportunity_state": native_opportunity.state.value,
                 "reasoner_state": reason_txt,
             }
             if pattern_mod_note:
@@ -2200,18 +2459,21 @@ class CognitiveBrain:
             )
             brain_hyps = self._build_hypotheses(
                 direction, lead_conf, reward_r, risk_r,
-                lead.statement, [h.statement for h in hypotheses if h is not lead],
-                lead.invalidation, [], [],
+                lead.statement, competing_statements,
+                lead.invalidation, supporting_evidence_ids, [],
             )
             decision = DecisionPackage(
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
+                supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
                 invalidation_conditions=invalidation_conditions,
                 hypotheses=brain_hyps,
+                opportunities=[native_opportunity],
+                preferred_opportunity_id=native_opportunity.opportunity_id,
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
@@ -2221,9 +2483,12 @@ class CognitiveBrain:
                 initial_execution_intent={"kind": "market",
                                           "confidence": round(lead_conf, 4),
                                           "independent_origination": True},
+                supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
+                opportunity_id=native_opportunity.opportunity_id,
+                opportunity_state=native_opportunity.state.value,
                 decision_id=decision.decision_id,
             )
             with self._lock:

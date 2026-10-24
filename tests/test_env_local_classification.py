@@ -1,5 +1,5 @@
-"""GPU/Compute Constitution §8 — the LOCAL (Tier 3) roster in the live ``.env``
-must be FULLY classified.
+"""GPU/Compute Constitution §8 — the LOCAL (Tier 3) roster in ``.env.example``
+must be fully classified without committing runtime credentials.
 
 Every locally-served model must declare the compute classes it serves and its
 context window, so the class-aware router can place the Brain's ``deep`` cognition
@@ -16,7 +16,7 @@ import pytest
 from llm.model_manager import spec_classes, spec_context_window
 from llm.provider_tiers import ProviderTier, resolve_tier
 
-_ENV = Path(__file__).resolve().parents[1] / ".env"
+_ENV = Path(__file__).resolve().parents[1] / ".env.example"
 
 
 def _local_specs() -> list:
@@ -25,14 +25,14 @@ def _local_specs() -> list:
     line = next((ln for ln in _ENV.read_text().split("\n")
                  if ln.startswith("LLM_EXTRA_MODELS=")), None)
     if line is None:
-        pytest.skip("LLM_EXTRA_MODELS not set in .env")
+        pytest.skip("LLM_EXTRA_MODELS not set in .env.example")
     models = json.loads(line.partition("=")[2])
     return [m for m in models if isinstance(m, dict)
             and int(resolve_tier(m.get("provider"), m.get("tier"))) == int(ProviderTier.TIER_3)]
 
 
 def test_env_ships_a_local_failsafe_roster():
-    assert _local_specs(), "the live .env should ship a local (Tier 3) failsafe roster"
+    assert _local_specs(), "the secret-free example should ship a local (Tier 3) failsafe roster"
 
 
 def test_every_local_model_is_fully_classified():

@@ -129,15 +129,15 @@ class BrainMixin:
             if not evidence_rows:
                 continue
 
-            long_n = sum(1 for r in vote_rows if r["direction"] == "LONG")
-            short_n = sum(1 for r in vote_rows if r["direction"] == "SHORT")
-            neutral_n = sum(1 for r in vote_rows if r["direction"] == "NEUTRAL")
-            net = _round(sum(r["signed"] for r in vote_rows), 3)
+            long_n = sum(1 for r in evidence_rows if r["direction"] == "LONG")
+            short_n = sum(1 for r in evidence_rows if r["direction"] == "SHORT")
+            neutral_n = sum(1 for r in evidence_rows if r["direction"] == "NEUTRAL")
+            net = _round(sum(r["signed"] for r in evidence_rows), 3)
             # V-027 — lead with the EVIDENCE SOURCES that informed this pair
             # (constitutional framing: the Brain reasons over evidence + decisions,
             # not directional vote tallies). The long/short/neutral counts below are
             # retained only as supplementary, backward-compatible operator context.
-            evidence_sources = sorted({r["module"] for r in vote_rows if r["module"]})
+            evidence_sources = sorted({r["module"] for r in evidence_rows if r["module"]})
 
             pairs.append({
                 "pair": pair,
@@ -149,7 +149,7 @@ class BrainMixin:
                 ).upper(),
                 "consensus_net": _round(getattr(result, "consensus_net", 0.0), 3),
                 "consensus_agreement": _round(getattr(result, "consensus_agreement", 0.0), 3),
-                "votes": vote_rows,
+                "votes": evidence_rows,
                 # Supplementary / deprecated (V-027) — directional vote tallies kept
                 # for the existing panel during the operator transition to the
                 # evidence/decision framing above.

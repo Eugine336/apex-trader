@@ -1,21 +1,11 @@
-"""Tests for atomic thesis reversal (Session 29, final gap-closing session).
+"""Regression tests for legacy reversal components under the Apex identity.
 
-Session 28 gave a ``THESIS_FLIP`` (opposing thesis now dominant) the power to
-EXIT an open position (flat). Session 29 turns that flip into an *atomic
-reversal* — close the current side AND open the opposite in one decision cycle —
-guarded by an anti-ping-pong gate so a choppy market cannot bleed spread on a
-LONG→SHORT→LONG flip-flop.
-
-Coverage:
-* ``ReversalManager`` — the pure anti-ping-pong decision module (min edge,
-  cooldown, per-session cap, escalating threshold, record/reset, fail-safe).
-* ``ExitCause.THESIS_REVERSAL`` taxonomy + ``from_reason`` mapping.
-* ``ThesisConfig`` reversal defaults + validation.
-* ``PositionEvaluator._maybe_arm_reversal`` — the arm-at-flip decision hook
-  (arms a pending reversal when the gate permits, plain exit otherwise).
-* ``EventDrivenSystem._dispatch_pending_reversal`` — the close→open execution
-  hook (dispatch through the full entry pipeline, freshness discard, partial
-  reversal stays flat, journals both dispatched and rejected reversals).
+The pure ``ReversalManager`` can still be tested as a utility, but the runtime
+must not use it to authorize an opposite-side entry. Such an entry must be a new
+Brain-originated opportunity and go through the shared opportunity, cost, and
+whole-book admission path. The old ``_dispatch_pending_reversal`` execution
+hook is retired; a management reverse closes the held side and triggers fresh
+Brain reasoning rather than opening the opposite side directly.
 """
 
 from __future__ import annotations
@@ -195,7 +185,7 @@ def test_from_reason_maps_reversal_before_flip():
 
 def test_reversal_config_defaults():
     c = ThesisConfig()
-    assert c.atomic_reversal_enabled is True
+    assert c.atomic_reversal_enabled is False
     assert c.reversal_min_thesis_ev == 0.1
     assert c.reversal_cooldown == 300.0
     assert c.max_reversals_per_session == 3
@@ -280,114 +270,14 @@ def test_maybe_arm_reversal_does_not_count_until_dispatch():
     assert rm.reversals_this_session("EURUSD") == 0
 
 
-# ── E. EventDrivenSystem._dispatch_pending_reversal (close→open hook) ───────
+# ── E. The legacy direct reverse-open route stays retired ───────────────────
 
-def _dispatch_stub(rm, plan, *, build_returns="auto", max_age=60.0):
-    """Stub exposing what ``_dispatch_pending_reversal`` needs.
 
-    ``build_returns`` "auto" builds a plausible decision dict from the plan;
-    ``None`` simulates a failed entry build (partial reversal → stay flat).
-    """
+def test_legacy_reverse_dispatcher_is_not_part_of_event_runtime():
     import event_driven_bootstrap as edb
 
-    journal_calls = []
-    journal = types.SimpleNamespace(
-        log_management_event=lambda **kw: journal_calls.append(kw),
-    )
-    entry_calls = []
-
-    stub = types.SimpleNamespace(
-        _ctx=types.SimpleNamespace(reversal_manager=rm, decision_journal=journal),
-        _config=types.SimpleNamespace(
-            thesis=types.SimpleNamespace(reversal_max_age_seconds=max_age),
-        ),
-        _pending_reversals={"T1": dict(plan)} if plan is not None else {},
-        _on_entry_decision=lambda decision: entry_calls.append(decision),
-    )
-
-    def _build(symbol, direction, p):
-        if build_returns == "auto":
-            return {"symbol": symbol, "direction": direction, "source": "reversal"}
-        return build_returns
-
-    stub._build_reversal_decision_dict = _build
-    stub._dispatch_pending_reversal = types.MethodType(
-        edb.EventDrivenSystem._dispatch_pending_reversal, stub,
-    )
-    stub._journal_reversal = types.MethodType(
-        edb.EventDrivenSystem._journal_reversal, stub,
-    )
-    return stub, entry_calls, journal_calls
+    assert not hasattr(edb.EventDrivenSystem, "_dispatch_pending_reversal")
 
 
-def _fresh_plan(**over):
-    import time as _t
-    plan = {
-        "symbol": "EURUSD",
-        "from_direction": "LONG",
-        "to_direction": "SHORT",
-        "competing_ev": 0.5,
-        "required_threshold": 0.1,
-        "reversals_so_far": 0,
-        "detail": {"opp_over_flat": 0.5},
-        "decided_at": _t.time(),
-    }
-    plan.update(over)
-    return plan
-
-
-def test_dispatch_reverses_through_entry_pipeline():
-    rm = _rm()
-    stub, entry_calls, journal_calls = _dispatch_stub(rm, _fresh_plan())
-    stub._dispatch_pending_reversal("T1", "EURUSD")
-    # Opposite-direction entry dispatched through the full pipeline.
-    assert len(entry_calls) == 1
-    assert entry_calls[0]["direction"] == "SHORT"
-    assert entry_calls[0]["source"] == "reversal"
-    # Reversal counted at execution time.
-    assert rm.reversals_this_session("EURUSD") == 1
-    # Journalled as dispatched.
-    assert any(c["event"] == "thesis_reversal" for c in journal_calls)
-
-
-def test_dispatch_no_plan_is_noop():
-    rm = _rm()
-    stub, entry_calls, journal_calls = _dispatch_stub(rm, None)
-    stub._dispatch_pending_reversal("T1", "EURUSD")
-    assert entry_calls == []
-    assert rm.reversals_this_session("EURUSD") == 0
-
-
-def test_dispatch_stale_plan_discarded():
-    import time as _t
-    rm = _rm()
-    stub, entry_calls, journal_calls = _dispatch_stub(
-        rm, _fresh_plan(decided_at=_t.time() - 500.0), max_age=60.0,
-    )
-    stub._dispatch_pending_reversal("T1", "EURUSD")
-    # Market moved on → no entry, not counted, journalled as rejected.
-    assert entry_calls == []
-    assert rm.reversals_this_session("EURUSD") == 0
-    assert any(c["event"] == "thesis_reversal_rejected" for c in journal_calls)
-
-
-def test_dispatch_partial_reversal_stays_flat():
-    # Exit filled but the reversal entry could not be built → stay flat (safe),
-    # do not count the reversal, journal the partial.
-    rm = _rm()
-    stub, entry_calls, journal_calls = _dispatch_stub(
-        rm, _fresh_plan(), build_returns=None,
-    )
-    stub._dispatch_pending_reversal("T1", "EURUSD")
-    assert entry_calls == []
-    assert rm.reversals_this_session("EURUSD") == 0
-    assert any(c["event"] == "thesis_reversal_rejected" for c in journal_calls)
-
-
-def test_dispatch_invalid_direction_guards_flat():
-    rm = _rm()
-    stub, entry_calls, _ = _dispatch_stub(rm, _fresh_plan(to_direction="FLAT"))
-    stub._dispatch_pending_reversal("T1", "EURUSD")
-    # Never "reverse into flat".
-    assert entry_calls == []
-    assert rm.reversals_this_session("EURUSD") == 0
+def test_default_thesis_config_does_not_arm_atomic_reversal():
+    assert ThesisConfig().atomic_reversal_enabled is False

@@ -1,12 +1,9 @@
-"""APEX TRADER — Phase 2 developing analysis tests.
+"""Developing-analysis tests for raw, non-directional WorldModel facts.
 
-Covers:
-  * the ``include_forming`` flag on ``run_tf_modules`` (forming bar kept),
-  * the developing-structure confidence blend in ``compute_bias`` (direction
-    unchanged, confidence ±15% bounded),
-  * the ``DevelopingAnalysisLoop`` (analysis, rate limiting, merge, isolation,
-    lifecycle, stats),
-  * the ``CandleCloseHandler`` reading the developing store into ``compute_bias``.
+Covers forming-bar handling, the DevelopingAnalysisLoop (analysis, rate limiting,
+merge, isolation, lifecycle and stats), and publication of confirmed structure.
+The legacy ``compute_bias`` helper was intentionally removed because it
+synthesized direction outside the CognitiveBrain; these tests must not restore it.
 """
 
 from types import SimpleNamespace
@@ -14,10 +11,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 import brain.decision_core as dc
-from brain.decision_core import (
-    compute_bias,
-    run_tf_modules,
-)
+from brain.decision_core import run_tf_modules
 from brain.developing_analysis import DevelopingAnalysisLoop
 from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
 from brain.world_model import WorldModelStore, build_world_model
@@ -28,7 +22,7 @@ from config import DevelopingAnalysisConfig
 
 
 def _sa(trend: str, confidence: float) -> StructureAnalysis:
-    """Minimal StructureAnalysis for compute_bias / blend tests."""
+    """Minimal StructureAnalysis for developing-analysis tests."""
     return StructureAnalysis(
         trend=Trend(trend),
         last_event=StructureEvent.NONE,
@@ -152,71 +146,12 @@ def test_include_forming_passes_through(monkeypatch):
     assert seen["fvg"] == n
 
 
-# ── compute_bias developing blend ───────────────────────────────────────────
+# ── Legacy directional helper retirement ─────────────────────────────────
 
 
-def test_compute_bias_without_developing():
-    """Existing behaviour unchanged when no developing struct is supplied."""
-    confirmed = {"H4": _sa("BULLISH", 0.8), "H1": _sa("BULLISH", 0.8)}
-    bias = compute_bias(confirmed)
-    assert bias["direction"] == "LONG"
-    assert bias["confidence"] == 0.8
-    assert bias["score"] == 80
-    assert bias["developing_blend"] == 0.0
-
-
-def test_compute_bias_with_agreeing_developing():
-    """Agreeing developing structure increases confidence; direction unchanged."""
-    confirmed = {"H4": _sa("BULLISH", 0.8), "H1": _sa("BULLISH", 0.8)}
-    dev = {"H1": _sa("BULLISH", 0.9)}
-    base = compute_bias(confirmed)
-    blended = compute_bias(confirmed, developing_struct_by_tf=dev)
-    assert blended["direction"] == "LONG"  # direction never moves
-    assert blended["confidence"] > base["confidence"]
-    assert blended["developing_blend"] > 0.0
-
-
-def test_compute_bias_with_conflicting_developing():
-    """Conflicting developing structure reduces confidence; direction unchanged."""
-    confirmed = {"H4": _sa("BULLISH", 0.8), "H1": _sa("BULLISH", 0.8)}
-    dev = {"H1": _sa("BEARISH", 0.9)}
-    base = compute_bias(confirmed)
-    blended = compute_bias(confirmed, developing_struct_by_tf=dev)
-    assert blended["direction"] == "LONG"
-    assert blended["confidence"] < base["confidence"]
-    assert blended["developing_blend"] < 0.0
-
-
-def test_compute_bias_confidence_bounded():
-    """Confidence stays within [0, 1] under extreme developing input."""
-    # Confirmed confidence at the ceiling, developing strongly agrees.
-    hi = compute_bias(
-        {"H4": _sa("BULLISH", 1.0), "H1": _sa("BULLISH", 1.0)},
-        developing_struct_by_tf={"H1": _sa("BULLISH", 1.0), "H4": _sa("BULLISH", 1.0)},
-    )
-    assert 0.0 <= hi["confidence"] <= 1.0
-
-    # Confirmed confidence at the floor, developing strongly conflicts.
-    lo = compute_bias(
-        {"H4": _sa("BULLISH", 0.0), "H1": _sa("BULLISH", 0.0)},
-        developing_struct_by_tf={"H1": _sa("BEARISH", 1.0), "H4": _sa("BEARISH", 1.0)},
-    )
-    assert 0.0 <= lo["confidence"] <= 1.0
-
-
-def test_developing_ranging_no_effect():
-    """Ranging / empty developing structure leaves the bias unchanged."""
-    confirmed = {"H4": _sa("BULLISH", 0.8), "H1": _sa("BULLISH", 0.8)}
-    base = compute_bias(confirmed)
-
-    # Ranging developing contributes no evidence → no shift.
-    ranging = compute_bias(confirmed, developing_struct_by_tf={"H1": _sa("RANGING", 0.9)})
-    assert ranging["direction"] == base["direction"]
-    assert ranging["developing_blend"] == 0.0
-
-    # Empty developing dict is falsy → developing_blend stays 0.0.
-    empty = compute_bias(confirmed, developing_struct_by_tf={})
-    assert empty["developing_blend"] == 0.0
+def test_legacy_direction_calculator_remains_retired():
+    """No subsystem outside CognitiveBrain should synthesize market direction."""
+    assert not hasattr(dc, "compute_bias")
 
 
 # ── DevelopingAnalysisLoop ──────────────────────────────────────────────────
@@ -242,8 +177,9 @@ def test_rate_limiting():
     loop._pool = fake
     loop._cycle()
     first = len(fake.calls)
-    # 5 TFs in TF_MODULE_MAP for a single symbol.
-    assert first == len(dc.TF_MODULE_MAP)
+    # The refresh windows may make only a subset of TFs due on the first
+    # cycle; the invariant is that at least one is scheduled, then rate-limited.
+    assert 0 < first <= len(dc.TF_MODULE_MAP)
     loop._cycle()  # immediately again — all still within refresh window
     assert len(fake.calls) == first  # no new submissions
 
@@ -299,49 +235,44 @@ def test_stats():
     assert s["symbols_tracked"] == 1
 
 
-# ── CandleCloseHandler reads developing store ───────────────────────────────
+# ── CandleCloseHandler publishes raw structural facts ───────────────────────
 
 
-def test_candle_handler_reads_developing_store():
-    """Handler blends developing structure into the published confirmed bias."""
-    from tick.event_bus import EventBus
+def test_candle_handler_publishes_structure_without_directional_bias():
+    """The handler publishes source facts; CognitiveBrain alone forms direction."""
+    from datetime import datetime, timezone
+
     from scanner.candle_close_handler import CandleCloseHandler
+    from tick.event_bus import EventBus
 
     confirmed_store = WorldModelStore()
-    dev_store = WorldModelStore()
-
-    # Developing store: agreeing bullish H1.
-    dev_wm = build_world_model(
-        symbol="EURUSD", version=1,
-        structure={"H1": _sa("BULLISH", 0.9)},
-    )
-    dev_store.publish(dev_wm)
-
     handler = CandleCloseHandler(
         EventBus(),
         confirmed_store,
-        lambda s, t, c: pd.DataFrame(),
+        lambda symbol, timeframe, count: pd.DataFrame(),
         max_workers=1,
-        developing_store=dev_store,
     )
-
-    from datetime import datetime, timezone
-
     handler._merge_and_publish_locked(
         "EURUSD", "H1",
         {"structure": _sa("BULLISH", 0.8)},
         datetime.now(timezone.utc),
     )
-    # Also publish a confirmed H4 so direction resolves; merge again.
     handler._merge_and_publish_locked(
         "EURUSD", "H4",
         {"structure": _sa("BULLISH", 0.8)},
         datetime.now(timezone.utc),
     )
 
-    wm = confirmed_store.get("EURUSD")
-    assert wm is not None
-    bias = wm.bias_dict()
-    assert bias["direction"] == "LONG"
-    # Developing agreement recorded and confidence nudged above the raw 0.8.
-    assert bias["developing_blend"] > 0.0
+    model = confirmed_store.get("EURUSD")
+    assert model is not None
+    structure = model.structure_by_tf()
+    assert {"H1", "H4"} <= set(structure)
+    assert structure["H1"].trend == Trend.BULLISH
+    assert structure["H4"].trend == Trend.BULLISH
+
+    alignment = model.multi_tf_alignment_dict()
+    forbidden = {
+        "direction", "score", "signed_score", "long_probability",
+        "short_probability", "dominant", "bias", "lean", "signal", "vote",
+    }
+    assert not forbidden.intersection(alignment)

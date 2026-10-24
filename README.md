@@ -1,9 +1,16 @@
 # APEX TRADER
-### Automated Multi-Platform Trading System
+### Continuously Operating, Market-Aware Trading Intelligence
 
-A fully automated trading system for MetaTrader 5 and Deriv WebSocket API covering 66 instruments across forex, commodities, indices, synthetics, and crypto.
+APEX TRADER is a multi-platform trading system for MetaTrader 5 and Deriv. Its identity applies across the entire repository, every supported instrument, each analytical family, the whole portfolio and every campaign—not only Gold.
 
-APEX TRADER is a capital allocation engine. It identifies opportunities, measures risk, deploys capital, and protects capital. It carries no label — not scalper, not day trader, not swing trader. The market determines the holding period. Risk is the final, non-negotiable authority.
+## Canonical identity
+
+> Apex is a continuously operating, market-aware trading intelligence. It does not belong to one strategy, timeframe or trading style. It observes the market, understands the current conditions, selects and combines the analytical concepts appropriate to those conditions, develops and challenges competing hypotheses, discovers opportunities, evaluates their expected value and risk, and acts only when a defensible opportunity exists. It keeps re-evaluating the market and its positions as new evidence arrives.
+
+This is binding. Apex must observe market state before choosing analytical methods. ICT/SMC, price action, M1 candlestick patterns, trend following, momentum, mean reversion, breakouts, Wyckoff, CRT, volume/auction, volatility, session/macro, intermarket and statistical methods are analytical tools—not permanent trading identities or independent order authorities.
+
+Read [the canonical identity](docs/APEX_IDENTITY.md) and [the system-wide implementation audit](docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md). Those documents distinguish implemented/wired/tested behaviour from shadow, legacy, data-limited and unverified capabilities.
+
 
 ---
 
@@ -11,7 +18,7 @@ APEX TRADER is a capital allocation engine. It identifies opportunities, measure
 
 ```
 apex-trader/
-├── brain/                    # Market intelligence engine (17 modules)
+├── brain/                    # Specialist analytical observers and market measurements
 │   ├── structure_engine.py   # Market structure: HH/HL/LH/LL, BOS, CHOCH
 │   ├── liquidity_mapper.py   # Institutional stop clusters — equal highs/lows
 │   ├── fvg_detector.py       # Fair Value Gaps — price imbalances
@@ -22,7 +29,7 @@ apex-trader/
 │   ├── volume_analyzer.py    # Tick-volume spikes, divergence, PoC
 │   ├── inducement_detector.py# Manipulation and fake breakout traps
 │   ├── wyckoff_engine.py     # Wyckoff phases and spring/upthrust
-│   ├── mtf_orchestrator.py   # H4→H1→M15/M5→M1 setup cascade
+│   ├── mtf_orchestrator.py   # Legacy orchestration; see identity audit for live wiring
 │   ├── trade_journal.py      # SQLite trade/decision auditing
 │   ├── drawdown_guard.py     # NORMAL/CAUTION/RECOVERY/FROZEN mode transitions
 │   ├── execution_monitor.py  # Slippage, spread, and latency quality
@@ -30,13 +37,13 @@ apex-trader/
 │   └── backtest_engine.py    # Replay, walk-forward, Monte Carlo
 │
 ├── scanner/                  # Multi-pair scanner
-│   ├── pair_scanner.py       # 10-factor confluence scoring (max 100)
-│   ├── pair_ranker.py        # Opportunity ranking by EV × score × pair_multiplier
+│   ├── pair_scanner.py       # Legacy scanner score; not the CognitiveBrain's sole authority
+│   ├── pair_ranker.py        # Legacy candidate ranking; live decision authority must be verified
 │   └── scan_scheduler.py     # Adaptive frequency: 10s overlap, 60s quiet, 15s with positions
 │
 ├── trigger/                  # Entry engine
-│   ├── entry_engine.py       # Zone discovery, M1 confirmation, SL/TP, sizing
-│   ├── entry_patterns.py     # 5 M1 patterns: engulfing, pin bar, inside bar, wick, volume
+│   ├── entry_engine.py       # Legacy entry utilities; single-path cognition is authoritative when enabled
+│   ├── entry_patterns.py     # Legacy M1 confirmations; shared Brain observer is separate
 │   └── entry_validator.py    # 7 safety checks: spread, R:R, drawdown, expiry, max trades
 │
 ├── management/               # Trade lifecycle
@@ -45,17 +52,17 @@ apex-trader/
 │   ├── partial_close.py      # 50% partial at TP1 + breakeven
 │   └── re_entry.py           # Re-entry after breakeven stops (15-min cooldown)
 │
-├── risk/                     # Risk engine — the ultimate authority
+├── risk/                     # Risk utilities; verify the authoritative live path
 │   ├── risk_engine.py        # Multi-stage gate: drawdown, correlation, EV, sizing
 │   ├── position_sizer.py     # Dynamic sizing with micro account support ($5+)
 │   ├── daily_tracker.py      # Daily/weekly/monthly P&L tracking
 │   ├── spread_monitor.py     # Spread spike protection
 │   └── risk_reporter.py      # Aggregated risk health reporting
 │
-├── adaptive/                 # Adaptive optimizer (statistical heuristics)
+├── adaptive/                 # Statistical learning and adaptation; individual modules require live-wiring verification
 │   ├── optimizer.py          # Master controller — coordinates all learners
 │   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
-│   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
+│   ├── score_optimizer.py    # Legacy scoring-weight tuner; not the Brain's identity or sole decision authority
 │   ├── regime_learner.py     # Regime-specific strategy adaptation
 │   ├── pair_learner.py       # Pair-specific confidence multipliers
 │   ├── session_learner.py    # Session aggression levels
@@ -113,36 +120,29 @@ Each instrument has its own pip size, spread baseline, pip value, margin categor
 
 ---
 
-## How It Works
+## How Apex reasons
 
-1. **Scan** — All 66 instruments scored on 10 confluence factors every 10 seconds during active sessions
-2. **Analyse** — Structure, FVG, order blocks, liquidity, currency strength, volume, Wyckoff, regime, session, inducement
-3. **Trigger** — M1 confirmation at entry zones with dynamic signal expiry per timeframe
-4. **Risk** — Multi-stage gate: drawdown mode, daily P&L, correlation, EV estimate, score-based sizing, micro account awareness
-5. **Execute** — Routes to MT5 or Deriv via PlatformManager
-6. **Manage** — TP1 partial → breakeven → structure trailing → TP2, with timeframe-aware stall exits
-7. **Persist** — SQLite WAL position store with crash recovery and broker reconciliation
-8. **Learn** — Adaptive optimizer profiles pairs, regimes, and sessions from trade outcomes
+1. **Observe.** Reconstruct live quotes, ticks, recent price action and multi-timeframe candles, plus session/event context, instrument-specific structure and the current book when those sources are available.
+2. **Assess the state.** Measure trend, range, liquidity, displacement, volatility, momentum, volume, market structure, execution costs and missing/conflicting evidence.
+3. **Select relevant methods.** Consult the contextual strategy-knowledge map. It can surface relevant or watch-list lenses; it cannot issue orders, and missing inputs are not invented.
+4. **Develop competing hypotheses.** Native reasoning analyses evidence, detects structural relationships, generates and criticizes hypotheses. An external adviser may broaden the analysis; it is not the sole source of truth.
+5. **Evaluate opportunities.** A pattern is not an opportunity and an opportunity is not an order. Apex must consider activation, invalidation, expected value after costs, time horizon, the whole book and execution feasibility.
+6. **Act through common controls.** Qualified Brain decisions flow through the shared origination/execution/risk plane. Broker validity, account/portfolio constraints and capital-preservation safeguards remain mandatory.
+7. **Re-evaluate and learn.** Market changes can wake reasoning between candle closes. Open campaigns are re-evaluated; outcomes are attributed and learning is promoted only after validation.
+
+No M1 pattern, indicator, score, strategy label or time frame is a universal prerequisite. The presence of a pattern does not imply an order. Forming-candle observations are provisional and must remain distinguishable from confirmed candles.
 
 ---
 
-## Key Features
+## Current architecture principles
 
-- **10-factor confluence scoring** with configurable entry threshold
-- **Multi-stage risk engine** (NORMAL → CAUTION → RECOVERY → FROZEN)
-- **Dual-platform** MT5 + Deriv WebSocket with unified routing
-- **Position persistence** with crash recovery and broker reconciliation
-- **Dashboard with API key authentication** (DD_DASHBOARD_API_KEY)
-- **Adaptive optimizer** — statistical heuristics that learn from trade outcomes
-- **High-water mark tracking** with equity curve awareness
-- **Micro account support** ($5+) with dynamic minimum viable trade detection
-- **Expected value gate** — blocks only proven losers, permissive by default
-- **Score-based dynamic risk scaling** — higher conviction = more capital
-- **Opportunity cost ranking** — EV × score × pair_multiplier
-- **Timeframe-aware stall exits** — M5 entry stalls at 60 min, H1 at 180 min
-- **Dynamic signal expiry** — scales with the timeframe that generated the setup
-- **Datadog APM integration** via ddtrace
-- **CI pipeline** — pytest + ruff on every push/PR
+- **One market decision authority:** the CognitiveBrain interprets evidence, hypotheses, opportunities and campaign theses.
+- **Specialists are observers:** FVG, order-block, structure, liquidity, volume, Wyckoff, momentum, volatility and candle-pattern modules provide measurements; overlapping observations are not independent votes.
+- **Adaptive knowledge, not a fixed recipe:** the native strategy map assesses analytical lenses from current evidence and explicitly marks limitations. It is a seed for the broader redesign, not evidence that every known strategy is implemented.
+- **M1 patterns are retained:** engulfing, pin bar/rejection wick, range reclaim, inside-bar breakout and volume-at-boundary observations can inform context; they do not automatically trigger entries.
+- **Native reasoning plus optional advisers:** provider failure is different from a reasoned no-opportunity state. Native fallback must retain the same evidence and qualification discipline.
+- **Shared execution and risk:** exposure-increasing actions must pass through the authoritative execution plane and its risk controls.
+- **Auditability:** decisions need a thesis, evidence provenance, uncertainty, invalidation and action/no-action reason.
 
 ---
 
@@ -156,9 +156,10 @@ cd apex-trader
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure
-cp .env.example .env
-# Edit .env with your broker credentials
+# Runtime configuration note
+# `.env` is currently tracked and restored exactly from `main` per operator instruction.
+# Do not edit `.env` through this migration. `.env.example` is a separate sanitized template.
+# Because tracked files are visible to repository readers, rotate exposed active credentials separately.
 
 # Run headless
 python main.py
@@ -195,18 +196,22 @@ docker-compose up -d
 | `DD_API_KEY` | No | Datadog API key for APM |
 | `APP_ENV` | No | development or production (default: development) |
 
-### Key Settings (config.py)
+### Cognition and origination controls
 
-| Setting | Default | Description |
-|---|---|---|
-| `scoring.min_entry_score` | 85 | Minimum confluence to trigger entry |
-| `risk.risk_per_trade_pct` | 0.5 | Base risk per trade (%) |
-| `risk.max_daily_drawdown_pct` | 3.0 | Daily loss limit before FROZEN |
-| `risk.max_open_trades` | 3 | Maximum simultaneous positions |
-| `risk.max_spread_multiplier` | 2.0 | Block entry if spread > typical × this |
-| `risk.ev_threshold` | -0.1 | Minimum expected value (blocks proven losers) |
+The effective values depend on config.py plus environment overrides. Review runtime logs before starting an unattended session.
 
----
+| Variable | Meaning |
+|---|---|
+| `COGNITION_GATE_MODE` | Default `authoritative`: stale/missing cognition cannot silently authorize a legacy exposure-increasing route |
+| `COGNITION_EV_PRIMARY_GATE` | Default `true`: requires positive net expected value after estimated costs, not only confidence |
+| `COGNITION_MIN_EVIDENCE_DOMAINS` | Default `3`: requires multi-domain evidence before advisor-assisted origination |
+| `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes can wake native cognition once per second per symbol; provider calls have separate throttles |
+| `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes may wake native cognition once per second per symbol; provider calls have separate throttles |
+| `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
+| `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled; verify its effective runtime value before relying on it |
+| `APEX_GOLD_DESK_SHADOW_ENABLED` | Enables/disables the Gold-specific observation layer; the observer itself cannot place orders |
+
+A live origination setting does not prove that the advisor, feed, broker or strategy is healthy and does not establish profitability. Follow the rollout runbook and identity audit.
 
 ## Testing
 
@@ -214,20 +219,15 @@ docker-compose up -d
 python -m pytest tests/ -v
 ```
 
-Currently: 390+ tests across 16 test files covering risk engine, trade manager, entry engine, pair scanner, structure engine, FVG detector, session engine, symbol mapper, platforms, position store, dashboard auth, adaptive optimizer, capital context, intelligence (Phase 2), and full integration pipeline.
-
-CI runs automatically on every push to main and every pull request.
+The repository contains a large legacy and current test suite. Use the latest CI run as the authority for pass/fail status; a passing focused cognition suite does not imply that the entire repository is green.
 
 ---
 
-## What This Is NOT
+## Implementation limits
 
-- Not a scalper, day trader, or swing trader — it identifies opportunities
-- Not machine learning — the adaptive optimizer uses statistical heuristics
-- Timeframe-agnostic — the market decides holding period (3 seconds to 3 days)
-- Not institutional-grade — lacks FIX protocol, HA, compliance infrastructure
+Apex is being redesigned toward this identity; the repository is not yet proof of exhaustive trading knowledge or production readiness. Some legacy scanner/entry utilities remain in the source tree, the native hypothesis generator is narrower than the desired target, and several analytical techniques require data a broker feed may not provide. The full repository test/lint baseline has previously shown unrelated failures, and end-to-end demo validation is still required.
 
----
+Do not treat source-file presence, a successful import, or an attractive backtest as proof of a live capability. Do not promise guaranteed profit or capture of every profitable movement. Test on a demo account before using real capital.
 
 ## Disclaimer
 

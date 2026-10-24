@@ -670,7 +670,9 @@ class RiskConfig:
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
     tp3_close_ratio: float = 0.25
-    scale_in_enabled: bool = True
+    # Legacy mechanical scaling is disabled; additional exposure must pass
+    # the Brain's first-class opportunity and whole-book admission path.
+    scale_in_enabled: bool = False
     scale_in_max_adds: int = 1
     scale_in_min_profit_r: float = 1.0
     scale_in_add_ratio: float = 0.5
@@ -3125,16 +3127,13 @@ class ThesisConfig:
     # cannot immediately close a fresh position (the mechanical stop still
     # protects it during this window).
     evidence_exit_min_hold_time: float = 60.0
-    # ── Session 29: atomic reversal (close + reverse in one decision) ──────
-    # When a ``thesis_flip`` fires (the OPPOSING thesis is the dominant,
-    # actionable read), instead of merely exiting to flat the system can close
-    # the current side AND open the opposite direction as one atomic decision —
-    # so there is no gap between "I should be short" and being short. The new
-    # opposite entry still passes the full entry pipeline (Compliance /
-    # Portfolio / Governor / EV / DecisionEngine) and is sized independently from
-    # the competing thesis; a reversal earns no free pass. When disabled, a
-    # ``thesis_flip`` just triggers the Session-28 evidence exit (flat).
-    atomic_reversal_enabled: bool = True
+    # Legacy Session 29 atomic reversal is disabled under the canonical identity.
+    # The management path may close an invalidated position, but an opposite-side
+    # entry must be separately discovered/activated by CognitiveBrain and pass the
+    # same market-evidence, net-EV, portfolio and execution admission gates.
+    # This compatibility flag is retained for serialized configs; runtime wiring
+    # must not use it to authorize a new side directly from a management signal.
+    atomic_reversal_enabled: bool = False
     # The competing thesis's effective EV over the Flat baseline (R) must clear
     # this before a reversal is permitted — the same do-nothing margin a fresh
     # entry beats. Defaults to ``opportunity_cost_threshold``.
@@ -3798,12 +3797,12 @@ class ComposioConfig:
 class CognitionConfig:
     """The AI Cognitive Brain loop (Single Reasoner) — Constitution Parts I/II/IV.
 
-    Runs the one Brain over consolidated Evidence on a background loop and, by
-    default, DRIVES execution: it originates and manages live trades from its
-    DecisionPackages with no external gate veto (origination_mode="live",
-    management_mode="live", gate_mode="off"). The Brain's own EV / confidence /
-    uncertainty qualification and the deterministic risk + feasibility layer
-    (Parts IX/X) still constrain every order. Env overrides:
+    Runs the one Brain over consolidated Evidence on a background loop and,
+    when explicitly configured for live origination, may drive execution from
+    qualified DecisionPackages. The shipped identity-safe defaults require the
+    authoritative cognition gate, net-EV qualification and multi-domain evidence;
+    deterministic risk + broker feasibility (Parts IX/X) still constrain every
+    order. Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
     COGNITION_MEMORY_ENABLED (default true),
@@ -3815,9 +3814,9 @@ class CognitionConfig:
 
     enabled: bool = True
     shadow_mode: bool = False
-    # "off" = the Brain acts un-gated: its DecisionPackages drive execution
-    # directly with no CognitionGate/ManagementGate veto layer in front.
-    gate_mode: str = "off"   # off | shadow | veto | authoritative (Brain = sole decider)
+    # The production default is authoritative: absent/stale cognition cannot
+    # silently permit a legacy exposure-increasing path.
+    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
     # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
     # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
     # at runtime — the AI Cognitive Brain, via its origination path, is the sole
@@ -3828,24 +3827,23 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
-    # V-01 (§I/§VI/§VIII) — EV-primary actionability gate (OPT-IN, default off).
-    # When true, the Brain opens a campaign on a positive EXPECTED VALUE (net of
-    # cost, over flat) rather than a raw confidence floor, so a genuine positive-
-    # expectancy opportunity is not vetoed merely because mixed evidence pulled
-    # confidence below a threshold ("conflicting evidence ⇒ FLAT" is forbidden).
-    # ``ev_action_threshold_r`` is the minimum EV in R to act on (default 0.0 ⇒
-    # any strictly positive EV). Confidence still feeds the EV and the sizing.
+    # Identity requirement: net expected value is the default actionability gate,
+    # not an optional upgrade to a raw confidence floor. A market thesis cannot
+    # originate exposure without positive EV after estimated costs.
+    # ``ev_action_threshold_r`` is the minimum net EV in R (0.0 means strictly
+    # positive EV); confidence still contributes to EV and sizing.
     # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
-    ev_primary_gate: bool = False
+    ev_primary_gate: bool = True
     ev_action_threshold_r: float = 0.0
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
     min_advisors_for_action: int = 1
-    # Article XXXIV — minimum evidence-domain coverage before the Brain may act
-    # ("cannot determine whether an opportunity exists" ≠ "no opportunity").
+    # Identity requirement: market action needs a minimum breadth of independent
+    # evidence domains. Three permits lean but multi-dimensional market reads while
+    # rejecting single-domain direction proxies; the runtime may require more.
     # env COGNITION_MIN_EVIDENCE_DOMAINS.
-    min_evidence_domains: int = 1
+    min_evidence_domains: int = 3
     # Article XXI / V-013 — when the council under-delivers (most available
     # advisors did not respond) the Brain attenuates its effective confidence by
     # this multiplier: degraded cognition is ENFORCED, not merely observed.
@@ -3865,7 +3863,9 @@ class CognitionConfig:
     # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
     # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
     event_driven: bool = True
-    event_min_interval_seconds: float = 8.0
+    # Material tick/structure changes can trigger a fresh native analysis at most
+    # once per second per symbol. Provider calls remain independently rate-limited.
+    event_min_interval_seconds: float = 1.0
     # Lowered 0.15 → 0.10 so smaller (still meaningful) forming-bar shifts wake
     # the Brain — more responsive entries/management. Extra wakes hit the
     # per-symbol reasoner throttle (origination + council keep their global
@@ -3878,12 +3878,9 @@ class CognitionConfig:
     # extra cost across scanning. env COGNITION_MANAGE_MIN_INTERVAL_SECONDS.
     manage_min_interval_seconds: float = 8.0
     # Phase F — Brain-driven management thresholds.
-    # allow_scale_in: the Brain may ADD to a winning campaign (Part XVIII Art 1 —
-    # one campaign spans multiple entries). Enabled by default; the management
-    # sink still requires a protective stop + a broker-valid lot, and a scale is
-    # suppressed when the symbol's correlated cluster is over-concentrated
-    # (Art 11). Set false to forbid scaling entirely.
-    allow_scale_in: bool = True
+    # Retained for compatibility, but live management-sink scaling is suppressed
+    # until it carries a first-class activated opportunity and whole-book review.
+    allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
     # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
@@ -4083,6 +4080,52 @@ class CognitionConfig:
                 "CognitionConfig.min_evidence_domains must be >= 0, got "
                 f"{self.min_evidence_domains!r}"
             )
+
+        # These are product-identity invariants, not tuning preferences. Keep the
+        # .env file operator-owned, but do not let an old/permissive env override
+        # silently disable the sole-Brain path, net-EV gate, source-cost
+        # qualification, continuous event waking, or minimum evidence breadth.
+        # Operators can still adjust thresholds upward; these safety floors are
+        # deliberately one-way.
+        if not self.single_path:
+            logger.warning(
+                "[config] COGNITION_SINGLE_PATH=false is incompatible with the Apex identity; forcing true"
+            )
+            self.single_path = True
+        if not self.ev_primary_gate:
+            logger.warning(
+                "[config] COGNITION_EV_PRIMARY_GATE=false is incompatible with the Apex identity; forcing true"
+            )
+            self.ev_primary_gate = True
+        if not self.opportunity_qualification_enabled:
+            logger.warning(
+                "[config] disabling opportunity cost qualification is incompatible with the Apex identity; forcing true"
+            )
+            self.opportunity_qualification_enabled = True
+        if self.allow_scale_in:
+            logger.warning(
+                "[config] COGNITION_ALLOW_SCALE_IN=true is not supported until scale-ins "
+                "use the first-class opportunity and whole-book admission path; forcing false"
+            )
+            self.allow_scale_in = False
+        if not self.event_driven:
+            logger.warning(
+                "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
+            )
+            self.event_driven = True
+        if self.min_evidence_domains < 3:
+            logger.warning(
+                "[config] minimum evidence domains %s is below the identity floor of 3; forcing 3",
+                self.min_evidence_domains,
+            )
+            self.min_evidence_domains = 3
+        if self.min_advisors_for_action < 1:
+            logger.warning(
+                "[config] minimum advisors %s is below the identity floor of 1; forcing 1",
+                self.min_advisors_for_action,
+            )
+            self.min_advisors_for_action = 1
+
         if not (0.0 <= float(self.degraded_confidence_multiplier) <= 1.0):
             raise ValueError(
                 "CognitionConfig.degraded_confidence_multiplier must be in [0, 1], got "
