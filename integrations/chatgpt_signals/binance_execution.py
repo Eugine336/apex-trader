@@ -32,10 +32,10 @@ class BinanceExecutionError(RuntimeError):
 
 
 class BinanceSignedClient:
-    """Minimal USD-M Futures signed REST client.
+    """USD-M Futures signed read client with direct order placement disabled.
 
-    Only account, position, exchange-info, ticker and order endpoints are used.
-    No withdrawal/transfer endpoint exists in this client.
+    Account, position, exchange-info and ticker reads remain available for
+    diagnostics. This class intentionally cannot submit an order or transfer funds.
     """
 
     BASE = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com").rstrip("/")

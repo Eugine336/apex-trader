@@ -115,7 +115,8 @@ def test_relay_blocks_non_paper_mode_before_executor_call():
     assert guards, "relay route must explicitly fail closed outside PAPER mode"
     assert any(
         any(
-            isinstance(call.func, ast.Name)
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
             and call.func.id == "HTTPException"
             for call in ast.walk(guard)
         )
