@@ -33,20 +33,31 @@ def authorize(token: str | None) -> None:
 def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "execution_mode": MODE,
-        "live_enabled": os.getenv("BINANCE_LIVE_EXECUTION_ENABLED", "false").lower() == "true",
-        "binance_private_api": MODE == "LIVE",
+        "execution_mode": "PAPER_ONLY",
+        "configured_mode": MODE,
+        "live_enabled": False,
+        "binance_private_api": False,
+        "live_block_reason": (
+            "External signals cannot authorize exposure outside CognitiveBrain admission."
+        ),
     }
 
 
 @app.post("/v1/signals")
 def receive_signal(envelope: SignalEnvelope, x_apex_relay_token: str | None = Header(default=None)):
     authorize(x_apex_relay_token)
+    if MODE != "PAPER":
+        raise HTTPException(
+            503,
+            "LIVE is disabled: external ChatGPT signals must not bypass CognitiveBrain "
+            "and whole-book admission.",
+        )
     signal = ChatGPTTradeSignal.from_dict(envelope.signal)
-    if MODE == "LIVE" and signal.mode != "LIVE":
-        raise HTTPException(400, "LIVE executor requires a LIVE signal")
-    if MODE != "LIVE" and signal.mode != "PAPER":
-        raise HTTPException(400, "PAPER executor requires a PAPER signal")
+    if signal.mode != "PAPER":
+        raise HTTPException(
+            503,
+            "The signal relay is paper-only; LIVE signals cannot authorize Apex exposure.",
+        )
     try:
         result = executor.execute(signal)
     except Exception as exc:

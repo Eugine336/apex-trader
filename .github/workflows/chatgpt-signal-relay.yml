@@ -1,6 +1,11 @@
 name: Relay ChatGPT trade signals
 
 on:
+  pull_request:
+    paths:
+      - 'integrations/chatgpt_signals/**'
+      - 'tests/test_chatgpt_signal_identity_gate.py'
+      - '.github/workflows/chatgpt-signal-relay.yml'
   push:
     branches:
       - chatgpt-signal-inbox
@@ -8,7 +13,21 @@ on:
       - 'signals/inbox/*.json'
 
 jobs:
+  validate-paper-only:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install focused test runner
+        run: python -m pip install --upgrade pip pytest
+      - name: Validate external-signal live admission is blocked
+        run: python -m pytest tests/test_chatgpt_signal_identity_gate.py -q
+
   relay:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/chatgpt-signal-inbox'
     runs-on: ubuntu-latest
     permissions:
       contents: read
