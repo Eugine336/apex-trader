@@ -49,6 +49,21 @@ def test_evidence_freshness():
     assert timeless.is_fresh(now=10_000.0) is True
 
 
+def test_future_dated_evidence_is_not_fresh():
+    future = Evidence(
+        source_module="x", timestamp_epoch=1001.0,
+        relevance_horizon_seconds=100.0,
+    )
+    assert future.is_fresh(now=1000.0) is False
+
+    # A non-expiring horizon does not make an impossible future timestamp valid.
+    future_timeless = Evidence(
+        source_module="x", timestamp_epoch=1001.0,
+        relevance_horizon_seconds=0.0,
+    )
+    assert future_timeless.is_fresh(now=1000.0) is False
+
+
 def test_evidence_to_dict_shape():
     d = Evidence(source_module="liq", domain="liquidity",
                  observation="pool above", confidence=0.7).to_dict()
