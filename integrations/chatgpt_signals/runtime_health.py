@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-from .binance_execution import BinanceExecutionError, BinanceSignedClient
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -29,7 +28,8 @@ def check() -> int:
     print("APEX BINANCE / CHATGPT EXECUTION RUNTIME")
     print("=" * 64)
     print(f"Execution mode       : {mode}")
-    print(f"Live enabled         : {'YES' if live_enabled else 'NO'}")
+    print(f"Live opt-in requested: {'YES' if live_enabled else 'NO'}")
+    print("Live execution       : BLOCKED until CognitiveBrain admission is wired")
     print(f"Relay endpoint       : {relay_host}:{relay_port}")
     print(f"Relay token          : {'SET' if relay_token else 'MISSING'}")
     print(f"Binance endpoint     : {base_url}")
@@ -51,37 +51,16 @@ def check() -> int:
 
     if mode == "PAPER":
         print("Binance account      : NOT REQUIRED (paper mode)")
-        print("Live trading         : DISABLED")
         print("Status               : READY FOR PAPER")
         print("=" * 64)
         return 0
 
-    if not live_enabled:
-        print("Status               : FAIL (LIVE mode requires explicit live enable)")
-        return 2
-
-    if not os.getenv("BINANCE_API_KEY") or not os.getenv("BINANCE_API_SECRET"):
-        print("Status               : FAIL (Binance live credentials missing)")
-        return 2
-
-    try:
-        client = BinanceSignedClient()
-        account = client.account()
-        can_trade = bool(account.get("canTrade", False))
-        if not can_trade:
-            print("Binance trading      : DISABLED")
-            print("Status               : FAIL (Binance account cannot trade)")
-            return 2
-
-        print("Binance connection   : OK")
-        print("Futures trading      : ENABLED")
-        print("Withdrawals          : NOT USED BY EXECUTOR")
-        print("Status               : LIVE-READY")
-        print("=" * 64)
-        return 0
-    except BinanceExecutionError as exc:
-        print(f"Status               : FAIL ({exc})")
-        return 2
+    # No environment switch can promote an external signal into Apex trade
+    # authority. Do not make a private API connection from this diagnostic.
+    print("Binance account      : NOT CHECKED (live route disabled)")
+    print("Status               : BLOCKED (requires CognitiveBrain admission)")
+    print("=" * 64)
+    return 2
 
 
 if __name__ == "__main__":

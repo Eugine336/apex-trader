@@ -142,6 +142,7 @@ No M1 pattern, indicator, score, strategy label or time frame is a universal pre
 - **M1 patterns are retained:** engulfing, pin bar/rejection wick, range reclaim, inside-bar breakout and volume-at-boundary observations can inform context; they do not automatically trigger entries.
 - **Native reasoning plus optional advisers:** provider failure is different from a reasoned no-opportunity state. Native fallback must retain the same evidence and qualification discipline.
 - **Shared execution and risk:** exposure-increasing actions must pass through the authoritative execution plane and its risk controls.
+- **External-signal relay is paper-only:** the optional ChatGPT→Binance integration cannot authorize LIVE exposure independently of CognitiveBrain and whole-book admission.
 - **Auditability:** decisions need a thesis, evidence provenance, uncertainty, invalidation and action/no-action reason.
 
 ---
