@@ -47,6 +47,11 @@ class BinanceSignedClient:
             raise BinanceExecutionError("BINANCE_API_KEY and BINANCE_API_SECRET are required")
 
     def _request(self, method: str, path: str, params: dict[str, Any] | None = None, signed: bool = False) -> Any:
+        method = method.upper()
+        if method != "GET":
+            raise BinanceExecutionError(
+                "Mutating Binance REST requests are disabled for the external-signal adapter."
+            )
         params = dict(params or {})
         if signed:
             params["timestamp"] = int(time.time() * 1000)

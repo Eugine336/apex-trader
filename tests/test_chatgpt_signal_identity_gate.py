@@ -69,6 +69,8 @@ def test_low_level_binance_order_endpoint_is_disabled():
     client = object.__new__(BinanceSignedClient)
     with pytest.raises(BinanceExecutionError, match="Direct Binance order placement is disabled"):
         client.place_order(symbol="BTCUSDT", side="BUY", type="MARKET", quantity="0.001")
+    with pytest.raises(BinanceExecutionError, match="Mutating Binance REST requests are disabled"):
+        client._request("POST", "/fapi/v1/order", {"symbol": "BTCUSDT"}, signed=True)
 
 
 def test_runtime_health_never_declares_live_ready(monkeypatch, capsys):
