@@ -101,6 +101,8 @@ Outcome attribution → memory/calibration → validated adaptation
 
 ## Constraints and honesty rules
 
+**Pending-order route guard (PR #754; focused validation passed):** the scheduled NewsPlanner has a direct callback to `connector.place_pending_order()`, which bypasses the Brain's first-class opportunity and whole-book admission. Its scheduled update entrypoint and direct staging helper are now inert, so neither a configuration flag nor a symbol allowlist can revive the legacy route. News context remains observational; staged orders remain blocked until the common Brain path admits them. The focused workflow passed on Python 3.11 and 3.12 and lint passed. The full suite remains red with 180 unchanged failures; the latest tested branch had 3,718 passing tests and 12 skips. Other direct broker routes remain under audit.
+
 - No source, test, backtest or log can prove guaranteed profitability or capture of every profitable movement.
 - `.env` was restored exactly from `main` at the user's instruction and must not be edited again. It remains tracked; any active credential previously exposed should be rotated separately without changing that file.
 - Do not enable a data feed, provider, strategy family or execution path simply because the name exists in the repository.

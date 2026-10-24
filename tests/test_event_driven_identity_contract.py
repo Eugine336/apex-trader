@@ -99,3 +99,29 @@ def test_legacy_atomic_reversal_runtime_wiring_is_disabled():
         isinstance(keyword.value, ast.Constant) and keyword.value.value is False
         for call in calls for keyword in call.keywords if keyword.arg == "enabled"
     ), "the legacy reversal manager must not open the opposite side itself"
+
+
+def test_legacy_news_planner_cannot_stage_pending_orders_outside_brain_admission():
+    module = _parse("event_driven_bootstrap.py")
+    update = _function(module, "_run_news_planner_update")
+    # The old planner's callback calls connector.place_pending_order directly,
+    # without a first-class Brain opportunity or whole-book admission. The
+    # scheduled update entrypoint therefore must not invoke it under any config.
+    assert not _calls(update, attribute="update")
+    assert not _calls(update, attribute="place_pending_order")
+    assert _calls(update, attribute="warning")
+
+
+def test_legacy_pending_order_callback_cannot_reach_broker_connector():
+    module = _parse("event_driven_bootstrap.py")
+    stage = _function(module, "_stage_place_pending")
+    # Symbol allowlists are not a substitute for first-class opportunity and
+    # portfolio admission; this boundary must never place broker pending orders.
+    assert not _calls(stage, attribute="place_pending_order")
+    assert _calls(stage, attribute="warning")
+    returns = [node for node in ast.walk(stage) if isinstance(node, ast.Return)]
+    assert returns
+    assert all(
+        isinstance(node.value, ast.Constant) and node.value.value is None
+        for node in returns
+    )
