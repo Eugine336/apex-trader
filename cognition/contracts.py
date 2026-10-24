@@ -266,10 +266,16 @@ class Evidence:
         horizon = self.relevance_horizon_seconds
         if horizon is None:
             horizon = DEFAULT_EVIDENCE_HORIZON_SECONDS
+        t = _now_epoch() if now is None else float(now)
+        age = t - self.timestamp_epoch
+        # Future-dated evidence can indicate clock skew or bad timestamp
+        # normalization. It must not pass freshness merely because its age is
+        # negative and therefore below the maximum age horizon.
+        if age < 0:
+            return False
         if horizon <= 0:
             return True
-        t = _now_epoch() if now is None else float(now)
-        return (t - self.timestamp_epoch) <= horizon
+        return age <= horizon
 
     def to_dict(self) -> dict:
         return {

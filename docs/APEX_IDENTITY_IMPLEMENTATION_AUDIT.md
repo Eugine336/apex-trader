@@ -1,6 +1,6 @@
 # Apex identity — system-wide implementation audit
 
-> **Audit baseline:** repository main at commit b57f6c8d311d9865a69e9e0a9f6198a4752176a9 (2026-10-23).  
+> **Audit baseline:** repository main at commit 7a74844f708486e33c5125a9dace3ed04db604c2 (2026-10-24; re-verified 2026-10-25).  
 > **Purpose:** replace optimistic documentation-only completion claims with source-backed runtime gates. Refresh this audit after every migration PR.  
 > **Authority:** APEX_IDENTITY.md and APEX_Constitution.md.
 
@@ -9,6 +9,8 @@
 The identity is canonical in source and documentation in this branch. The shared cognition snapshot now includes universal completed-bar OHLC observations and contextual M1 patterns when data is available. The latest completed focused workflow on the previous head passed on Python 3.11 and 3.12 (264 tests per version, compilation and scoped Ruff lint; 3 warnings). New route-level static guards and configuration changes have landed since that run and are awaiting a fresh focused run. A repository-wide Ruff run is green; the full suite now completes collection but still has numerous failures in legacy-contract, environment/dependency, and test-fixture areas. That does **not** mean the full identity is implemented. Existing code already has strong pieces (one CognitiveBrain, evidence consolidation, event-driven nudges, MTF chart/tick snapshots, competing native hypotheses, campaign memory, portfolio context and risk/execution gates), but these pieces do not yet prove a complete market-aware trader.
 
 ## Findings from actual source inspection
+
+**Freshness correction in this migration (PR validation pending):** `Evidence.is_fresh()` rejects evidence whose source timestamp is later than the comparison time, including evidence with an otherwise non-expiring horizon. This closes a negative-age fail-open; it does not establish that each broker adapter normalizes timestamps correctly. Regression coverage is in `tests/test_cognition_contracts.py` and is added to the focused cognition workflow.
 
 | Area | Existing implementation | Gap that remains | Required closure evidence |
 |---|---|---|---|
