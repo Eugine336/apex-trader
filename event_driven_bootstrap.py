@@ -5662,6 +5662,7 @@ class EventDrivenSystem:
             getattr(risk_cfg, "legacy_mechanical_exit_fallback_enabled", False)
         )
         cfg.discretionary_exits_enabled = legacy_fallback
+        cfg.legacy_mechanical_exit_fallback_enabled = legacy_fallback
         cfg.scan_directional_exits_enabled = bool(
             legacy_fallback
             and getattr(risk_cfg, "scan_directional_exits_enabled", False)
