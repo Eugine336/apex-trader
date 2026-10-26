@@ -544,7 +544,9 @@ class CognitionLoop:
                 logger.debug("[cognition-loop] native memory binding ignored: %s", exc)
         self._operations_author = operations_author
         self._operations_sink = operations_sink
-        self._origination_sink: Optional[Callable[[Any], None]] = None
+        # None remains accepted for older void callbacks; False explicitly means
+        # that admission rejected the intent and no campaign may be registered.
+        self._origination_sink: Optional[Callable[[Any], Optional[bool]]] = None
         self._is_market_open: Optional[Callable[[str], bool]] = None
         self._name = str(name or "cognition-loop")
         # Management realisation (Part VI): the mode mirrors origination —
@@ -579,6 +581,7 @@ class CognitionLoop:
         self._managed = 0
         self._orig_intended = 0
         self._orig_submitted = 0
+        self._orig_suppressed = 0
         self._memory_opens = 0
         self._ops_submitted = 0
         self._event_reasons = 0
@@ -630,7 +633,7 @@ class CognitionLoop:
         self._pattern_tracker = pattern_tracker
         self._origination_patterns: dict = {}
 
-    def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
+    def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
         """Wire the live order-submission sink (set by the system that owns the
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
@@ -1283,7 +1286,15 @@ class CognitionLoop:
             # Suppress repeats within a cycle regardless of submission outcome.
             self._open_keys.add((symbol, direction))
             if self.origination_mode == "live" and self._origination_sink is not None:
-                self._origination_sink(intent)
+                sink_result = self._origination_sink(intent)
+                if sink_result is False:
+                    self._orig_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] origination rejected for %s %s — "
+                        "not registering a live campaign",
+                        symbol, direction,
+                    )
+                    return
                 self._orig_submitted += 1
                 logger.info(
                     "[cognition-loop] originated LIVE %s %s (stake=%s)",
@@ -1741,6 +1752,7 @@ class CognitionLoop:
             "origination_sink_wired": self._origination_sink is not None,
             "orig_intended": self._orig_intended,
             "orig_submitted": self._orig_submitted,
+            "orig_suppressed": self._orig_suppressed,
             "memory_enabled": self._memory is not None,
             "memory_opens": self._memory_opens,
             "operations_enabled": (self._operations_author is not None
