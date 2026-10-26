@@ -41,7 +41,67 @@ class _Reasoner:
         return self._opinion
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8):
+
+def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
+    """Add fresh, completed market-lens geometry for entry-admission tests."""
+    import time
+
+    entry = 1.1000
+    risk = 0.0050
+    side = str(direction).upper()
+    if side == "LONG":
+        high = entry + risk * float(target_r)
+        low = entry - risk
+        trend = "uptrend"
+        breakout = "up"
+        change = 0.0010
+    else:
+        high = entry + risk
+        low = entry - risk * float(target_r)
+        trend = "downtrend"
+        breakout = "down"
+        change = -0.0010
+    stamp = time.time()
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain="structure", symbol=ms.symbol,
+        observation="fresh completed-bar structural range for test geometry",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "current_close": entry,
+            "prior_range_high": high,
+            "prior_range_low": low,
+            "range_position": 0.5,
+            "breakout_direction": breakout,
+            "trend_state": trend,
+            "trend_strength": 0.4,
+            "upper_wick": 0.0,
+            "lower_wick": 0.0,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain="momentum", symbol=ms.symbol,
+        observation="fresh completed-bar momentum for test geometry",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "close_change": change,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900.0,
+    ))
+    return ms
+
+
+def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
     ms = MarketState(symbol=symbol)
     # Two distinct evidence domains so the Brain's minimum-coverage gate
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
@@ -73,6 +133,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
     return ms
 
 
@@ -189,15 +250,20 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     assert "sizing_rationale" in out.decision.questions_answered
 
 
-def test_high_confidence_poor_payoff_is_sized_down():
-    # Same 0.8 confidence but poor payoff geometry (0.5R favorable vs 1.0R adverse)
-    # → gross EV = 0.8*0.5 - 0.2*1 = 0.2R; costs reduce this to 0.15R.
-    # → ev_normalized = 0.15/2.0 = 0.075, so exposure stays below confidence.
-    op = _RichOpinion("LONG", 0.8, efe="0.5R", eae="1.0R")
+def test_high_confidence_poor_market_derived_payoff_is_sized_down():
+    # Same 0.8 confidence, but the observed target is only 0.5R from entry while
+    # the structural invalidation is 1R away. Advisor-reported excursions cannot
+    # replace these market-derived levels.
+    op = _RichOpinion("LONG", 0.8, efe="8R", eae="0.1R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
+    out = brain.reason(_confident_state(polarity=0.8, target_r=0.5))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.075)
+    assert out.decision.questions_answered["payoff_geometry_status"] == (
+        "qualified_from_fresh_completed_market_evidence"
+    )
+    assert out.campaign.expected_value == pytest.approx(0.15)
+    assert out.campaign.desired_exposure == pytest.approx(0.3)
+    assert out.campaign.desired_exposure < out.campaign.confidence
 
 
 def test_campaign_carries_expected_value_field():
