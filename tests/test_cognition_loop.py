@@ -322,6 +322,7 @@ class _OpenBrain:
         self._dir = direction
         self._exp = exposure
         self._conf = confidence
+        self.last_campaign = None
 
     def reason(self, market_state, now=None):
         sym = market_state.symbol
@@ -333,6 +334,7 @@ class _OpenBrain:
             symbol=sym, direction=self._dir, desired_exposure=self._exp,
             confidence=self._conf, decision_id=decision.decision_id,
         )
+        self.last_campaign = campaign
         return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
 
     def reason_portfolio(self, outputs, existing_positions):
@@ -843,14 +845,16 @@ class _FakeRegistry:
 
 def test_origination_live_births_campaign():
     reg = _FakeRegistry()
+    brain = _OpenBrain(direction="LONG")
     loop = CognitionLoop(
-        _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", campaign_registry=reg,
         position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: None)
     loop.run_once()
     assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
+    assert reg.theses[0][5] == brain.last_campaign.campaign_id
     assert ("EURUSD", "LONG", "open") == reg.legs[0][:3]
 
 
