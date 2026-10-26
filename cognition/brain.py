@@ -175,6 +175,9 @@ class PositionView:
     size: float = 0.0
     campaign_id: str = ""
     entry_confidence: Optional[float] = None
+    # Original lineage helps the Brain reassess the held campaign without guessing.
+    opportunity_id: str = ""
+    originating_decision_id: str = ""
 
 
 class CognitiveBrain:
