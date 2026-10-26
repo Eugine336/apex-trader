@@ -1460,12 +1460,18 @@ class SystemContext:
                             broker_profit_r as _profit_r,
                             hold_seconds_from as _hold,
                         )
-                        try:
-                            positions = (
-                                platform_manager.get_all_open_positions() or []
+                        # Use the confirmation-aware broker snapshot. A platform
+                        # that failed to answer has UNKNOWN exposure, not an empty book.
+                        snapshot = platform_manager.get_open_positions_snapshot()
+                        failed = set(getattr(snapshot, "failed_platforms", set()) or set())
+                        if failed:
+                            raise RuntimeError(
+                                "broker positions unconfirmed for platform(s): "
+                                + ", ".join(sorted(str(item) for item in failed))
                             )
-                        except Exception:  # noqa: BLE001
-                            positions = []
+                        positions = getattr(snapshot, "positions", None)
+                        if positions is None:
+                            raise RuntimeError("broker positions snapshot omitted positions")
                         # Best-effort campaign enrichment, keyed by (symbol, side).
                         camp_by_key: dict = {}
                         reg = ctx.campaign_registry
