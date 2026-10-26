@@ -685,7 +685,10 @@ class TestDiscretionaryExitsToggle:
 
     def test_explicit_legacy_fallback_retains_and_labels_tp2(self):
         # This explicit worker override represents the runtime RiskConfig opt-in.
-        cfg = WorkerConfig(discretionary_exits_enabled=True)
+        cfg = WorkerConfig(
+            discretionary_exits_enabled=True,
+            legacy_mechanical_exit_fallback_enabled=True,
+        )
         intents = PositionWorker(cfg).evaluate(
             _snap(tp2=1.12, current_price=1.121), NOW)
         legacy = [i for i in intents if i.source == "legacy_mechanical"]
