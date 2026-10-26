@@ -1,8 +1,10 @@
 """Tests for the deterministic, provider-independent campaign manager."""
 
-from cognition.native_management import NativePositionManager
-from cognition.contracts import Evidence, MarketState
+from cognition.brain import CognitiveBrain, PositionView
+from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.identity import IDENTITY_VERSION
+from cognition.memory import CampaignMemoryStore
+from cognition.native_management import NativePositionManager
 
 
 def _position(*, campaign_id="campaign-1", profit_r=0.0):
@@ -197,3 +199,53 @@ def test_native_manager_fault_fails_safe_to_hold():
     result = manager.assess(None, None)
     assert result.action == "hold"
     assert "fault" in result.reason or "campaign id missing" in result.reason
+
+
+
+def test_brain_uses_native_management_when_no_provider_and_loads_original_thesis():
+    store = CampaignMemoryStore(db_path=":memory:")
+    store.record_open(
+        symbol="EURUSD",
+        direction="LONG",
+        fingerprint={},
+        campaign_id="campaign-1",
+        spec={
+            "thesis": "The original structural break remains valid.",
+            "invalidation_conditions": ["The broken structure is reclaimed."],
+            "opportunity_id": "opportunity-1",
+            "decision_id": "decision-1",
+            "identity_version": IDENTITY_VERSION,
+        },
+    )
+    brain = CognitiveBrain(reasoner=None)
+    brain.bind_campaign_memory(store)
+    state = _state(markers=({"state": "invalidated"}, {"state": "invalidated"}))
+    try:
+        out = brain.manage(
+            PositionView(
+                symbol="EURUSD", direction="LONG", campaign_id="campaign-1",
+            ),
+            state,
+        )
+        assert out.decision.decision_type == DecisionType.EXIT
+        baseline = out.decision.questions_answered["native_management_baseline"]
+        assert baseline["action"] == "exit"
+        assert baseline["campaign_id"] == "campaign-1"
+        assert baseline["original_thesis"] == "The original structural break remains valid."
+        assert out.decision.to_dict()["identity_version"] == IDENTITY_VERSION
+    finally:
+        store.close()
+
+
+def test_brain_records_native_hold_when_no_provider_and_no_campaign_assessment():
+    brain = CognitiveBrain(reasoner=None)
+    state = _state()
+    out = brain.manage(
+        PositionView(symbol="EURUSD", direction="LONG", campaign_id="campaign-1"),
+        state,
+    )
+    assert out.decision.decision_type == DecisionType.HOLD
+    baseline = out.decision.questions_answered["native_management_baseline"]
+    assert baseline["action"] == "hold"
+    assert "no fresh campaign-linked thesis assessment" in baseline["reason"]
+    assert out.decision.to_dict()["identity_version"] == IDENTITY_VERSION
