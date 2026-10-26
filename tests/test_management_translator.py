@@ -70,3 +70,18 @@ def test_action_to_dict_is_bounded():
     assert d["identity_version"] == IDENTITY_VERSION
     assert d["identity"] == IDENTITY_STATEMENT
     assert d["decision_id"] == "dec-1"
+
+
+def test_management_action_preserves_campaign_and_opportunity_provenance():
+    pos = SimpleNamespace(
+        symbol="XAUUSD", direction="LONG", campaign_id="campaign-7",
+        opportunity_id="opportunity-9",
+    )
+    action = translate_management(_out(DecisionType.EXIT), pos)
+    assert action is not None
+    assert action.decision_id == "dec-1"
+    assert action.campaign_id == "campaign-7"
+    assert action.opportunity_id == "opportunity-9"
+    payload = action.to_dict()
+    assert payload["campaign_id"] == "campaign-7"
+    assert payload["opportunity_id"] == "opportunity-9"
