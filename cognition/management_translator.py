@@ -91,13 +91,24 @@ def translate_management(
         conf = float(getattr(decision, "confidence", 0.0) or 0.0)
         reason = str(getattr(decision, "thesis", "") or "")[:200]
         dec_id = str(getattr(decision, "decision_id", "") or "")
+        # A management decision can identify the opportunity it is reassessing.
+        # Prefer that explicit Brain provenance; use position metadata only as a
+        # fallback for adapters that retain the original lineage.
+        decision_opportunity_id = str(
+            getattr(decision, "preferred_opportunity_id", "") or ""
+        )
+        position_opportunity_id = str(
+            getattr(position, "opportunity_id", "") or ""
+        )
+        decision_campaign_id = str(getattr(decision, "campaign_id", "") or "")
+        position_campaign_id = str(getattr(position, "campaign_id", "") or "")
 
         def _act(kind: str, **kw: Any) -> ManagementAction:
             return ManagementAction(
                 symbol=symbol, kind=kind, direction=held,
                 confidence=conf, reason=reason, decision_id=dec_id,
-                campaign_id=str(getattr(position, "campaign_id", "") or ""),
-                opportunity_id=str(getattr(position, "opportunity_id", "") or ""),
+                campaign_id=decision_campaign_id or position_campaign_id,
+                opportunity_id=decision_opportunity_id or position_opportunity_id,
                 identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT, **kw,
             )
 
