@@ -78,6 +78,7 @@ def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
         relevance_horizon_seconds=60.0,
     ))
+    add_market_geometry(ms, "LONG" if polarity >= 0 else "SHORT")
     return ms
 
 
