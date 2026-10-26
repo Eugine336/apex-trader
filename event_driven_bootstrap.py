@@ -2086,6 +2086,11 @@ class EventDrivenSystem:
                     idempotency_key=idem_key,
                     source="ai_brain",
                     reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
+                    decision_id=str(getattr(origination, "decision_id", "") or ""),
+                    campaign_id=str(getattr(origination, "campaign_id", "") or ""),
+                    opportunity_id=str(getattr(origination, "opportunity_id", "") or ""),
+                    identity_version=str(getattr(origination, "identity_version", "") or ""),
+                    identity=str(getattr(origination, "identity", "") or ""),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
