@@ -412,12 +412,14 @@ class TestAdaptiveOptimizer:
         assert adj.should_trade is True
         assert adj.position_size_multiplier == 0.8
 
-    def test_persistence_after_optimization(self, tmp_path):
+    def test_persistence_after_optimization(self, tmp_path, monkeypatch):
         import adaptive.score_optimizer as so_mod
         import adaptive.pair_learner as pl_mod
         import adaptive.regime_learner as rl_mod
         import adaptive.session_learner as sl_mod
 
+        # ScoreOptimizer resolves its active file through runtime_paths.data_dir().
+        monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
         old_so = so_mod.ScoreOptimizer.DEFAULT_PATH
         old_pl = pl_mod.PairLearner.SAVE_PATH
         old_rl = rl_mod.RegimeLearner.SAVE_PATH
