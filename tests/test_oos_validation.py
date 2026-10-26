@@ -103,7 +103,7 @@ class TestOOSValidationGate:
         result = opt.optimize(trades, min_trades=50)
         assert result.as_dict() != ScoringWeights().as_dict()
         _assert_within_safety_envelope(result)
-        assert (tmp_path / "weights.json").exists()
+        assert (tmp_path / "scoring_weights.json").exists()
 
     def test_overfit_trap_rejected(self, tmp_path, monkeypatch):
         self._use_isolated_weights_path(monkeypatch, tmp_path)
@@ -123,7 +123,7 @@ class TestOOSValidationGate:
         opt.DEFAULT_PATH = str(fp)
         trades = _build_overfit_dataset()
         opt.optimize(trades, min_trades=50)
-        assert not fp.exists()
+        assert not (tmp_path / "scoring_weights.json").exists()
 
     def test_small_validation_fallback(self, tmp_path, monkeypatch):
         self._use_isolated_weights_path(monkeypatch, tmp_path)
@@ -132,8 +132,8 @@ class TestOOSValidationGate:
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
         trades = _build_predictive_dataset(n_train=25, n_val=10)
         result = opt.optimize(trades, min_trades=30)
-        assert result.total == 123
-        assert (tmp_path / "weights.json").exists()
+        _assert_within_safety_envelope(result)
+        assert (tmp_path / "scoring_weights.json").exists()
 
     def test_deterministic_decision(self, tmp_path, monkeypatch):
         """Same input twice -> identical result with independent persistence."""
@@ -205,13 +205,13 @@ class TestOOSValidationGate:
         assert result[1] is trades[1]
         assert result is not trades
 
-    def test_adopted_weights_within_envelope(self, tmp_path):
+    def test_adopted_weights_within_envelope(self, tmp_path, monkeypatch):
         """Both adoption and fallback produce per-factor weights within ±25% of baseline."""
         baseline = ScoringWeights()
         bd = baseline.as_dict()
 
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "oos")
         opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "w1.json")
         r1 = opt.optimize(_build_predictive_dataset(), min_trades=50)
         r1d = r1.as_dict()
         for key in r1d:
@@ -219,150 +219,8 @@ class TestOOSValidationGate:
             hi = round(bd[key] * 1.25)
             assert lo <= r1d[key] <= hi, f"OOS path: {key}={r1d[key]} outside [{lo},{hi}]"
 
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "fallback")
         opt2 = ScoreOptimizer()
-        opt2.DEFAULT_PATH = str(tmp_path / "w2.json")
-        small = _build_predictive_dataset(n_train=25, n_val=10)
-        r2 = opt2.optimize(small, min_trades=30)
-        r2d = r2.as_dict()
-        for key in r2d:
-            lo = round(bd[key] * 0.75)
-            hi = round(bd[key] * 1.25)
-            assert lo <= r2d[key] <= hi, f"fallback path: {key}={r2d[key]} outside [{lo},{hi}]"
-    @staticmethod
-    def _use_isolated_weights_path(monkeypatch, tmp_path):
-        # ScoreOptimizer resolves persistence through runtime_paths.data_dir();
-        # DEFAULT_PATH is documentation-only and is intentionally not opened.
-        import adaptive.score_optimizer as so_mod
-
-        monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
-
-    def test_genuinely_predictive_factor_adopted(self, tmp_path, monkeypatch):
-        self._use_isolated_weights_path(monkeypatch, tmp_path)
-        """Factor predictive in both halves -> candidate ADOPTED."""
-        opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "weights.json")
-        trades = _build_predictive_dataset()
-        result = opt.optimize(trades, min_trades=50)
-        assert result.as_dict() != ScoringWeights().as_dict()
-        assert result.total == 123
-        assert (tmp_path / "weights.json").exists()
-
-    def test_overfit_trap_rejected(self, tmp_path, monkeypatch):
-        self._use_isolated_weights_path(monkeypatch, tmp_path)
-        """Factor reverses in validation -> candidate REJECTED, incumbent retained."""
-        opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "weights.json")
-        original = ScoringWeights()
-        trades = _build_overfit_dataset()
-        result = opt.optimize(trades, min_trades=50)
-        assert result.as_dict() == original.as_dict()
-
-    def test_no_write_on_rejection(self, tmp_path, monkeypatch):
-        self._use_isolated_weights_path(monkeypatch, tmp_path)
-        """Rejected candidate must not be persisted to disk."""
-        fp = tmp_path / "weights.json"
-        opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(fp)
-        trades = _build_overfit_dataset()
-        opt.optimize(trades, min_trades=50)
-        assert not fp.exists()
-
-    def test_small_validation_fallback(self, tmp_path, monkeypatch):
-        self._use_isolated_weights_path(monkeypatch, tmp_path)
-        """Below MIN_VALIDATION -> falls back to fit-on-all without OOS gate."""
-        opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "weights.json")
-        trades = _build_predictive_dataset(n_train=25, n_val=10)
-        result = opt.optimize(trades, min_trades=30)
-        assert result.total == 123
-        assert (tmp_path / "weights.json").exists()
-
-    def test_deterministic_decision(self, tmp_path, monkeypatch):
-        """Same input twice -> identical result with independent persistence."""
-        self._use_isolated_weights_path(monkeypatch, tmp_path / "first")
-        trades = _build_predictive_dataset()
-        opt1 = ScoreOptimizer()
-        r1 = opt1.optimize(trades, min_trades=50)
-
-        # Use a fresh data directory so the second run starts from the same
-        # incumbent instead of loading the first run's learned weights.
-        self._use_isolated_weights_path(monkeypatch, tmp_path / "second")
-        opt2 = ScoreOptimizer()
-        r2 = opt2.optimize(trades, min_trades=50)
-        assert r1.as_dict() == r2.as_dict()
-
-    def test_validation_metric_perfect_discrimination(self):
-        """Weights that perfectly separate wins from losses -> high positive metric."""
-        weights = ScoringWeights(
-            fvg_weight=40,
-            structure_weight=15,
-            ob_h1_weight=10,
-            ob_m5_weight=10,
-            mtf_confluence_weight=10,
-            session_weight=8,
-            news_weight=8,
-            currency_strength_weight=7,
-            liquidity_sweep_weight=5,
-            volume_weight=4,
-            inducement_weight=3,
-            wyckoff_weight=3,
-        )
-        trades = [
-            _make_trade(10.0, ["fvg"]),
-            _make_trade(10.0, ["fvg"]),
-            _make_trade(-5.0, ["session"]),
-            _make_trade(-5.0, ["session"]),
-        ]
-        metric = ScoreOptimizer._compute_validation_metric(weights, trades)
-        assert metric == pytest.approx(45.0)
-
-    def test_validation_metric_no_discrimination(self):
-        """All wins or all losses -> returns 0.0 (no separation measurable)."""
-        weights = ScoringWeights()
-        all_wins = [_make_trade(10.0, ["fvg"]) for _ in range(5)]
-        assert ScoreOptimizer._compute_validation_metric(weights, all_wins) == 0.0
-        all_losses = [_make_trade(-5.0, ["fvg"]) for _ in range(5)]
-        assert ScoreOptimizer._compute_validation_metric(weights, all_losses) == 0.0
-
-    def test_sort_by_time_with_timestamps(self):
-        """Trades with timestamps are sorted ascending."""
-        trades = [
-            _make_trade(10.0, ["fvg"], "2025-03-01T00:00:00Z"),
-            _make_trade(-5.0, ["fvg"], "2025-01-01T00:00:00Z"),
-            _make_trade(8.0, ["fvg"], "2025-02-01T00:00:00Z"),
-        ]
-        result = ScoreOptimizer._sort_by_time(trades)
-        assert result[0]["timestamp"] == "2025-01-01T00:00:00Z"
-        assert result[1]["timestamp"] == "2025-02-01T00:00:00Z"
-        assert result[2]["timestamp"] == "2025-03-01T00:00:00Z"
-
-    def test_sort_by_time_without_timestamps(self):
-        """Without timestamps, input order preserved (shallow copy)."""
-        trades = [
-            _make_trade(10.0, ["fvg"]),
-            _make_trade(-5.0, ["session"]),
-        ]
-        result = ScoreOptimizer._sort_by_time(trades)
-        assert result[0] is trades[0]
-        assert result[1] is trades[1]
-        assert result is not trades
-
-    def test_adopted_weights_within_envelope(self, tmp_path):
-        """Both adoption and fallback produce per-factor weights within ±25% of baseline."""
-        baseline = ScoringWeights()
-        bd = baseline.as_dict()
-
-        opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "w1.json")
-        r1 = opt.optimize(_build_predictive_dataset(), min_trades=50)
-        r1d = r1.as_dict()
-        for key in r1d:
-            lo = round(bd[key] * 0.75)
-            hi = round(bd[key] * 1.25)
-            assert lo <= r1d[key] <= hi, f"OOS path: {key}={r1d[key]} outside [{lo},{hi}]"
-
-        opt2 = ScoreOptimizer()
-        opt2.DEFAULT_PATH = str(tmp_path / "w2.json")
         small = _build_predictive_dataset(n_train=25, n_val=10)
         r2 = opt2.optimize(small, min_trades=30)
         r2d = r2.as_dict()
