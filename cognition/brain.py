@@ -2715,6 +2715,8 @@ class CognitiveBrain:
             recent_mgmt = {s: o.decision.decision_type.value
                            for s, o in list(self._last_management.items())[-25:]}
             return {
+                "identity_version": IDENTITY_VERSION,
+                "identity": IDENTITY_STATEMENT,
                 "available": self.available,
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
