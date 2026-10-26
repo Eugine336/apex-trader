@@ -70,7 +70,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
         observation="fresh test spread and slippage quote",
         confidence=0.9,
         uncertainty=0.1,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
     return ms
