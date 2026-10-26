@@ -225,13 +225,29 @@ def test_v9_execution_cost_can_flip_ev_negative():
 
 
 def test_v9_execution_cost_adapter_shapes_measurements():
-    ev = evidence_from_execution_cost("EURUSD", {"estimated_spread_r": 0.1,
-                                                 "estimated_slippage_r": 0.05})
+    ev = evidence_from_execution_cost("EURUSD", {
+        "estimated_spread_r": 0.1,
+        "estimated_slippage_r": 0.05,
+        "cost_verified": True,
+        "cost_source": "test live quote",
+    })
     assert len(ev) == 1
     m = ev[0].measurements
     assert m["estimated_total_cost_r"] == pytest.approx(0.15)
+    assert m["cost_verified"] is True
+    assert m["cost_source"] == "test live quote"
     assert ev[0].domain == EvidenceDomain.EXECUTION_QUALITY
     assert ev[0].polarity == 0.0
+
+
+def test_v9_execution_cost_adapter_defaults_to_unverified():
+    ev = evidence_from_execution_cost("EURUSD", {
+        "estimated_spread_r": 0.1,
+        "estimated_slippage_r": 0.05,
+    })
+    assert len(ev) == 1
+    assert ev[0].measurements["estimated_total_cost_r"] == pytest.approx(0.15)
+    assert ev[0].measurements["cost_verified"] is False
 
 
 # ── V1 — the Brain attenuates an overconfident advisor ───────────────────────
