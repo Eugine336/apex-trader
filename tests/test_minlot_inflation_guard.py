@@ -77,7 +77,9 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._deviation = 20
     c._max_tick_age_seconds = 120.0
     c._max_slippage_pips = 0.0
-    c._min_rr_after_adjust = 1.5
+    # This suite tests min-lot inflation, not the independent minimum-R:R
+    # gate. Keep a 1R baseline admissible so failures identify the intended guard.
+    c._min_rr_after_adjust = 1.0
     c._preserve_rr_after_adjust = True
     c._broker_name = "test"
     c._symbol_cache = {"XTIUSD": "XTIUSD", "EURUSD": "EURUSD"}

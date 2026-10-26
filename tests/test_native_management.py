@@ -341,10 +341,24 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
 
 def test_risk_domain_invalidation_does_not_count_as_market_coverage():
     manager = NativePositionManager()
-    # Two genuine market domains corroborate invalidation, but that remains
-    # below the three-domain floor. Risk telemetry normalizes to OTHER in the
-    # contract layer and must not count as a third market domain.
-    state = _state(markers=({"state": "invalidated"}, {"state": "invalidated"}))
+    # Construct only two genuine market domains. The normal _state fixture
+    # includes three domains by default, so using it here would already satisfy
+    # the market-coverage floor even when the risk telemetry is correctly ignored.
+    state = MarketState(symbol="EURUSD")
+    for domain in ("structure", "momentum"):
+        state.add(Evidence(
+            source_module=f"native.{domain}",
+            domain=domain,
+            symbol="EURUSD",
+            observation=f"fresh {domain} evidence",
+            confidence=0.9,
+            uncertainty=0.1,
+            measurements={
+                "campaign_id": "campaign-1",
+                "native_thesis_state": "invalidated",
+            },
+            relevance_horizon_seconds=900.0,
+        ))
     state.add(Evidence(
         source_module="portfolio.risk_monitor",
         domain="other",
