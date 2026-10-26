@@ -185,7 +185,7 @@ class TestEnvelopeOnAdopt:
     def test_oos_path_persisted_file_within_envelope(self, tmp_path, monkeypatch):
         _use_isolated_weights_path(monkeypatch, tmp_path)
         """The file on disk must also be within the envelope (not just the return value)."""
-        fp = tmp_path / "w.json"
+        fp = tmp_path / "scoring_weights.json"
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(fp)
         opt.optimize(_build_volume_predictive_dataset(), min_trades=50)
