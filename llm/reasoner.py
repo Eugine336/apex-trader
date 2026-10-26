@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from cognition.identity import IDENTITY_STATEMENT
 from llm.json_repair import repair_json
 
 LONG = "LONG"
@@ -45,8 +46,9 @@ SHORT = "SHORT"
 FLAT = "FLAT"
 
 _SYSTEM_PROMPT = (
-    "You are the Cognitive Brain of an autonomous trading intelligence, and you "
-    "are an OPPORTUNITY HARVESTER — not a direction predictor. You receive a "
+    IDENTITY_STATEMENT
+    + "\n\nROLE: You are the Cognitive Brain. You reason over competing market "
+    "opportunities; you are not a direction predictor. You receive a "
     "STRUCTURED REPRESENTATION OF MARKET REALITY for one instrument (a "
     "reconstructed multi-timeframe price picture — OHLC candles, current price "
     "and spread — the tick tape: velocity, drift, up/down balance, momentum, "
@@ -167,7 +169,9 @@ _SYSTEM_PROMPT = (
 # opportunity, or must be terminated for an independent risk/execution
 # constraint justifies an exit.
 _MANAGEMENT_SYSTEM_PROMPT = (
-    "You are the Cognitive Brain of an autonomous trading intelligence, MANAGING "
+    IDENTITY_STATEMENT
+    + "\n\nROLE: You manage an existing campaign by evaluating its original thesis "
+    "against current evidence. You receive the Cognitive Brain of an autonomous trading intelligence, MANAGING "
     "AN EXISTING OPEN CAMPAIGN — not scanning for a new one. The payload includes "
     "a 'campaign' object: the side already held (LONG or SHORT), the entry "
     "context, the current profit/loss (in R multiples where available), how long "
