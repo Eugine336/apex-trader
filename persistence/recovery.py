@@ -211,6 +211,11 @@ def run_startup_recovery(
             "unreconciled. Verify broker positions manually.",
             len(report.broker_open),
         )
+        if emit is not None:
+            try:
+                emit(report)
+            except Exception as exc:
+                logger.debug("[recovery] emit failed for degraded report: {}", exc)
         return report
 
     log_open_details = build_log_open_details(store, checkpoint_db=checkpoint_db)
