@@ -74,3 +74,18 @@ Failure evidence includes distinct clusters rather than one universal root cause
 - The silent-handler test reports 395 locations; classify and repair intentional fail-safe handlers versus genuine swallowed failures rather than mass-adding logs or changing runtime behavior blindly.
 
 After this run, the two remaining direct `TestClient(..., client=...)` calls in `tests/test_dashboard_auth.py` were replaced with the existing cross-version `_test_client_with_address` helper in commit `b31293f0e15581095ccf80cb1a61c7c2499dc793`. That specific fix has **not yet been shown to pass a new workflow**. Do not reuse the earlier run as evidence for the new commit.
+
+
+## Current recovery status — 2026-10-26, PR #758
+
+This section supersedes older workflow-quota and pending-status notes above.
+
+- Latest completed full suite on commit `c8275d179cf5c93ed378525030ad58364b3f3674`: **50 failed, 3,888 passed, 162 warnings** on Python 3.12; Python 3.11 was cancelled after the paired job failed. Ruff/lint passed.
+- Latest full CI on current recovery branch head `313d04fbcd835eb82e19e8db44bd6e0660453c8b` is running: https://github.com/Eugine336/apex-trader/actions/runs/40306586682. Do not infer success until completed.
+- Gold-focused tests passed on several recent branch heads, including `6a7452642aebc6c9b3dd2dbe855703f1cac81ec9`; this does not substitute for full CI.
+- Confirmed test-fixture repairs: registered symbols in the candle-concurrency test; current StructureEngine spy signature; AppConfig's current `layered_decision` section; and fail-closed startup expectations for a degraded position store. A learner-persistence test now patches the canonical `adaptive.*` modules rather than compatibility shims.
+- Runtime state audit: a read-only inventory examined 26 tracked SQLite files. `data/apex_shadow.db` has SQLite integrity errors affecting indexes; `data/counterfactual.db` has two index-integrity errors. The shadow store now disables persistence on initialization/integrity failure and preserves the original file rather than continuing as if healthy. This change is not yet validated by a completed full-suite run.
+- The test `test_no_database_artifacts_tracked` still fails because database and WAL/SHM artifacts are tracked. They were not removed because they may contain position, event, or learning state; a safe state-preserving migration is required before untracking them.
+- The remaining failures include risk/decision contract drift, legacy event-driven API expectations, stale-market fixtures, test-order/persistence isolation, execution-worker behavior, and a 397-handler silent-exception audit. These require individual triage; do not mass-edit exception handlers or relax fail-closed risk gates.
+
+PR #758 remains draft and unmerged. Do not merge until full CI is green and the live entry/position-management paths are validated with a recording fake broker. No broker orders were sent. The `.env` file remains out of scope and untouched.
