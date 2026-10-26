@@ -33,6 +33,8 @@ from typing import Optional
 
 from loguru import logger
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 
 class OutcomeFeedback:
     """Persists entry-attribution → realised-outcome pairs and aggregates them."""
@@ -75,6 +77,8 @@ class OutcomeFeedback:
             return
         self._append({
             "type": "entry",
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "trade_key": str(trade_key),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "attribution": attribution or {},
@@ -86,6 +90,8 @@ class OutcomeFeedback:
             return
         self._append({
             "type": "outcome",
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "trade_key": str(trade_key),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "outcome": outcome or {},
