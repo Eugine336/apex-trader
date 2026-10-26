@@ -3784,27 +3784,23 @@ class EventDrivenSystem:
             _time.sleep(10.0)
 
     def _run_news_planner_update(self) -> None:
-        """Drive legacy OCO staging only when Apex's single-Brain path is disabled.
+        """Keep legacy news OCO staging disabled until it joins Brain admission.
 
-        On the normal single-path architecture the Brain owns trade origination.
-        NewsGuard still feeds verified event context to the Brain, but this legacy
-        planner must not stage a second, independent pair of broker orders.
+        NewsPlanner's staging callback calls the broker connector's pending-order
+        API directly. That is an exposure-increasing route which bypasses the
+        first-class Brain opportunity, whole-book comparison, and shared execution
+        admission. The configuration flag cannot waive Apex's canonical identity.
+        News context remains available to the Brain through the observation path;
+        staging stays blocked until pending orders use the common admission path.
         """
-        cognition_cfg = getattr(self._config, "cognition", None)
-        if bool(getattr(cognition_cfg, "single_path", True)):
-            return
         planner = getattr(self, "_news_planner", None)
-        if planner is None:
-            return
-        now = _time.monotonic()
-        last = getattr(self, "_last_news_planner_update", 0.0)
-        if (now - last) < 60.0:
-            return
-        self._last_news_planner_update = now
-        try:
-            planner.update()
-        except Exception as exc:  # noqa: BLE001 — planning never breaks the watchdog
-            logger.debug("[news-planner] periodic update failed: {}", exc)
+        if planner is not None and not getattr(self, "_news_planner_bypass_warned", False):
+            self._news_planner_bypass_warned = True
+            logger.warning(
+                "[news-planner] pending-order staging disabled: legacy callback "
+                "bypasses the canonical Brain and whole-book admission path"
+            )
+        return
 
     def _run_system_volatility_update(self, ctx: SystemContext) -> None:
         """Feed the SystemVolatilityMonitor with per-symbol regime analyses."""
@@ -5977,27 +5973,20 @@ class EventDrivenSystem:
         comment: str = "",
         idempotency_key: str = "",
     ):
-        """Place a pending LIMIT via the per-symbol broker connector.
+        """Reject legacy pending-order staging until shared Brain admission exists.
 
-        Final Gold-only safeguard for the direct pending-order path. Pending
-        orders do not go through ActionExecutor, so keep this boundary guarded
-        even if an operator accidentally re-enables a retired staging component.
+        Pending orders can become exposure without passing ActionExecutor, the
+        first-class CognitiveBrain opportunity contract, or whole-book review.
+        Neither the symbol allowlist nor configuration is an admission decision.
+        Keep this callback inert until pending orders can use the same governed
+        opportunity and risk path as every other exposure-increasing action.
         """
-        allowed_gold_symbols = {
-            "XAUUSD", "GOLD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
-        }
-        if str(symbol or "").strip().upper() not in allowed_gold_symbols:
-            logger.warning(
-                "[gold-only] rejected pending order for non-Gold symbol {}",
-                symbol,
-            )
-            return None
-        connector = self._pm.get_connector(symbol)
-        if connector is None:
-            return None
-        return connector.place_pending_order(
-            symbol, order_kind, entry_price, lots, sl, tp, comment, idempotency_key,
+        logger.warning(
+            "[pending-order] rejected {} {}: legacy staging bypasses CognitiveBrain "
+            "and whole-book admission; use a first-class admitted opportunity",
+            symbol, order_kind,
         )
+        return None
 
     def _stage_cancel_pending(self, symbol: str, order_id: str) -> bool:
         """Cancel a resting pending order via the per-symbol broker connector."""
