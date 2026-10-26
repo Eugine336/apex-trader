@@ -15,6 +15,7 @@ from execution.action_executor import (
     _is_transient,
 )
 from execution.risk_gate import GateConfig
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 # ── Fake broker ──────────────────────────────────────────────────────
@@ -860,3 +861,24 @@ def test_gold_feed_health_callback_failure_fails_closed():
     assert blocked.rejected_by_gate
     assert "gold_feed_unhealthy" in blocked.gate_reason
     assert broker.open_calls == []
+
+
+def test_open_with_mismatched_identity_is_rejected_before_broker_call():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.open(
+        symbol="EURUSD", direction="BUY", lots=0.10, sl=1.0, tp=2.0,
+        source="test", reason="identity mismatch",
+        identity_version=IDENTITY_VERSION, identity="not the canonical Apex identity",
+    )
+    result = executor.execute(intent, open_positions={})
+    assert result.success is False
+    assert result.rejected_by_gate is True
+    assert "identity_contract_mismatch" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_intent_carries_canonical_identity_by_default():
+    intent = _open_intent()
+    assert intent.identity_version == IDENTITY_VERSION
+    assert intent.identity == IDENTITY_STATEMENT
