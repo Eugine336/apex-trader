@@ -162,7 +162,12 @@ def build_instance_environment(
     # repo-shipped assets (trained RL models, reference configs). Pin the repo
     # root explicitly so ``runtime_paths.repo_root()`` / ``checkpoints_dir()``
     # resolve to the shared location for every instance.
-    env["APEX_REPO_DIR"] = str(_repo_root().resolve())
+    if repo_root is not None:
+        env["APEX_REPO_DIR"] = str(Path(repo_root).resolve())
+    else:
+        # Do not leak the parent process's checkout path into isolated/test
+        # environments when no repository root was explicitly supplied.
+        env.pop("APEX_REPO_DIR", None)
 
     # ── Trade reporting bridge → API database ─────────────────────────────
     env["APEX_TRADE_REPORT_DB"] = str(api_db_path.resolve())
