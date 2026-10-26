@@ -90,7 +90,7 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
         source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol=symbol, observation="fresh test execution-cost estimate",
         confidence=0.9, uncertainty=0.1,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
     return ms
@@ -248,7 +248,7 @@ def _state_domains(n, *, symbol="XAUUSD"):
         source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol=symbol, observation="fresh test execution-cost estimate",
         confidence=0.9, uncertainty=0.1,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
     return ms
