@@ -92,6 +92,14 @@ class EvidenceConsolidator:
         self._developing_source = developing_source
         self._per_module = bool(per_module)
         self._memory = memory
+        # Native campaign management reads the original thesis from the existing
+        # memory store. The Brain does not create or open persistence on its own.
+        memory_binder = getattr(self._brain, "bind_campaign_memory", None)
+        if self._memory is not None and callable(memory_binder):
+            try:
+                memory_binder(self._memory)
+            except Exception as exc:  # noqa: BLE001 — missing memory cannot stop the loop
+                logger.debug("[cognition-loop] native memory binding ignored: %s", exc)
         self._max_analogues = max(1, int(max_analogues))
         self._influence = influence
         self._influence_enabled = bool(influence_enabled)
