@@ -75,6 +75,11 @@ class Intent:
         source: str,
         reason: str,
         direction: Optional[str] = None,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -85,6 +90,11 @@ class Intent:
             source=source,
             reason=reason,
             direction=direction,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.CLOSE,
         )
 
@@ -145,6 +155,11 @@ class Intent:
         new_sl: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -155,6 +170,11 @@ class Intent:
             source=source,
             reason=reason,
             new_sl=new_sl,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.MODIFY_SL,
         )
 
@@ -166,6 +186,11 @@ class Intent:
         new_tp: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -176,6 +201,11 @@ class Intent:
             source=source,
             reason=reason,
             new_tp=new_tp,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.MODIFY_TP,
         )
 
@@ -187,6 +217,11 @@ class Intent:
         fraction: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -197,5 +232,10 @@ class Intent:
             source=source,
             reason=reason,
             close_fraction=fraction,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.PARTIAL_CLOSE,
         )
