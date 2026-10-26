@@ -165,11 +165,30 @@ def main() -> int:
     # --- Step 3: move the old plain data/ aside (never delete outright) ---
     backup_dir = repo_root / "data_preclone_backup"
     if data_dir.exists():
-        print(f"[3/4] Renaming old {data_dir} -> {backup_dir} (kept for your own review/deletion)")
+        print(f"[3/4] Renaming old {data_dir} -> {backup_dir} (kept for your own review)")
         if not ns.dry_run:
             if backup_dir.exists():
                 print(f"  ERROR: {backup_dir} already exists from a previous run. Resolve manually before re-running.")
                 return 1
+            # Explicit final backup before changing topology. Refuse to proceed
+            # unless every source file is present in the sibling target and byte-identical.
+            for source in sorted(data_dir.rglob("*")):
+                if not source.is_file() or ".git" in source.parts:
+                    continue
+                target = sibling_dir / source.relative_to(data_dir)
+                if not target.is_file() or source.stat().st_size != target.stat().st_size:
+                    print(f"ERROR: post-copy verification failed for {source.relative_to(data_dir)}; data/ remains in place.")
+                    return 1
+                import hashlib
+                def _sha256(path: Path) -> str:
+                    h = hashlib.sha256()
+                    with path.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            h.update(chunk)
+                    return h.hexdigest()
+                if _sha256(source) != _sha256(target):
+                    print(f"ERROR: checksum verification failed for {source.relative_to(data_dir)}; data/ remains in place.")
+                    return 1
             data_dir.rename(backup_dir)
         else:
             print(f"  [dry-run] would rename {data_dir} -> {backup_dir}")
