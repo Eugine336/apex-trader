@@ -35,8 +35,13 @@ data/
 logs/
 *.log
 *.db
-*.db-wal
-*.db-shm
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*-wal
+*-shm
+*-journal
 data/backups/
 api_data/
 authority.db

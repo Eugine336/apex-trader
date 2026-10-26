@@ -263,8 +263,16 @@ class TestDbFilesUntracked:
         from pathlib import Path
 
         result = subprocess.run(
-            ["git", "ls-files", "*.db", "*.db-wal", "*.db-shm"],
-            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
+            ["git", "ls-files", "-z"], capture_output=True, text=False,
+            cwd=str(Path(__file__).parent.parent), check=True,
         )
-        tracked = result.stdout.strip()
-        assert tracked == "", f"These SQLite runtime artifacts are still tracked:\n{tracked}"
+        paths = [item.decode("utf-8", errors="strict")
+                 for item in result.stdout.split(b"\\0") if item]
+        suffixes = (".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite",
+                    ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".sqlite-journal",
+                    "-wal", "-shm", "-journal")
+        tracked = [path for path in paths if path.lower().endswith(suffixes)]
+        assert tracked == [], (
+            "SQLite runtime databases/sidecars must not be tracked:\\n"
+            + "\\n".join(tracked)
+        )

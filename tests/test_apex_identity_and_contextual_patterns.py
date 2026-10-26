@@ -8,10 +8,12 @@ from cognition.brain import CognitiveBrain
 from cognition.brain_reasoning import BrainReasoner
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
 from cognition.identity import (
-    IDENTITY_STATEMENT,
-    IDENTITY_VERSION,
-    NON_NEGOTIABLE_PRINCIPLES,
-    identity_contract,
+    ACTION_CONFIDENCE_FLOOR, ACTION_UNCERTAINTY_CEILING,
+    DEGRADED_CONFIDENCE_MULTIPLIER_CEILING, IDENTITY_STATEMENT, IDENTITY_VERSION,
+    MIN_ADVISORS_FOR_ACTION, MIN_MARKET_EVIDENCE_DOMAINS,
+    NATIVE_ONLY_CONFIDENCE_FLOOR, NATIVE_ONLY_SIZING_MULTIPLIER_CEILING,
+    NATIVE_ONLY_UNCERTAINTY_CEILING, NET_EXPECTED_VALUE_FLOOR_R,
+    NON_NEGOTIABLE_PRINCIPLES, REVERSE_CONFIDENCE_FLOOR, identity_contract,
 )
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.price_action_patterns import (
@@ -57,6 +59,9 @@ def test_identity_is_one_exact_machine_readable_contract():
     contract = identity_contract()
     assert IDENTITY_VERSION == "1.0.0"
     assert contract["identity"] == IDENTITY_STATEMENT
+    assert contract["actionability_policy"]["effective_confidence_floor"] == ACTION_CONFIDENCE_FLOOR
+    assert contract["actionability_policy"]["minimum_responding_advisors"] == MIN_ADVISORS_FOR_ACTION
+    assert contract["actionability_policy"]["minimum_independent_market_evidence_domains"] == MIN_MARKET_EVIDENCE_DOMAINS
     assert len(NON_NEGOTIABLE_PRINCIPLES) >= 10
     assert "does not belong to one strategy, timeframe or trading style" in IDENTITY_STATEMENT
     brain = CognitiveBrain(reasoner=None)
@@ -97,7 +102,54 @@ def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
     assert cfg.opportunity_qualification_enabled is True
     assert cfg.event_driven is True
     assert cfg.min_evidence_domains >= 3
-    assert cfg.min_advisors_for_action >= 1
+    assert cfg.min_advisors_for_action >= MIN_ADVISORS_FOR_ACTION
+
+def test_identity_actionability_floors_cannot_be_lowered_by_config_or_direct_brain(monkeypatch):
+    for name in ("COGNITION_MIN_ADVISORS_FOR_ACTION", "COGNITION_MIN_EVIDENCE_DOMAINS",
+                 "COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL"):
+        monkeypatch.delenv(name, raising=False)
+    policy = identity_contract()["actionability_policy"]
+    assert policy["effective_confidence_floor"] == 0.55
+    assert policy["aggregate_uncertainty_ceiling"] == 0.60
+    assert policy["minimum_responding_advisors"] == 2
+    assert policy["minimum_independent_market_evidence_domains"] == 3
+    assert policy["native_only_confidence_floor"] == 0.70
+    assert policy["native_only_uncertainty_ceiling"] == 0.50
+    assert policy["reverse_confidence_floor"] == 0.70
+    assert policy["net_expected_value_floor_r_exclusive"] == 0.0
+    assert policy["degraded_confidence_multiplier_ceiling"] == 0.70
+    assert policy["native_only_sizing_multiplier_ceiling"] == 0.50
+
+    cfg = CognitionConfig(min_confidence_to_act=0.10, max_uncertainty_to_act=0.95,
+        ev_action_threshold_r=-1.0, min_advisors_for_action=1, min_evidence_domains=1,
+        manage_reverse_confidence=0.10, degraded_confidence_multiplier=1.0,
+        degrade_on_unknown_council=False)
+    assert cfg.min_confidence_to_act >= ACTION_CONFIDENCE_FLOOR
+    assert cfg.max_uncertainty_to_act <= ACTION_UNCERTAINTY_CEILING
+    assert cfg.ev_action_threshold_r >= NET_EXPECTED_VALUE_FLOOR_R
+    assert cfg.min_advisors_for_action >= MIN_ADVISORS_FOR_ACTION
+    assert cfg.min_evidence_domains >= MIN_MARKET_EVIDENCE_DOMAINS
+    assert cfg.manage_reverse_confidence >= REVERSE_CONFIDENCE_FLOOR
+    assert cfg.degraded_confidence_multiplier <= DEGRADED_CONFIDENCE_MULTIPLIER_CEILING
+    assert cfg.degrade_on_unknown_council is True
+
+    brain = CognitiveBrain(reasoner=None, min_confidence_to_act=0.10,
+        max_uncertainty_to_act=0.95, ev_action_threshold_r=-1.0, reverse_confidence=0.10,
+        min_advisors_for_action=1, min_evidence_domains=1,
+        degraded_confidence_multiplier=1.0, degrade_on_unknown_council=False,
+        independent_min_confidence=0.10, independent_max_uncertainty=0.95,
+        independent_sizing_multiplier=1.0)
+    assert brain.min_confidence_to_act >= ACTION_CONFIDENCE_FLOOR
+    assert brain.max_uncertainty_to_act <= ACTION_UNCERTAINTY_CEILING
+    assert brain.ev_action_threshold_r >= NET_EXPECTED_VALUE_FLOOR_R
+    assert brain.reverse_confidence >= REVERSE_CONFIDENCE_FLOOR
+    assert brain.min_advisors_for_action >= MIN_ADVISORS_FOR_ACTION
+    assert brain.min_evidence_domains >= MIN_MARKET_EVIDENCE_DOMAINS
+    assert brain.degraded_confidence_multiplier <= DEGRADED_CONFIDENCE_MULTIPLIER_CEILING
+    assert brain._degrade_on_unknown_council is True
+    assert brain.independent_min_confidence >= NATIVE_ONLY_CONFIDENCE_FLOOR
+    assert brain.independent_max_uncertainty <= NATIVE_ONLY_UNCERTAINTY_CEILING
+    assert brain.independent_sizing_multiplier <= NATIVE_ONLY_SIZING_MULTIPLIER_CEILING
 
 
 def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
