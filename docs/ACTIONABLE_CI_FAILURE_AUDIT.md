@@ -38,3 +38,12 @@ This is a triage record, not a claim that the suite is fixed. The main-branch fu
 ## Protected configuration
 
 The `.env` file is out of scope and must not be read, copied, recreated, renamed, or modified during this work. This audit does not change broker credentials or send orders.
+
+
+## CI status refresh — 2026-10-26
+
+The prior statement that CI could not be rerun because of exhausted Actions quota is superseded: new workflows are now running on branch head `cc702c0c353690f4d9d2d3e6b7b61c819688aa78`:
+- Full CI: https://github.com/Eugine336/apex-trader/actions/runs/40280936900
+- Gold-focused tests: https://github.com/Eugine336/apex-trader/actions/runs/40280936955
+
+These are pending at this update. Do not infer success from a running workflow. The previous completed full-suite result remains red, and the new provenance-gate changes must pass the focused suite before the PR is considered mergeable.
