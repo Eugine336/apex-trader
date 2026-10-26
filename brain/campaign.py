@@ -440,6 +440,7 @@ class CampaignRegistry:
         ev_over_flat: float = 0.0,
         confidence: float = 0.0,
         now: Optional[float] = None,
+        campaign_id: str = "",
     ) -> Optional[Campaign]:
         """Fold one dominant-thesis read into the campaign store.
 
@@ -467,10 +468,15 @@ class CampaignRegistry:
                     )
 
                 camp = self._live.get((sym, d))
+                requested_id = str(campaign_id or "").strip()
                 if camp is None:
                     self._seq += 1
                     camp = Campaign(
-                        campaign_id=f"{sym}:{d}:{self._seq}",
+                        # Use the Brain-authored campaign ID when this opening is
+                        # tied to a concrete CampaignSpecification. This keeps the
+                        # registry, memory store, intent and position context on a
+                        # single campaign identity instead of parallel identifiers.
+                        campaign_id=requested_id or f"{sym}:{d}:{self._seq}",
                         symbol=sym,
                         direction=d,
                         state=CampaignState.ACTIVE,
@@ -482,6 +488,16 @@ class CampaignRegistry:
                         "[campaign] OPEN {} — ev-over-flat {:.3f}R conf {:.2f}",
                         camp.campaign_id, _safe_float(ev_over_flat),
                         _clamp01(confidence),
+                    )
+                elif requested_id and requested_id != camp.campaign_id and not camp.legs:
+                    # A registry placeholder without any execution legs has not
+                    # yet established a durable live campaign identity.
+                    camp.campaign_id = requested_id
+                elif requested_id and requested_id != camp.campaign_id:
+                    logger.warning(
+                        "[campaign] identity mismatch for live %s %s: "
+                        "registry=%s requested=%s; preserving existing identity",
+                        sym, d, camp.campaign_id, requested_id,
                     )
                 camp.refresh(ev_over_flat, confidence, now_iso, t)
                 return camp
