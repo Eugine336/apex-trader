@@ -11,7 +11,7 @@ import ast
 import re
 from pathlib import Path
 
-from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+from cognition.identity import IDENTITY_STATEMENT
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = {".git", ".venv", "__pycache__", "build", "dist", "node_modules"}
@@ -54,7 +54,7 @@ def _python_files() -> list[Path]:
 def _production_python_files() -> list[Path]:
     return [
         path for path in _python_files()
-        if path.parts[0] not in {"scripts", "docs", "test_support"}
+        if path.relative_to(ROOT).parts[0] not in {"scripts", "docs", "test_support"}
     ]
 
 
