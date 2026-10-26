@@ -264,6 +264,21 @@ class ActionExecutor:
         risk = finite_positive(geometry.get("risk_distance"))
         reward = finite_positive(geometry.get("reward_distance"))
         reward_r = finite_positive(geometry.get("reward_r"))
+        source_timestamp = finite_positive(geometry.get("evidence_timestamp_epoch"))
+        if source_timestamp is None:
+            return "market_payoff_geometry_timestamp_missing"
+        now_epoch = time.time()
+        timeframe = str(geometry.get("entry_timeframe", "") or "").strip().upper()
+        timeframe_seconds = {
+            "M1": 60, "M2": 120, "M3": 180, "M5": 300, "M10": 600,
+            "M15": 900, "M30": 1800, "H1": 3600, "H2": 7200,
+            "H4": 14400, "D1": 86400,
+        }.get(timeframe)
+        if timeframe_seconds is None:
+            return "market_payoff_geometry_timeframe_unknown"
+        max_age_seconds = float(timeframe_seconds * 3)
+        if source_timestamp > now_epoch + 30 or now_epoch - source_timestamp > max_age_seconds:
+            return "market_payoff_geometry_stale"
         live_entry = finite_positive(intent.entry_price)
         intent_stop = finite_positive(intent.new_sl)
         intent_target = finite_positive(intent.new_tp)
