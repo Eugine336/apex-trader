@@ -2265,11 +2265,14 @@ class CognitiveBrain:
     ) -> Optional[BrainOutput]:
         """Discover an opportunity from native analysis when no advisor is available.
 
-        Native-only reasoning can still discover opportunities during provider
-        failure, but discovery is not activation. Require sufficient independent
-        evidence domains, a multi-source activation pattern, fresh executable-cost
-        evidence, calibrated confidence, acceptable uncertainty, and positive net
-        EV. Never substitute a bare directional hypothesis for an opportunity.
+        Native-only reasoning can discover and evaluate opportunities during
+        provider failure. Do not impose a universal named-pattern allowlist or
+        fixed confidence/uncertainty cutoffs: the identity requires methods to be
+        selected from the market context. Require fresh independent market
+        evidence, corroboration across distinct domains, a testable activation
+        event in the current observations, verified live execution costs, positive
+        cost-adjusted expectancy, and final shared portfolio/risk admission.
+        A bare directional hypothesis is never sufficient.
         """
         if analysis is None or not hypotheses or market_state is None:
             return None
@@ -2291,34 +2294,40 @@ class CognitiveBrain:
             if available_market_domains is None or available_market_domains < required_domains:
                 return None
 
-            # A pattern must describe a multi-dimensional activation event. Simple
-            # directional context (trend, momentum, one candle) may inform a
-            # hypothesis but cannot independently activate a native-only campaign.
-            activation_patterns = {
-                "displacement_confirmed",
-                "volume_confirmed_breakout",
-                "liquidity_sweep_absorbed",
-                "liquidity_sweep_with_momentum_exhaustion",
-                "liquidity_sweep_reclaimed",
-                "failed_breakout",
-                "fvg_liquidity_confluence",
-                "order_flow_at_structure",
-                "volatility_expansion_breakout",
-                "event_window_breakout",
-            }
             supporting = {pattern_name(p) for p in lead.supporting_patterns}
-            if not supporting.intersection(activation_patterns):
+
+            # Activation is evaluated from the current evidence, not membership
+            # in a fixed catalogue of familiar pattern names. Require multiple
+            # fresh, independent market domains and at least one concrete current
+            # observation that can be named in the opportunity contract.
+            fresh = list(market_state.fresh_evidence())
+            market_evidence = [
+                item for item in fresh
+                if str(getattr(getattr(item, "domain", None), "value",
+                               getattr(item, "domain", ""))).lower()
+                in {"structure", "liquidity", "momentum", "volatility", "volume",
+                    "order_flow", "multi_timeframe", "correlation", "session", "macro",
+                    "historical_analogue"}
+            ]
+            directional_facts = [
+                item for item in market_evidence
+                if str(getattr(item, "observation", "") or "").strip()
+                and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
+            ]
+            independent_domains = {
+                str(getattr(getattr(item, "domain", None), "value",
+                            getattr(item, "domain", ""))).lower()
+                for item in directional_facts
+            }
+            if len(independent_domains) < required_domains or not directional_facts:
                 return None
 
-            # A directional hypothesis without structured support remains
-            # observational, not execution authority.
-            if not lead.supporting_patterns:
-                return None
-            if lead.confidence < self._native.independent_min_confidence:
-                return None
-            if analysis.evidence_uncertainty >= self._native.independent_max_uncertainty:
-                return None
-
+            # A directional hypothesis may become actionable below 0.70 confidence
+            # or above 0.50 uncertainty only when its uncertainty-adjusted,
+            # cost-adjusted expectancy still supports it. These values inform EV
+            # and sizing; they are not universal strategy-selection switches.
+            uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
+                if consolidation else _clamp01(analysis.evidence_uncertainty)
             # Native fallback may not invent a cost estimate. A current execution
             # cost observation from the shared consolidator is mandatory; use its
             # actual net round-trip estimate for EV rather than a constant default.
@@ -2327,12 +2336,18 @@ class CognitiveBrain:
                 return None
 
             direction = lead.direction_implication
-            uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
-                if consolidation else analysis.evidence_uncertainty
-            # Article X — weight the lead confidence by its patterns' demonstrated
-            # edge before computing EV (neutral when no tracker is wired).
+            # Acknowledge uncertainty continuously rather than converting it into
+            # a universal binary cutoff. Uncertainty attenuates the probability
+            # estimate used for expectancy; it does not alone prohibit a market
+            # hypothesis from being evaluated as an opportunity.
+            # Article X — pattern history may inform calibration when available,
+            # but no specific pattern name is required for native reasoning.
+            raw_lead_conf = _clamp01(lead.confidence)
+            uncertainty_adjusted_conf = _clamp01(
+                raw_lead_conf * (1.0 - 0.5 * uncertainty)
+            )
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
-                _clamp01(lead.confidence), lead)
+                uncertainty_adjusted_conf, lead)
             reward_r, risk_r = self.reward_r_default, 1.0
             cost_r = self._execution_cost_r(market_state)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
@@ -2346,32 +2361,13 @@ class CognitiveBrain:
                 f"confirmation — {lead.statement}")
             considered = self._compare_opportunities(lead, symbol, [])
 
-            # Native-only origination must still produce the same first-class
-            # opportunity contract as advisor-assisted origination. The opportunity
-            # is marked ACTIVE only because the native path above required an
-            # observed composite activation pattern, sufficient evidence breadth,
-            # fresh execution-cost evidence and positive net EV.
-            pattern_domain_map = {
-                "displacement_confirmed": {"structure", "volume"},
-                "volume_confirmed_breakout": {"structure", "volume", "volatility"},
-                "liquidity_sweep_absorbed": {"liquidity", "order_flow"},
-                "liquidity_sweep_with_momentum_exhaustion": {"liquidity", "momentum"},
-                "liquidity_sweep_reclaimed": {"liquidity", "structure"},
-                "failed_breakout": {"structure", "liquidity", "volatility"},
-                "fvg_liquidity_confluence": {"structure", "liquidity", "order_flow"},
-                "order_flow_at_structure": {"order_flow", "structure"},
-                "volatility_expansion_breakout": {"volatility", "structure", "volume"},
-                "event_window_breakout": {"volatility", "structure", "macro"},
-            }
-            supporting_domains: set[str] = set()
-            for pattern in supporting:
-                supporting_domains.update(pattern_domain_map.get(pattern, set()))
+            # Preserve the actual evidence provenance that informed the native
+            # hypothesis. Do not infer evidence domains from a hard-coded pattern
+            # catalogue or manufacture support when a method has no matching fact.
             supporting_evidence_ids = [
                 str(getattr(item, "evidence_id", "") or "")
-                for item in market_state.fresh_evidence()
-                if str(getattr(getattr(item, "domain", None), "value",
-                               getattr(item, "domain", ""))).lower() in supporting_domains
-                and getattr(item, "evidence_id", "")
+                for item in directional_facts
+                if getattr(item, "evidence_id", "")
             ]
             competing_statements = [
                 item.statement for item in hypotheses if item is not lead
@@ -2395,8 +2391,9 @@ class CognitiveBrain:
                     "thesis": lead.statement,
                     "why_now": "; ".join(analysis.observations[:4]) or lead.statement,
                     "entry_conditions": [
-                        "Native composite activation pattern is present in fresh evidence",
-                        "Fresh quote, broker feasibility and protective-risk checks must pass before submission",
+                        f"Current evidence supports this hypothesis across {len(independent_domains)} independent market domains",
+                        *[str(getattr(item, "observation", "") or "")[:180] for item in directional_facts[:4]],
+                        "Fresh quote, broker feasibility, protective-risk checks and common admission must pass before submission",
                     ],
                     "confirmation_conditions": [
                         "The activation evidence remains valid at final execution admission",
@@ -2429,8 +2426,9 @@ class CognitiveBrain:
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
-                    f"evaluated: acting alone is justified — native leading hypothesis "
-                    f"at {lead.confidence:.2f} with EV {expected_value:.4f}R"),
+                    f"evaluated: native hypothesis effective confidence {lead_conf:.2f}, "
+                    f"uncertainty {uncertainty:.2f}, and cost-adjusted EV {expected_value:.4f}R; "
+                    "final admission still requires current activation, broker and portfolio checks"),
                 "brain_independent_origination": origination_note,
                 "brain_evidence_analysis": analysis.summary(),
                 "brain_hypotheses": " | ".join(
@@ -2446,8 +2444,10 @@ class CognitiveBrain:
                 questions["pattern_confidence_modifier"] = pattern_mod_note
             if lead_pattern_names:
                 questions["supporting_patterns"] = list(lead_pattern_names)
-            base_exposure = min(lead_conf,
-                                min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default))))
+            base_exposure = min(
+                lead_conf,
+                min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default))),
+            )
             desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
             questions["sizing_rationale"] = (
                 f"independent origination sized {desired_exposure:.4f} = "
