@@ -286,13 +286,17 @@ class EventStore:
         # Add canonical provenance to every newly written event without changing
         # the existing SQLite schema or rewriting any historical row. Explicit
         # decision/opportunity/campaign IDs come from the producer's payload.
+        source_payload = (
+            payload if isinstance(payload, dict)
+            else {"legacy_payload": payload}
+        )
         event_payload = attach_provenance(
-            payload if isinstance(payload, dict) else {},
+            source_payload,
             event_id=eid,
             parent_event_id=parent_id or "",
-            decision_id=(payload or {}).get("decision_id", "") if isinstance(payload, dict) else "",
-            opportunity_id=(payload or {}).get("opportunity_id", "") if isinstance(payload, dict) else "",
-            campaign_id=(payload or {}).get("campaign_id", "") if isinstance(payload, dict) else "",
+            decision_id=source_payload.get("decision_id", ""),
+            opportunity_id=source_payload.get("opportunity_id", ""),
+            campaign_id=source_payload.get("campaign_id", ""),
         )
         try:
             payload_json = json.dumps(event_payload)
