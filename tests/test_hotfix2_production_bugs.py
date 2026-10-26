@@ -297,7 +297,7 @@ class TestFailedTimeframeDedup:
     def test_different_timeframes_tracked_separately(self):
         mgr = self._make_manager()
 
-        def side_effect(sym, tf, count):
+        def side_effect(sym, tf, count, *, include_forming=True):
             if tf in ("H4", "H1"):
                 raise RuntimeError(f"No candle data for test/{tf}")
             import pandas as pd
