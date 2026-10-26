@@ -1074,17 +1074,27 @@ class CognitiveBrain:
                         f"insufficient ({conf_dims[limiting_dim]:.2f}), thesis holds "
                         "but timing/execution not ready"
                     )
-                elif uncertainty > self.max_uncertainty_to_act:
-                    reason_txt = "insufficient confidence/uncertainty for a campaign"
+                elif not ev_ok:
+                    reason_txt = (
+                        "net expected value does not support exposure at current "
+                        "market conditions — continue evaluating alternatives"
+                    )
                     do_nothing_txt = (
-                        f"evaluated: doing nothing is correct — uncertainty "
-                        f"{uncertainty:.2f} too high"
+                        f"evaluated: doing nothing is correct — net EV {expected_value:.4f}R "
+                        "does not justify exposure at this moment"
                     )
                 else:
-                    reason_txt = "insufficient confidence/uncertainty for a campaign"
+                    # Contextual uncertainty remains part of the recorded market
+                    # state and risk sizing; it is not a second global binary veto.
+                    # Positive cost-adjusted EV and a first-class active opportunity
+                    # are already required by admission above.
+                    reason_txt = (
+                        "opportunity evaluation incomplete — preserve the hypothesis "
+                        "and continue market observation"
+                    )
                     do_nothing_txt = (
-                        f"evaluated: doing nothing is correct — confidence "
-                        f"{eff_conf:.2f} below threshold {self.min_confidence_to_act}"
+                        "evaluated: no executable opportunity was established; "
+                        "continue observing new evidence"
                     )
                 dtype = DecisionType.CONTINUE_OBSERVING
             elif is_harvesting:
