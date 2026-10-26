@@ -54,6 +54,21 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
 
+def _positive_optional_number(value: Any) -> Optional[float]:
+    """Parse a positive finite measurement; malformed geometry remains absent."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (
+        number
+        if number == number and number not in (float("inf"), float("-inf")) and number > 0.0
+        else None
+    )
+
+
 def _clamp01(value: Any, default: float = 0.0) -> float:
     try:
         f = float(value)
@@ -594,6 +609,15 @@ class Opportunity:
     competing_opportunities: list[str] = field(default_factory=list)
     is_preferred: bool = False
     identity_version: str = IDENTITY_VERSION
+    # Market-derived payoff geometry appended to preserve positional callers.
+    # Only the native geometry resolver may authoritatively populate these.
+    entry_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    target_price: Optional[float] = None
+    risk_distance: Optional[float] = None
+    reward_distance: Optional[float] = None
+    reward_r: Optional[float] = None
+    geometry_evidence_ids: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         d = str(self.direction or "FLAT").upper()
@@ -669,6 +693,13 @@ class Opportunity:
             confirmation_conditions=_lst("confirmation_conditions"),
             invalidation_conditions=_lst("invalidation_conditions"),
             target_logic=str(data.get("target_logic", "") or "")[:280],
+            entry_price=_positive_optional_number(data.get("entry_price")),
+            stop_price=_positive_optional_number(data.get("stop_price")),
+            target_price=_positive_optional_number(data.get("target_price")),
+            risk_distance=_positive_optional_number(data.get("risk_distance")),
+            reward_distance=_positive_optional_number(data.get("reward_distance")),
+            reward_r=_positive_optional_number(data.get("reward_r")),
+            geometry_evidence_ids=_lst("geometry_evidence_ids"),
             quality=_clamp01(data.get("quality")),
             asymmetry=_clamp01(data.get("asymmetry")),
             urgency=_clamp01(data.get("urgency")),
@@ -690,6 +721,13 @@ class Opportunity:
             "confirmation_conditions": list(self.confirmation_conditions),
             "invalidation_conditions": list(self.invalidation_conditions),
             "target_logic": self.target_logic,
+            "entry_price": self.entry_price,
+            "stop_price": self.stop_price,
+            "target_price": self.target_price,
+            "risk_distance": self.risk_distance,
+            "reward_distance": self.reward_distance,
+            "reward_r": self.reward_r,
+            "geometry_evidence_ids": list(self.geometry_evidence_ids),
             "quality": round(self.quality, 4),
             "asymmetry": round(self.asymmetry, 4),
             "urgency": round(self.urgency, 4),
