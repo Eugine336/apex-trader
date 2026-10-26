@@ -197,7 +197,7 @@ class TestPendingOrderMinlotInflation:
         )
         assert result.success is True
         assert result.lots == 0.5
-        logger = sys.modules["loguru"].logger
+        logger = _captured_logger
         logger.warning.assert_called()
         warning_args = logger.warning.call_args_list[-1]
         assert "[MINLOT_INFLATION]" in str(warning_args)
