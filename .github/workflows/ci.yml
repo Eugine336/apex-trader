@@ -17,6 +17,7 @@ jobs:
       # top-level tick package. Load pytest-asyncio explicitly in each command.
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
 
