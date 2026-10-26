@@ -4088,7 +4088,6 @@ class EventDrivenSystem:
                 direction = getattr(pos, "direction", "LONG")
                 entry_price = float(getattr(pos, "open_price", 0.0) or 0.0)
                 sl = float(getattr(pos, "sl", 0.0) or 0.0)
-                tp = float(getattr(pos, "tp", 0.0) or 0.0)
                 lots = float(getattr(pos, "lots", 0.0) or 0.0)
                 pip_size = self._safe_pip_size(symbol)
                 # Broker-truth money-per-pip — MUST match the sizing path so the
