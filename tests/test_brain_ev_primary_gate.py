@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from cognition.brain import CognitiveBrain
 from cognition.contracts import DecisionType, Evidence, MarketState
+from test_support.market_geometry import add_market_geometry
 
 
 class _Opinion:
