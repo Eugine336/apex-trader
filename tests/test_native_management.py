@@ -333,6 +333,7 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
         assert out.decision.decision_type == DecisionType.HOLD
         baseline = out.decision.questions_answered["native_management_baseline"]
         assert baseline["action"] == "hold"
-        assert "original thesis" in baseline["reason"]
+        assert baseline["original_thesis"] == ""
+        assert "no fresh campaign-linked thesis assessment" in baseline["reason"]
     finally:
         store.close()
