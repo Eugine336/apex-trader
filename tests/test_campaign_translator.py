@@ -68,6 +68,11 @@ def test_translate_carries_provenance():
     assert intent.campaign_id == "c123"
     assert intent.decision_id == "d456"
     assert intent.to_dict()["campaign_id"] == "c123"
+    from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+    assert intent.identity_version == IDENTITY_VERSION
+    assert intent.identity == IDENTITY_STATEMENT
+    assert intent.to_dict()["identity_version"] == IDENTITY_VERSION
+    assert intent.to_dict()["identity"] == IDENTITY_STATEMENT
 
 
 def test_translate_never_raises_on_garbage():
