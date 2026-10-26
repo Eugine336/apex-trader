@@ -37,7 +37,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "timeframe": "M5",
             "current_close": 1.100,
             "prior_range_high": 1.120,
-            "prior_range_low": 1.080,
+            "prior_range_low": 1.090,
             "range_position": 0.5,
             "breakout_direction": breakout,
             "trend_state": trend,
