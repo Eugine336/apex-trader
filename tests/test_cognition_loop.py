@@ -315,9 +315,6 @@ def test_bridge_respects_disabled():
 
 # ── Origination (Phase G — Brain originates entries from its campaign spec) ────
 
-from cognition.contracts import CampaignSpecification, DecisionPackage
-
-
 class _OpenBrain:
     """Emits an OPEN_CAMPAIGN BrainOutput with a directional campaign per symbol."""
 
