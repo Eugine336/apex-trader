@@ -1,11 +1,13 @@
 """
 APEX TRADER — Shadow Resolver (Phase 4)
 
-Replays the REAL TradeManager bar-by-bar over forward price to determine
-counterfactual outcomes for rejected/skipped setups.
+Replays the deprecated mechanical TradeManager only as a comparison baseline.
+Those outcomes are not qualified for adaptive learning because the contract
+currently lacks the original thesis and invalidation context required for native
+thesis-based replay.
 
 Design constraints (binding):
-  - Uses the production TradeManager.update() — the real management path
+  - Legacy comparison only; outcomes carry learning_eligible=False
   - NO look-ahead: never feeds a bar at or before entry timestamp
   - bar_time seam ensures time-based management logic is faithful
   - Resolution granularity (M1/M5) is stamped on every outcome, never hidden
@@ -21,6 +23,7 @@ import pandas as pd
 from loguru import logger
 
 from config import get_instrument
+from cognition.identity import IDENTITY_VERSION
 from management.trade_manager import (
     ManagedTrade,
     TradeManager,
@@ -205,7 +208,7 @@ def resolve_contract(
     Returns a ShadowResolution with the counterfactual outcome.
     """
     if manager is None:
-        manager = TradeManager()
+        manager = TradeManager()  # deprecated comparison path; never training authority
 
     trade = _build_managed_trade(contract)
     manager._trades[trade.trade_id] = trade
@@ -245,6 +248,13 @@ def resolve_contract(
                 resolution_granularity=granularity,
                 bars_replayed=bars_replayed,
                 resolver_meta={
+                    "identity_version": IDENTITY_VERSION,
+                    "management_engine": "legacy_trade_manager",
+                    "learning_eligible": False,
+                    "learning_exclusion_reason": (
+                        "legacy fixed-level manager; original thesis/invalidation "
+                        "context is not available in ShadowContract"
+                    ),
                     "final_status": trade.status.value,
                     "pnl_pips": round(trade.pnl_pips, 2),
                     "partial_closed": trade.partial_closed,
@@ -269,6 +279,13 @@ def resolve_contract(
         resolution_granularity=granularity,
         bars_replayed=bars_replayed,
         resolver_meta={
+            "identity_version": IDENTITY_VERSION,
+            "management_engine": "legacy_trade_manager",
+            "learning_eligible": False,
+            "learning_exclusion_reason": (
+                "legacy fixed-level manager; original thesis/invalidation "
+                "context is not available in ShadowContract"
+            ),
             "final_status": trade.status.value,
             "pnl_pips": round(trade.pnl_pips, 2),
             "partial_closed": trade.partial_closed,
