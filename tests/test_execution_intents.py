@@ -16,7 +16,8 @@ class TestIntentType:
         assert IntentType.CLOSE == max(IntentType)
 
     def test_all_types_exist(self):
-        assert len(IntentType) == 4
+        assert len(IntentType) == 5
+        assert IntentType.OPEN in IntentType
 
 
 class TestIntent:
