@@ -218,10 +218,37 @@ class TestLoopbackHelpers:
         assert not api._request_is_trusted_local(SimpleNamespace(host="127.0.0.1"))
 
 
+def _test_client_with_address(app, address):
+    """Set ASGI peer address across Starlette versions.
+
+    Starlette <0.44 does not accept TestClient(client=...). Wrap the ASGI app
+    at the transport boundary instead so the auth middleware sees the intended
+    peer without depending on private transport internals beyond its app slot.
+    """
+    try:
+        return TestClient(app, client=address)
+    except TypeError as exc:
+        if "unexpected keyword argument 'client'" not in str(exc):
+            raise
+        test_client = TestClient(app)
+        transport = getattr(test_client, "_transport", None)
+        if transport is None or not hasattr(transport, "app"):
+            raise RuntimeError("Cannot inject ASGI peer address with this TestClient version") from exc
+        inner_app = transport.app
+
+        async def with_peer_address(scope, receive, send):
+            if scope.get("type") in {"http", "websocket"}:
+                scope["client"] = address
+            await inner_app(scope, receive, send)
+
+        transport.app = with_peer_address
+        return test_client
+
+
 class TestLoopbackBypassEndToEnd:
     def test_loopback_reads_without_key(self):
         api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
-        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        client = _test_client_with_address(api.create_app(), ("127.0.0.1", 5))
         assert client.get("/api/status").status_code == 200
 
     def test_loopback_mutating_without_key(self):
@@ -231,7 +258,7 @@ class TestLoopbackBypassEndToEnd:
 
     def test_remote_still_requires_key(self):
         api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
-        client = TestClient(api.create_app(), client=("203.0.113.7", 5))
+        client = _test_client_with_address(api.create_app(), ("203.0.113.7", 5))
         assert client.get("/api/status").status_code == 401
 
     def test_loopback_trust_off_requires_key_even_local(self):
