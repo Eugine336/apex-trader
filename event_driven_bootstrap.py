@@ -2904,8 +2904,23 @@ class EventDrivenSystem:
                 "new exposure must remain blocked: {}", exc,
             )
             ctx = self._ctx
-            if ctx is not None and hasattr(ctx, "_mark_safety_degraded"):
-                ctx._mark_safety_degraded("BrokerPositionReconciliation")
+            if ctx is not None:
+                marker = getattr(ctx, "_mark_safety_degraded", None)
+                if callable(marker):
+                    marker("BrokerPositionReconciliation")
+                # Best-effort degradation bookkeeping is not enough: fail closed
+                # at the cognition loop's actual admission boundary as well.
+                brain_loop = getattr(ctx, "cognition_loop", None)
+                if brain_loop is None:
+                    brain_loop = getattr(self, "_cognition_loop", None)
+                if brain_loop is not None:
+                    try:
+                        setattr(brain_loop, "broker_book_verified", False)
+                    except Exception as state_exc:  # noqa: BLE001
+                        logger.critical(
+                            "[event-driven] failed to apply reconciliation admission lock: {}",
+                            state_exc,
+                        )
 
         # ── Restore PortfolioGovernor daily tally + loss-cap halt ─────────
         # Must run before the loops so an active daily-loss halt is enforced
