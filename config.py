@@ -4116,13 +4116,13 @@ class CognitionConfig:
             self.event_driven = True
         if self.min_evidence_domains < 3:
             logger.warning(
-                "[config] minimum evidence domains %s is below the identity floor of 3; forcing 3",
+                "[config] minimum evidence domains {} is below the identity floor of 3; forcing 3",
                 self.min_evidence_domains,
             )
             self.min_evidence_domains = 3
         if self.min_advisors_for_action < 1:
             logger.warning(
-                "[config] minimum advisors %s is below the identity floor of 1; forcing 1",
+                "[config] minimum advisors {} is below the identity floor of 1; forcing 1",
                 self.min_advisors_for_action,
             )
             self.min_advisors_for_action = 1
