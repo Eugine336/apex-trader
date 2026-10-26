@@ -61,6 +61,8 @@ from typing import Any, Deque, Optional
 
 from loguru import logger
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 # Directional labels — kept identical to brain.thesis_engine so the two layers
 # speak the same vocabulary without importing each other.
 LONG = "LONG"
@@ -295,6 +297,7 @@ class Campaign:
     # Appended to preserve the established positional constructor contract.
     originating_decision_id: str = ""
     opportunity_id: str = ""
+    identity_version: str = IDENTITY_VERSION
 
     # ── Derived reads ────────────────────────────────────────────────────
     @property
@@ -343,6 +346,8 @@ class Campaign:
         # strongly the evidence still supports the thesis.
         opportunity = _clamp01(0.5 * conf + 0.5 * _clamp01(ev))
         return {
+            "identity_version": self.identity_version,
+            "identity": IDENTITY_STATEMENT,
             "campaign_id": self.campaign_id,
             "originating_decision_id": self.originating_decision_id,
             "opportunity_id": self.opportunity_id,
@@ -370,6 +375,8 @@ class Campaign:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
+            "identity": IDENTITY_STATEMENT,
             "campaign_id": self.campaign_id,
             "originating_decision_id": self.originating_decision_id,
             "opportunity_id": self.opportunity_id,
