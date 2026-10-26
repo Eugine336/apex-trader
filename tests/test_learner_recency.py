@@ -21,9 +21,13 @@ def test_disabled_window_returns_all():
     assert AdaptiveOptimizer._recent_trades(trades, 0, 50) is trades
 
 
-def test_small_history_never_windowed():
-    trades = [_t(i) for i in range(10)]  # <= min_trades → keep full
-    assert AdaptiveOptimizer._recent_trades(trades, 90, 50) == trades
+def test_small_history_falls_back_to_weighted_full_history():
+    trades = [_t(i) for i in range(10)]  # <= min_trades → keep full history
+    out = AdaptiveOptimizer._recent_trades(trades, 90, 50)
+    assert len(out) == len(trades)
+    assert all("_recency_weight" in t for t in out)
+    assert all("_recency_weight" not in t for t in trades)
+    assert all(t["_recency_weight"] == 1.0 for t in out[:10])
 
 
 def test_windows_when_enough_recent():
@@ -41,8 +45,13 @@ def test_fallback_when_recent_too_few():
     recent = [_t(i) for i in range(10)]          # only 10 recent (< 50)
     old = [_t(200 + i) for i in range(100)]
     trades = recent + old
-    # Not enough recent → use the full history rather than starve the learners.
-    assert AdaptiveOptimizer._recent_trades(trades, 90, 50) is trades
+    # Not enough recent → use full history with exponential decay for old trades.
+    out = AdaptiveOptimizer._recent_trades(trades, 90, 50)
+    assert len(out) == len(trades)
+    assert all("_recency_weight" in t for t in out)
+    assert all("_recency_weight" not in t for t in trades)
+    assert all(t["_recency_weight"] == 1.0 for t in out[:10])
+    assert all(t["_recency_weight"] < 1.0 for t in out[10:])
 
 
 def test_parse_ts_handles_missing_and_bad():

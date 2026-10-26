@@ -4,6 +4,7 @@ Tests for multiplier discovery, Deriv fill_price fix, and timeframe warning dedu
 """
 
 from unittest.mock import MagicMock, AsyncMock, patch
+import time
 
 import pytest
 
@@ -104,8 +105,13 @@ class TestMultiplierDiscovery:
 
         import asyncio
         c._lock = asyncio.Lock()
-        c._send = AsyncMock(return_value=mock_response)
 
+        async def _send_raw(payload, **kwargs):
+            if "active_symbols" in payload:
+                return {"active_symbols": [{"symbol": "1HZ50V"}]}
+            return mock_response
+
+        c._send_raw = AsyncMock(side_effect=_send_raw)
         with patch("builtins.open", MagicMock()):
             with patch("json.load", return_value=mock_config):
                 await c._discover_multipliers()
@@ -126,14 +132,19 @@ class TestMultiplierDiscovery:
 
         import asyncio
         c._lock = asyncio.Lock()
-        c._send = AsyncMock(return_value={
-            "contracts_for": {
-                "available": [
-                    {"contract_type": "MULTUP", "multipliers": [40, 100, 200]},
-                ]
-            }
-        })
 
+        async def _send_raw(payload, **kwargs):
+            if "active_symbols" in payload:
+                return {"active_symbols": [{"symbol": "1HZ75V"}]}
+            return {
+                "contracts_for": {
+                    "available": [
+                        {"contract_type": "MULTUP", "multipliers": [40, 100, 200]},
+                    ]
+                }
+            }
+
+        c._send_raw = AsyncMock(side_effect=_send_raw)
         with patch("builtins.open", MagicMock()):
             with patch("json.load", return_value=mock_config):
                 await c._discover_multipliers()
@@ -151,8 +162,13 @@ class TestMultiplierDiscovery:
 
         import asyncio
         c._lock = asyncio.Lock()
-        c._send = AsyncMock(return_value={"error": {"message": "Not found"}})
 
+        async def _send_raw(payload, **kwargs):
+            if "active_symbols" in payload:
+                return {"active_symbols": [{"symbol": "1HZ50V"}]}
+            return {"error": {"message": "Not found"}}
+
+        c._send_raw = AsyncMock(side_effect=_send_raw)
         with patch("builtins.open", MagicMock()):
             with patch("json.load", return_value=mock_config):
                 await c._discover_multipliers()
@@ -196,7 +212,7 @@ class TestDerivFillPrice:
         buy_price = 193.40
 
         tick_response = {
-            "history": {"prices": [instrument_price], "times": [1717200000]},
+            "history": {"prices": [instrument_price], "times": [int(time.time())]},
         }
         buy_response = {
             "buy": {"contract_id": 12345, "buy_price": buy_price},
@@ -238,7 +254,7 @@ class TestDerivFillPrice:
 
         def mock_sync_send(payload):
             if "ticks_history" in payload:
-                return {"history": {"prices": [850.0], "times": [1717200000]}}
+                return {"history": {"prices": [850.0], "times": [int(time.time())]}}
             return {"buy": {"contract_id": 99, "buy_price": 50.0}}
 
         c._sync_send = mock_sync_send

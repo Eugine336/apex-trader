@@ -100,10 +100,11 @@ def test_confident_long_opens_campaign():
     assert out.campaign.decision_id == out.decision.decision_id
 
 
-def test_low_confidence_does_not_open():
+def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
     out = brain.reason(_confident_state())
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    # Negative expected value is a defensible rejection, not merely a wait.
+    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
 
 
@@ -190,21 +191,21 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
 
 def test_high_confidence_poor_payoff_is_sized_down():
     # Same 0.8 confidence but poor payoff geometry (0.5R favorable vs 1.0R adverse)
-    # → reward 0.5R → EV = 0.8*0.5 - 0.2*1 = 0.2R → ev_normalized = 0.2/2.0 = 0.1
-    # → exposure = min(0.8, 0.1) = 0.1 — sized far below confidence.
+    # → gross EV = 0.8*0.5 - 0.2*1 = 0.2R; costs reduce this to 0.15R.
+    # → ev_normalized = 0.15/2.0 = 0.075, so exposure stays below confidence.
     op = _RichOpinion("LONG", 0.8, efe="0.5R", eae="1.0R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == 0.1
+    assert out.campaign.desired_exposure == pytest.approx(0.075)
 
 
 def test_campaign_carries_expected_value_field():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.campaign is not None
-    assert out.campaign.expected_value == pytest.approx(1.4)
-    assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.4)
+    assert out.campaign.expected_value == pytest.approx(1.35)
+    assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)
 
 
 # ── V13: Brain applies calibration correction to effective confidence ──────────

@@ -582,14 +582,24 @@ class EventStore:
                         "marking store DEGRADED; events are being dropped: {}",
                         self._write_error_streak, self._db_path, exc,
                     )
+            finally:
+                # Queue.empty() only means the writer has dequeued the rows;
+                # it does not mean SQLite has committed them. task_done lets
+                # flush() wait for both queued and in-flight writes.
+                for _ in batch:
+                    self._queue.task_done()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Block until the queue is drained or *timeout* elapses."""
+        """Block until all queued and in-flight writes finish or timeout elapses."""
         deadline = time.monotonic() + timeout
-        while not self._queue.empty() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._queue.all_tasks_done.wait(remaining)
 
     def close(self) -> None:
         """Drain remaining events and shut down the writer thread."""
@@ -620,6 +630,11 @@ class EventStore:
                     self._conn.close()
             except Exception as exc:
                 print(f"[event_store] close cleanup failed: {exc}", file=sys.stderr)
+            finally:
+                # Rows drained by close are marked complete only after the
+                # final persistence attempt, never merely when dequeued.
+                for _ in remaining:
+                    self._queue.task_done()
             self._conn = None
 
 

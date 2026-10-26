@@ -187,7 +187,7 @@ def test_v7_do_nothing_reasoning_on_low_confidence():
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(_evidence_state())
     txt = out.decision.questions_answered["should_i_do_nothing"]
     assert txt.startswith("evaluated: doing nothing is correct")
-    assert "confidence" in txt
+    assert "ev" in txt.lower() or "expected value" in txt.lower()
 
 
 # ── V9 — EV is net of execution cost ─────────────────────────────────────────

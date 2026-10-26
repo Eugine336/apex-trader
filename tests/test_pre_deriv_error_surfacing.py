@@ -33,6 +33,9 @@ def _make_connector():
     conn._balance_lock = _threading.Lock()
     conn._acct_cache = None
     conn._acct_cache_ts = 0.0
+    # These tests exercise balance-request caching/error surfacing; isolate the
+    # separate portfolio request used to mark equity to market.
+    conn._sum_open_unrealized_pnl = MagicMock(return_value=0.0)
     return conn
 
 

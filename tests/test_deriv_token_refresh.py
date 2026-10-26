@@ -21,6 +21,7 @@ def _make_connector(callback, token="old", ttl=100.0, elapsed_frac=0.9):
     c._token_expires_at = c._token_issued_at + ttl
     c._token_expiry_warned = False
     c._token_refresh_fail_streak = 0
+    c._token_refresh_degraded = False
     c._token_lock = threading.Lock()
     return c
 

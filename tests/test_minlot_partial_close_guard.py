@@ -15,8 +15,9 @@ The fix has two layers, both validated here:
    then relies on SL-based protection (breakeven / trailing).
 
 2. **Worker guard** (``position_worker.py`` ``_check_tp1``): when the position
-   is at the broker minimum lot, emit a ``MODIFY_SL`` to breakeven instead of
-   the impossible ``PARTIAL_CLOSE`` — so the doomed intent is never created.
+   is at the broker minimum lot or is an atomic Deriv contract, emit a full
+   ``CLOSE`` at TP1 to bank the realized win instead of creating an impossible
+   ``PARTIAL_CLOSE`` or waiting for a runner that cannot exist.
 """
 
 from __future__ import annotations
@@ -194,21 +195,21 @@ class TestExecutorMinLotFallback:
 
 
 class TestWorkerTp1MinLotGuard:
-    def test_minlot_emits_breakeven_not_partial(self):
+    def test_minlot_banks_tp1_with_full_close(self):
         snap = _snap(remaining_lots=0.01, volume_min=0.01)
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        be = [i for i in out if i.source == "tp1_minlot_be"]
-        assert len(be) == 1
-        assert be[0].intent_type == IntentType.MODIFY_SL
+        close = [i for i in out if i.source == "tp1_minlot_close"]
+        assert len(close) == 1
+        assert close[0].intent_type == IntentType.CLOSE
 
-    def test_minlot_breakeven_only_moves_stop_forward(self):
-        # SL already at breakeven → no thrash, no intent.
+    def test_minlot_at_breakeven_still_banks_tp1(self):
+        # A TP1 hit is a realized exit, even if the stop has already moved.
         snap = _snap(remaining_lots=0.01, volume_min=0.01, at_breakeven=True)
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
-        assert not any(i.source == "tp1_minlot_be" for i in out)
+        assert any(i.source == "tp1_minlot_close" for i in out)
 
     def test_normal_lot_still_emits_partial(self):
         snap = _snap(remaining_lots=0.10, volume_min=0.01)
@@ -226,15 +227,19 @@ class TestWorkerTp1MinLotGuard:
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        assert any(i.source == "tp1_minlot_be" for i in out)
+        close = [i for i in out if i.source == "tp1_minlot_close"]
+        assert len(close) == 1
+        assert close[0].intent_type == IntentType.CLOSE
 
-    def test_deriv_path_unchanged(self):
-        # Deriv still routes to its own breakeven source (atomic contract).
+    def test_deriv_path_banks_tp1_with_full_close(self):
+        # Deriv contracts are atomic; do not create a partial-close intent.
         snap = _snap(remaining_lots=0.10, volume_min=0.01, platform="deriv")
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        assert any(i.source == "tp1_deriv_be" for i in out)
+        close = [i for i in out if i.source == "tp1_deriv_close"]
+        assert len(close) == 1
+        assert close[0].intent_type == IntentType.CLOSE
 
 
 # ── Snapshot field ───────────────────────────────────────────────────
