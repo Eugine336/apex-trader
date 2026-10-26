@@ -129,15 +129,6 @@ def main() -> int:
     print(f"sibling repo: {sibling_dir}")
     print()
 
-    # Refuse before cloning or copying if the preserved source backup path is
-    # already occupied. This prevents a partial migration that copies state but
-    # cannot safely complete the topology switch.
-    backup_dir = repo_root / "data_preclone_backup"
-    if data_dir.exists() and not ns.dry_run and backup_dir.exists():
-        print(f"ERROR: {backup_dir} already exists from a previous run.")
-        print("No source files copied, renamed or relinked. Review the existing backup manually.")
-        return 1
-
     if not data_dir.exists():
         print("data/ doesn't exist yet -- nothing to preserve, will just clone + junction.")
     elif _is_junction_or_symlink(data_dir):
@@ -148,6 +139,15 @@ def main() -> int:
         print("         this script only handles the plain-directory case. If this is stale,")
         print("         handle it manually.")
         return 0
+
+    # Refuse before cloning or copying if the preserved source backup path is
+    # already occupied. This prevents a partial migration that copies state but
+    # cannot safely complete the topology switch.
+    backup_dir = repo_root / "data_preclone_backup"
+    if data_dir.exists() and not ns.dry_run and backup_dir.exists():
+        print(f"ERROR: {backup_dir} already exists from a previous run.")
+        print("No source files copied, renamed or relinked. Review the existing backup manually.")
+        return 1
 
     # --- Step 1: clone apex-trader-data as a sibling, if not already there ---
     if ns.dry_run:
