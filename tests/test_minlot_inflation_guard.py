@@ -9,23 +9,29 @@ the connector:
 
 Uses the same dep-stubbing pattern as test_p2_execution_features.py.
 """
+import importlib
 import sys
 import time
 from types import SimpleNamespace, ModuleType
 from unittest.mock import MagicMock
 
-# ── Stub heavy deps so imports succeed in minimal environments ────────────
+# Stub only genuinely unavailable optional dependencies. Replacing installed
+# modules in sys.modules leaks mocks into unrelated tests (notably Loguru's
+# event-store sink and the shared WebSocket stack).
 _STUB_MODULES = [
     "MetaTrader5", "requests", "loguru", "websockets",
     "websockets.sync", "websockets.sync.client",
     "aiosqlite", "sqlalchemy",
 ]
 for mod in _STUB_MODULES:
-    if mod not in sys.modules:
+    if mod in sys.modules:
+        continue
+    try:
+        importlib.import_module(mod)
+    except ImportError:
         sys.modules[mod] = MagicMock()
 
-_loguru = sys.modules["loguru"]
-_loguru.logger = MagicMock()
+_captured_logger = MagicMock()
 
 if "numpy" not in sys.modules:
     np_stub = MagicMock()
@@ -55,6 +61,9 @@ if "pandas" not in sys.modules:
 def _make_connector(reject_on_minlot_inflation: bool = False):
     """Build a minimally-initialised MT5Connector with _connected=True."""
     from platforms.mt5.mt5_connector import MT5Connector
+    import platforms.mt5.mt5_connector as mt5_connector_module
+    mt5_connector_module.logger = _captured_logger
+    _captured_logger.reset_mock()
     c = MT5Connector.__new__(MT5Connector)
     c._connected = True
     c._magic = 202500
@@ -134,7 +143,7 @@ class TestMarketOrderMinlotInflation:
         result = c.place_order("XTIUSD", "SELL", 0.01, 99.0, 97.0)
         assert result.success is True
         assert result.lots == 0.5
-        logger = sys.modules["loguru"].logger
+        logger = _captured_logger
         logger.warning.assert_called()
         warning_args = logger.warning.call_args_list[-1]
         assert "[MINLOT_INFLATION]" in str(warning_args)
