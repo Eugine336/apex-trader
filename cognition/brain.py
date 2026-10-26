@@ -1087,7 +1087,10 @@ class CognitiveBrain:
                     "conditions are not executable now; preserve the thesis and wait"
                 )
             elif (directional_and_qualified and not ev_ok) or (
-                self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
+                self.ev_primary_gate
+                and geometry_qualified
+                and direction in (LONG, SHORT)
+                and not ev_ok
             ):
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
