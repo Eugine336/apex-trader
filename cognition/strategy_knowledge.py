@@ -36,6 +36,7 @@ class StrategyLensAssessment:
     reasons: tuple[str, ...]
     missing_context: tuple[str, ...]
     limitation: str
+    data_requirements: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class StrategyLensAssessment:
             "relevance": round(self.relevance, 3),
             "reasons": list(self.reasons),
             "missing_context": list(self.missing_context),
+            "data_requirements": list(self.data_requirements),
             "limitation": self.limitation,
         }
 
@@ -347,8 +349,9 @@ def assess_strategy_lenses(
             status=status,
             relevance=round(relevance, 3),
             reasons=tuple(reasons),
-            missing_context=tuple(lens.data_requirements),
+            missing_context=tuple(lens.data_requirements) if status != "relevant" else (),
             limitation=lens.limitation,
+            data_requirements=tuple(lens.data_requirements),
         ))
 
     order = {"relevant": 0, "watch": 1, "not_evaluable": 2}
