@@ -333,12 +333,20 @@ class MT5Connector(BaseConnector):
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
         if age > self._max_tick_age_seconds:
             now_mono = _time.monotonic()
-            if now_mono - self._stale_warn_last.get(mapped, 0.0) > 60.0:
+            # Tests, health probes and recovery paths may construct a connector
+            # shell with __new__ before full initialization. Freshness enforcement
+            # must still reject the stale quote instead of failing on a missing
+            # warning-throttle cache.
+            warn_last = getattr(self, "_stale_warn_last", None)
+            if not isinstance(warn_last, dict):
+                warn_last = {}
+                self._stale_warn_last = warn_last
+            if now_mono - warn_last.get(mapped, 0.0) > 60.0:
                 logger.warning(
                     "Stale tick for {}: {:.1f}s old (limit {}s)",
                     mapped, age, self._max_tick_age_seconds,
                 )
-                self._stale_warn_last[mapped] = now_mono
+                warn_last[mapped] = now_mono
             raise RuntimeError(
                 f"Stale tick for {mapped}: {age:.1f}s old (limit {self._max_tick_age_seconds}s)"
             )
