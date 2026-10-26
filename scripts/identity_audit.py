@@ -34,7 +34,6 @@ BROKER_MUTATION_NAMES = {
     "modify_order",
     "order_send",
     "close_position",
-    "partial_close",
 }
 
 
