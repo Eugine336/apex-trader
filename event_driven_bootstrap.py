@@ -2321,14 +2321,14 @@ class EventDrivenSystem:
         missing stop is refused because an entry without a stop would bypass the
         constitutional deterministic-safety floor (Part X).
         """
-        def _sink(origination: Any) -> None:
+        def _sink(origination: Any) -> bool:
             try:
                 symbol = str(getattr(origination, "symbol", "") or "")
                 direction = str(getattr(origination, "direction", "") or "").upper()
                 sl = getattr(origination, "sl", None)
                 tp = getattr(origination, "tp", None)
                 if not symbol or direction not in ("LONG", "SHORT"):
-                    return
+                    return False
                 # Part X — every entry MUST carry a protective stop. When the
                 # Brain's spec omits one, derive it deterministically from the
                 # live price + structure rather than refusing to trade.
@@ -2340,7 +2340,7 @@ class EventDrivenSystem:
                         "protective stop/target (Part X safety floor)",
                         symbol, direction,
                     )
-                    return
+                    return False
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
                 sized = self._size_brain_origination_with_portfolio(
                     origination, symbol, direction, float(sl),
@@ -2349,7 +2349,7 @@ class EventDrivenSystem:
                     # PortfolioDivision is the sizing authority. Missing or
                     # rejected portfolio sizing must never fall back to an inline
                     # lot calculation that bypasses account/book limits.
-                    return
+                    return False
                 lots = float(sized["lots"])
                 stake_usd = sized.get("stake_usd")
                 entry_price = float(sized["entry_price"])
@@ -2358,7 +2358,7 @@ class EventDrivenSystem:
                         symbol, direction, float(sl), float(tp),
                         float(stake_usd or 0.0), confidence,
                     ):
-                        return
+                        return False
                     quantity_for_key = float(stake_usd or 0.0)
                 else:
                     # Part XIX Art 1/7 — only proceed with positive expected NET
@@ -2366,7 +2366,7 @@ class EventDrivenSystem:
                     if lots <= 0.0 or not self._opportunity_qualifies(
                         symbol, direction, sl, tp, lots, confidence,
                     ):
-                        return
+                        return False
                     quantity_for_key = lots
                 idem_key = generate_idempotency_key(symbol, direction, quantity_for_key)
                 comment = build_order_comment(
@@ -2396,8 +2396,10 @@ class EventDrivenSystem:
                     symbol, direction, lots,
                     getattr(origination, "campaign_id", ""),
                 )
+                return True
             except Exception as exc:  # noqa: BLE001 — sink must never break the loop
                 logger.warning("[origination-sink] submit failed: {}", exc)
+                return False
 
         return _sink
 
