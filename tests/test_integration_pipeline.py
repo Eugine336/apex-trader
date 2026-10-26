@@ -309,12 +309,13 @@ class TestPositionPersistenceRoundTrip:
 class TestAdaptiveOptimizerPipeline:
     """Verify AdaptiveOptimizer produces valid adjustments."""
 
-    def test_optimization_cycle(self, tmp_path):
+    def test_optimization_cycle(self, tmp_path, monkeypatch):
         import adaptive.score_optimizer as so_mod
         import adaptive.pair_learner as pl_mod
         import adaptive.regime_learner as rl_mod
         import adaptive.session_learner as sl_mod
 
+        monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
         old_so = so_mod.ScoreOptimizer.DEFAULT_PATH
         old_pl = pl_mod.PairLearner.SAVE_PATH
         old_rl = rl_mod.RegimeLearner.SAVE_PATH
