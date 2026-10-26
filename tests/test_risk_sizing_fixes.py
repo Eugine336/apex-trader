@@ -7,55 +7,6 @@ Covers three fixes:
   3. risk_pips <= 0 returns lots=0.0 / skip_invalid_stop (no tradeable lot).
 """
 
-import sys
-from types import ModuleType
-from unittest.mock import MagicMock
-
-# ── Stub heavy deps before any app imports ────────────────────────────────
-_STUB_MODULES = [
-    "MetaTrader5", "requests", "loguru", "websockets",
-    "websockets.sync", "websockets.sync.client",
-    "aiosqlite", "sqlalchemy",
-    "torch", "torch.nn", "torch.nn.functional",
-    "torch.optim", "torch.distributions",
-]
-for mod in _STUB_MODULES:
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
-
-_loguru = sys.modules["loguru"]
-_loguru.logger = MagicMock()
-
-_np = ModuleType("numpy")
-_np.__version__ = "1.26.0"
-_np.ndarray = list
-_np.float64 = float
-_np.array = lambda x, **kw: list(x) if hasattr(x, "__iter__") else [x]
-_np.zeros = lambda n: [0] * n
-_np.mean = lambda x: sum(x) / len(x) if x else 0.0
-_np.std = lambda x, **kw: 0.0
-_np.nan = float("nan")
-_np.isnan = lambda x: x != x
-_np.isscalar = lambda x: isinstance(x, (int, float, complex))
-if "numpy" not in sys.modules:
-    sys.modules["numpy"] = _np
-
-_pd = ModuleType("pandas")
-
-class _FakeTS:
-    @staticmethod
-    def now(tz=None):
-        return _FakeTS()
-    def isoformat(self):
-        return "2025-01-01T00:00:00+00:00"
-
-_pd.Timestamp = _FakeTS
-_pd.Series = MagicMock
-_pd.DataFrame = MagicMock
-if "pandas" not in sys.modules:
-    sys.modules["pandas"] = _pd
-
-
 from risk.position_sizer import PositionSizer
 from risk.risk_engine import RiskEngine
 
