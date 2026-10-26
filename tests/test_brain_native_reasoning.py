@@ -442,6 +442,26 @@ def test_native_fallback_requires_explicit_verified_execution_cost():
 # ── Article X: independent origination when the advisor is unavailable ────────
 
 
+def test_native_campaign_uses_the_observed_entry_stop_and_target_geometry():
+    brain = CognitiveBrain(reasoner=None, reward_r_default=99.0)
+    out = brain.reason(_strong_long_state())
+
+    assert out.campaign is not None
+    intent = out.campaign.initial_execution_intent
+    geometry = intent["payoff_geometry"]
+    assert intent["entry_price"] == geometry["entry_price"]
+    assert intent["sl"] == geometry["stop_price"]
+    assert intent["tp"] == geometry["target_price"]
+    assert intent["sl"] < intent["entry_price"] < intent["tp"]
+    assert intent["geometry_evidence_ids"] == geometry["evidence_ids"]
+    # A huge configured fallback is intentionally irrelevant when real geometry
+    # exists; the target is based on observed structure, not reward_r_default.
+    assert out.decision.preferred_opportunity.reward_r == geometry["reward_r"]
+    assert out.decision.questions_answered["payoff_geometry_status"] == (
+        "qualified_from_fresh_completed_market_evidence"
+    )
+
+
 def test_brain_originates_natively_when_no_external_reasoner_is_configured():
     # No AI provider object exists at all. A strong, low-uncertainty structured
     # market read must still be reasoned over by the native Brain.
