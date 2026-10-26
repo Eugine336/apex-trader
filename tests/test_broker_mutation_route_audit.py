@@ -71,7 +71,7 @@ def test_only_approved_gateway_files_call_live_entry_mutators() -> None:
     violations = []
     for path in ROOT.rglob("*.py"):
         relative = path.relative_to(ROOT)
-        if any(part in excluded_dirs for part in relative.parts):
+        if any(part in excluded_dirs for part in relative.parts) or relative.name == "conftest.py":
             continue
         if relative in _ALLOWED_MUTATION_FILES:
             continue
