@@ -15,6 +15,8 @@ import time
 from types import SimpleNamespace, ModuleType
 from unittest.mock import MagicMock
 
+import pytest
+
 # Stub only genuinely unavailable optional dependencies. Replacing installed
 # modules in sys.modules leaks mocks into unrelated tests (notably Loguru's
 # event-store sink and the shared WebSocket stack).
@@ -32,6 +34,14 @@ for mod in _STUB_MODULES:
         sys.modules[mod] = MagicMock()
 
 _captured_logger = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _capture_mt5_logger(monkeypatch):
+    import platforms.mt5.mt5_connector as mt5_connector_module
+    monkeypatch.setattr(mt5_connector_module, "logger", _captured_logger)
+    _captured_logger.reset_mock()
+
 
 if "numpy" not in sys.modules:
     np_stub = MagicMock()
@@ -61,9 +71,6 @@ if "pandas" not in sys.modules:
 def _make_connector(reject_on_minlot_inflation: bool = False):
     """Build a minimally-initialised MT5Connector with _connected=True."""
     from platforms.mt5.mt5_connector import MT5Connector
-    import platforms.mt5.mt5_connector as mt5_connector_module
-    mt5_connector_module.logger = _captured_logger
-    _captured_logger.reset_mock()
     c = MT5Connector.__new__(MT5Connector)
     c._connected = True
     c._magic = 202500
