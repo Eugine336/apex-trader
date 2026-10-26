@@ -209,7 +209,16 @@ class NativePositionManager:
                 if not isinstance(measurements, dict):
                     continue
 
-                if domain not in {"reasoning", "execution_quality", "risk", "portfolio_risk"}:
+                is_non_market_source = (
+                    domain in {
+                        "reasoning", "execution_quality", "risk", "portfolio", "portfolio_risk",
+                    }
+                    or "risk" in source.lower()
+                    or "portfolio" in source.lower()
+                    or "execution" in source.lower()
+                    or "reasoning" in source.lower()
+                )
+                if not is_non_market_source:
                     market_domains.add(domain)
 
                 for key in ("estimated_total_cost_r", "execution_cost_r", "round_trip_cost_r"):
@@ -456,11 +465,13 @@ class NativePositionManager:
                 }
                 coverage = getattr(analysis, "domain_coverage", {}) or {}
                 if isinstance(coverage, dict):
+                    # Keep the fallback's coverage denominator consistent with
+                    # the source-aware filtering above. Domain normalisation maps
+                    # several non-market producers to OTHER, so a key-name-only
+                    # filter is insufficient.
                     analysis_domains = {
                         str(domain).lower() for domain in coverage
-                        if str(domain).lower() not in {
-                            "reasoning", "execution_quality", "risk", "portfolio_risk",
-                        }
+                        if str(domain).lower() in market_domains
                     }
                 analysis_uncertainty = max(
                     uncertainty,
