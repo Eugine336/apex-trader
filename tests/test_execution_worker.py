@@ -673,33 +673,43 @@ class TestMultipleIntents:
 
 
 class TestDiscretionaryExitsToggle:
-    """Constitution Part VI/X — when the Brain is the live manager, the worker
-    DEFERS discretionary exits to it but still enforces the catastrophic safety
-    floor (hard stop-loss). ``discretionary_exits_enabled=False`` models that."""
+    """Discretionary mechanics are deferred unless the legacy fallback is explicit."""
 
-    def test_discretionary_on_by_default_takes_tp(self):
-        intents = PositionWorker(WorkerConfig()).evaluate(
+    def test_discretionary_defaults_off_and_defers_tp(self):
+        cfg = WorkerConfig()
+        assert cfg.discretionary_exits_enabled is False
+        assert cfg.scan_directional_exits_enabled is False
+        intents = PositionWorker(cfg).evaluate(
             _snap(tp2=1.12, current_price=1.121), NOW)
-        assert any(i.source == "tp2_target" for i in intents)
+        assert not any(i.source == "legacy_mechanical" for i in intents)
+
+    def test_explicit_legacy_fallback_retains_and_labels_tp2(self):
+        # This explicit worker override represents the runtime RiskConfig opt-in.
+        cfg = WorkerConfig(discretionary_exits_enabled=True)
+        intents = PositionWorker(cfg).evaluate(
+            _snap(tp2=1.12, current_price=1.121), NOW)
+        legacy = [i for i in intents if i.source == "legacy_mechanical"]
+        assert legacy
+        assert any("legacy_source=tp2_target" in i.reason for i in legacy)
 
     def test_discretionary_off_defers_tp2(self):
         cfg = WorkerConfig(discretionary_exits_enabled=False)
         intents = PositionWorker(cfg).evaluate(
             _snap(tp2=1.12, current_price=1.121), NOW)
-        assert not any(i.source == "tp2_target" for i in intents)
+        assert not any(i.source == "legacy_mechanical" for i in intents)
 
     def test_discretionary_off_defers_tp1_partial(self):
         cfg = WorkerConfig(discretionary_exits_enabled=False)
         intents = PositionWorker(cfg).evaluate(
             _snap(tp1=1.11, current_price=1.111, partial_closed=False), NOW)
-        assert not any(i.source in ("tp1_partial", "tp1_deriv_be") for i in intents)
+        assert not any(i.source == "legacy_mechanical" for i in intents)
 
     def test_discretionary_off_defers_breakeven(self):
         cfg = WorkerConfig(discretionary_exits_enabled=False)
         snap = _snap(partial_closed=True, at_breakeven=False,
                      pnl_pips=15.0, current_price=1.10150)
         intents = PositionWorker(cfg).evaluate(snap, NOW)
-        assert not any(i.source == "breakeven" for i in intents)
+        assert not any(i.source == "legacy_mechanical" for i in intents)
 
     def test_safety_floor_stop_loss_always_fires(self):
         # Even with discretionary exits deferred to the Brain, a hard SL breach
