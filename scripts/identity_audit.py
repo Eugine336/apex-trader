@@ -128,21 +128,29 @@ def audit_repository() -> list[str]:
             violations.append(f"{path.relative_to(ROOT)} has a syntax error")
             continue
 
-        if path.relative_to(ROOT).as_posix() not in {
-            "execution/action_executor.py",
-            "platforms/platform_manager.py",
-        } and not path.relative_to(ROOT).as_posix().startswith("platforms/"):
+        relative = path.relative_to(ROOT).as_posix()
+        # Broker-mutating adapters are confined to the canonical execution sink
+        # and platform connector boundary. Simulation-only trade managers are
+        # excluded because their methods mutate in-memory replay state, not live
+        # broker accounts. Do not use receiver-name heuristics here: self._pm,
+        # a custom wrapper, or an alias can still perform a real order mutation.
+        simulation_only = (
+            relative.startswith("platforms/")
+            or relative.startswith("backtest/")
+            or relative.startswith("rl/")
+            or relative.startswith("management/")
+            or relative.startswith("test_support/")
+        )
+        if relative != "execution/action_executor.py" and not simulation_only:
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                     continue
                 if node.func.attr not in BROKER_MUTATION_NAMES:
                     continue
-                receiver = ast.unparse(node.func.value).lower()
-                if any(part in receiver for part in ("broker", "platform", "connector", "mt5", "deriv")):
-                    violations.append(
-                        f"{path.relative_to(ROOT)}:{node.lineno} calls broker mutation "
-                        f"{node.func.attr} outside the ActionExecutor boundary"
-                    )
+                violations.append(
+                    f"{relative}:{node.lineno} calls broker mutation "
+                    f"{node.func.attr} outside the ActionExecutor/platform boundary"
+                )
 
     intents_path = ROOT / "execution" / "intents.py"
     try:
