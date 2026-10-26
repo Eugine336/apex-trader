@@ -9,6 +9,7 @@ from cognition.contracts import (
     Opportunity,
 )
 from cognition.identity import IDENTITY_VERSION
+from cognition.brain_reasoning import BrainHypothesis, EvidenceAnalysis
 from cognition.provenance import attach_provenance, current_provenance
 from execution.action_executor import ActionExecutor
 from execution.intents import Intent
@@ -25,6 +26,11 @@ def test_cognitive_contract_serializers_carry_identity_version():
 
     for record in records:
         assert record.to_dict()["identity_version"] == IDENTITY_VERSION
+
+
+def test_native_analysis_and_hypotheses_are_versioned():
+    assert EvidenceAnalysis().to_dict()["identity_version"] == IDENTITY_VERSION
+    assert BrainHypothesis(statement="range rotation").to_dict()["identity_version"] == IDENTITY_VERSION
 
 
 def test_provenance_helper_preserves_links_without_mutating_input():
