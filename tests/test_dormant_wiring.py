@@ -33,11 +33,14 @@ def agent(tmp_path):
 # ── PostCloseTracker config + instantiation ─────────────────────────────────
 
 
-def test_post_close_config_defaults_off():
+def test_post_close_config_defaults_on_for_observation_only():
     from config import AppConfig, PostCloseTrackerConfig
 
-    assert PostCloseTrackerConfig().enabled is False
-    assert AppConfig().post_close_tracker.enabled is False
+    # This tracker only measures post-close MFE/MAE for outcome attribution;
+    # it does not alter entries or live positions. Collection is on by default
+    # so learning receives evidence, while adaptation remains separately gated.
+    assert PostCloseTrackerConfig().enabled is True
+    assert AppConfig().post_close_tracker.enabled is True
 
 
 def test_post_close_tracker_disabled_is_noop(tmp_path):
