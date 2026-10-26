@@ -103,7 +103,11 @@ def preflight_data_copy(data_dir: Path, sibling_dir: Path) -> tuple[list[tuple[P
                 same = False
             if not same:
                 conflicts.append(str(relative))
-    return files_to_copy, conflicts
+    # Never return a copy plan alongside conflicts. Callers should be unable to
+    # accidentally copy unrelated missing files after discovering one collision.
+    if conflicts:
+        return [], sorted(set(conflicts))
+    return files_to_copy, []
 
 
 def verify_copied_files(data_dir: Path, sibling_dir: Path) -> tuple[bool, str]:
