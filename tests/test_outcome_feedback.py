@@ -7,9 +7,12 @@ accuracy aggregation, confidence calibration, and that unmatched halves are
 ignored rather than crashing.
 """
 
+import json
+
 import pytest
 
 from brain.outcome_feedback import OutcomeFeedback
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 class _Cfg:
@@ -29,6 +32,9 @@ class TestRecordingAndJoin:
     def test_entry_then_outcome_joins(self, fb):
         fb.record_entry("ord1", {"horizon": "SCALP", "votes": {"momentum": ["LONG", 0.9]}})
         fb.record_outcome("ord1", {"pnl_r": 1.5, "won": True})
+        records = [json.loads(line) for line in (fb._path).read_text(encoding="utf-8").splitlines()]
+        assert all(record["identity_version"] == IDENTITY_VERSION for record in records)
+        assert all(record["identity"] == IDENTITY_STATEMENT for record in records)
         completed = fb.get_completed()
         assert len(completed) == 1
         assert completed[0]["trade_key"] == "ord1"
