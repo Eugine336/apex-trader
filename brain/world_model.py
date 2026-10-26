@@ -98,6 +98,15 @@ class WorldModel:
     # to avoid import coupling.
     candidates: tuple[Any, ...] = ()
 
+    # ── Shared setup-quality measurements ─────────────────────────────
+    # Direction-free opportunity quality and direction-aware entry quality
+    # are measurements, not decisions. The Cognitive Brain remains the sole
+    # authority that forms a thesis and chooses whether to act.
+    opportunity_quality: Optional[float] = None
+    entry_quality_long: Optional[float] = None
+    entry_quality_short: Optional[float] = None
+    regime_analysis: Any = None
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     def fvgs_by_tf(self) -> dict[str, tuple[FairValueGap, ...]]:
@@ -331,6 +340,10 @@ def build_world_model(
     concepts: Optional[dict[str, list]] = None,
     regime: Optional[dict[str, str]] = None,
     candidates: Optional[list] = None,
+    opportunity_quality: Optional[float] = None,
+    entry_quality_long: Optional[float] = None,
+    entry_quality_short: Optional[float] = None,
+    regime_analysis: Any = None,
 ) -> WorldModel:
     """Convenience builder: accepts mutable dicts, freezes them into tuples.
 
@@ -416,4 +429,8 @@ def build_world_model(
         concepts=_freeze_lists(concepts),
         regime=_freeze_scalars(regime),
         candidates=tuple(candidates) if candidates else (),
+        opportunity_quality=opportunity_quality,
+        entry_quality_long=entry_quality_long,
+        entry_quality_short=entry_quality_short,
+        regime_analysis=regime_analysis,
     )
