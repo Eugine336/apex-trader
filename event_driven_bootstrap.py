@@ -286,6 +286,10 @@ class PositionEvaluator:
             return
 
         if not positions:
+            # A successful empty-book sweep is still an evaluation cycle. Count
+            # it so the loop health/status metric does not report a stopped
+            # evaluator merely because there are no open positions.
+            self._eval_count += 1
             return
 
         now_mono = _time.monotonic()
