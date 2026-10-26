@@ -776,6 +776,8 @@ class DecisionPackage:
     decision_id: str = ""
     created_iso: str = ""
     identity_version: str = IDENTITY_VERSION
+    # Appended so every live decision exposes the identity value it claims.
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
         if not self.decision_id:
@@ -857,7 +859,7 @@ class DecisionPackage:
     def to_dict(self) -> dict:
         return {
             "identity_version": self.identity_version,
-            "identity": IDENTITY_STATEMENT,
+            "identity": self.identity,
             "decision_id": self.decision_id,
             "created": self.created_iso,
             "symbol": self.symbol,
@@ -913,6 +915,8 @@ class CampaignSpecification:
     campaign_id: str = ""
     created_iso: str = ""
     identity_version: str = IDENTITY_VERSION
+    # Explicit identity text is validated by the translator before execution.
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
         if not self.campaign_id:
@@ -926,7 +930,7 @@ class CampaignSpecification:
     def to_dict(self) -> dict:
         return {
             "identity_version": self.identity_version,
-            "identity": IDENTITY_STATEMENT,
+            "identity": self.identity,
             "campaign_id": self.campaign_id,
             "created": self.created_iso,
             "symbol": self.symbol,
