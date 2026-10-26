@@ -139,9 +139,16 @@ class TestEvolutionHooksInBootstrap:
         from pathlib import Path
         self.source = Path("event_driven_bootstrap.py").read_text()
 
-    def test_capital_allocator_in_entry_path(self):
-        assert "capital_allocator" in self.source
-        assert "cap_mult" in self.source
+    def test_brain_origination_uses_portfolio_division(self):
+        # The current architecture sizes Brain-authored exposure through the
+        # shared PortfolioDivision, not the retired inline cap_mult fold.
+        start = self.source.index("    def _size_brain_origination_with_portfolio(")
+        end = self.source.index("    def _make_origination_sink(", start)
+        helper = self.source[start:end]
+        assert "PortfolioDivision" in helper
+        assert "division.evaluate(" in helper
+        assert "SizingFactors(base_risk_pct=base_risk_pct)" in helper
+        assert "cap_mult" not in helper
 
     def test_execution_profiles_in_entry_path(self):
         assert "execution_profiles" in self.source
@@ -178,17 +185,21 @@ class TestShutdownClosesEvolutionDBs:
             assert name in source, f"Shutdown should close {name}"
 
 
-# ── Combined multiplier includes cap_mult ────────────────────────────
+# ── Brain entry sizing contract ──────────────────────────────────────
 
 
-class TestCombinedMultiplier:
-    """Verify the combined sizing multiplier includes all factors."""
+class TestBrainOriginationSizing:
+    """New exposure must pass through one portfolio sizing/admission boundary."""
 
-    def test_combined_mult_formula(self):
+    def test_origination_sink_has_no_inline_sizer_fallback(self):
         from pathlib import Path
         source = Path("event_driven_bootstrap.py").read_text()
-        assert "cap_mult" in source
-        assert "* cap_mult" in source
+        start = source.index("    def _make_origination_sink(")
+        end = source.index("    def _derive_origination_levels(", start)
+        sink = source[start:end]
+        assert "_size_brain_origination_with_portfolio(" in sink
+        assert "self._origination_lot_size(" not in sink
+        assert "if sized is None:" in sink
 
 
 # ── EventDrivenSystem bootstrap docstring updated ────────────────────
