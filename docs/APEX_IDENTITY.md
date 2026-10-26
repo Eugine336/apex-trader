@@ -23,6 +23,25 @@ This identity governs the **entire repository and runtime**: every instrument, b
 9. **Native reasoning must survive provider failures.** External models can extend analysis, but a provider outage is an infrastructure state. Native-only action still requires the same honest evidence, activation, expectancy and risk standards.
 10. **Safety is not strategy.** Market reasoning finds and evaluates opportunities; deterministic controls enforce broker validity, operational integrity, account/portfolio limits and capital preservation. These constraints remain mandatory.
 
+## Binding confidence and actionability policy
+
+The machine-readable policy in `cognition/identity.py` is the source of truth. Configuration loading and direct `CognitiveBrain` construction enforce these floors/caps; environment values may tighten them but cannot weaken them.
+
+| Gate | Binding requirement |
+|---|---|
+| Provider-assisted effective confidence | At least **0.55** after confidence integration, calibration and degradation |
+| Aggregate uncertainty | No greater than **0.60** |
+| Advisor-backed action | At least **2 actual responding advisors**; unknown council coverage is not quorum and is treated as degraded |
+| Independent market evidence | At least **3 fresh market-analysis domains**. Advisor metadata, portfolio state and execution-cost data do not count as market domains |
+| Native-only fallback | At least **0.70 effective confidence**, uncertainty no greater than **0.50**, and a sizing multiplier no greater than **0.50** |
+| Reverse decisions | Confidence floor **0.70**; direction disagreement alone is not a reason to reverse or close |
+| Expected value | Strictly positive net EV in R after verified round-trip costs; a zero/negative threshold cannot weaken this gate |
+| Degraded council | Confidence attenuation multiplier cannot exceed **0.70**; missing council metadata is explicitly degraded |
+
+These are different policy dimensions, not a single blended score. Direction, thesis, opportunity, timing, execution, management and expected-value confidence remain separately recorded. The **0.55 floor is necessary but never sufficient**: an action also requires a first-class activated opportunity, positive net EV after verified costs, independent market evidence, current data, advisor quorum where applicable, and shared portfolio/risk/broker admission. Confidence must not be inflated by repeated polling, correlated evidence, stale data, or a strategy's name.
+
+Apex's external AI remains advisory. With no external advisor available, native-only reasoning remains eligible to discover opportunities, but it uses the stricter **0.70 / 0.50 / 0.50** confidence, uncertainty and sizing limits and still passes the same independent-evidence, activation, expectancy, cost and safety checks.
+
 ## Strategy-knowledge scope
 
 The strategy map in cognition/strategy_knowledge.py records analytical families, evidence anchors, data requirements and limitations. It is a **knowledge map**, not a closed universe of all trading knowledge, not proof that every technique is implemented, and not a decision policy. Relevance assessments only tell the Brain which lenses are worth considering from the evidence available.

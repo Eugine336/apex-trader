@@ -8,16 +8,36 @@ from pathlib import Path
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
-tracked = subprocess.run(
-    ["git", "ls-files", "*.db"], cwd=ROOT, capture_output=True, text=True, check=True
-).stdout.splitlines()
+tracked_paths = subprocess.run(
+    ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True
+).stdout.split(b"\\0")
+artifact_suffixes = (
+    ".db", ".db-wal", ".db-shm", ".db-journal",
+    ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm",
+    ".sqlite-journal", "-wal", "-shm", "-journal",
+)
+artifacts = sorted(
+    item.decode("utf-8", errors="strict")
+    for item in tracked_paths
+    if item and item.decode("utf-8", errors="strict").lower().endswith(artifact_suffixes)
+)
+sidecar_suffixes = (
+    ".db-wal", ".db-shm", ".db-journal", ".sqlite-wal", ".sqlite-shm",
+    ".sqlite-journal", "-wal", "-shm", "-journal",
+)
+tracked = [rel for rel in artifacts if not rel.lower().endswith(sidecar_suffixes)]
 print(f"TRACKED_DATABASE_COUNT={len(tracked)}")
-for rel in tracked:
+print(f"TRACKED_DATABASE_ARTIFACT_COUNT={len(artifacts)}")
+for rel in artifacts:
     path = ROOT / rel
+    if rel.lower().endswith(sidecar_suffixes):
+        print(f"ARTIFACT={rel} KIND=SIDE_CAR SIZE_BYTES={path.stat().st_size if path.exists() else 'MISSING'}")
+        continue
     print(f"\nDATABASE={rel} SIZE_BYTES={path.stat().st_size if path.exists() else 'MISSING'}")
     if not path.exists():
         print("STATUS=MISSING")
         continue
+    # Read-only inspection: schemas and row counts only, never row payloads.
     uri = "file:" + quote(str(path.resolve()), safe="/") + "?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=1.0)

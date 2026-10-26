@@ -11,6 +11,8 @@
 
 This statement is the single identity authority. Gold is one instrument context, not the scope of the identity. No indicator, fixed strategy, timeframe, legacy M1 gate, external model or score may replace market-state reasoning. Analytical modules report measurements; the CognitiveBrain is the sole market decision authority; execution and capital-preservation safeguards remain mandatory.
 
+The binding confidence/admission policy is defined in [APEX_IDENTITY.md](APEX_IDENTITY.md) and machine-readably in `cognition/identity.py`: provider-assisted action requires effective confidence >= 0.55, uncertainty <= 0.60, at least 2 responding advisors, at least 3 independent fresh market domains, verified execution costs, an activated first-class opportunity, and strictly positive net EV. Native-only fallback uses >= 0.70 confidence, <= 0.50 uncertainty and <= 0.50 sizing multiplier. These are hard floors/caps, not substitutes for multidimensional reasoning; no caller or environment override may weaken them.
+
 The machine-readable source is cognition/identity.py. The current migration state and unclosed acceptance gates are tracked in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
 
 ## Vision
