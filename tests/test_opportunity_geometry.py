@@ -1,0 +1,131 @@
+"""Market geometry must come from fresh completed-bar structure, not constants."""
+
+import time
+
+from cognition.contracts import Evidence, EvidenceDomain, MarketState, Opportunity
+from cognition.identity import IDENTITY_VERSION
+from cognition.opportunity_geometry import derive_opportunity_geometry
+
+
+def _state(
+    *,
+    direction="LONG",
+    timestamp=None,
+    high=1.105,
+    low=1.095,
+    close=1.100,
+    breakout="up",
+    trend="uptrend",
+    momentum=0.001,
+):
+    now = time.time()
+    stamp = now if timestamp is None else timestamp
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="SYNTHETIC",
+        observation="completed bar structural range",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "current_close": close,
+            "prior_range_high": high,
+            "prior_range_low": low,
+            "range_position": 0.5,
+            "breakout_direction": breakout,
+            "trend_state": trend,
+            "trend_strength": 0.4,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900,
+    ))
+    state.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM,
+        symbol="SYNTHETIC",
+        observation="completed bar momentum",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "close_change": momentum,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900,
+    ))
+    return state
+
+
+def test_long_geometry_comes_from_observed_structure():
+    geometry = derive_opportunity_geometry(_state(), "LONG")
+
+    assert geometry is not None
+    assert geometry.activated is True
+    assert geometry.entry_price == 1.100
+    assert geometry.stop_price == 1.095
+    assert geometry.target_price == 1.105
+    assert geometry.risk_distance == 0.005
+    assert geometry.reward_distance == 0.005
+    assert geometry.reward_r == 1.0
+    assert geometry.evidence_ids
+    assert "completed-bar structural breakout up" in geometry.activation_reason
+
+
+def test_short_geometry_is_directionally_symmetric():
+    geometry = derive_opportunity_geometry(
+        _state(breakout="down", trend="downtrend", momentum=-0.001),
+        "SHORT",
+    )
+
+    assert geometry is not None
+    assert geometry.entry_price == 1.100
+    assert geometry.stop_price == 1.105
+    assert geometry.target_price == 1.095
+    assert geometry.reward_r == 1.0
+    assert "breakout down" in geometry.activation_reason
+
+
+def test_missing_structural_target_fails_closed():
+    state = _state(high=1.100, close=1.100)
+
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_unconfirmed_direction_without_activation_fails_closed():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_stale_completed_bar_evidence_cannot_define_geometry():
+    state = _state(timestamp=time.time() - 2000)
+
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_opportunity_serializes_explicit_geometry():
+    opportunity = Opportunity.from_reply({
+        "id": "geometry-test",
+        "direction": "LONG",
+        "state": "ACTIVE",
+        "entry_price": 1.100,
+        "stop_price": 1.095,
+        "target_price": 1.105,
+        "risk_distance": 0.005,
+        "reward_distance": 0.005,
+        "reward_r": 1.0,
+        "geometry_evidence_ids": ["e1", "e2"],
+    })
+
+    payload = opportunity.to_dict()
+    assert payload["entry_price"] == 1.100
+    assert payload["stop_price"] == 1.095
+    assert payload["target_price"] == 1.105
+    assert payload["reward_r"] == 1.0
+    assert payload["geometry_evidence_ids"] == ["e1", "e2"]
