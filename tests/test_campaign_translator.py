@@ -35,7 +35,6 @@ def _geometry(symbol, direction, entry, sl, tp):
         "stop_timeframe": "M5",
         "target_timeframe": "M5",
         "evidence_timestamp_epoch": time.time(),
-        "evidence_timestamp_epoch": time.time(),
     }
 
 
