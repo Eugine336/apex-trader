@@ -32,31 +32,15 @@ from execution.position_snapshot import PositionSnapshot
 from execution.position_worker import PositionWorker
 from execution.risk_gate import GateConfig
 
-# ── Fake broker ──────────────────────────────────────────────────────
+# ── Shared recording fake broker (never connects to a live platform) ─────
 
+from test_support.recording_broker import FakeCloseResult as _FakeCloseResult
+from test_support.recording_broker import RecordingFakeBroker as _RecordingFakeBroker
 
-@dataclass
-class _FakeCloseResult:
-    success: bool = True
-    error: str = ""
-    pnl: float = 0.0
-
-
-class _FakeBroker:
+class _FakeBroker(_RecordingFakeBroker):
     def __init__(self):
-        self.close_calls: list[dict] = []
-        self.modify_calls: list[dict] = []
-
-    def modify_trade(self, order_id, platform, new_sl=None, new_tp=None) -> bool:
-        self.modify_calls.append({"order_id": order_id, "new_sl": new_sl})
-        return True
-
-    def close_trade(self, order_id, platform, lots=None) -> _FakeCloseResult:
-        self.close_calls.append({"order_id": order_id, "lots": lots})
-        return _FakeCloseResult()
-
-    def execute_entry(self, *a, **k) -> Any:  # pragma: no cover - unused
-        return _FakeCloseResult()
+        super().__init__()
+        self.close_return = _FakeCloseResult(pnl=0.0)
 
 
 def _fast_cfg() -> ExecutorConfig:
