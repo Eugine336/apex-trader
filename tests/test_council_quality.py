@@ -64,7 +64,7 @@ def _decide(opinion, uncertainty=0.1):
         observation="fresh test spread and slippage quote",
         confidence=0.9,
         uncertainty=uncertainty,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
     return _brain()._from_opinion(

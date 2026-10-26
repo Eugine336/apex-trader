@@ -191,6 +191,35 @@ def test_loop_symbols_provider_fault_is_fail_safe():
     assert loop.run_once() == 0
 
 
+def test_loop_open_book_read_fault_blocks_new_origination_but_reasons():
+    brain = _OpenBrain()
+    submitted = []
+
+    def _broken_book():
+        raise RuntimeError("broker position query failed")
+
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+        position_source=_broken_book,
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+
+    assert loop.run_once() == 1
+    assert submitted == []
+    assert loop.get_status()["orig_submitted"] == 0
+
+
+def test_loop_current_open_keys_does_not_convert_none_to_empty_book():
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        position_source=lambda: None,
+    )
+    import pytest
+    with pytest.raises(RuntimeError, match="no confirmation"):
+        loop._current_open_keys()
+
+
 def test_loop_caps_symbols():
     brain = _StubBrain()
     loop = CognitionLoop(brain, _StubConsolidator(),

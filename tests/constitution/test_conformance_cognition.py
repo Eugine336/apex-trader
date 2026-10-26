@@ -106,7 +106,7 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
         observation="fresh test spread and slippage quote",
         confidence=conf,
         uncertainty=unc,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
     return ms

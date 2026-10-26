@@ -2759,7 +2759,9 @@ class EventDrivenSystem:
         # Read-only: fold the replayable event log into the order_ids it
         # believes are open and compare to the broker's live positions.  Logs
         # any mismatch (missed closes / orphan positions) so an unclean restart
-        # is visible; never opens or closes anything.  Best-effort.
+        # is visible; never opens or closes anything. An unavailable or partial
+        # broker position snapshot is NOT an empty book: mark safety degraded so
+        # new exposure is refused while protective management can continue.
         try:
             from persistence.recovery import (
                 find_confirmed_close_deals,
@@ -2896,8 +2898,71 @@ class EventDrivenSystem:
                         "[recovery] adopted {} broker orphan position(s) into the "
                         "event log (audit: orphan_at_broker_no_log_entry)", adopted,
                     )
+
+            # A successful API response is not enough: reconciliation must agree
+            # after any evidenced history-based close repair and orphan adoption.
+            # Remaining mismatches mean Apex does not know the whole book; allow
+            # analysis and protective management, but prohibit new exposure.
+            unresolved = bool(
+                report is None
+                or getattr(report, "store_degraded", False)
+                or getattr(report, "log_open", set())
+                or getattr(report, "missing_from_broker", set())
+                or getattr(report, "orphan_at_broker", set())
+            )
+            if unresolved:
+                logger.error(
+                    "[recovery] broker/event state remains UNRECONCILED — "
+                    "new exposure disabled until state is reviewed; report=%s",
+                    (
+                        "missing report" if report is None else {
+                            "store_degraded": getattr(report, "store_degraded", False),
+                            "log_open": sorted(getattr(report, "log_open", set()) or set()),
+                            "missing_from_broker": sorted(
+                                getattr(report, "missing_from_broker", set()) or set()
+                            ),
+                            "orphan_at_broker": sorted(
+                                getattr(report, "orphan_at_broker", set()) or set()
+                            ),
+                        }
+                    ),
+                )
+                ctx = self._ctx
+                if ctx is not None:
+                    marker = getattr(ctx, "_mark_safety_degraded", None)
+                    if callable(marker):
+                        marker("BrokerPositionReconciliation")
+                    loop = getattr(ctx, "cognition_loop", None)
+                    if loop is not None:
+                        loop.broker_book_verified = False
         except Exception as exc:
-            logger.debug("[event-driven] event-log reconciliation failed: {}", exc)
+            logger.error(
+                "[event-driven] broker/event reconciliation UNVERIFIED; "
+                "new exposure must remain blocked: {}", exc,
+            )
+            ctx = self._ctx
+            if ctx is not None:
+                marker = getattr(ctx, "_mark_safety_degraded", None)
+                if callable(marker):
+                    marker("BrokerPositionReconciliation")
+                # Best-effort degradation bookkeeping is not enough: fail closed
+                # at the cognition loop's actual admission boundary as well.
+                brain_loop = getattr(ctx, "cognition_loop", None)
+                if brain_loop is None:
+                    brain_loop = getattr(self, "_cognition_loop", None)
+                if brain_loop is None:
+                    # Bootstrap creates the loop before startup recovery. Keep a
+                    # direct reference so the reconciliation breaker reaches the
+                    # actual admission boundary, not just the context diagnostic.
+                    brain_loop = getattr(self, "_cognition_loop_instance", None)
+                if brain_loop is not None:
+                    try:
+                        setattr(brain_loop, "broker_book_verified", False)
+                    except Exception as state_exc:  # noqa: BLE001
+                        logger.critical(
+                            "[event-driven] failed to apply reconciliation admission lock: {}",
+                            state_exc,
+                        )
 
         # ── Restore PortfolioGovernor daily tally + loss-cap halt ─────────
         # Must run before the loops so an active daily-loss halt is enforced

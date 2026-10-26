@@ -609,6 +609,10 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition-loop] portfolio source wiring fault: %s", exc)
         self._open_keys: set = set()
+        # Startup recovery owns this circuit breaker. An unverified broker/event
+        # reconciliation may not be represented as an empty book; keep observing
+        # but prohibit all new exposure until the operator resolves the mismatch.
+        self.broker_book_verified = True
         # Article X — pattern EVOLUTION. When wired, the loop feeds the tracker
         # the originated patterns at campaign open (via ``_record_open_memory``)
         # and their realised outcome at campaign close (via management), so the
@@ -720,7 +724,18 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] symbols provider fault: %s", exc)
             return 0
-        self._open_keys = self._current_open_keys()
+        try:
+            if not self.broker_book_verified:
+                raise RuntimeError("startup broker/event reconciliation remains unverified")
+            self._open_keys = self._current_open_keys()
+            book_verified = True
+        except Exception as exc:  # noqa: BLE001
+            self._open_keys = set()
+            book_verified = False
+            logger.warning(
+                "[cognition-loop] cycle can reason, but origination is deferred because "
+                "the broker book is unverified: %s", exc,
+            )
         made = 0
         cycle_outputs: list = []
         for symbol in self._select_cycle_batch(symbols):
@@ -736,7 +751,13 @@ class CognitionLoop:
         # lower-EV opportunities. Missing/faulting portfolio cognition or unknown
         # live exposure must not silently authorize new campaigns.
         portfolio_outputs = self._reason_portfolio(cycle_outputs)
-        if self.origination_mode != "off":
+        if not book_verified:
+            for candidate in portfolio_outputs:
+                if self._is_open_campaign_candidate(candidate):
+                    self._demote_unreviewed_campaign(
+                        candidate, "broker position book unverified — new exposure suppressed",
+                    )
+        if self.origination_mode != "off" and book_verified:
             for output in portfolio_outputs:
                 self._maybe_originate(output, now=now)
         self._manage_open_positions(now=now)
@@ -809,7 +830,10 @@ class CognitionLoop:
             return cycle_outputs
 
         try:
-            existing = list(self._position_source() or [])
+            raw_existing = self._position_source()
+            if raw_existing is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            existing = list(raw_existing)
             result = fn(list(cycle_outputs), existing)
             if result is None:
                 raise RuntimeError("Brain portfolio review returned no result")
@@ -959,9 +983,24 @@ class CognitionLoop:
         caller's), keeping any LLM latency off the market-data path. Fail-safe.
         """
         try:
+            if not self.broker_book_verified:
+                raise RuntimeError("startup broker/event reconciliation remains unverified")
             self._open_keys = self._current_open_keys()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[cognition-loop] event origination deferred — broker book unverified: %s",
+                exc,
+            )
+            output = self._reason_over_symbol(symbol, now=now)
+            # Re-evaluate/observe the market, but do not send a new exposure
+            # candidate to portfolio admission when duplicate/open-book state is unknown.
+            if output is not None:
+                self._demote_unreviewed_campaign(
+                    output, "broker position book unverified — new exposure suppressed",
+                )
+            self._decisions += 1 if output is not None else 0
+            self._event_reasons += 1 if output is not None else 0
+            return 1 if output is not None else 0
         output = self._reason_over_symbol(symbol, now=now)
         made = 1 if output is not None else 0
         # Event-driven origination still requires a current book-wide exposure
@@ -1099,22 +1138,23 @@ class CognitionLoop:
             logger.debug("[cognition-loop] author operations fault: %s", exc)
 
     def _current_open_keys(self) -> set:
-        """Set of ``(symbol, direction)`` for currently open positions/campaigns.
+        """Return confirmed open symbol/sides; never convert a read failure to an empty book.
 
-        Used to suppress duplicate origination for a book the Brain already holds.
-        Fail-safe: an unreadable position source yields an empty set.
+        A failed or unavailable broker snapshot is unknown exposure, not proof
+        that the account has no positions. The caller may log/defer; admission
+        must not proceed using an unverified empty set.
         """
-        keys: set = set()
         if self._position_source is None:
-            return keys
-        try:
-            for pos in list(self._position_source() or []):
-                sym = str(getattr(pos, "symbol", "") or "")
-                d = str(getattr(pos, "direction", "") or "").upper()
-                if sym and d in ("LONG", "SHORT"):
-                    keys.add((sym, d))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] open-keys read fault: %s", exc)
+            raise RuntimeError("broker position source is not configured")
+        raw = self._position_source()
+        if raw is None:
+            raise RuntimeError("broker position source returned no confirmation")
+        keys: set = set()
+        for pos in list(raw):
+            sym = str(getattr(pos, "symbol", "") or "")
+            d = str(getattr(pos, "direction", "") or "").upper()
+            if sym and d in ("LONG", "SHORT"):
+                keys.add((sym, d))
         return keys
 
     def _record_open_memory(self, output: Any, market_state: Any, *,
@@ -1266,9 +1306,15 @@ class CognitionLoop:
         if self._position_source is None or not hasattr(self._brain, "manage"):
             return 0
         try:
-            positions = list(self._position_source() or [])
+            raw_positions = self._position_source()
+            if raw_positions is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            positions = list(raw_positions)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] position source fault: %s", exc)
+            logger.warning(
+                "[cognition-loop] position book unverified; skip stale-book management/rearm: %s",
+                exc,
+            )
             return 0
         managed = 0
         for pos in positions:
@@ -1516,9 +1562,15 @@ class CognitionLoop:
         if not sym:
             return 0
         try:
-            positions = list(self._position_source() or [])
+            raw_positions = self._position_source()
+            if raw_positions is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            positions = list(raw_positions)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] position source fault: %s", exc)
+            logger.warning(
+                "[cognition-loop] position book unverified; skip symbol management: %s",
+                exc,
+            )
             return 0
         managed = 0
         for pos in positions:

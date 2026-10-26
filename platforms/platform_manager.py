@@ -687,28 +687,20 @@ class PlatformManager:
     # ── Positions ────────────────────────────────────────────────────────
 
     def get_all_open_positions(self) -> list[PositionInfo]:
-        positions: list[PositionInfo] = []
-        for i, connector in enumerate(self.mt5_connectors):
-            if self._mt5_connected_flags[i]:
-                try:
-                    positions.extend(connector.get_open_positions())
-                except Exception as exc:
-                    label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
-                    logger.warning("{} positions fetch error: {}", label, exc)
-        if self._deriv_connected:
-            try:
-                positions.extend(self.deriv.get_open_positions())
-                if self._deriv_reconnect_warned:
-                    logger.info("Deriv positions fetch recovered")
-                    self._deriv_reconnect_warned = False
-            except Exception as exc:
-                if "reconnecting" in str(exc).lower():
-                    if not self._deriv_reconnect_warned:
-                        logger.warning("Deriv positions fetch blocked — broker is reconnecting")
-                        self._deriv_reconnect_warned = True
-                else:
-                    logger.warning("Deriv positions fetch error: {}", exc)
-        return positions
+        """Return positions only when every currently connected platform responds.
+
+        A partial list is unsafe for duplicate-order checks and portfolio risk.
+        Callers that need to distinguish disconnected from confirmed-empty should
+        use get_open_positions_snapshot(); this compatibility method raises if
+        any connected platform failed to confirm its book.
+        """
+        snapshot = self.get_open_positions_snapshot()
+        if snapshot.failed_platforms:
+            raise RuntimeError(
+                "open-position book is incomplete; failed platform(s): "
+                + ", ".join(sorted(str(item) for item in snapshot.failed_platforms))
+            )
+        return list(snapshot.positions)
 
     def get_market_depth(self, symbol: str) -> list[dict]:
         """Best-effort Level-2 order book for ``symbol`` (empty when unsupported).

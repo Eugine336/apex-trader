@@ -67,8 +67,13 @@ class _Reasoner:
 
 def _ev(domain, measurements, *, conf=0.9, module=None):
     return Evidence(
-        source_module=module or f"m_{domain}", domain=domain, confidence=conf,
-        uncertainty=1.0 - conf, measurements=dict(measurements),
+        source_module=module or f"m_{domain}",
+        domain=domain,
+        symbol="EURUSD",
+        observation=f"{domain} observer measurement: {dict(measurements)}",
+        confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements=dict(measurements),
         relevance_horizon_seconds=900.0,
     )
 
@@ -78,7 +83,11 @@ def _with_verified_council(ms, *, responded=2, available=2, total=2):
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol=ms.symbol, observation="fresh test cost estimate",
         confidence=0.9, uncertainty=0.1,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={
+            "estimated_total_cost_r": 0.05,
+            "cost_verified": True,
+            "cost_source": "simulated live quote for test",
+        },
         relevance_horizon_seconds=60.0,
     ))
     ms.add(Evidence(
@@ -102,12 +111,21 @@ def _strong_long_state(symbol="EURUSD"):
     """A rich, low-uncertainty state whose evidence structurally leans LONG."""
     ms = MarketState(symbol=symbol)
     ms.add(_ev("structure", {"displacement": 150, "bos": True,
-                             "structural_integrity": 0.85, "support": True}))
-    ms.add(_ev("volume", {"volume_z": 1.8, "expansion": True}))
-    ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8}))
-    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
-    ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1}))
-    ms.add(_ev("execution_quality", {"estimated_total_cost_r": 0.05}))
+                             "structural_integrity": 0.85, "support": True},
+                   module="structure.observer"))
+    ms.add(_ev("volume", {"volume_z": 1.8, "expansion": True},
+                   module="volume.observer"))
+    ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8},
+                   module="order_flow.observer"))
+    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"},
+                   module="momentum.observer"))
+    ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1},
+                   module="multi_timeframe.observer"))
+    ms.add(_ev("execution_quality", {
+        "estimated_total_cost_r": 0.05,
+        "cost_verified": True,
+        "cost_source": "simulated live quote for test",
+    }, module="execution_cost.observer"))
     return _with_verified_council(ms)
 
 
@@ -302,6 +320,62 @@ def test_flat_brain_defers_without_changing_confidence():
     assert out.decision.confidence == pytest.approx(0.8)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
+
+
+
+def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
+    """Native reasoning discovers from context/evidence, not pattern-name gates."""
+    ms = _strong_long_state()
+    brain = CognitiveBrain(reasoner=None, reward_r_default=3.0, min_expected_value=0.0)
+    # This scenario is intended to exercise a directional hypothesis whose
+    # confidence is below the former fixed 0.70 cutoff and whose pattern names
+    # are not a qualification allowlist.
+    analysis = EvidenceAnalysis(
+        domain_coverage={
+            "structure": 0.85, "volume": 0.8, "order_flow": 0.82,
+            "momentum": 0.78, "multi_timeframe": 0.8,
+        },
+        coverage_gap=0.2,
+        observations=["completed timeframe structure and order flow align"],
+        detected_patterns=[],
+        agreement_score=0.7,
+        contradictions=[],
+        regime_indicators={
+            "structure": LONG, "order_flow": "buying",
+            "trend_context": "uptrend", "trend_timeframes": 3,
+            "momentum": "decelerating",
+        },
+        evidence_uncertainty=0.25,
+    )
+    hypothesis = BrainHypothesis(
+        statement="Completed higher-timeframe structure supports continuation with a pullback risk",
+        confidence=0.60,
+        direction_implication=LONG,
+        supporting_patterns=[],
+        contradicting_patterns=[],
+        invalidation="A completed structural close breaks below the continuation origin",
+        opportunity_implication="continuation after pullback",
+    )
+    brain._native_reasoning = lambda state, consolidation, symbol: (analysis, [hypothesis])
+    out = brain.reason(ms)
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.direction == LONG
+    assert out.decision.confidence < 0.70
+    assert out.campaign is not None
+    assert out.campaign.initial_execution_intent.get("independent_origination") is True
+
+
+def test_native_fallback_requires_explicit_verified_execution_cost():
+    state = _strong_long_state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "execution_quality"
+    ]
+    # An unverified numeric cost cannot satisfy the execution-cost requirement.
+    state.add(_ev("execution_quality", {"estimated_total_cost_r": 0.01}))
+    out = CognitiveBrain(reasoner=None, reward_r_default=3.0).reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 # ── Article X: independent origination when the advisor is unavailable ────────
 

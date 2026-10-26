@@ -23,6 +23,8 @@ Usage::
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -1377,25 +1379,78 @@ class SystemContext:
                 )
 
                 def _execution_cost_source(symbol: str) -> dict:
+                    """Publish live quote costs as verified; configured spread is diagnostic only.
+
+                    The typical-spread registry is a fallback estimate, not a
+                    current broker quote. It must never satisfy the Brain's
+                    verified-cost requirement.
+                    """
                     try:
-                        from config import INSTRUMENT_REGISTRY
-                        info = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        info = platform_manager.get_price(symbol)
                         if info is None:
-                            return {"estimated_total_cost_r": _default_cost_r}
-                        spread_pips = float(getattr(info, "typical_spread_pips", 0.0) or 0.0)
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "configured fallback; no live quote"}
+                        bid = float(getattr(info, "bid", 0.0) or 0.0)
+                        ask = float(getattr(info, "ask", 0.0) or 0.0)
+                        if bid <= 0.0 or ask <= 0.0 or ask < bid:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "invalid live bid/ask; configured fallback"}
+                        # A quote is only current if its broker source timestamp is
+                        # present, timezone-aware, and within the short live-cost
+                        # validity window. The constant bounds quote freshness; it
+                        # is not a trading signal/confidence cutoff.
+                        from datetime import datetime, timezone
+                        quote_time = getattr(info, "time", None)
+                        if not isinstance(quote_time, datetime):
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "quote timestamp unavailable"}
+                        if quote_time.tzinfo is None:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "quote timestamp has no timezone"}
+                        quote_age = (datetime.now(timezone.utc) - quote_time.astimezone(timezone.utc)).total_seconds()
+                        if quote_age < 0.0 or quote_age > 5.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": f"quote stale or future-dated (age={quote_age:.3f}s)"}
+                        # Resolve symbol-specific pip size and a conservative
+                        # risk-distance proxy. The execution sink recomputes the
+                        # final size/EV against the actual stop and broker costs.
+                        from config import INSTRUMENT_REGISTRY
+                        instrument = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        pip_size = float(getattr(instrument, "pip_size", 0.0) or 0.0)
                         stop_pips = _stop_distance_pips if _stop_distance_pips > 0 else 20.0
-                        if spread_pips <= 0.0:
-                            return {"estimated_total_cost_r": _default_cost_r}
-                        spread_r = min(0.5, spread_pips / stop_pips)
-                        # Slippage allowance ≈ half the spread cost.
+                        if pip_size <= 0.0 or stop_pips <= 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "instrument cost geometry unavailable"}
+                        spread_pips = (ask - bid) / pip_size
+                        spread_r = spread_pips / stop_pips
+                        if not math.isfinite(spread_r) or spread_r < 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "non-finite live spread"}
+                        # Slippage remains an estimate, not a broker guarantee;
+                        # keep it explicit in provenance and validate again at submit.
                         slippage_r = 0.5 * spread_r
                         return {
                             "estimated_spread_r": round(spread_r, 6),
                             "estimated_slippage_r": round(slippage_r, 6),
                             "estimated_total_cost_r": round(spread_r + slippage_r, 6),
+                            "cost_verified": True,
+                            "cost_source": "live bid/ask spread + explicit slippage estimate",
                         }
-                    except Exception:  # noqa: BLE001 — cost estimate must never break the loop
-                        return {"estimated_total_cost_r": _default_cost_r}
+                    except Exception as exc:  # noqa: BLE001 — cost estimation must never break cognition
+                        logger.warning(
+                            "[cognition] live execution-cost read unavailable for %s: %s",
+                            symbol, exc,
+                        )
+                        return {"estimated_total_cost_r": _default_cost_r,
+                                "cost_verified": False,
+                                "cost_source": "configured fallback; live quote unavailable"}
 
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
@@ -1460,12 +1515,18 @@ class SystemContext:
                             broker_profit_r as _profit_r,
                             hold_seconds_from as _hold,
                         )
-                        try:
-                            positions = (
-                                platform_manager.get_all_open_positions() or []
+                        # Use the confirmation-aware broker snapshot. A platform
+                        # that failed to answer has UNKNOWN exposure, not an empty book.
+                        snapshot = platform_manager.get_open_positions_snapshot()
+                        failed = set(getattr(snapshot, "failed_platforms", set()) or set())
+                        if failed:
+                            raise RuntimeError(
+                                "broker positions unconfirmed for platform(s): "
+                                + ", ".join(sorted(str(item) for item in failed))
                             )
-                        except Exception:  # noqa: BLE001
-                            positions = []
+                        positions = getattr(snapshot, "positions", None)
+                        if positions is None:
+                            raise RuntimeError("broker positions snapshot omitted positions")
                         # Best-effort campaign enrichment, keyed by (symbol, side).
                         camp_by_key: dict = {}
                         reg = ctx.campaign_registry
@@ -1509,8 +1570,12 @@ class SystemContext:
                                 ),
                             ))
                         return out
-                    except Exception:  # noqa: BLE001
-                        return []
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[cognition] broker position source unavailable; "
+                            "new exposure must remain blocked: %s", exc,
+                        )
+                        raise
 
                 def _cognition_balance(symbol: str) -> float:
                     # Per-symbol platform balance for Brain-originated sizing.
