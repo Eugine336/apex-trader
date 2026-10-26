@@ -211,8 +211,10 @@ class ApexMultiTFTradingEnv:
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
 
-        if (self.max_episode_steps is not None
-                and (self.idx - self._episode_start) >= self.max_episode_steps):
+        max_episode_steps = getattr(self, "max_episode_steps", None)
+        episode_start = getattr(self, "_episode_start", 0)
+        if (max_episode_steps is not None
+                and (self.idx - episode_start) >= max_episode_steps):
             done = True
 
         if self.balance <= 0 and not done:
