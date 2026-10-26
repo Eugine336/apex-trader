@@ -1076,6 +1076,15 @@ class SystemContext:
             # until the cutover is validated (Parts XIII/XV). Fail-safe.
             try:
                 from cognition.brain import CognitiveBrain as _CognitiveBrain
+                from cognition.identity import (
+                    ACTION_CONFIDENCE_FLOOR as _ACTION_CONFIDENCE_FLOOR,
+                    ACTION_UNCERTAINTY_CEILING as _ACTION_UNCERTAINTY_CEILING,
+                    DEGRADED_CONFIDENCE_MULTIPLIER_CEILING as _DEGRADED_CONFIDENCE_MULTIPLIER_CEILING,
+                    MIN_ADVISORS_FOR_ACTION as _MIN_ADVISORS_FOR_ACTION,
+                    MIN_MARKET_EVIDENCE_DOMAINS as _MIN_MARKET_EVIDENCE_DOMAINS,
+                    NET_EXPECTED_VALUE_FLOOR_R as _NET_EXPECTED_VALUE_FLOOR_R,
+                    REVERSE_CONFIDENCE_FLOOR as _REVERSE_CONFIDENCE_FLOOR,
+                )
                 from cognition.loop import (
                     BrainActionBridge as _BrainActionBridge,
                     CognitionLoop as _CognitionLoop,
@@ -1132,30 +1141,29 @@ class SystemContext:
                 ctx.cognitive_brain = _CognitiveBrain(
                     reasoner=ctx.llm_reasoner,
                     min_confidence_to_act=float(
-                        getattr(cog_cfg, "min_confidence_to_act", 0.55)
-                        if cog_cfg is not None else 0.55
+                        getattr(cog_cfg, "min_confidence_to_act", _ACTION_CONFIDENCE_FLOOR)
+                        if cog_cfg is not None else _ACTION_CONFIDENCE_FLOOR
                     ),
                     max_uncertainty_to_act=float(
-                        getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
-                        if cog_cfg is not None else 0.6
+                        getattr(cog_cfg, "max_uncertainty_to_act", _ACTION_UNCERTAINTY_CEILING)
+                        if cog_cfg is not None else _ACTION_UNCERTAINTY_CEILING
                     ),
-                    # V-01 (§I/§VI/§VIII) — opt-in EV-primary actionability gate.
-                    # Default off ⇒ the legacy confidence-floor gate is unchanged.
+                    # Net-EV qualification is mandatory under the canonical identity.
                     ev_primary_gate=bool(
-                        getattr(cog_cfg, "ev_primary_gate", False)
-                        if cog_cfg is not None else False
+                        getattr(cog_cfg, "ev_primary_gate", True)
+                        if cog_cfg is not None else True
                     ),
                     ev_action_threshold_r=float(
-                        getattr(cog_cfg, "ev_action_threshold_r", 0.0)
-                        if cog_cfg is not None else 0.0
+                        getattr(cog_cfg, "ev_action_threshold_r", _NET_EXPECTED_VALUE_FLOOR_R)
+                        if cog_cfg is not None else _NET_EXPECTED_VALUE_FLOOR_R
                     ),
                     allow_scale_in=bool(
                         getattr(cog_cfg, "allow_scale_in", False)
                         if cog_cfg is not None else False
                     ),
                     reverse_confidence=float(
-                        getattr(cog_cfg, "manage_reverse_confidence", 0.7)
-                        if cog_cfg is not None else 0.7
+                        getattr(cog_cfg, "manage_reverse_confidence", _REVERSE_CONFIDENCE_FLOOR)
+                        if cog_cfg is not None else _REVERSE_CONFIDENCE_FLOOR
                     ),
                     exit_floor=float(
                         getattr(cog_cfg, "manage_exit_floor", 0.3)
@@ -1194,18 +1202,18 @@ class SystemContext:
                     # Article XX — advisor quorum: a campaign must be backed by at
                     # least this many advisors that actually responded.
                     min_advisors_for_action=int(
-                        getattr(cog_cfg, "min_advisors_for_action", 2)
-                        if cog_cfg is not None else 2
+                        getattr(cog_cfg, "min_advisors_for_action", _MIN_ADVISORS_FOR_ACTION)
+                        if cog_cfg is not None else _MIN_ADVISORS_FOR_ACTION
                     ),
                     # Article XXXIV — minimum evidence-domain coverage to act.
                     min_evidence_domains=int(
-                        getattr(cog_cfg, "min_evidence_domains", 2)
-                        if cog_cfg is not None else 2
+                        getattr(cog_cfg, "min_evidence_domains", _MIN_MARKET_EVIDENCE_DOMAINS)
+                        if cog_cfg is not None else _MIN_MARKET_EVIDENCE_DOMAINS
                     ),
                     # Article XXI — attenuate confidence under degraded cognition.
                     degraded_confidence_multiplier=float(
-                        getattr(cog_cfg, "degraded_confidence_multiplier", 0.7)
-                        if cog_cfg is not None else 0.7
+                        getattr(cog_cfg, "degraded_confidence_multiplier", _DEGRADED_CONFIDENCE_MULTIPLIER_CEILING)
+                        if cog_cfg is not None else _DEGRADED_CONFIDENCE_MULTIPLIER_CEILING
                     ),
                     # V-013 — treat UNKNOWN council coverage (no council metadata)
                     # as degraded cognition and attenuate accordingly.
