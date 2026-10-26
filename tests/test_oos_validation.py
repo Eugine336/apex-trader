@@ -129,12 +129,16 @@ class TestOOSValidationGate:
         assert (tmp_path / "weights.json").exists()
 
     def test_deterministic_decision(self, tmp_path, monkeypatch):
-        self._use_isolated_weights_path(monkeypatch, tmp_path)
-        """Same input twice -> identical result."""
+        """Same input twice -> identical result with independent persistence."""
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "first")
         trades = _build_predictive_dataset()
         opt1 = ScoreOptimizer()
-        opt2 = ScoreOptimizer()
         r1 = opt1.optimize(trades, min_trades=50)
+
+        # Use a fresh data directory so the second run starts from the same
+        # incumbent instead of loading the first run's learned weights.
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "second")
+        opt2 = ScoreOptimizer()
         r2 = opt2.optimize(trades, min_trades=50)
         assert r1.as_dict() == r2.as_dict()
 
