@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 
 @dataclass
 class ManagementAction:
@@ -38,6 +40,10 @@ class ManagementAction:
     confidence: float = 0.0
     reason: str = ""
     decision_id: str = ""
+    campaign_id: str = ""
+    opportunity_id: str = ""
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +55,10 @@ class ManagementAction:
             "confidence": round(self.confidence, 4),
             "reason": self.reason[:200],
             "decision_id": self.decision_id,
+            "campaign_id": self.campaign_id,
+            "opportunity_id": self.opportunity_id,
+            "identity_version": self.identity_version,
+            "identity": self.identity,
         }
 
 
@@ -85,7 +95,10 @@ def translate_management(
         def _act(kind: str, **kw: Any) -> ManagementAction:
             return ManagementAction(
                 symbol=symbol, kind=kind, direction=held,
-                confidence=conf, reason=reason, decision_id=dec_id, **kw,
+                confidence=conf, reason=reason, decision_id=dec_id,
+                campaign_id=str(getattr(position, "campaign_id", "") or ""),
+                opportunity_id=str(getattr(position, "opportunity_id", "") or ""),
+                identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT, **kw,
             )
 
         if name in ("exit", "terminate_campaign"):
