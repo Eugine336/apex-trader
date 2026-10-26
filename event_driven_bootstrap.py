@@ -3960,6 +3960,39 @@ class EventDrivenSystem:
         # Shadow contract resolution — live tick-driven (see _resolve_shadows).
         self._resolve_shadows()
 
+    def _refresh_tick_store_critical_levels(self, positions: Any) -> list[Any]:
+        """Rebuild tick coalescing bypasses from broker-confirmed live SL/TPs.
+
+        Entry-zone orchestration belongs to the retired directional entry stack.
+        The active execution plane protects the actual broker-side stop and
+        target levels instead; those are the prices that must never be lost to
+        tick-rate coalescing.
+        """
+        live_positions = list(positions or [])
+        tick_store = getattr(self, "_tick_store", None)
+        if tick_store is None:
+            return live_positions
+        try:
+            tick_store.clear_critical_levels()
+        except Exception as exc:  # noqa: BLE001 — missing cache must not stop risk monitoring
+            logger.debug("[risk-state] critical-level clear failed: {}", exc)
+
+        for pos in live_positions:
+            try:
+                symbol = str(getattr(pos, "symbol", "") or "")
+                if not symbol:
+                    continue
+                for field in ("sl", "tp"):
+                    level = float(getattr(pos, field, 0.0) or 0.0)
+                    if level > 0:
+                        tick_store.register_critical_level(symbol, level)
+            except Exception as exc:  # noqa: BLE001 — one malformed position must not stop the rest
+                logger.debug(
+                    "[risk-state] critical-level refresh failed for {}: {}",
+                    getattr(pos, "symbol", "?"), exc,
+                )
+        return live_positions
+
     def _apply_portfolio_risk_state(self, ctx: SystemContext) -> None:
         """Compute live capital-at-risk and drive the portfolio risk state
         machine + per-account heat gate.
@@ -4040,16 +4073,10 @@ class EventDrivenSystem:
         acct_positions: dict[str, list] = defaultdict(list)
         balance_refreshed: set[str] = set()
 
-        # Rebuild the tick-store critical-level set from the live book so ticks
-        # approaching an active SL/TP bypass Hz coalescing (they could be
-        # silently dropped during volatility spikes otherwise). A full resync
-        # each cycle keeps the set current on SL/TP modification and bounded to
-        # only live levels — covering register-on-open / update-on-modify /
-        # unregister-on-close in one pass.
-        try:
-            self._tick_store.clear_critical_levels()
-        except Exception:
-            pass
+        # Rebuild critical levels from broker-truth SL/TP before evaluating
+        # risk. These are active execution safeguards, unlike the retired entry
+        # zone boundaries from the old EntryOrchestrator pipeline.
+        positions = self._refresh_tick_store_critical_levels(positions)
 
         for pos in positions:
             try:
@@ -4059,14 +4086,6 @@ class EventDrivenSystem:
                 sl = float(getattr(pos, "sl", 0.0) or 0.0)
                 tp = float(getattr(pos, "tp", 0.0) or 0.0)
                 lots = float(getattr(pos, "lots", 0.0) or 0.0)
-                if symbol:
-                    try:
-                        if sl > 0:
-                            self._tick_store.register_critical_level(symbol, sl)
-                        if tp > 0:
-                            self._tick_store.register_critical_level(symbol, tp)
-                    except Exception:
-                        pass
                 pip_size = self._safe_pip_size(symbol)
                 # Broker-truth money-per-pip — MUST match the sizing path so the
                 # heat monitor and the position sizer agree on capital-at-risk.
