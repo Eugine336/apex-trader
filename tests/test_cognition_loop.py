@@ -728,8 +728,13 @@ class _ManageBrain:
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
-        dec = SimpleNamespace(decision_type=self._dt, symbol=position.symbol,
-                              confidence=0.8, thesis="mgmt", decision_id="d1")
+        dec = SimpleNamespace(
+            decision_type=self._dt, symbol=position.symbol,
+            confidence=0.8, thesis="mgmt", decision_id="d1",
+            identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+            campaign_id=getattr(position, "campaign_id", ""),
+            preferred_opportunity_id=getattr(position, "opportunity_id", ""),
+        )
         return SimpleNamespace(decision=dec, direction=position.direction)
 
 
