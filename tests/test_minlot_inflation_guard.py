@@ -75,6 +75,7 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._connected = True
     c._magic = 202500
     c._deviation = 20
+    c._max_tick_age_seconds = 120.0
     c._broker_name = "test"
     c._symbol_cache = {"XTIUSD": "XTIUSD", "EURUSD": "EURUSD"}
     c._not_found_warned = set()
