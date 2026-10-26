@@ -14,8 +14,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Ensure torch stub exists before any rl imports
-if "torch" not in sys.modules:
+# Prefer the real PyTorch installation. A sys.modules-only check is insufficient:
+# the package may be installed but not imported yet, and installing a stub here
+# contaminates every later RL test in the same pytest process.
+try:
+    import torch as _torch
+except ImportError:
+    _torch = None
+
+if _torch is None:
     _torch = types.ModuleType("torch")
     _torch.nn = types.ModuleType("torch.nn")
     _torch.optim = types.ModuleType("torch.optim")
