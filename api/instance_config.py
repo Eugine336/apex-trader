@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from runtime_paths import repo_root as _repo_root
 
 # Keys accepted in a user's saved trading config (subset of AppConfig surface).
 # Each maps to a setter applied to the constructed AppConfig instance.
