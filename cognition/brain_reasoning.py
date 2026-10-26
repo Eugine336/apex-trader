@@ -648,7 +648,6 @@ class BrainReasoner:
             ):
                 direction = LONG if trend_context == "uptrend" else SHORT
                 momentum = str(regime.get("momentum", "") or "").lower()
-                volatility = str(regime.get("volatility", "") or "").lower()
                 caveat = (
                     " Momentum is decelerating, so a pullback or trend transition "
                     "is a live competing explanation."
