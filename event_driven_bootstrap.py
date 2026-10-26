@@ -5654,22 +5654,19 @@ class EventDrivenSystem:
         system with a MagicMock config, which would otherwise inject mocks).
         """
         cfg = WorkerConfig()
-        # Constitution Part VI/X — when the AI Cognitive Brain is the LIVE position
-        # manager, hand every DISCRETIONARY exit (TP / breakeven / trailing /
-        # stall / invalidation / conviction / HTF / dynamic-SL / opportunity-cost)
-        # to the Brain and leave the worker only the always-on catastrophic safety
-        # floor (hard SL + weekend / session / spread + absolute-profit backstop).
-        # The broker-side protective stop attached at entry stays the hard capital
-        # floor. Guarded so a MagicMock config (tests) never flips it: only an
-        # exact "live" management_mode with cognition enabled qualifies.
-        cog_cfg = getattr(self._config, "cognition", None)
-        if cog_cfg is not None:
-            mgmt_mode = str(
-                getattr(cog_cfg, "management_mode", "shadow") or "shadow"
-            ).strip().lower()
-            if mgmt_mode == "live" and bool(getattr(cog_cfg, "enabled", False)) is True:
-                cfg.discretionary_exits_enabled = False
+        # Native thesis-based management owns discretionary exits regardless of
+        # external provider availability. The mechanical suite is enabled only by
+        # the explicit RiskConfig fallback flag, never merely because cognition is off.
         risk_cfg = getattr(self._config, "risk", None)
+        legacy_fallback = bool(
+            getattr(risk_cfg, "legacy_mechanical_exit_fallback_enabled", False)
+        )
+        cfg.discretionary_exits_enabled = legacy_fallback
+        cfg.legacy_mechanical_exit_fallback_enabled = legacy_fallback
+        cfg.scan_directional_exits_enabled = bool(
+            legacy_fallback
+            and getattr(risk_cfg, "scan_directional_exits_enabled", False)
+        )
         if risk_cfg is None:
             return cfg
         enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
@@ -5684,13 +5681,8 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
-        # V-009 — defer the legacy mechanical directional exits (invalidation /
-        # conviction-collapse / structure-loss stall / H1-candle-against-side) to
-        # the Brain when the operator opts in (default True keeps the deterministic
-        # suite intact, with each firing warned).
-        scan_dir = getattr(risk_cfg, "scan_directional_exits_enabled", None)
-        if isinstance(scan_dir, bool):
-            cfg.scan_directional_exits_enabled = scan_dir
+        # Directional mechanical exits are constrained by the explicit
+        # legacy fallback flag evaluated above.
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:
