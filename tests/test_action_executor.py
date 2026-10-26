@@ -41,10 +41,14 @@ def _positions(**overrides) -> dict[str, dict]:
 
 
 def _close_intent(ticket: str = "12345") -> Intent:
-    return Intent.close(symbol="EURUSD", ticket=ticket, source="test", reason="test")
+    return Intent.close(
+        symbol="EURUSD", ticket=ticket, source="ai_brain", reason="test",
+        decision_id="decision-test", campaign_id="campaign-test",
+        opportunity_id="opportunity-test",
+    )
 
 
-def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = False, **overrides) -> Intent:
+def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **overrides) -> Intent:
     values = dict(
         symbol=symbol, direction="BUY", lots=0.10, sl=1.0, tp=2.0,
         source="test", reason="test",
@@ -59,21 +63,27 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = False, **ov
 def _sl_intent(ticket: str = "12345", new_sl: float = 1.08100) -> Intent:
     return Intent.modify_sl(
         symbol="EURUSD", ticket=ticket, new_sl=new_sl,
-        source="test", reason="test",
+        source="ai_brain", reason="test",
+        decision_id="decision-test", campaign_id="campaign-test",
+        opportunity_id="opportunity-test",
     )
 
 
 def _tp_intent(ticket: str = "12345", new_tp: float = 1.09000) -> Intent:
     return Intent.modify_tp(
         symbol="EURUSD", ticket=ticket, new_tp=new_tp,
-        source="test", reason="test",
+        source="ai_brain", reason="test",
+        decision_id="decision-test", campaign_id="campaign-test",
+        opportunity_id="opportunity-test",
     )
 
 
 def _partial_intent(ticket: str = "12345", fraction: float = 0.5) -> Intent:
     return Intent.partial_close(
         symbol="EURUSD", ticket=ticket, fraction=fraction,
-        source="test", reason="test",
+        source="ai_brain", reason="test",
+        decision_id="decision-test", campaign_id="campaign-test",
+        opportunity_id="opportunity-test",
     )
 
 
@@ -789,6 +799,44 @@ def test_gold_feed_health_callback_failure_fails_closed():
     assert broker.open_calls == []
 
 
+def test_management_target_change_without_provenance_is_rejected():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.modify_tp(
+        symbol="EURUSD", ticket="12345", new_tp=1.095,
+        source="legacy", reason="unattributed target change",
+    )
+    result = executor.execute(intent, _positions())
+    assert not result.success and result.rejected_by_gate
+    assert "management_provenance_required" in result.gate_reason
+    assert broker.modify_calls == []
+
+
+def test_protective_stop_tightening_remains_available_without_links():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.modify_sl(
+        symbol="EURUSD", ticket="12345", new_sl=1.081,
+        source="legacy", reason="tighten stop",
+    )
+    result = executor.execute(intent, _positions())
+    assert result.success
+    assert broker.modify_calls[0]["new_sl"] == 1.081
+
+
+def test_noncanonical_management_identity_is_rejected_even_for_close():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.close(
+        symbol="EURUSD", ticket="12345", source="legacy", reason="close",
+        identity_version="old-version",
+    )
+    result = executor.execute(intent, _positions())
+    assert not result.success and result.rejected_by_gate
+    assert "identity_contract_mismatch" in result.gate_reason
+    assert broker.close_calls == []
+
+
 def test_open_with_mismatched_identity_is_rejected_before_broker_call():
     broker = FakeBroker()
     executor = ActionExecutor(broker, _fast_cfg())
@@ -813,10 +861,27 @@ def test_open_intent_carries_canonical_identity_by_default():
 def test_gold_only_rejects_legacy_entry_without_brain_opportunity_provenance():
     broker = FakeBroker()
     executor = ActionExecutor(broker, ExecutorConfig(gold_only=True))
-    result = executor.execute(_open_intent("XAUUSD"), {})
+    result = executor.execute(_open_intent("XAUUSD", brain_provenance=False), {})
     assert not result.success and result.rejected_by_gate
     assert "brain_opportunity_provenance_required" in result.gate_reason
     assert broker.open_calls == []
+
+
+def test_non_gold_mode_also_rejects_legacy_open_without_cognitive_provenance():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg(gold_only=False))
+    result = executor.execute(_open_intent("EURUSD", brain_provenance=False), {})
+    assert not result.success and result.rejected_by_gate
+    assert "brain_opportunity_provenance_required" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_non_gold_mode_accepts_canonical_brain_open_provenance():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg(gold_only=False))
+    result = executor.execute(_open_intent("EURUSD", brain_provenance=True), {})
+    assert result.success
+    assert len(broker.open_calls) == 1
 
 
 def test_gold_only_rejects_brain_entry_without_activated_opportunity_id():
