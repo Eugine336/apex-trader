@@ -4,7 +4,7 @@ Wires all subsystems into a running event-driven system:
 
   Analysis Plane:    CandleClose events → brain modules → WorldModel
   Execution Plane:   Ticks → PositionWorkers → IntentAggregator → ActionExecutor → Broker
-  Entry Plane:       WorldModel zones → tick detection → M1 confirm → gates → executor
+  Decision Plane:    market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor
 
 Start:  ``system.start()``
 Stop:   ``system.stop()``
@@ -3577,7 +3577,7 @@ class EventDrivenSystem:
         logger.info("-" * 60)
         logger.info("  ANALYSIS:  candle-close → brain modules → WorldModel")
         logger.info("  EXECUTION: ticks → position workers → intent aggregator → executor")
-        logger.info("  ENTRY:     zones → tick detection → M1 confirm → gates → executor")
+        logger.info("  DECISION:  market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor")
         logger.info("-" * 60)
 
     # ── PortfolioGovernor daily-state persistence ────────────────────────
