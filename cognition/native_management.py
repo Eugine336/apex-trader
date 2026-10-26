@@ -167,7 +167,10 @@ class NativePositionManager:
             uncertainty = _clamp01(con.get("aggregate_uncertainty", 1.0))
             required_domains = max(3, int(min_evidence_domains))
             max_unc = _clamp01(max_uncertainty)
-            fresh = list(market_state.fresh_evidence()) if market_state is not None else []
+            fresh = (
+                list(market_state.fresh_evidence(now))
+                if market_state is not None else []
+            )
             if not symbol:
                 symbol = str(getattr(market_state, "symbol", "") or "")
             if held_side not in {"LONG", "SHORT"}:
@@ -233,6 +236,14 @@ class NativePositionManager:
                 if risk_state and ("risk" in domain or "portfolio" in domain or
                                    "risk" in source.lower() or "portfolio" in source.lower()):
                     book_risk_states.append((risk_state, domain, source))
+
+                # Execution/risk telemetry can tighten risk through the dedicated
+                # safety channels above, but it is not an independent MARKET
+                # domain capable of corroborating original-thesis invalidation.
+                if domain in {
+                    "reasoning", "execution_quality", "risk", "portfolio_risk",
+                }:
+                    continue
 
                 raw_state = _text(
                     measurements.get("native_thesis_state")
