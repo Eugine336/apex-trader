@@ -152,3 +152,20 @@ These hypotheses remain interpretations, not entry signals. They do not create a
 
 **Still unresolved:** direct broker API call-graph proof for all instruments, full runtime management-thesis wiring, broader adversarial scenario tests, and cost-aware walk-forward/holdout evidence. The full repository CI baseline remains red; focused workflow results are reported separately. Demo-account testing has not been performed.
 
+
+
+## 2026-10-26 exposure-route audit guard follow-up
+
+A standard-library AST regression test was added in `tests/test_broker_mutation_route_audit.py`. It checks that runtime orchestration and other production modules do not call exposure-increasing broker APIs directly, outside the shared executor/gateway boundary. Broker adapters and simulated backtest execution remain explicit implementation exceptions. This is a static guardrail; it is not equivalent to a runtime call trace or broker demo.
+
+### Current full-suite failure classification
+
+The latest completed `main` CI run (#1902) reports **177 failed, 3,738 passed, 12 skipped** on Python 3.12; the Python 3.11 test job was cancelled. Lint passes and test collection succeeds. Failures include:
+- stale test contracts that expect a campaign to open when advisor quorum metadata is absent or unconfirmed; the Brain now correctly records unconfirmed coverage and continues observing;
+- test/API compatibility mismatches (for example, dashboard tests pass a `client=` argument not accepted by the installed Starlette `TestClient`);
+- legacy tests asserting removed bootstrap methods or prior pipeline behavior;
+- genuine subsystem/fixture failures that still require individual triage.
+
+These categories must not be collapsed into “legacy failures” without checking each one. Do not relax fail-closed decision gates just to make old positive-path tests pass; positive-path fixtures should provide explicit, valid council coverage. Do not mark the redesign complete until the route audit, failure triage, focused tests, full CI, walk-forward/holdout evaluation, and controlled demo validation have evidence.
+
+Operational boundary remains unchanged: `.env` is off-limits; no broker orders or live configuration changes are permitted during this work.
