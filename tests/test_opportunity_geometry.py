@@ -4,6 +4,7 @@ import time
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState, Opportunity
 from cognition.opportunity_geometry import derive_opportunity_geometry
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 def _state(
@@ -105,6 +106,35 @@ def test_unconfirmed_direction_without_activation_fails_closed():
     assert derive_opportunity_geometry(state, "LONG") is None
 
 
+def test_other_symbol_evidence_cannot_contaminate_geometry():
+    state = _state()
+    # MarketState objects can be contaminated by a misrouted adapter. Evidence
+    # with a non-matching symbol cannot define a candidate's entry/stop/target.
+    state.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="OTHER",
+        observation="foreign-symbol structural breakout",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "current_close": 1.2,
+            "prior_range_high": 1.25,
+            "prior_range_low": 1.1,
+            "range_position": 0.9,
+            "breakout_direction": "up",
+            "trend_state": "uptrend",
+            "trend_strength": 0.8,
+        },
+        relevance_horizon_seconds=900,
+    ))
+    geometry = derive_opportunity_geometry(state, "LONG")
+    assert geometry is not None
+    assert geometry.entry_price == 1.100
+
+
 def test_measured_range_rotation_can_activate_without_a_named_pattern():
     state = _state(
         breakout="none", trend="range", momentum=0.001,
@@ -139,6 +169,13 @@ def test_opportunity_serializes_explicit_geometry():
     })
 
     payload = opportunity.to_dict()
+    assert payload["identity_version"] == IDENTITY_VERSION
+    assert payload["identity"] == IDENTITY_STATEMENT
+    geometry = derive_opportunity_geometry(_state(), "LONG")
+    assert geometry is not None
+    geometry_payload = geometry.to_dict()
+    assert geometry_payload["identity_version"] == IDENTITY_VERSION
+    assert geometry_payload["identity"] == IDENTITY_STATEMENT
     assert payload["entry_price"] == 1.100
     assert payload["stop_price"] == 1.095
     assert payload["target_price"] == 1.105
