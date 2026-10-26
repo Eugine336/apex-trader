@@ -2457,7 +2457,6 @@ class EventDrivenSystem:
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
-                        direction=held,
                     ))
                     logger.info(
                         "[mgmt-sink] {} reverse requested {}→{}; closing held side "
