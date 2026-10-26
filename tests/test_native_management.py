@@ -258,3 +258,50 @@ def test_brain_records_native_hold_when_no_provider_and_no_campaign_assessment()
     assert baseline["action"] == "hold"
     assert "no fresh campaign-linked thesis assessment" in baseline["reason"]
     assert out.decision.to_dict()["identity_version"] == IDENTITY_VERSION
+
+
+def test_native_patterns_can_reduce_risk_without_campaign_tags():
+    from types import SimpleNamespace
+
+    manager = NativePositionManager()
+    state = _state()
+    analysis = SimpleNamespace(
+        domain_coverage={"structure": 0.9, "momentum": 0.8, "volatility": 0.8},
+        detected_patterns=["momentum_divergence", "multi_tf_conflict"],
+        contradictions=["price direction and momentum diverge"],
+        evidence_uncertainty=0.2,
+    )
+    result = manager.assess(
+        _position(profit_r=0.6), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.2, "market_domain_count": 3},
+        analysis=analysis,
+        hypotheses=[],
+    )
+    assert result.action == "scale_out"
+    assert result.thesis_state == "native_evidence_deteriorating"
+    assert "not exit" in result.reason
+
+
+def test_counter_direction_alone_does_not_reduce_or_exit():
+    from types import SimpleNamespace
+
+    manager = NativePositionManager()
+    state = _state()
+    analysis = SimpleNamespace(
+        domain_coverage={"structure": 0.9, "momentum": 0.8, "volatility": 0.8},
+        detected_patterns=[],
+        contradictions=[],
+        evidence_uncertainty=0.2,
+    )
+    opposite_hypothesis = SimpleNamespace(
+        direction_implication="SHORT",
+        confidence=0.95,
+        contradicting_patterns=[],
+    )
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.2, "market_domain_count": 3},
+        analysis=analysis,
+        hypotheses=[opposite_hypothesis],
+    )
+    assert result.action == "hold"
