@@ -1520,7 +1520,10 @@ class CognitionLoop:
             )
             ev = float(getattr(campaign, "expected_value", 0.0) or 0.0)
             exposure = float(getattr(campaign, "desired_exposure", 0.0) or 0.0)
-            reg.observe_thesis(symbol, direction, True, ev_over_flat=ev, confidence=conf)
+            reg.observe_thesis(
+                symbol, direction, True, ev_over_flat=ev, confidence=conf,
+                campaign_id=str(getattr(campaign, "campaign_id", "") or ""),
+            )
             reg.record_leg(symbol, direction, "open", size=exposure)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] campaign open fault (%s): %s", symbol, exc)
