@@ -60,3 +60,23 @@ def test_data_repo_verification_detects_change_before_relink(tmp_path: Path) -> 
     assert ok is False
     assert failed == "event.db"
     assert (source / "event.db").read_bytes() == b"source"
+
+
+
+def test_data_repo_preflight_refuses_when_backup_already_exists_before_copy(tmp_path: Path) -> None:
+    repo_root = tmp_path / "apex-trader"
+    source = repo_root / "data"
+    target = tmp_path / "apex-trader-data"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (repo_root / "data_preclone_backup").mkdir()
+    (source / "positions.db").write_bytes(b"valuable state")
+
+    missing, conflicts = preflight_data_copy(source, target)
+
+    # The helper only plans the copy; production entrypoint checks the existing
+    # backup path before applying this plan or mutating the source topology.
+    assert conflicts == []
+    assert [str(src.relative_to(source)) for src, _ in missing] == ["positions.db"]
+    assert not (target / "positions.db").exists()
+    assert (source / "positions.db").read_bytes() == b"valuable state"
