@@ -2611,20 +2611,12 @@ class CognitiveBrain:
             direction = str(lead.direction_implication or FLAT).upper()
             if not lead.is_directional or direction not in (LONG, SHORT):
                 reasons.append("leading hypothesis was not directional")
-            if not lead.supporting_patterns:
-                reasons.append("leading hypothesis had no recognised supporting structural patterns")
-            if float(lead.confidence) < self._native.independent_min_confidence:
-                reasons.append(
-                    f"confidence {float(lead.confidence):.2f} below native-only threshold "
-                    f"{self._native.independent_min_confidence:.2f}"
-                )
+            # Pattern names and raw confidence are diagnostic features only;
+            # neither is a universal trade/no-trade switch under Apex identity.
         if analysis is None:
             reasons.append("native evidence analysis unavailable")
-        elif float(getattr(analysis, "evidence_uncertainty", 1.0)) >= self._native.independent_max_uncertainty:
-            reasons.append(
-                f"evidence uncertainty {float(analysis.evidence_uncertainty):.2f} is at/above "
-                f"native-only limit {self._native.independent_max_uncertainty:.2f}"
-            )
+        elif not getattr(analysis, "domain_coverage", {}):
+            reasons.append("native analysis has no measurable market-domain coverage")
 
         hypothesis_summary = " | ".join(
             f"{(h.direction_implication or 'FLAT')}@{float(h.confidence):.2f}: {h.statement}"
