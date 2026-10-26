@@ -434,8 +434,11 @@ class TestAdaptiveOptimizer:
     def test_persistence_after_optimization(self, tmp_path, monkeypatch):
         import adaptive.score_optimizer as so_mod
         import adaptive.pair_learner as pl_mod
+        monkeypatch.setattr(pl_mod, "_data_dir", lambda: tmp_path)
         import adaptive.regime_learner as rl_mod
+        monkeypatch.setattr(rl_mod, "_data_dir", lambda: tmp_path)
         import adaptive.session_learner as sl_mod
+        monkeypatch.setattr(sl_mod, "_data_dir", lambda: tmp_path)
 
         # ScoreOptimizer resolves its active file through runtime_paths.data_dir().
         monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
