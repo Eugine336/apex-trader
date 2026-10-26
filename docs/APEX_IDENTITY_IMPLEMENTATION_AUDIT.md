@@ -206,3 +206,17 @@ The .env file remains out of scope: do not read, display, copy, recreate, rename
 - The Composio adapter test now asserts the current v3 tools/execute request contract rather than the retired v2 endpoint.
 
 These are code/test-contract corrections inferred from the failing run and source contracts. Because the quota prevents a rerun, each remains pending execution verification.
+
+
+## 2026-10-26 canonical identity propagation pass
+
+The canonical source remains `cognition/identity.py`; this pass propagates its exact identity statement/version across the lifecycle instead of duplicating alternate wording:
+
+- **Observation:** `MarketState.consolidation()` exposes `identity_version` and the exact canonical identity alongside freshness, coverage, conflict and uncertainty.
+- **Analysis and decision:** `DecisionPackage.to_dict()` and `CognitiveBrain.get_status()` expose the same canonical identity/version.
+- **Campaign and execution hand-off:** `CampaignSpecification.to_dict()`, `OriginationIntent`, and the immutable execution `Intent` carry identity plus decision/campaign/opportunity provenance. The Brain origination sink propagates those fields into the shared `Intent.open` path.
+- **Execution boundary:** `ActionExecutor` rejects a new OPEN intent if its identity version or statement differs from the canonical contract, before any broker dispatch. This does not block risk-reducing management actions on existing positions.
+- **Learning:** entry/outcome journal records include the identity version and exact statement, keeping the decision contract attached to later outcome attribution.
+- **Regression coverage:** added assertions for observation snapshots, serialized decisions/campaigns, learning records, translator provenance, execution-intent propagation, and rejection of a mismatched OPEN identity. Removed import-time global torch/RL mocks from the bankruptcy and MTF-observation tests to prevent test-order contamination of the RL suite.
+
+**Validation status:** these latest edits have been committed to the route-audit branch, but no test run has executed against the current head. The last available workflow is from an earlier head and failed; Actions quota is exhausted. Do not treat the new assertions or the full suite as verified until tests are run in a local environment or CI becomes available. No broker orders were sent; `.env` remains untouched.
