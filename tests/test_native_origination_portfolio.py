@@ -5,7 +5,10 @@ no real order is sent, and no persistent store is opened.
 """
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
+
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 import event_driven_bootstrap as edb
 
@@ -137,10 +140,35 @@ def _origination(**overrides):
         "campaign_id": "campaign-test",
         "decision_id": "decision-test",
         "opportunity_id": "opportunity-test",
-        "identity_version": "apex-constitution-v1",
-        "identity": "Apex is a continuously operating, market-aware trading intelligence.",
+        "identity_version": IDENTITY_VERSION,
+        "identity": IDENTITY_STATEMENT,
+        "reference_entry_price": 1.1000,
     }
     values.update(overrides)
+    side = str(values["direction"]).upper()
+    entry = float(values["reference_entry_price"])
+    stop = float(values["sl"])
+    target = float(values["tp"])
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    values["payoff_geometry"] = {
+        "identity_version": IDENTITY_VERSION,
+        "identity": IDENTITY_STATEMENT,
+        "symbol": str(values["symbol"]),
+        "direction": side,
+        "entry_price": entry,
+        "stop_price": stop,
+        "target_price": target,
+        "risk_distance": risk,
+        "reward_distance": reward,
+        "reward_r": reward / risk,
+        "activated": True,
+        "activation_reason": "synthetic completed-bar structural evidence",
+        "invalidation_reason": "synthetic stop invalidation",
+        "evidence_ids": ["test-structure", "test-momentum"],
+        "entry_timeframe": "M5",
+        "evidence_timestamp_epoch": time.time(),
+    }
     return SimpleNamespace(**values)
 
 
