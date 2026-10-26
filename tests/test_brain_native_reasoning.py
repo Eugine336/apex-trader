@@ -78,6 +78,66 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
     )
 
 
+
+def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
+    """Add fresh, completed market-lens geometry for entry-admission tests."""
+    import time
+
+    entry = 1.1000
+    risk = 0.0050
+    side = str(direction).upper()
+    if side == "LONG":
+        high = entry + risk * float(target_r)
+        low = entry - risk
+        trend = "uptrend"
+        breakout = "up"
+        change = 0.0010
+    else:
+        high = entry + risk
+        low = entry - risk * float(target_r)
+        trend = "downtrend"
+        breakout = "down"
+        change = -0.0010
+    stamp = time.time()
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain="structure", symbol=ms.symbol,
+        observation="fresh completed-bar structural range for test geometry",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "current_close": entry,
+            "prior_range_high": high,
+            "prior_range_low": low,
+            "range_position": 0.5,
+            "breakout_direction": breakout,
+            "trend_state": trend,
+            "trend_strength": 0.4,
+            "upper_wick": 0.0,
+            "lower_wick": 0.0,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain="momentum", symbol=ms.symbol,
+        observation="fresh completed-bar momentum for test geometry",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "close_change": change,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900.0,
+    ))
+    return ms
+
+
 def _with_verified_council(ms, *, responded=2, available=2, total=2):
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain="execution_quality",
@@ -121,6 +181,7 @@ def _strong_long_state(symbol="EURUSD"):
                    module="momentum.observer"))
     ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1},
                    module="multi_timeframe.observer"))
+    _add_market_geometry(ms, target_r=2.0, direction="LONG")
     ms.add(_ev("execution_quality", {
         "estimated_total_cost_r": 0.05,
         "cost_verified": True,
@@ -318,7 +379,8 @@ def test_flat_brain_defers_without_changing_confidence():
     synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
     assert "defer" in synth
     assert out.decision.confidence == pytest.approx(0.8)
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 
 
@@ -378,6 +440,26 @@ def test_native_fallback_requires_explicit_verified_execution_cost():
     assert out.campaign is None
 
 # ── Article X: independent origination when the advisor is unavailable ────────
+
+
+def test_native_campaign_uses_the_observed_entry_stop_and_target_geometry():
+    brain = CognitiveBrain(reasoner=None, reward_r_default=99.0)
+    out = brain.reason(_strong_long_state())
+
+    assert out.campaign is not None
+    intent = out.campaign.initial_execution_intent
+    geometry = intent["payoff_geometry"]
+    assert intent["entry_price"] == geometry["entry_price"]
+    assert intent["sl"] == geometry["stop_price"]
+    assert intent["tp"] == geometry["target_price"]
+    assert intent["sl"] < intent["entry_price"] < intent["tp"]
+    assert intent["geometry_evidence_ids"] == geometry["evidence_ids"]
+    # A huge configured fallback is intentionally irrelevant when real geometry
+    # exists; the target is based on observed structure, not reward_r_default.
+    assert out.decision.preferred_opportunity.reward_r == geometry["reward_r"]
+    assert out.decision.questions_answered["payoff_geometry_status"] == (
+        "qualified_from_fresh_completed_market_evidence"
+    )
 
 
 def test_brain_originates_natively_when_no_external_reasoner_is_configured():

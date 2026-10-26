@@ -91,6 +91,18 @@ def translate_management(
         conf = float(getattr(decision, "confidence", 0.0) or 0.0)
         reason = str(getattr(decision, "thesis", "") or "")[:200]
         dec_id = str(getattr(decision, "decision_id", "") or "")
+        # Preserve the identity actually authored by the decision. Never stamp a
+        # legacy/malformed result with the current identity merely to get it past
+        # the executor's last-mile contract gate.
+        decision_identity_version = str(
+            getattr(decision, "identity_version", "") or ""
+        )
+        decision_identity = str(getattr(decision, "identity", "") or "")
+        if (
+            decision_identity_version != IDENTITY_VERSION
+            or decision_identity != IDENTITY_STATEMENT
+        ):
+            return None
         # A management decision can identify the opportunity it is reassessing.
         # Prefer that explicit Brain provenance; use position metadata only as a
         # fallback for adapters that retain the original lineage.
@@ -109,7 +121,8 @@ def translate_management(
                 confidence=conf, reason=reason, decision_id=dec_id,
                 campaign_id=decision_campaign_id or position_campaign_id,
                 opportunity_id=decision_opportunity_id or position_opportunity_id,
-                identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT, **kw,
+                identity_version=decision_identity_version,
+                identity=decision_identity, **kw,
             )
 
         if name in ("exit", "terminate_campaign"):

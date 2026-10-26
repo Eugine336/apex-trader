@@ -22,6 +22,8 @@ behaviour:
 
 import json
 
+from test_support.market_geometry import add_market_geometry
+
 import pytest
 
 from cognition.brain import CognitiveBrain, PositionView
@@ -119,6 +121,8 @@ def _confident_state(symbol="ETHUSD", polarity=0.8):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=300.0,
     ))
+    side = "LONG" if polarity >= 0 else "SHORT"
+    add_market_geometry(ms, side)
     return ms
 
 

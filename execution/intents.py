@@ -66,6 +66,8 @@ class Intent:
     decision_id: str = ""
     campaign_id: str = ""
     opportunity_id: str = ""
+    # Evidence-backed payoff geometry travels through the shared execution sink.
+    payoff_geometry: Optional[dict] = None
 
     @staticmethod
     def close(
@@ -117,6 +119,7 @@ class Intent:
         opportunity_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
+        payoff_geometry: Optional[dict] = None,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         """An intent to OPEN a new position.
@@ -144,6 +147,9 @@ class Intent:
             opportunity_id=opportunity_id,
             identity_version=identity_version,
             identity=identity,
+            payoff_geometry=(
+                dict(payoff_geometry) if isinstance(payoff_geometry, dict) else None
+            ),
             priority=IntentType.OPEN,
         )
 

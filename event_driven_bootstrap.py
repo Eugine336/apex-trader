@@ -4,7 +4,7 @@ Wires all subsystems into a running event-driven system:
 
   Analysis Plane:    CandleClose events → brain modules → WorldModel
   Execution Plane:   Ticks → PositionWorkers → IntentAggregator → ActionExecutor → Broker
-  Entry Plane:       WorldModel zones → tick detection → M1 confirm → gates → executor
+  Decision Plane:    market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor
 
 Start:  ``system.start()``
 Stop:   ``system.stop()``
@@ -13,6 +13,7 @@ Stop:   ``system.stop()``
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time as _time
@@ -23,6 +24,8 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
+
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated
 from brain.symbol_mapper import resolve_to_internal
@@ -2327,19 +2330,72 @@ class EventDrivenSystem:
                 direction = str(getattr(origination, "direction", "") or "").upper()
                 sl = getattr(origination, "sl", None)
                 tp = getattr(origination, "tp", None)
+                geometry = getattr(origination, "payoff_geometry", None)
                 if not symbol or direction not in ("LONG", "SHORT"):
                     return False
-                # Part X — every entry MUST carry a protective stop. When the
-                # Brain's spec omits one, derive it deterministically from the
-                # live price + structure rather than refusing to trade.
-                if sl is None or tp is None:
-                    sl, tp = self._derive_origination_levels(symbol, direction)
-                if sl is None or tp is None:
-                    logger.info(
-                        "[origination-sink] {} {} skipped — could not derive a "
-                        "protective stop/target (Part X safety floor)",
+                # The Brain's market-derived geometry is the sole authority for
+                # entry/stop/target. The execution sink must not invent levels or
+                # fall back to a static stop fraction/reward multiple.
+                if not isinstance(geometry, dict):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — Brain payoff geometry missing",
                         symbol, direction,
                     )
+                    return False
+                if (
+                    str(getattr(origination, "identity_version", "") or "") != IDENTITY_VERSION
+                    or str(getattr(origination, "identity", "") or "") != IDENTITY_STATEMENT
+                    or str(geometry.get("identity_version", "") or "") != IDENTITY_VERSION
+                    or str(geometry.get("identity", "") or "") != IDENTITY_STATEMENT
+                    or str(geometry.get("symbol", "") or "").strip().upper() != symbol.strip().upper()
+                    or str(geometry.get("direction", "") or "").upper() != direction
+                    or geometry.get("activated") is not True
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — identity/symbol/direction/activation mismatch",
+                        symbol, direction,
+                    )
+                    return False
+                evidence_ids = geometry.get("evidence_ids")
+                if not isinstance(evidence_ids, (list, tuple)) or not any(
+                    str(item or "").strip() for item in evidence_ids
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — geometry has no evidence lineage",
+                        symbol, direction,
+                    )
+                    return False
+                try:
+                    reference_entry = float(getattr(origination, "reference_entry_price", 0.0) or 0.0)
+                    geometry_entry = float(geometry.get("entry_price", 0.0) or 0.0)
+                    geometry_stop = float(geometry.get("stop_price", 0.0) or 0.0)
+                    geometry_target = float(geometry.get("target_price", 0.0) or 0.0)
+                    supplied_sl = float(sl)
+                    supplied_tp = float(tp)
+                except (TypeError, ValueError, OverflowError):
+                    return False
+                if not all(math.isfinite(value) and value > 0.0 for value in (
+                    reference_entry, geometry_entry, geometry_stop, geometry_target,
+                    supplied_sl, supplied_tp,
+                )):
+                    return False
+                tolerance = max(1e-9, abs(reference_entry) * 1e-8)
+                if (
+                    abs(reference_entry - geometry_entry) > tolerance
+                    or abs(supplied_sl - geometry_stop) > tolerance
+                    or abs(supplied_tp - geometry_target) > tolerance
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — translated levels differ from Brain geometry",
+                        symbol, direction,
+                    )
+                    return False
+                ordered = (
+                    geometry_stop < geometry_entry < geometry_target
+                    if direction == "LONG"
+                    else geometry_target < geometry_entry < geometry_stop
+                )
+                if not ordered:
                     return False
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
                 sized = self._size_brain_origination_with_portfolio(
@@ -2390,6 +2446,11 @@ class EventDrivenSystem:
                     opportunity_id=str(getattr(origination, "opportunity_id", "") or ""),
                     identity_version=str(getattr(origination, "identity_version", "") or ""),
                     identity=str(getattr(origination, "identity", "") or ""),
+                    payoff_geometry=(
+                        dict(getattr(origination, "payoff_geometry", {}) or {})
+                        if isinstance(getattr(origination, "payoff_geometry", None), dict)
+                        else None
+                    ),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
@@ -3577,7 +3638,7 @@ class EventDrivenSystem:
         logger.info("-" * 60)
         logger.info("  ANALYSIS:  candle-close → brain modules → WorldModel")
         logger.info("  EXECUTION: ticks → position workers → intent aggregator → executor")
-        logger.info("  ENTRY:     zones → tick detection → M1 confirm → gates → executor")
+        logger.info("  DECISION:  market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor")
         logger.info("-" * 60)
 
     # ── PortfolioGovernor daily-state persistence ────────────────────────
@@ -5654,22 +5715,19 @@ class EventDrivenSystem:
         system with a MagicMock config, which would otherwise inject mocks).
         """
         cfg = WorkerConfig()
-        # Constitution Part VI/X — when the AI Cognitive Brain is the LIVE position
-        # manager, hand every DISCRETIONARY exit (TP / breakeven / trailing /
-        # stall / invalidation / conviction / HTF / dynamic-SL / opportunity-cost)
-        # to the Brain and leave the worker only the always-on catastrophic safety
-        # floor (hard SL + weekend / session / spread + absolute-profit backstop).
-        # The broker-side protective stop attached at entry stays the hard capital
-        # floor. Guarded so a MagicMock config (tests) never flips it: only an
-        # exact "live" management_mode with cognition enabled qualifies.
-        cog_cfg = getattr(self._config, "cognition", None)
-        if cog_cfg is not None:
-            mgmt_mode = str(
-                getattr(cog_cfg, "management_mode", "shadow") or "shadow"
-            ).strip().lower()
-            if mgmt_mode == "live" and bool(getattr(cog_cfg, "enabled", False)) is True:
-                cfg.discretionary_exits_enabled = False
+        # Native thesis-based management owns discretionary exits regardless of
+        # external provider availability. The mechanical suite is enabled only by
+        # the explicit RiskConfig fallback flag, never merely because cognition is off.
         risk_cfg = getattr(self._config, "risk", None)
+        legacy_fallback = bool(
+            getattr(risk_cfg, "legacy_mechanical_exit_fallback_enabled", False)
+        )
+        cfg.discretionary_exits_enabled = legacy_fallback
+        cfg.legacy_mechanical_exit_fallback_enabled = legacy_fallback
+        cfg.scan_directional_exits_enabled = bool(
+            legacy_fallback
+            and getattr(risk_cfg, "scan_directional_exits_enabled", False)
+        )
         if risk_cfg is None:
             return cfg
         enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
@@ -5684,13 +5742,8 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
-        # V-009 — defer the legacy mechanical directional exits (invalidation /
-        # conviction-collapse / structure-loss stall / H1-candle-against-side) to
-        # the Brain when the operator opts in (default True keeps the deterministic
-        # suite intact, with each firing warned).
-        scan_dir = getattr(risk_cfg, "scan_directional_exits_enabled", None)
-        if isinstance(scan_dir, bool):
-            cfg.scan_directional_exits_enabled = scan_dir
+        # Directional mechanical exits are constrained by the explicit
+        # legacy fallback flag evaluated above.
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:

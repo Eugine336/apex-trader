@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from persistence.event_store import EventStore
 from persistence.shadow_store import ShadowStore, ShadowContract, ShadowResolution
+from cognition.identity import IDENTITY_VERSION
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -110,6 +111,13 @@ def _seed_shadow(store: ShadowStore):
                     resolution_ts=int(time.time() * 1000),
                     resolution_granularity="M1",
                     bars_replayed=50,
+                    resolver_meta={
+                        # Synthetic native-manager fixture for the learner contract;
+                        # this does not claim a production shadow replay is native.
+                        "identity_version": IDENTITY_VERSION,
+                        "management_engine": "native_thesis",
+                        "learning_eligible": True,
+                    },
                 ),
             )
         else:
@@ -183,7 +191,9 @@ class TestShadowStoreQueryOutcomes:
             gate_map[gate][r["outcome"]] = r["cnt"]
         assert gate_map["M1_confirmation"]["WIN"] == 1
         assert gate_map["M1_confirmation"]["LOSS"] == 1
-        assert gate_map["M1_confirmation"]["EXPIRED"] == 1
+        # Expired rows do not carry a thesis-based resolution record, so they
+        # remain visible through reporting APIs but cannot enter learner input.
+        assert "EXPIRED" not in gate_map["M1_confirmation"]
         assert gate_map["spread_check"]["WIN"] == 2
 
     def test_get_all_contracts(self, tmp_shadow_db):

@@ -10,6 +10,7 @@ unchanged (every dimension resolves to it) — zero regression.
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
+from test_support.market_geometry import add_market_geometry
 from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.evidence_adapters import evidence_from_reasoning
 from cognition.expected_value import effective_confidence
@@ -60,6 +61,7 @@ def _decide(opinion, uncertainty=0.1):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
         relevance_horizon_seconds=60.0,
     ))
+    add_market_geometry(ms, opinion.direction)
     consolidation = ms.consolidation()
     consolidation["aggregate_uncertainty"] = uncertainty
     return _brain()._from_opinion(

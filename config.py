@@ -657,16 +657,17 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
-    # V-009 (was V-03; Constitution §I/§IV/§V/§XVII) — defer the LEGACY mechanical
-    # directional exits (invalidation / conviction-collapse / structure-loss stall
-    # / H1-candle-against-side) to the AI Cognitive Brain instead of closing on a
-    # re-derived scan direction/score or an opposing HTF candle. Default True ⇒ the
-    # deterministic suite keeps them (non-cognition mode) and each firing is logged
-    # as a WARNING; set False to hand them to cognition (thesis-based management).
-    # The hard-SL floor and the non-directional risk mechanics (TP / breakeven /
-    # trailing / time-based stall) are unaffected. env
-    # RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
-    scan_directional_exits_enabled: bool = True
+    # V-009 — scan-direction/score and opposing-HTF exits are mechanical legacy
+    # behavior, not thesis-based management. The default is disabled. They may only
+    # run when the separate explicit fallback flag below is enabled; this setting
+    # chooses whether the directional subset of that fallback is allowed.
+    # env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    scan_directional_exits_enabled: bool = False
+    # Explicit opt-in for the legacy fixed-level/time-based exit suite.
+    # Default false: native thesis-based management remains the default even
+    # when every external reasoning provider is unavailable.
+    # env RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED.
+    legacy_mechanical_exit_fallback_enabled: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -976,6 +977,10 @@ class RiskConfig:
         )
         self.scan_directional_exits_enabled = _llm_env_bool(
             "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
+        )
+        self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
+            "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
+            self.legacy_mechanical_exit_fallback_enabled,
         )
 
         def _check_finite_positive(name: str, val: float) -> None:
@@ -4116,13 +4121,13 @@ class CognitionConfig:
             self.event_driven = True
         if self.min_evidence_domains < 3:
             logger.warning(
-                "[config] minimum evidence domains %s is below the identity floor of 3; forcing 3",
+                "[config] minimum evidence domains {} is below the identity floor of 3; forcing 3",
                 self.min_evidence_domains,
             )
             self.min_evidence_domains = 3
         if self.min_advisors_for_action < 1:
             logger.warning(
-                "[config] minimum advisors %s is below the identity floor of 1; forcing 1",
+                "[config] minimum advisors {} is below the identity floor of 1; forcing 1",
                 self.min_advisors_for_action,
             )
             self.min_advisors_for_action = 1

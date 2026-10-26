@@ -1,9 +1,14 @@
 """Tests for the cognition loop, evidence consolidator, and Brain→action bridge."""
 
+import time
 from types import SimpleNamespace
 
-from cognition.contracts import DecisionType, Evidence, MarketState
+from cognition.contracts import (
+    CampaignSpecification, DecisionPackage, DecisionType, Evidence,
+    MarketState, Opportunity,
+)
 from cognition.loop import BrainActionBridge, CognitionLoop, EvidenceConsolidator
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 # ── EvidenceConsolidator ──────────────────────────────────────────────────────
@@ -312,9 +317,6 @@ def test_bridge_respects_disabled():
 
 # ── Origination (Phase G — Brain originates entries from its campaign spec) ────
 
-from cognition.contracts import CampaignSpecification, DecisionPackage
-
-
 class _OpenBrain:
     """Emits an OPEN_CAMPAIGN BrainOutput with a directional campaign per symbol."""
 
@@ -326,13 +328,61 @@ class _OpenBrain:
 
     def reason(self, market_state, now=None):
         sym = market_state.symbol
+        opportunity_id = f"opportunity:{sym}:{self._dir.lower()}"
+        opportunity = Opportunity(
+            opportunity_id=opportunity_id,
+            direction=self._dir,
+            state="ACTIVE",
+            thesis="completed market structure supports the candidate",
+            entry_conditions=["synthetic test opportunity activated"],
+            confirmation_conditions=["fresh quote and shared admission"],
+            invalidation_conditions=["test structural boundary fails"],
+            target_logic="synthetic structural target for test only",
+            quality=self._conf,
+            asymmetry=self._conf,
+            evidence_strength=self._conf,
+            is_preferred=True,
+        )
         decision = DecisionPackage(
-            symbol=sym, decision_type=DecisionType.OPEN_CAMPAIGN,
-            thesis="breakout", confidence=self._conf,
+            symbol=sym,
+            decision_type=DecisionType.OPEN_CAMPAIGN,
+            thesis="breakout",
+            confidence=self._conf,
+            opportunities=[opportunity],
+            preferred_opportunity_id=opportunity_id,
         )
         campaign = CampaignSpecification(
-            symbol=sym, direction=self._dir, desired_exposure=self._exp,
-            confidence=self._conf, decision_id=decision.decision_id,
+            symbol=sym,
+            direction=self._dir,
+            desired_exposure=self._exp,
+            confidence=self._conf,
+            decision_id=decision.decision_id,
+            opportunity_id=opportunity_id,
+            opportunity_state="ACTIVE",
+            initial_execution_intent={
+                "kind": "market",
+                "entry_price": 1.100,
+                "sl": 1.099 if self._dir == "LONG" else 1.101,
+                "tp": 1.102 if self._dir == "LONG" else 1.098,
+                "payoff_geometry": {
+                    "identity_version": IDENTITY_VERSION,
+                    "identity": IDENTITY_STATEMENT,
+                    "symbol": sym,
+                    "direction": self._dir,
+                    "entry_price": 1.100,
+                    "stop_price": 1.099 if self._dir == "LONG" else 1.101,
+                    "target_price": 1.102 if self._dir == "LONG" else 1.098,
+                    "risk_distance": 0.001,
+                    "reward_distance": 0.002,
+                    "reward_r": 2.0,
+                    "activated": True,
+                    "activation_reason": "synthetic completed-bar entry evidence",
+                    "invalidation_reason": "synthetic stop-level invalidation",
+                    "evidence_ids": ["test-structure", "test-momentum"],
+                    "entry_timeframe": "M5",
+                    "evidence_timestamp_epoch": time.time(),
+                },
+            },
         )
         self.last_campaign = campaign
         return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
@@ -678,8 +728,13 @@ class _ManageBrain:
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
-        dec = SimpleNamespace(decision_type=self._dt, symbol=position.symbol,
-                              confidence=0.8, thesis="mgmt", decision_id="d1")
+        dec = SimpleNamespace(
+            decision_type=self._dt, symbol=position.symbol,
+            confidence=0.8, thesis="mgmt", decision_id="d1",
+            identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+            campaign_id=getattr(position, "campaign_id", ""),
+            preferred_opportunity_id=getattr(position, "opportunity_id", ""),
+        )
         return SimpleNamespace(decision=dec, direction=position.direction)
 
 
@@ -824,8 +879,12 @@ class _FakeRegistry:
         self.managed = []
 
     def observe_thesis(self, symbol, direction, should_act, ev_over_flat=0.0,
-                       confidence=0.0, now=None, campaign_id=""):
-        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence, campaign_id))
+                       confidence=0.0, now=None, campaign_id="",
+                       opportunity_id="", decision_id=""):
+        self.theses.append((
+            symbol, direction, should_act, ev_over_flat, confidence, campaign_id,
+            opportunity_id, decision_id,
+        ))
 
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
                    pnl=0.0, ticket="", now=None):
@@ -855,6 +914,8 @@ def test_origination_live_births_campaign():
     loop.run_once()
     assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
     assert reg.theses[0][5] == brain.last_campaign.campaign_id
+    assert reg.theses[0][6] == brain.last_campaign.opportunity_id
+    assert reg.theses[0][7] == brain.last_campaign.decision_id
     assert ("EURUSD", "LONG", "open") == reg.legs[0][:3]
 
 

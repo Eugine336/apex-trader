@@ -54,3 +54,12 @@ def test_canonical_identity_is_copied_verbatim_into_public_identity_docs():
             f"{path.relative_to(_REPO_ROOT)} must contain the canonical identity "
             "exactly once, byte-for-byte"
         )
+
+
+
+def test_repository_wide_identity_audit():
+    """Keep the repo-wide identity/provenance/order-boundary guard executable in CI."""
+    from scripts.identity_audit import audit_repository
+
+    violations = audit_repository()
+    assert not violations, "Identity conformance violations:\n" + "\n".join(violations)

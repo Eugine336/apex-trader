@@ -16,6 +16,7 @@ from brain.campaign import (
     CampaignRegistry,
     CampaignState,
 )
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 def _reg(**kw) -> CampaignRegistry:
@@ -392,6 +393,40 @@ def test_is_component_saturated():
         reg.record_management(s, "LONG", "hold", confidence=0.6, ev_over_flat=1.0)
     assert reg.is_component_saturated("NZDUSD", max_per_component=2) is True   # USD x3 > 2
     assert reg.is_component_saturated("EURGBP", max_per_component=2) is False  # EUR x1, GBP x1
+
+
+def test_campaign_keeps_original_decision_and_opportunity_lineage():
+    reg = CampaignRegistry(enabled=True)
+    camp = reg.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.4, confidence=0.8,
+        campaign_id="campaign-123", decision_id="decision-1",
+        opportunity_id="opportunity-1",
+    )
+
+    assert camp is not None
+    assert camp.originating_decision_id == "decision-1"
+    assert camp.opportunity_id == "opportunity-1"
+    payload = camp.to_dict()
+    assert payload["identity_version"] == IDENTITY_VERSION
+    assert payload["identity"] == IDENTITY_STATEMENT
+    assert payload["originating_decision_id"] == "decision-1"
+    assert payload["opportunity_id"] == "opportunity-1"
+
+
+def test_campaign_refresh_does_not_overwrite_originating_lineage():
+    reg = CampaignRegistry(enabled=True)
+    camp = reg.observe_thesis(
+        "EURUSD", "LONG", True, campaign_id="campaign-123",
+        decision_id="decision-1", opportunity_id="opportunity-1",
+    )
+    refreshed = reg.observe_thesis(
+        "EURUSD", "LONG", True, campaign_id="campaign-123",
+        decision_id="decision-2", opportunity_id="opportunity-2",
+    )
+
+    assert refreshed is camp
+    assert camp.originating_decision_id == "decision-1"
+    assert camp.opportunity_id == "opportunity-1"
 
 
 def test_observe_thesis_uses_brain_campaign_id_when_provided():

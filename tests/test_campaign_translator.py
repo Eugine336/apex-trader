@@ -1,18 +1,67 @@
 """Tests for the campaign translator (Phase G — origination from the Brain's spec)."""
 
+import time
+from types import SimpleNamespace
+
 from cognition.campaign_translator import (
     OriginationIntent,
     compute_lot_size,
     derive_protective_levels,
     translate,
 )
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from cognition.contracts import CampaignSpecification
 
 
+def _geometry(symbol, direction, entry, sl, tp):
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    return {
+        "identity_version": IDENTITY_VERSION,
+        "identity": IDENTITY_STATEMENT,
+        "symbol": symbol,
+        "direction": direction,
+        "entry_price": entry,
+        "stop_price": sl,
+        "target_price": tp,
+        "risk_distance": risk,
+        "reward_distance": reward,
+        "reward_r": reward / risk,
+        "activated": True,
+        "activation_reason": "synthetic completed-bar evidence for translator tests",
+        "invalidation_reason": "synthetic structural invalidation",
+        "evidence_ids": ["test-evidence-1", "test-evidence-2"],
+        "entry_timeframe": "M5",
+        "stop_timeframe": "M5",
+        "target_timeframe": "M5",
+        "evidence_timestamp_epoch": time.time(),
+    }
+
+
+def _initial_intent(symbol="EURUSD", direction="LONG", entry=1.1, sl=1.09, tp=1.12):
+    return {
+        "kind": "market", "entry_price": entry, "sl": sl, "tp": tp,
+        "payoff_geometry": _geometry(symbol, direction, entry, sl, tp),
+    }
+
+
 def _spec(**kw) -> CampaignSpecification:
-    base = dict(symbol="EURUSD", direction="LONG", desired_exposure=0.5,
-                confidence=0.8, thesis="momentum breakout")
+    base = dict(
+        symbol="EURUSD", direction="LONG", desired_exposure=0.5,
+        confidence=0.8, thesis="momentum breakout",
+        decision_id="decision-default", opportunity_id="opportunity-default",
+        opportunity_state="ACTIVE",
+    )
     base.update(kw)
+    if "initial_execution_intent" not in kw:
+        if base["direction"] == "SHORT":
+            base["initial_execution_intent"] = _initial_intent(
+                base["symbol"], "SHORT", entry=1.1, sl=1.11, tp=1.08,
+            )
+        elif base["direction"] == "LONG":
+            base["initial_execution_intent"] = _initial_intent(
+                base["symbol"], "LONG", entry=1.1, sl=1.09, tp=1.12,
+            )
     return CampaignSpecification(**base)
 
 
@@ -56,14 +105,18 @@ def test_translate_max_exposure_caps_exposure():
 
 
 def test_translate_carries_stop_and_target_from_intent():
-    spec = _spec(initial_execution_intent={"sl": 1.0800, "tp": 1.0950})
+    spec = _spec(initial_execution_intent=_initial_intent(
+        entry=1.1, sl=1.08, tp=1.12,
+    ))
     intent = translate(spec, balance=5_000.0)
     assert intent.sl == 1.0800
     assert intent.tp == 1.0950
 
 
 def test_translate_carries_provenance():
-    spec = _spec(campaign_id="c123", decision_id="d456")
+    spec = _spec(
+        campaign_id="c123", decision_id="d456", opportunity_id="o789",
+    )
     intent = translate(spec, balance=5_000.0)
     assert intent.campaign_id == "c123"
     assert intent.decision_id == "d456"
@@ -75,6 +128,24 @@ def test_translate_carries_provenance():
     assert intent.to_dict()["identity"] == IDENTITY_STATEMENT
     assert intent.opportunity_id == spec.opportunity_id
     assert intent.to_dict()["opportunity_id"] == spec.opportunity_id
+
+
+def test_translate_rejects_noncanonical_identity_instead_of_rewriting_it():
+    assert translate(_spec(identity_version="old-version")) is None
+    assert translate(_spec(identity="competing identity")) is None
+
+
+def test_translate_requires_decision_campaign_and_activated_opportunity_links():
+    assert translate(_spec(decision_id="")) is None
+    assert translate(_spec(opportunity_id="")) is None
+    no_campaign = SimpleNamespace(
+        symbol="EURUSD", direction="LONG", desired_exposure=0.5,
+        decision_id="d1", opportunity_id="o1", opportunity_state="ACTIVE",
+        identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+    )
+    assert translate(no_campaign) is None
+    assert translate(_spec(opportunity_state="FORMING")) is None
+    assert translate(_spec(opportunity_state="UNKNOWN")) is None
 
 
 def test_translate_never_raises_on_garbage():

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
+from cognition.identity import IDENTITY_VERSION
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import assess_strategy_lenses
 
@@ -91,6 +92,7 @@ class EvidenceAnalysis:
 
     # Context-sensitive analytical lenses. These are not trade signals.
     strategy_lenses: list[dict] = field(default_factory=list)
+    identity_version: str = IDENTITY_VERSION
 
     def summary(self) -> str:
         cov = ", ".join(f"{k} {v:.2f}" for k, v in sorted(self.domain_coverage.items()))
@@ -112,6 +114,7 @@ class EvidenceAnalysis:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "domain_coverage": {k: round(v, 4) for k, v in self.domain_coverage.items()},
             "coverage_gap": round(self.coverage_gap, 4),
             "observations": list(self.observations),
@@ -137,6 +140,7 @@ class BrainHypothesis:
     invalidation: str = ""
     opportunity_implication: str = ""
     criticism: str = ""  # self-criticism notes (Article IV)
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         self.confidence = _clamp01(self.confidence)
@@ -149,6 +153,7 @@ class BrainHypothesis:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "statement": self.statement,
             "supporting_patterns": [pattern_name(p) for p in self.supporting_patterns],
             "contradicting_patterns": [pattern_name(p) for p in self.contradicting_patterns],
@@ -685,6 +690,174 @@ class BrainReasoner:
                     invalidation="Fresh, independent evidence supports a testable market-state hypothesis",
                     opportunity="observe; do not infer that missing evidence means a trade or a proven consolidation",
                 ))
+
+            # State-first competitor set (I-2 / I-4).
+            # Form each explanation from the current regime even when the pattern
+            # detector returns nothing. Pattern names below are evidence that can
+            # support or contradict an existing hypothesis; they are not gates on
+            # whether the market hypothesis exists.
+            structure_state = str(regime.get("structure", "") or "").upper()
+            flow_state = str(regime.get("order_flow", "") or "").lower()
+            trend_state = str(regime.get("trend_context", "") or "").lower()
+            try:
+                range_frames = max(0, int(regime.get("range_timeframes", 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                range_frames = 0
+
+            coverage_quality = (
+                sum(_clamp01(value) for value in analysis.domain_coverage.values())
+                / len(analysis.domain_coverage)
+                if analysis.domain_coverage else 0.0
+            )
+            coverage_completeness = min(1.0, len(analysis.domain_coverage) / 6.0)
+            agreement = _clamp01(analysis.agreement_score)
+            uncertainty = _clamp01(analysis.evidence_uncertainty, 1.0)
+            evidence_quality = (
+                coverage_quality + coverage_completeness + agreement + (1.0 - uncertainty)
+            ) / 4.0
+            counter_pressure = (
+                coverage_quality + coverage_completeness + (1.0 - agreement) + uncertainty
+            ) / 4.0
+
+            if structure_state in (LONG, SHORT):
+                state_direction = structure_state
+            elif flow_state == "buying":
+                state_direction = LONG
+            elif flow_state == "selling":
+                state_direction = SHORT
+            else:
+                state_direction = FLAT
+            opposite_state_direction = (
+                SHORT if state_direction == LONG else
+                LONG if state_direction == SHORT else FLAT
+            )
+
+            # A recognisable pattern modifies the evidence attached to a
+            # hypothesis; its absence never removes the hypothesis from the set.
+            hypothesis_text = " ".join(
+                f"{item.statement} {item.opportunity_implication}"
+                for item in hyps
+            ).lower()
+            state_candidates = (
+                {
+                    "key": "continuation",
+                    "needle": ("continuation", "continue"),
+                    "statement": (
+                        f"Continuation remains a conditional explanation for {symbol} "
+                        "if the observed regime persists; a sustained structural or flow "
+                        "failure would challenge it."
+                    ),
+                    "direction": state_direction,
+                    "confidence": evidence_quality,
+                    "invalidation": "The current structural/flow state fails on fresh completed-bar evidence",
+                    "opportunity": (
+                        f"continuation candidate; activation requires fresh follow-through "
+                        f"consistent with the observed regime; candidate_direction={state_direction}"
+                    ),
+                    "support": support,
+                    "against": against,
+                },
+                {
+                    "key": "pullback",
+                    "needle": ("pullback", "correction"),
+                    "statement": (
+                        f"A pullback or correction is a competing explanation for {symbol}; "
+                        "its depth and acceptance must be assessed against the prevailing regime."
+                    ),
+                    "direction": opposite_state_direction,
+                    "confidence": counter_pressure if state_direction in (LONG, SHORT) else coverage_quality,
+                    "invalidation": "The pullback fails to develop and the prior directional structure resumes",
+                    "opportunity": (
+                        f"pullback/correction candidate; activation requires a measured retracement "
+                        f"and fresh response evidence; candidate_direction={opposite_state_direction}"
+                    ),
+                    "support": [n for n in names if "pullback" in n or "retracement" in n or "correction" in n],
+                    "against": support,
+                },
+                {
+                    "key": "reversal",
+                    "needle": ("reversal", "reversal candidate"),
+                    "statement": (
+                        f"A reversal is an alternative explanation for {symbol}, conditional on "
+                        "fresh evidence that the prevailing structure or order flow is failing."
+                    ),
+                    "direction": opposite_state_direction,
+                    "confidence": counter_pressure,
+                    "invalidation": "The prevailing structural extreme is extended and accepted with supporting flow",
+                    "opportunity": (
+                        f"reversal candidate; do not activate without independent invalidation evidence; "
+                        f"candidate_direction={opposite_state_direction}"
+                    ),
+                    "support": against,
+                    "against": support,
+                },
+                {
+                    "key": "range rotation",
+                    "needle": ("range rotation", "range-rotation", "range-edge"),
+                    "statement": (
+                        f"Range rotation remains a candidate explanation for {symbol}; "
+                        "the observed boundaries and acceptance outside them determine whether it fits."
+                    ),
+                    "direction": FLAT,
+                    "confidence": (
+                        (coverage_quality + coverage_completeness + (min(1.0, range_frames / 2.0) if range_frames else 0.0)) / 3.0
+                        if trend_state == "range" or range_frames >= 2
+                        else (coverage_quality + coverage_completeness) / 6.0
+                    ),
+                    "invalidation": "Fresh completed-bar evidence accepts beyond a measured range boundary",
+                    "opportunity": "range rotation candidate; evaluate both edges and breakout alternatives before selecting direction",
+                    "support": [n for n in names if "range" in n or "compression" in n],
+                    "against": [n for n in names if "breakout" in n or "displacement" in n],
+                },
+                {
+                    "key": "failed breakout",
+                    "needle": ("failed breakout", "breakout failure"),
+                    "statement": (
+                        f"A failed breakout remains a competing explanation for {symbol}; "
+                        "it requires evidence of rejection after price tests beyond a relevant boundary."
+                    ),
+                    "direction": opposite_state_direction,
+                    "confidence": counter_pressure,
+                    "invalidation": "Price accepts beyond the boundary with continued participation",
+                    "opportunity": (
+                        f"failed-breakout candidate; activation requires boundary breach followed by "
+                        f"rejection/failed acceptance; candidate_direction={opposite_state_direction}"
+                    ),
+                    "support": [n for n in names if "failed_breakout" in n or "liquidity_sweep_reclaimed" in n],
+                    "against": [n for n in names if "volume_confirmed_breakout" in n or "displacement_confirmed" in n],
+                },
+                {
+                    "key": "no-trade",
+                    "needle": ("no-trade", "no trade", "wait candidate"),
+                    "statement": (
+                        f"No-trade/wait remains an explicit competing outcome for {symbol}; "
+                        "missing, stale, contradictory or non-executable evidence must not be filled by inference."
+                    ),
+                    "direction": FLAT,
+                    "confidence": (
+                        _clamp01(analysis.coverage_gap)
+                        + uncertainty
+                        + (1.0 - agreement)
+                    ) / 3.0,
+                    "invalidation": "Fresh independent evidence resolves the key uncertainty and supports an admitted opportunity",
+                    "opportunity": "no-trade/wait candidate; observe until evidence, activation, execution cost and risk are adequately established",
+                    "support": [n for n in names if "execution_degraded" in n],
+                    "against": [],
+                },
+            )
+            for candidate in state_candidates:
+                if any(token in hypothesis_text for token in candidate["needle"]):
+                    continue
+                hyps.append(BrainHypothesis(
+                    statement=candidate["statement"],
+                    supporting_patterns=list(candidate["support"]),
+                    contradicting_patterns=list(candidate["against"]),
+                    confidence=_clamp01(candidate["confidence"]),
+                    direction_implication=candidate["direction"],
+                    invalidation=candidate["invalidation"],
+                    opportunity_implication=candidate["opportunity"],
+                ))
+                hypothesis_text += " " + candidate["key"]
 
             # ALWAYS generate at least one counter-hypothesis (Article IV).
             hyps.append(self._counter(hyps[0], analysis))

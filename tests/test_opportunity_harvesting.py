@@ -13,6 +13,8 @@ sizing).
 
 import json
 
+from test_support.market_geometry import add_market_geometry
+
 import pytest
 
 from cognition.brain import CognitiveBrain
@@ -265,6 +267,8 @@ def _confident_state(symbol="ETHUSD", polarity=0.8):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=300.0,
     ))
+    side = "LONG" if polarity >= 0 else "SHORT"
+    add_market_geometry(ms, side)
     return ms
 
 
@@ -304,15 +308,15 @@ def test_brain_multiple_directions_preferred_drives_campaign():
     assert "HTF resumes" in out.decision.questions_answered["conditional_alternatives"]
 
 
-def test_brain_sizing_scales_with_asymmetry():
-    # Holding quality fixed, higher asymmetry ⇒ better payoff geometry ⇒ higher
-    # EV ⇒ larger desired exposure. Demonstrates asymmetry informs sizing.
+def test_market_geometry_controls_payoff_not_reported_asymmetry():
+    # The Brain uses independently observed structural levels for payoff. A model
+    # scoring the same market more asymmetrically cannot invent a higher reward.
     lo = _brain(_new_reply([_opp(direction="LONG", quality=0.8, asymmetry=0.55)])
                 ).reason(_confident_state())
     hi = _brain(_new_reply([_opp(direction="LONG", quality=0.8, asymmetry=0.8)])
                 ).reason(_confident_state())
     assert lo.campaign is not None and hi.campaign is not None
-    assert hi.campaign.expected_value > lo.campaign.expected_value
+    assert hi.campaign.expected_value == lo.campaign.expected_value
     assert hi.campaign.desired_exposure >= lo.campaign.desired_exposure
 
 

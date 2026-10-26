@@ -17,6 +17,8 @@ import sys
 from dotenv import load_dotenv
 from loguru import logger
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 load_dotenv()
 
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
@@ -54,7 +56,7 @@ def main() -> None:
     force_rediscover = "--rediscover"  in sys.argv
 
     logger.info("=" * 60)
-    logger.info("  APEX TRADER — Institutional-Grade Trading System")
+    logger.info("  APEX TRADER — Identity v{}: {}", IDENTITY_VERSION, IDENTITY_STATEMENT)
     logger.info("=" * 60)
 
     config = AppConfig()
@@ -100,11 +102,7 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Auto-discovery skipped: {}", exc)
 
-    logger.info("Phase 1 — Brain loaded (17 modules)")
-
-    logger.info("Phase 3 — Trigger loaded (entry engine, patterns, validator)")
-
-    logger.info("Phase 4 — Management loaded (trade manager, trailing, partial, re-entry)")
+    logger.info("Active decision path: market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor")
 
     logger.info("Phase 5 — Risk loaded (risk engine, position sizer, P&L tracker, spread, reporter)")
 
