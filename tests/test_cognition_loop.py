@@ -858,6 +858,24 @@ def test_origination_live_births_campaign():
     assert ("EURUSD", "LONG", "open") == reg.legs[0][:3]
 
 
+def test_rejected_live_sink_does_not_register_a_campaign():
+    reg = _FakeRegistry()
+    brain = _OpenBrain(direction="LONG")
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", campaign_registry=reg,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda _intent: False)
+    loop.run_once()
+
+    status = loop.get_status()
+    assert reg.theses == []
+    assert reg.legs == []
+    assert status["orig_submitted"] == 0
+    assert status["orig_suppressed"] == 1
+
+
 def test_management_records_campaign_health():
     reg = _FakeRegistry()
     loop = CognitionLoop(
