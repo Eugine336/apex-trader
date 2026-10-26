@@ -4,6 +4,8 @@ Verifies that candidate scoring weights are adopted only when they
 do not degrade win/loss discrimination on held-out (later-in-time) trades.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from adaptive.score_optimizer import ScoreOptimizer, ScoringWeights
@@ -38,12 +40,17 @@ def _build_predictive_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
@@ -57,12 +64,17 @@ def _build_overfit_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "session"] if is_win else ["structure", "fvg", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
