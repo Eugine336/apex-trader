@@ -268,10 +268,10 @@ def _domain(evidence: Any) -> str:
 
 def _surface(evidence: Any) -> str:
     """Build a normalized searchable surface from one evidence record."""
-    pieces = [
-        str(getattr(evidence, "source_module", "") or ""),
-        str(getattr(evidence, "observation", "") or ""),
-    ]
+    # Source names are provenance, not evidence that a concept is present.
+    # Including module paths here would make every market_lenses.*.structure
+    # record look like support/resistance evidence solely because of its filename.
+    pieces = [str(getattr(evidence, "observation", "") or "")]
     measurements = getattr(evidence, "measurements", {})
     if isinstance(measurements, dict):
         pieces.extend(str(k) for k in measurements)
