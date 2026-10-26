@@ -83,7 +83,33 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
         ms.add(Evidence(source_module=f"m{i}", domain=domains[i % len(domains)],
                         symbol=symbol, confidence=conf, uncertainty=1.0 - conf,
                         relevance_horizon_seconds=900.0))
-    for e in (extra or []):
+    # These fixtures exercise reasoning/EV behavior, not missing-quorum behavior.
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_panel",
+        domain=EvidenceDomain.REASONING,
+        symbol=symbol,
+        observation="two independent advisors returned opinions",
+        confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        relevance_horizon_seconds=900.0,
+    ))
+    extras = list(extra or [])
+    has_cost_evidence = any(
+        getattr(e, "domain", None) == EvidenceDomain.EXECUTION_QUALITY for e in extras
+    )
+    if not has_cost_evidence:
+        ms.add(Evidence(
+            source_module="execution_cost.test_quote",
+            domain=EvidenceDomain.EXECUTION_QUALITY,
+            symbol=symbol,
+            observation="fresh test spread and slippage quote",
+            confidence=conf,
+            uncertainty=1.0 - conf,
+            measurements={"estimated_total_cost_r": 0.05},
+            relevance_horizon_seconds=60.0,
+        ))
+    for e in extras:
         ms.add(e)
     return ms
 
