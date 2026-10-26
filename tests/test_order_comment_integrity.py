@@ -42,6 +42,10 @@ class TestBuildOrderComment:
         assert comment == "APEX-abcdef012345"
         assert len(comment) <= _MT5_COMMENT_MAX
 
+    def test_legacy_underscore_comment_still_extracts_key(self):
+        # Existing broker orders may carry the previous underscore delimiter.
+        assert extract_idempotency_key("APEX_abcdef012345") == "abcdef012345"
+
     def test_idem_key_always_at_index_1(self):
         key = "a1b2c3d4e5f6"
         comment = build_order_comment("APEX", key, score=92, session="AS")
