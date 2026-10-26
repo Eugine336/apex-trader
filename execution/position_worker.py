@@ -74,6 +74,7 @@ class WorkerConfig:
     # protective stop attached at entry remains the hard capital floor in either
     # case, so a position is never unprotected even if the Brain/provider is down.
     discretionary_exits_enabled: bool = False
+    legacy_mechanical_exit_fallback_enabled: bool = False
 
     # ── V-009 (was V-03): LEGACY mechanical directional exits ──────────────────
     # (Constitution §I/§IV/§V/§XVII). The invalidation / conviction-collapse /
@@ -282,9 +283,8 @@ class PositionWorker:
             source, snap.symbol, snap.direction, detail,
         )
 
-    @staticmethod
     def _label_legacy_mechanical(
-        intents: list[Intent], start_index: int,
+        self, intents: list[Intent], start_index: int,
     ) -> None:
         """Label discretionary worker actions for audit when legacy fallback fires.
 
@@ -292,6 +292,8 @@ class PositionWorker:
         canonical source label required by the migration contract.
         """
         if start_index >= len(intents):
+            return
+        if not self.cfg.legacy_mechanical_exit_fallback_enabled:
             return
         for index in range(start_index, len(intents)):
             intent = intents[index]
