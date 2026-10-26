@@ -195,10 +195,19 @@ def test_repeating_same_assessment_is_idempotent():
 
 
 def test_native_manager_fault_fails_safe_to_hold():
+    class _BrokenMarketState:
+        symbol = "EURUSD"
+
+        def consolidation(self, now=None):
+            raise RuntimeError("synthetic market-state failure")
+
+        def fresh_evidence(self):
+            return []
+
     manager = NativePositionManager()
-    result = manager.assess(None, None)
+    result = manager.assess(_position(), _BrokenMarketState(), campaign_context=_context())
     assert result.action == "hold"
-    assert "fault" in result.reason or "campaign id missing" in result.reason
+    assert "fault" in result.reason
 
 
 
