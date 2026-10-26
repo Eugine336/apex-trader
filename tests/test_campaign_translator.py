@@ -1,11 +1,14 @@
 """Tests for the campaign translator (Phase G — origination from the Brain's spec)."""
 
+from types import SimpleNamespace
+
 from cognition.campaign_translator import (
     OriginationIntent,
     compute_lot_size,
     derive_protective_levels,
     translate,
 )
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from cognition.contracts import CampaignSpecification
 
 
@@ -91,7 +94,12 @@ def test_translate_rejects_noncanonical_identity_instead_of_rewriting_it():
 def test_translate_requires_decision_campaign_and_activated_opportunity_links():
     assert translate(_spec(decision_id="")) is None
     assert translate(_spec(opportunity_id="")) is None
-    assert translate(_spec(campaign_id="")) is None
+    no_campaign = SimpleNamespace(
+        symbol="EURUSD", direction="LONG", desired_exposure=0.5,
+        decision_id="d1", opportunity_id="o1", opportunity_state="ACTIVE",
+        identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+    )
+    assert translate(no_campaign) is None
     assert translate(_spec(opportunity_state="FORMING")) is None
     assert translate(_spec(opportunity_state="UNKNOWN")) is None
 
