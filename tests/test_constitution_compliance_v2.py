@@ -20,6 +20,7 @@ import json
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
+from test_support.market_geometry import add_market_geometry
 from cognition.contracts import (
     DEFAULT_EVIDENCE_HORIZON_SECONDS,
     DecisionType,
@@ -93,6 +94,7 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    add_market_geometry(ms, "LONG")
     return ms
 
 
@@ -251,6 +253,7 @@ def _state_domains(n, *, symbol="XAUUSD"):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    add_market_geometry(ms, "LONG")
     return ms
 
 
