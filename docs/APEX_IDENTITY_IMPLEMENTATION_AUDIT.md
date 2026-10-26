@@ -236,3 +236,8 @@ The live PR head was rechecked before this refresh. The branch includes the iden
 - **Validation:** workflow #1911 (run ID 40275835782) is completed with failure on older head `a90a8f540f4f32d06098d24c36fa097218244c1f`. Main workflow #1902 is also failed. No successful workflow is established for the latest head. The current tool environment does not provide a checked-out repository for local test execution, so no local test result is claimed.
 
 No broker orders were sent and live trading was not enabled. `.env` was not accessed or modified.
+
+
+## Latest CI evidence update — 2026-10-26
+
+The latest completed full workflow on the prior PR head reports 140 failures, 3,785 passes, and 12 skips on Python 3.12; lint passed and Python 3.11 was cancelled. The focused Gold desk workflow passed on both Python 3.11 and 3.12. These are not a full-suite pass. A dashboard TestClient compatibility fix was committed afterward; it is not yet validated by a subsequent run. The PR must remain unmerged while the full suite and critical execution/management tests remain red or unverified.
