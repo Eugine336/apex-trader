@@ -173,9 +173,10 @@ class PositionView:
     hold_seconds: float = 0.0
     size: float = 0.0
     campaign_id: str = ""
+    entry_confidence: Optional[float] = None
+    # Appended for positional compatibility with existing PositionView callers.
     opportunity_id: str = ""
     originating_decision_id: str = ""
-    entry_confidence: Optional[float] = None
 
 
 class CognitiveBrain:
