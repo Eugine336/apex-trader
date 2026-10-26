@@ -700,10 +700,6 @@ class BrainReasoner:
             flow_state = str(regime.get("order_flow", "") or "").lower()
             trend_state = str(regime.get("trend_context", "") or "").lower()
             try:
-                trend_frames = max(0, int(regime.get("trend_timeframes", 0) or 0))
-            except (TypeError, ValueError, OverflowError):
-                trend_frames = 0
-            try:
                 range_frames = max(0, int(regime.get("range_timeframes", 0) or 0))
             except (TypeError, ValueError, OverflowError):
                 range_frames = 0
