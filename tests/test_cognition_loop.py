@@ -1,5 +1,6 @@
 """Tests for the cognition loop, evidence consolidator, and Brain→action bridge."""
 
+import time
 from types import SimpleNamespace
 
 from cognition.contracts import (
@@ -7,6 +8,7 @@ from cognition.contracts import (
     MarketState, Opportunity,
 )
 from cognition.loop import BrainActionBridge, CognitionLoop, EvidenceConsolidator
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 # ── EvidenceConsolidator ──────────────────────────────────────────────────────
@@ -358,7 +360,28 @@ class _OpenBrain:
             opportunity_id=opportunity_id,
             opportunity_state="ACTIVE",
             initial_execution_intent={
-                "kind": "market", "sl": 1.099, "tp": 1.102,
+                "kind": "market",
+                "entry_price": 1.100,
+                "sl": 1.099 if self._dir == "LONG" else 1.101,
+                "tp": 1.102 if self._dir == "LONG" else 1.098,
+                "payoff_geometry": {
+                    "identity_version": IDENTITY_VERSION,
+                    "identity": IDENTITY_STATEMENT,
+                    "symbol": sym,
+                    "direction": self._dir,
+                    "entry_price": 1.100,
+                    "stop_price": 1.099 if self._dir == "LONG" else 1.101,
+                    "target_price": 1.102 if self._dir == "LONG" else 1.098,
+                    "risk_distance": 0.001,
+                    "reward_distance": 0.002,
+                    "reward_r": 2.0,
+                    "activated": True,
+                    "activation_reason": "synthetic completed-bar entry evidence",
+                    "invalidation_reason": "synthetic stop-level invalidation",
+                    "evidence_ids": ["test-structure", "test-momentum"],
+                    "entry_timeframe": "M5",
+                    "evidence_timestamp_epoch": time.time(),
+                },
             },
         )
         self.last_campaign = campaign
