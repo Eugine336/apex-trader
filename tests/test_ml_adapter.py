@@ -434,11 +434,11 @@ class TestMLAdapter:
     def test_ml_persistence_after_optimization(self, tmp_path, monkeypatch):
         import adaptive.score_optimizer as adaptive_so_mod
         import ml.score_optimizer as so_mod
-        import ml.pair_learner as pl_mod
+        import adaptive.pair_learner as pl_mod
         monkeypatch.setattr(pl_mod, "_data_dir", lambda: tmp_path)
-        import ml.regime_learner as rl_mod
+        import adaptive.regime_learner as rl_mod
         monkeypatch.setattr(rl_mod, "_data_dir", lambda: tmp_path)
-        import ml.session_learner as sl_mod
+        import adaptive.session_learner as sl_mod
         monkeypatch.setattr(sl_mod, "_data_dir", lambda: tmp_path)
 
         monkeypatch.setattr(adaptive_so_mod, "_data_dir", lambda: tmp_path)
