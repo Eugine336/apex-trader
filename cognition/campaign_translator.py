@@ -154,9 +154,27 @@ def translate(
     non-directional / empty spec. Never raises.
     """
     try:
+        # Do not repair or overwrite a non-canonical Brain contract here:
+        # translating it into a canonical-looking intent would hide an identity
+        # violation at the last boundary before new exposure is created.
+        spec_identity_version = str(getattr(spec, "identity_version", "") or "")
+        spec_identity = str(getattr(spec, "identity", "") or "")
+        if (
+            spec_identity_version != IDENTITY_VERSION
+            or spec_identity != IDENTITY_STATEMENT
+        ):
+            return None
         direction = str(getattr(spec, "direction", "") or "").upper()
         symbol = str(getattr(spec, "symbol", "") or "")
-        if direction not in ("LONG", "SHORT") or not symbol:
+        campaign_id = str(getattr(spec, "campaign_id", "") or "").strip()
+        decision_id = str(getattr(spec, "decision_id", "") or "").strip()
+        opportunity_id = str(getattr(spec, "opportunity_id", "") or "").strip()
+        if (
+            direction not in ("LONG", "SHORT") or not symbol
+            or not campaign_id or not decision_id or not opportunity_id
+            or str(getattr(spec, "opportunity_state", "") or "").upper()
+               not in {"ACTIVE", "CONFIRMED", "STRENGTHENING"}
+        ):
             return None
         exposure = _clampf(getattr(spec, "desired_exposure", 0.0), 0.0,
                            _clampf(max_exposure, 0.0, 1.0, 1.0), 0.0)
@@ -174,11 +192,11 @@ def translate(
             sl=sl,
             tp=tp,
             reason=str(getattr(spec, "thesis", "") or "")[:280],
-            campaign_id=str(getattr(spec, "campaign_id", "") or ""),
-            decision_id=str(getattr(spec, "decision_id", "") or ""),
-            opportunity_id=str(getattr(spec, "opportunity_id", "") or ""),
-            identity_version=IDENTITY_VERSION,
-            identity=IDENTITY_STATEMENT,
+            campaign_id=campaign_id,
+            decision_id=decision_id,
+            opportunity_id=opportunity_id,
+            identity_version=spec_identity_version,
+            identity=spec_identity,
             confidence=_clampf(getattr(spec, "confidence", 0.0), 0.0, 1.0, 0.0),
             meta={"objectives": list(getattr(spec, "objectives", []) or [])},
         )
