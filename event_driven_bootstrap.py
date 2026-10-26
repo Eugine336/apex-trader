@@ -5876,7 +5876,7 @@ class EventDrivenSystem:
                         "symbol": str(symbol or ""),
                         "direction": str(direction or "").upper(),
                         "entry_price": entry_fill_price,
-                        "entry_time": datetime.now(timezone.utc),
+                        "entry_time": datetime.now(timezone.utc).isoformat(),
                         "lots": float(
                             getattr(result, "lots", getattr(result, "volume", 0.0)) or 0.0
                         ),
