@@ -1565,6 +1565,14 @@ class SystemContext:
                                     str(camp.get("campaign_id", "") or "")
                                     if isinstance(camp, dict) else ""
                                 ),
+                                opportunity_id=(
+                                    str(camp.get("opportunity_id", "") or "")
+                                    if isinstance(camp, dict) else ""
+                                ),
+                                originating_decision_id=(
+                                    str(camp.get("originating_decision_id", "") or "")
+                                    if isinstance(camp, dict) else ""
+                                ),
                                 entry_confidence=(
                                     float(ec) if ec is not None else None
                                 ),
