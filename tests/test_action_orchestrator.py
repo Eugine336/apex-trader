@@ -190,9 +190,9 @@ def test_composio_adapter_request_shape_and_parse():
     res = a.execute("github.create_issue", {"title": "bug"})
     assert res.ok is True and res.external_ref == "run_123"
     call = t.calls[0]
-    assert call["url"] == "https://backend.composio.dev/api/v2/actions/github.create_issue/execute"
+    assert call["url"] == "https://backend.composio.dev/api/v3/tools/execute/github.create_issue"
     assert call["headers"]["x-api-key"] == "secret"
-    assert call["body"] == {"entityId": "acct1", "input": {"title": "bug"}}
+    assert call["body"] == {"user_id": "acct1", "arguments": {"title": "bug"}}
 
 
 def test_composio_adapter_non_2xx_and_transport_error_fail_safe():
