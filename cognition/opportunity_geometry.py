@@ -55,11 +55,13 @@ class OpportunityGeometry:
     target_timeframe: str = ""
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
+    symbol: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "identity_version": self.identity_version,
             "identity": self.identity,
+            "symbol": self.symbol,
             "direction": self.direction,
             "entry_price": self.entry_price,
             "stop_price": self.stop_price,
@@ -105,6 +107,8 @@ def derive_opportunity_geometry(
         return None
 
     state_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
+    if not state_symbol:
+        return None
     structures: list[dict[str, Any]] = []
     momenta: list[dict[str, Any]] = []
     liquidity: list[dict[str, Any]] = []
@@ -284,6 +288,7 @@ def derive_opportunity_geometry(
         entry_timeframe=entry_record["timeframe"],
         stop_timeframe=stop_record["timeframe"],
         target_timeframe=target_record["timeframe"],
+        symbol=state_symbol,
     )
 
 
