@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from cognition.identity import IDENTITY_VERSION
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 from runtime_paths import data_dir as _data_dir  # noqa: E402
@@ -384,26 +386,71 @@ class ShadowStore:
                 return {}
 
     def get_outcomes_by_gate(self) -> List[Dict[str, Any]]:
-        """Aggregate resolved+expired contracts grouped by rejecting_gate."""
+        """Aggregate only identity-conformant outcomes eligible for gate learning.
+
+        Dashboard/observability methods may display legacy outcomes, but adaptive
+        learning must evaluate outcomes using the same thesis-based manager that
+        produced the decisions. Missing provenance is NOT assumed trustworthy.
+        Historical rows and the database schema are left untouched.
+        """
         if self._conn is None:
             return []
         with self._lock:
             try:
                 cur = self._conn.execute(
-                    """SELECT rejecting_gate, outcome,
-                              COUNT(*) as cnt,
-                              AVG(r_multiple) as avg_r,
-                              AVG(bars_replayed) as avg_bars
+                    """SELECT rejecting_gate, outcome, r_multiple, bars_replayed,
+                              resolver_meta
                        FROM shadow_contracts
                        WHERE status IN ('RESOLVED', 'EXPIRED')
-                       GROUP BY rejecting_gate, outcome
                        ORDER BY rejecting_gate, outcome"""
                 )
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
+                rows = cur.fetchall()
             except Exception as exc:
                 logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
                 return []
+
+        aggregates: Dict[tuple, Dict[str, Any]] = {}
+        for gate, outcome, r_multiple, bars_replayed, meta_json in rows:
+            try:
+                meta = json.loads(meta_json) if meta_json else {}
+            except (TypeError, ValueError):
+                meta = {}
+            if not (
+                isinstance(meta, dict)
+                and meta.get("identity_version") == IDENTITY_VERSION
+                and meta.get("management_engine") == "native_thesis"
+                and meta.get("learning_eligible") is True
+            ):
+                continue
+            key = (gate, outcome)
+            item = aggregates.setdefault(key, {
+                "rejecting_gate": gate,
+                "outcome": outcome,
+                "cnt": 0,
+                "_sum_r": 0.0,
+                "_n_r": 0,
+                "_sum_bars": 0.0,
+                "_n_bars": 0,
+            })
+            item["cnt"] += 1
+            if r_multiple is not None:
+                item["_sum_r"] += float(r_multiple)
+                item["_n_r"] += 1
+            if bars_replayed is not None:
+                item["_sum_bars"] += float(bars_replayed)
+                item["_n_bars"] += 1
+
+        result: List[Dict[str, Any]] = []
+        for item in aggregates.values():
+            n_r = item.pop("_n_r")
+            sum_r = item.pop("_sum_r")
+            n_bars = item.pop("_n_bars")
+            sum_bars = item.pop("_sum_bars")
+            item["avg_r"] = sum_r / n_r if n_r else None
+            item["avg_bars"] = sum_bars / n_bars if n_bars else None
+            result.append(item)
+        result.sort(key=lambda row: (str(row["rejecting_gate"]), str(row["outcome"])))
+        return result
 
     def get_gate_edge(self) -> List[Dict[str, Any]]:
         """Per-gate counterfactual edge of the setups each gate REJECTED.
