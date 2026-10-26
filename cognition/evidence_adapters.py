@@ -251,6 +251,10 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
                 "estimated_spread_r": round(spread_r, 6),
                 "estimated_slippage_r": round(slippage_r, 6),
                 "estimated_total_cost_r": round(total_r, 6),
+                "cost_verified": bool(cost.get("cost_verified", False))
+                if isinstance(cost, dict) else False,
+                "cost_source": str(cost.get("cost_source", "unverified estimate"))
+                if isinstance(cost, dict) else "unverified estimate",
             },
             relevance_horizon_seconds=300.0,
         ))
