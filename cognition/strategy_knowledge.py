@@ -306,19 +306,32 @@ def assess_strategy_lenses(
     names = {str(name or "").strip().lower() for name in pattern_names if str(name or "").strip()}
     reg = {str(k).lower(): str(v).lower() for k, v in (regime or {}).items()}
     domains = {_domain(item) for item in items}
-    surfaces = [_surface(item) for item in items]
-    surface = " ".join([*names, *reg.values(), *surfaces])
+    surfaces = [(_domain(item), _surface(item)) for item in items]
+    pattern_surface = " ".join(names)
+    regime_surface = " ".join(reg.values())
     assessments: list[StrategyLensAssessment] = []
 
     for lens in STRATEGY_LENSES:
-        matched = [anchor for anchor in lens.anchors if _contains_anchor(surface, anchor)]
+        # An anchor must be present in evidence from a domain the lens actually
+        # consumes. A keyword in unrelated evidence must not borrow an unrelated
+        # domain elsewhere in the snapshot to manufacture relevance.
+        matched_evidence = [
+            anchor for anchor in lens.anchors
+            if any(domain in lens.evidence_domains and _contains_anchor(surface, anchor)
+                   for domain, surface in surfaces)
+        ]
+        matched_context = [
+            anchor for anchor in lens.anchors
+            if _contains_anchor(pattern_surface, anchor) or _contains_anchor(regime_surface, anchor)
+        ]
+        matched = list(dict.fromkeys([*matched_evidence, *matched_context]))
         domain_hits = [domain for domain in lens.evidence_domains if domain in domains]
         regime_hits = [
             f"{key}={value}" for key, value in reg.items()
             if value and value not in {"unknown", "none", "balanced", "flat", "mixed"}
             and any(_contains_anchor(value, token) for token in lens.anchors)
         ]
-        if matched and domain_hits:
+        if matched_evidence and domain_hits:
             status = "relevant"
         elif matched or domain_hits or regime_hits:
             status = "watch"
