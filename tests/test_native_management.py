@@ -337,3 +337,27 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
         assert "no fresh campaign-linked thesis assessment" in baseline["reason"]
     finally:
         store.close()
+
+
+def test_risk_domain_invalidation_does_not_count_as_independent_market_confirmation():
+    manager = NativePositionManager()
+    state = _state(markers=({"state": "invalidated"},))
+    state.add(Evidence(
+        source_module="portfolio.risk_monitor",
+        domain="risk",
+        symbol="EURUSD",
+        observation="risk dashboard repeats an invalidation status",
+        confidence=0.99,
+        uncertainty=0.1,
+        measurements={
+            "campaign_id": "campaign-1",
+            "native_thesis_state": "invalidated",
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.1, "market_domain_count": 3},
+    )
+    assert result.action == "hold"
+    assert result.thesis_state == "invalidation_unconfirmed"
