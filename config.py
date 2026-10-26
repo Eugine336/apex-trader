@@ -660,7 +660,7 @@ class RiskConfig:
     # V-009 (was V-03; Constitution §I/§IV/§V/§XVII) — defer the LEGACY mechanical
     # directional exits (invalidation / conviction-collapse / structure-loss stall
     # / H1-candle-against-side) to the AI Cognitive Brain instead of closing on a
-    # re-derived scan direction/score or an opposing HTF candle. Default True ⇒ the
+    # re-derived scan direction/score or an opposing HTF candle. These stay disabled
     # deterministic suite keeps them (non-cognition mode) and each firing is logged
     # as a WARNING; set False to hand them to cognition (thesis-based management).
     # The hard-SL floor and the non-directional risk mechanics (TP / breakeven /
