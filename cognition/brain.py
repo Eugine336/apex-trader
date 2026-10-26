@@ -1853,24 +1853,38 @@ class CognitiveBrain:
             if campaign_id and callable(get_open_campaign):
                 try:
                     stored = get_open_campaign(campaign_id)
-                    spec = stored.get("spec", {}) if isinstance(stored, dict) else {}
-                    if isinstance(spec, dict):
-                        thesis = str(spec.get("thesis") or "").strip()
-                        if thesis and not campaign.get("original_thesis"):
-                            campaign["original_thesis"] = thesis[:500]
-                        raw_invalidation = spec.get("invalidation_conditions") or []
-                        if isinstance(raw_invalidation, str):
-                            raw_invalidation = [raw_invalidation]
-                        if not campaign.get("invalidation_conditions") and isinstance(
-                            raw_invalidation, (list, tuple)
-                        ):
-                            campaign["invalidation_conditions"] = [
-                                str(item)[:200] for item in raw_invalidation if str(item).strip()
-                            ][:8]
-                        campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
-                        campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
-                        campaign["entry_expected_value"] = spec.get("expected_value")
-                        campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
+                    stored_matches_position = (
+                        isinstance(stored, dict)
+                        and str(stored.get("symbol") or "").upper() == str(symbol or "").upper()
+                        and str(stored.get("direction") or "").upper()
+                        == str(campaign.get("held_direction") or "").upper()
+                        and str(stored.get("campaign_id") or "") == campaign_id
+                    )
+                    if stored_matches_position:
+                        spec = stored.get("spec", {})
+                        if isinstance(spec, dict):
+                            thesis = str(spec.get("thesis") or "").strip()
+                            if thesis and not campaign.get("original_thesis"):
+                                campaign["original_thesis"] = thesis[:500]
+                            raw_invalidation = spec.get("invalidation_conditions") or []
+                            if isinstance(raw_invalidation, str):
+                                raw_invalidation = [raw_invalidation]
+                            if not campaign.get("invalidation_conditions") and isinstance(
+                                raw_invalidation, (list, tuple)
+                            ):
+                                campaign["invalidation_conditions"] = [
+                                    str(item)[:200] for item in raw_invalidation if str(item).strip()
+                                ][:8]
+                            campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
+                            campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
+                            campaign["entry_expected_value"] = spec.get("expected_value")
+                            campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
+                    elif stored is not None:
+                        logger.warning(
+                            "[brain] campaign memory identity mismatch for %s; "
+                            "stored thesis ignored (position=%s %s)",
+                            campaign_id, symbol, campaign.get("held_direction", ""),
+                        )
                 except Exception as exc:  # noqa: BLE001 — missing memory never authorises a trade
                     logger.debug("[brain] campaign memory read ignored for %s: %s", campaign_id, exc)
 
