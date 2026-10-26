@@ -86,6 +86,15 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
             observation="instrument reading", confidence=conf, uncertainty=unc,
             polarity=0.0, relevance_horizon_seconds=900.0,
         ))
+    # Positive-path fixtures must explicitly establish council coverage; an
+    # unconfirmed advisor quorum is correctly non-actionable in production.
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_panel", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="two independent advisors returned opinions",
+        confidence=conf, uncertainty=unc, polarity=0.0,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
