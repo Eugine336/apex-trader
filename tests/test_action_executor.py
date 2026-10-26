@@ -799,6 +799,44 @@ def test_gold_feed_health_callback_failure_fails_closed():
     assert broker.open_calls == []
 
 
+def test_management_target_change_without_provenance_is_rejected():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.modify_tp(
+        symbol="EURUSD", ticket="12345", new_tp=1.095,
+        source="legacy", reason="unattributed target change",
+    )
+    result = executor.execute(intent, _positions())
+    assert not result.success and result.rejected_by_gate
+    assert "management_provenance_required" in result.gate_reason
+    assert broker.modify_calls == []
+
+
+def test_protective_stop_tightening_remains_available_without_links():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.modify_sl(
+        symbol="EURUSD", ticket="12345", new_sl=1.081,
+        source="legacy", reason="tighten stop",
+    )
+    result = executor.execute(intent, _positions())
+    assert result.success
+    assert broker.modify_calls[0]["new_sl"] == 1.081
+
+
+def test_noncanonical_management_identity_is_rejected_even_for_close():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.close(
+        symbol="EURUSD", ticket="12345", source="legacy", reason="close",
+        identity_version="old-version",
+    )
+    result = executor.execute(intent, _positions())
+    assert not result.success and result.rejected_by_gate
+    assert "identity_contract_mismatch" in result.gate_reason
+    assert broker.close_calls == []
+
+
 def test_open_with_mismatched_identity_is_rejected_before_broker_call():
     broker = FakeBroker()
     executor = ActionExecutor(broker, _fast_cfg())
