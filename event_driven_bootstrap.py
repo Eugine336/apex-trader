@@ -2390,6 +2390,11 @@ class EventDrivenSystem:
                     opportunity_id=str(getattr(origination, "opportunity_id", "") or ""),
                     identity_version=str(getattr(origination, "identity_version", "") or ""),
                     identity=str(getattr(origination, "identity", "") or ""),
+                    payoff_geometry=(
+                        dict(getattr(origination, "payoff_geometry", {}) or {})
+                        if isinstance(getattr(origination, "payoff_geometry", None), dict)
+                        else None
+                    ),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
