@@ -1,9 +1,9 @@
 """Static guard against live broker-entry bypasses.
 
 This audit is intentionally AST-only: it runs without broker SDKs, credentials,
-or market connectivity. Low-level broker adapters and the simulated backtest
-broker are allowed to implement order APIs; orchestration code must not invoke
-them directly and bypass the shared admission/execution boundary.
+or market connectivity. Broker protocol adapters and the simulated backtest
+broker may implement order APIs; orchestration code must not invoke them
+directly and bypass the shared admission/execution boundary.
 """
 from __future__ import annotations
 
@@ -20,13 +20,16 @@ ENTRY_MUTATORS = {
     "sell",
 }
 
-# These are implementation boundaries, not orchestration routes:
-# - platform adapters/gateway own the final broker protocol calls.
-# - ActionExecutor is the sole shared intent-to-broker entry executor.
-# - backtest uses a simulated broker, never a live connector.
+# Explicit implementation boundaries, not orchestration routes. Keep this list
+# narrow and path-specific: excluding the whole platforms/ tree would silently
+# exempt any newly added runtime coordinator from the audit.
 _ALLOWED_MUTATION_FILES = {
     Path("execution/action_executor.py"),
     Path("platforms/platform_manager.py"),
+    Path("platforms/mt5/mt5_connector.py"),
+    Path("platforms/deriv/deriv_connector.py"),
+    Path("backtest/broker.py"),
+    Path("backtest/runner.py"),
 }
 
 
@@ -66,7 +69,6 @@ def test_only_approved_gateway_files_call_live_entry_mutators() -> None:
     """Catch new direct-entry call sites anywhere in production Python code."""
     excluded_dirs = {
         ".git", ".venv", "venv", "node_modules", "__pycache__", "tests",
-        "backtest", "platforms",
     }
     violations = []
     for path in ROOT.rglob("*.py"):
