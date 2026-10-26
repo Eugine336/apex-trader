@@ -34,6 +34,19 @@ def test_lens_matching_uses_token_boundaries_not_arbitrary_substrings():
     assert ema["status"] == "not_evaluable"
 
 
+def test_module_names_are_not_treated_as_market_concept_evidence():
+    evidence = _evidence(
+        "structure",
+        "market_lenses.m5.structure",
+        "completed candle close remains within prior range",
+    )
+    result = next(
+        item for item in assess_strategy_lenses([evidence])
+        if item["key"] == "support_resistance"
+    )
+    assert result["status"] == "watch"
+
+
 def test_relevance_is_not_a_direction_or_execution_instruction():
     evidence = _evidence(
         "structure",
