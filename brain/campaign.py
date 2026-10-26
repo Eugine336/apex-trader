@@ -270,9 +270,6 @@ class Campaign:
     campaign_id: str
     symbol: str
     direction: str                       # LONG | SHORT
-    # Original decision/opportunity lineage is retained for management and audit.
-    originating_decision_id: str = ""
-    opportunity_id: str = ""
     state: CampaignState = CampaignState.ACTIVE
     ev_over_flat: float = 0.0            # latest thesis edge over the do-nothing baseline (R)
     confidence: float = 0.0             # latest supporting-evidence confidence (0..1)
@@ -295,6 +292,9 @@ class Campaign:
     objective: str = ""
     last_action: str = ""
     uncertainty: float = 0.0
+    # Appended to preserve the established positional constructor contract.
+    originating_decision_id: str = ""
+    opportunity_id: str = ""
 
     # ── Derived reads ────────────────────────────────────────────────────
     @property
