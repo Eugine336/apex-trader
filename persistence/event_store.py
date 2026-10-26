@@ -613,8 +613,6 @@ class EventStore:
                         remaining.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
-                    else:
-                        self._queue.task_done()
                 # Acquire the DB lock before touching the connection — if the
                 # writer thread failed to join within the timeout it may still
                 # be mid-write, and an unsynchronised access here would race it.
@@ -632,6 +630,11 @@ class EventStore:
                     self._conn.close()
             except Exception as exc:
                 print(f"[event_store] close cleanup failed: {exc}", file=sys.stderr)
+            finally:
+                # Rows drained by close are marked complete only after the
+                # final persistence attempt, never merely when dequeued.
+                for _ in remaining:
+                    self._queue.task_done()
             self._conn = None
 
 
