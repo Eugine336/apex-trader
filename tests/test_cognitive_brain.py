@@ -101,7 +101,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
     return ms
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8):
+def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
     ms = MarketState(symbol=symbol)
     # Two distinct evidence domains so the Brain's minimum-coverage gate
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
@@ -133,7 +133,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
-    _add_market_geometry(ms, target_r=2.0, direction=("LONG" if polarity >= 0 else "SHORT"))
+    _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
     return ms
 
 
@@ -250,17 +250,20 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     assert "sizing_rationale" in out.decision.questions_answered
 
 
-def test_high_confidence_poor_payoff_is_sized_down():
-    # Same 0.8 confidence but poor payoff geometry (0.5R favorable vs 1.0R adverse)
-    # → gross EV = 0.8*0.5 - 0.2*1 = 0.2R; costs reduce this to 0.15R.
-    # → ev_normalized = 0.15/2.0 = 0.075, so exposure stays below confidence.
-    op = _RichOpinion("LONG", 0.8, efe="0.5R", eae="1.0R")
+def test_high_confidence_poor_market_derived_payoff_is_sized_down():
+    # Same 0.8 confidence, but the observed target is only 0.5R from entry while
+    # the structural invalidation is 1R away. Advisor-reported excursions cannot
+    # replace these market-derived levels.
+    op = _RichOpinion("LONG", 0.8, efe="8R", eae="0.1R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
-    # Advisor excursions do not manufacture geometry; the fresh structural
-    # target in this state is the independently observed source of payoff R.
+    out = brain.reason(_confident_state(polarity=0.8, target_r=0.5))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.575)
+    assert out.decision.questions_answered["payoff_geometry_status"] == (
+        "qualified_from_fresh_completed_market_evidence"
+    )
+    assert out.campaign.expected_value == pytest.approx(0.15)
+    assert out.campaign.desired_exposure == pytest.approx(0.3)
+    assert out.campaign.desired_exposure < out.campaign.confidence
 
 
 def test_campaign_carries_expected_value_field():
