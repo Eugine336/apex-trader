@@ -420,12 +420,14 @@ class TestMLAdapter:
         assert adj.should_trade is True
         assert adj.position_size_multiplier == 0.8
 
-    def test_ml_persistence_after_optimization(self, tmp_path):
+    def test_ml_persistence_after_optimization(self, tmp_path, monkeypatch):
+        import adaptive.score_optimizer as adaptive_so_mod
         import ml.score_optimizer as so_mod
         import ml.pair_learner as pl_mod
         import ml.regime_learner as rl_mod
         import ml.session_learner as sl_mod
 
+        monkeypatch.setattr(adaptive_so_mod, "_data_dir", lambda: tmp_path)
         old_so = so_mod.ScoreOptimizer.DEFAULT_PATH
         old_pl = pl_mod.PairLearner.SAVE_PATH
         old_rl = rl_mod.RegimeLearner.SAVE_PATH
