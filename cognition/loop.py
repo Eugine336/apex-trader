@@ -337,13 +337,13 @@ class EvidenceConsolidator:
                         need = max(_f(cons.get("aggregate_uncertainty", 1.0)),
                                    _f(cons.get("conflict_ratio", 0.0)))
                         if getattr(self._reasoning, "panel", False):
-                            depth: Optional[int] = 0      # full panel — all advisors
+                            depth: Optional[int] = None    # uncapped panel — all advisors
                         elif need < 0.34:
                             depth = 1
                         elif need < 0.67:
                             depth = 2
                         else:
-                            depth = 0                      # critical ⇒ consult all
+                            depth = None                   # critical ⇒ consult all
                         consult = self._consult(ms.symbol, payload, now, depth)
                         for e in evidence_from_reasoning(ms.symbol, consult):
                             ms.add(e)
