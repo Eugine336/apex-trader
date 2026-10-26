@@ -5,8 +5,19 @@ and the master optimizer's adjustment pipeline.
 """
 
 import random
+
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scoring_data_dir(tmp_path, monkeypatch):
+    # Each test starts with clean, per-test persisted weights; optimizer writes
+    # must never leak into the repository's tracked data tree.
+    import adaptive.score_optimizer as score_mod
+
+    monkeypatch.setattr(score_mod, "_data_dir", lambda: tmp_path)
 
 
 from adaptive.trade_analyzer import TradeAnalyzer
