@@ -352,7 +352,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         confidence=0.60,
         direction_implication=LONG,
         supporting_patterns=[],
-        opposing_patterns=[],
+        contradicting_patterns=[],
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
     )
