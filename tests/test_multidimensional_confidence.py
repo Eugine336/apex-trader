@@ -104,16 +104,25 @@ def test_single_scalar_opinion_opens_campaign_unchanged():
         out.decision.questions_answered["sizing_rationale"]
 
 
-# ── weak execution: WAIT (thesis preserved), never a hard reject ─────────────
+# ── weak execution: contextual EV + sizing, not a universal cutoff ─────────────
 
-def test_weak_execution_waits_not_rejects():
-    out = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8,
-                             execution_confidence=0.2))
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    rr = out.decision.risk_rationale.lower()
-    assert "waiting" in rr and "execution" in rr
-    assert abs(out.decision.confidence - 0.2) < 1e-9   # honest effective conviction
-    assert out.direction == "FLAT"
+def test_weak_execution_is_evaluated_by_net_ev_and_activation():
+    strong = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
+    weaker = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9,
+                                execution_confidence=0.2))
+    assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    # Low execution confidence affects the EV estimate and sizing; it is not
+    # itself a universal binary veto. The actual net-EV outcome decides.
+    assert weaker.decision.expected_value < strong.decision.expected_value
+    if weaker.decision.expected_value > 0:
+        assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+        assert weaker.campaign is not None
+        assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
+    else:
+        assert weaker.decision.decision_type in {
+            DecisionType.CONTINUE_OBSERVING, DecisionType.REJECT_OPPORTUNITY,
+        }
+        assert weaker.campaign is None
 
 
 # ── moderate execution: still acts, but sizes DOWN ──────────────────────────
