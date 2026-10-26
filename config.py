@@ -986,10 +986,6 @@ class RiskConfig:
             "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
             self.legacy_mechanical_exit_fallback_enabled,
         )
-        self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
-            "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
-            self.legacy_mechanical_exit_fallback_enabled,
-        )
 
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
