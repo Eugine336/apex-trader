@@ -106,7 +106,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
             observation="fresh test spread and slippage quote",
             confidence=conf,
             uncertainty=1.0 - conf,
-            measurements={"estimated_total_cost_r": 0.05},
+            measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
             relevance_horizon_seconds=60.0,
         ))
     for e in extras:
@@ -199,7 +199,7 @@ def test_v9_execution_cost_reduces_ev():
     cost_ev = Evidence(
         source_module="execution.cost_model", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
-        measurements={"estimated_total_cost_r": 0.3}, relevance_horizon_seconds=300.0,
+        measurements={"estimated_total_cost_r": 0.3, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
     ms = _evidence_state(extra=[cost_ev])
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
@@ -214,7 +214,7 @@ def test_v9_execution_cost_can_flip_ev_negative():
     cost_ev = Evidence(
         source_module="execution.cost_model", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
-        measurements={"estimated_total_cost_r": 0.5}, relevance_horizon_seconds=300.0,
+        measurements={"estimated_total_cost_r": 0.5, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
     ms = _evidence_state(extra=[cost_ev])
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.6)),
