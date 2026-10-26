@@ -194,8 +194,10 @@ def test_loop_symbols_provider_fault_is_fail_safe():
 def test_loop_open_book_read_fault_blocks_new_origination_but_reasons():
     brain = _OpenBrain()
     submitted = []
+
     def _broken_book():
         raise RuntimeError("broker position query failed")
+
     loop = CognitionLoop(
         brain, _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", balance_provider=lambda s: 10_000.0,
@@ -204,7 +206,7 @@ def test_loop_open_book_read_fault_blocks_new_origination_but_reasons():
     loop.set_origination_sink(lambda intent: submitted.append(intent))
 
     assert loop.run_once() == 1
-    assert brain.reviewed_book == []  # portfolio review must not imply the book was verified
+    assert brain.reviewed_book == []
     assert submitted == []
     assert loop.get_status()["orig_submitted"] == 0
 
