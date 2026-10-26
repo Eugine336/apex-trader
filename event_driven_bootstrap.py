@@ -24,6 +24,8 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from loguru import logger
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated
 from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
@@ -2327,19 +2329,72 @@ class EventDrivenSystem:
                 direction = str(getattr(origination, "direction", "") or "").upper()
                 sl = getattr(origination, "sl", None)
                 tp = getattr(origination, "tp", None)
+                geometry = getattr(origination, "payoff_geometry", None)
                 if not symbol or direction not in ("LONG", "SHORT"):
                     return False
-                # Part X — every entry MUST carry a protective stop. When the
-                # Brain's spec omits one, derive it deterministically from the
-                # live price + structure rather than refusing to trade.
-                if sl is None or tp is None:
-                    sl, tp = self._derive_origination_levels(symbol, direction)
-                if sl is None or tp is None:
-                    logger.info(
-                        "[origination-sink] {} {} skipped — could not derive a "
-                        "protective stop/target (Part X safety floor)",
+                # The Brain's market-derived geometry is the sole authority for
+                # entry/stop/target. The execution sink must not invent levels or
+                # fall back to a static stop fraction/reward multiple.
+                if not isinstance(geometry, dict):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — Brain payoff geometry missing",
                         symbol, direction,
                     )
+                    return False
+                if (
+                    str(getattr(origination, "identity_version", "") or "") != IDENTITY_VERSION
+                    or str(getattr(origination, "identity", "") or "") != IDENTITY_STATEMENT
+                    or str(geometry.get("identity_version", "") or "") != IDENTITY_VERSION
+                    or str(geometry.get("identity", "") or "") != IDENTITY_STATEMENT
+                    or str(geometry.get("symbol", "") or "").strip().upper() != symbol.strip().upper()
+                    or str(geometry.get("direction", "") or "").upper() != direction
+                    or geometry.get("activated") is not True
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — identity/symbol/direction/activation mismatch",
+                        symbol, direction,
+                    )
+                    return False
+                evidence_ids = geometry.get("evidence_ids")
+                if not isinstance(evidence_ids, (list, tuple)) or not any(
+                    str(item or "").strip() for item in evidence_ids
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — geometry has no evidence lineage",
+                        symbol, direction,
+                    )
+                    return False
+                try:
+                    reference_entry = float(getattr(origination, "reference_entry_price", 0.0) or 0.0)
+                    geometry_entry = float(geometry.get("entry_price", 0.0) or 0.0)
+                    geometry_stop = float(geometry.get("stop_price", 0.0) or 0.0)
+                    geometry_target = float(geometry.get("target_price", 0.0) or 0.0)
+                    supplied_sl = float(sl)
+                    supplied_tp = float(tp)
+                except (TypeError, ValueError, OverflowError):
+                    return False
+                if not all(math.isfinite(value) and value > 0.0 for value in (
+                    reference_entry, geometry_entry, geometry_stop, geometry_target,
+                    supplied_sl, supplied_tp,
+                )):
+                    return False
+                tolerance = max(1e-9, abs(reference_entry) * 1e-8)
+                if (
+                    abs(reference_entry - geometry_entry) > tolerance
+                    or abs(supplied_sl - geometry_stop) > tolerance
+                    or abs(supplied_tp - geometry_target) > tolerance
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — translated levels differ from Brain geometry",
+                        symbol, direction,
+                    )
+                    return False
+                ordered = (
+                    geometry_stop < geometry_entry < geometry_target
+                    if direction == "LONG"
+                    else geometry_target < geometry_entry < geometry_stop
+                )
+                if not ordered:
                     return False
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
                 sized = self._size_brain_origination_with_portfolio(
