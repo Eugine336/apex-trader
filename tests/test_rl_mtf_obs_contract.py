@@ -7,17 +7,6 @@ in-memory frames (no disk / network).
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
-
-if "torch" not in sys.modules:
-    _m = MagicMock()
-    for _name in [
-        "torch", "torch.nn", "torch.nn.functional",
-        "torch.optim", "torch.distributions",
-    ]:
-        sys.modules.setdefault(_name, _m)
-
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
