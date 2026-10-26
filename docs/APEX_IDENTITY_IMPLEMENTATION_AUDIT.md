@@ -169,3 +169,31 @@ The latest completed `main` CI run (#1902) reports **177 failed, 3,738 passed, 1
 These categories must not be collapsed into “legacy failures” without checking each one. Do not relax fail-closed decision gates just to make old positive-path tests pass; positive-path fixtures should provide explicit, valid council coverage. Do not mark the redesign complete until the route audit, failure triage, focused tests, full CI, walk-forward/holdout evaluation, and controlled demo validation have evidence.
 
 Operational boundary remains unchanged: `.env` is off-limits; no broker orders or live configuration changes are permitted during this work.
+## 2026-10-26 recovery pass — post-run findings
+
+This section supersedes older test counts where they differ; it does not mark the redesign complete.
+
+### Latest available full-suite evidence
+
+The latest available route-audit branch workflow completed lint successfully and test collection successfully, but the Python 3.12 test job failed with **175 failed, 3,742 passed, 12 skipped**; Python 3.11 was cancelled. This run predates the fixes listed below. The suite is not verified green.
+
+### Root-cause fixes committed after that run
+
+- Cognitive conformance fixtures now include a fresh, explicit execution-quality quote with estimated_total_cost_r, so their EV assertions reach the EV gate rather than failing earlier because execution cost is unverified. Production fail-closed behavior is unchanged.
+- RiskConfig.allow_intentional_hedge now defaults to false. Same-instrument opposing exposure requires explicit opt-in.
+- The zero-stop-distance regression now expects a non-tradeable zero-lot result (skip_invalid_stop), rather than expecting the minimum lot for an invalid stop.
+- The conviction-sizing regression now derives its expected multiplier from the continuous conviction curve instead of asserting an obsolete fixed 0.5 factor.
+- Removed process-global fake dependency injection from tests/test_risk_sizing_fixes.py; the old setup could leave mocked torch, numpy, pandas, and other dependencies in sys.modules, contaminating unrelated tests in the same pytest process.
+
+### Remaining verified gaps
+
+- A full-suite rerun is unavailable while the repository's GitHub Actions quota is exhausted. These latest commits have not been executed by CI; do not describe them as test-passing.
+- The repository tree still contains tracked runtime SQLite databases and SQLite -wal/-shm files. They may contain persistent trading, campaign, and learning state. Do not delete them blindly; preserve/export the data before changing tracking policy.
+- The static entry-route audit is not runtime proof of every entry, pending-order, reversal, scale-in, exit, and stop-management path. Recording fake-broker call traces and a controlled demo cycle remain necessary.
+- The full-suite silent-exception audit reports hundreds of existing handlers. Do not mass-insert noisy logs or weaken the audit to manufacture a pass; classify intentional fail-safe fallbacks and genuinely silent failures, then remediate by subsystem.
+- Learning promotion remains unverified against cost-aware walk-forward splits and an untouched holdout. No learning or optimizer threshold should be lowered to make tests pass.
+- Broker demo reconciliation and live-position management have not been validated end-to-end.
+
+### Protected operating boundaries
+
+The .env file remains out of scope: do not read, display, copy, recreate, rename, or modify it. No broker orders have been sent and live trading has not been enabled by this recovery pass.
