@@ -699,9 +699,12 @@ class CognitiveBrain:
         # former confidence-as-EV proxy. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
-        # Bind payoff geometry to the selected opportunity in this decision;
-        # never mutate an unrelated opportunity or rely on an undefined local.
-        driving_opp = decision.preferred_opportunity
+        # Build the first-class opportunity set before qualifying payoff
+        # geometry, so the selected object receives the market-derived levels.
+        opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        driving_opp = self._select_driving_opportunity(
+            opportunity_set, preferred_opp_id, direction,
+        )
         geometry = (
             derive_opportunity_geometry(market_state, direction, now=now)
             if direction in (LONG, SHORT) else None
@@ -922,9 +925,6 @@ class CognitiveBrain:
         # activation this campaign depends on; ``is_harvesting`` marks a multi-
         # opportunity reply (a legacy single-direction reply leaves both empty and
         # every gate below behaves exactly as before).
-        opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
-        driving_opp = self._select_driving_opportunity(
-            opportunity_set, preferred_opp_id, direction)
         # Item 8 — remember the set per symbol so MANAGEMENT can later compare a
         # live campaign against the currently visible opportunities.
         if is_harvesting:
