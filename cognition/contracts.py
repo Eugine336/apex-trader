@@ -467,6 +467,8 @@ class MarketState:
             + 0.2 * coverage_gap
         )
         return {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "symbol": self.symbol,
             "evidence_total": total,
             "evidence_fresh": n,
