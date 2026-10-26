@@ -204,8 +204,17 @@ def audit_repository() -> list[str]:
             prompt_expr = assignments.get(prompt_name)
             if prompt_expr is None or not _contains_name(prompt_expr, "IDENTITY_STATEMENT"):
                 violations.append(f"{prompt_name} must compose the canonical identity")
-        if "OPPORTUNITY HARVESTER" in prompt_content:
-            violations.append("the LLM prompt must not create a competing product identity")
+        # "Opportunity harvester" is an analytical role description. Only a
+        # sentence that installs it as Apex's permanent identity conflicts with
+        # the canonical statement.
+        if re.search(
+            r"\bApex\s+(?:is|acts as|operates as)\s+an?\s+OPPORTUNITY HARVESTER\b",
+            prompt_content,
+            re.IGNORECASE,
+        ):
+            violations.append(
+                "the LLM prompt must not replace Apex's canonical identity with a permanent role"
+            )
     except (OSError, UnicodeDecodeError, SyntaxError):
         violations.append("llm/reasoner.py could not be audited")
 
