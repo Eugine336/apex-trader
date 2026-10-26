@@ -534,6 +534,14 @@ class CognitionLoop:
         self._max_exposure = min(1.0, max(0.0, float(origination_max_exposure)))
         self._balance_provider = balance_provider
         self._memory = memory
+        # Native campaign management reads the original thesis from the existing
+        # memory store. The Brain does not create or open persistence on its own.
+        memory_binder = getattr(self._brain, "bind_campaign_memory", None)
+        if self._memory is not None and callable(memory_binder):
+            try:
+                memory_binder(self._memory)
+            except Exception as exc:  # noqa: BLE001 — missing memory cannot stop the loop
+                logger.debug("[cognition-loop] native memory binding ignored: %s", exc)
         self._operations_author = operations_author
         self._operations_sink = operations_sink
         self._origination_sink: Optional[Callable[[Any], None]] = None
