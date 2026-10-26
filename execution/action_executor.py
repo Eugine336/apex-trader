@@ -17,7 +17,7 @@ backoff sleeps run outside the lock so one retrying intent never stalls others.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from typing import Any, Callable, Optional, Protocol
 
@@ -216,6 +216,39 @@ class ActionExecutor:
         self._circuit_announced: set[str] = set()
         self._circuit_log_lock = Lock()
 
+    @staticmethod
+    def _is_risk_reducing_without_provenance(
+        intent: Intent,
+        open_positions: dict[str, dict],
+    ) -> bool:
+        """Allow missing provenance only for unambiguous de-risking intents.
+
+        CLOSE and PARTIAL_CLOSE reduce exposure by definition. MODIFY_SL is only
+        considered protective when the new stop is demonstrably tighter for the
+        held side. Ambiguous positions, malformed values, and target changes do
+        not receive this exception.
+        """
+        if intent.intent_type in (IntentType.CLOSE, IntentType.PARTIAL_CLOSE):
+            return True
+        if intent.intent_type != IntentType.MODIFY_SL or intent.new_sl is None:
+            return False
+        position = open_positions.get(str(intent.position_ticket or ""), {})
+        if not isinstance(position, dict):
+            return False
+        side = str(position.get("direction", "") or "").upper()
+        try:
+            old_sl = float(position.get("sl", position.get("stop_loss", 0.0)) or 0.0)
+            new_sl = float(intent.new_sl)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if new_sl <= 0.0:
+            return False
+        if side in ("LONG", "BUY"):
+            return old_sl <= 0.0 or new_sl >= old_sl
+        if side in ("SHORT", "SELL"):
+            return old_sl <= 0.0 or new_sl <= old_sl
+        return False
+
     def _manage_breaker(self, key: str) -> CircuitBreaker:
         """Lazily create/return the per-(symbol, op-class) management breaker."""
         with self._breaker_lock:
@@ -277,17 +310,102 @@ class ActionExecutor:
         # The canonical identity is versioned and carried with Brain-originated
         # intent provenance. Reject a malformed/mismatched OPEN before it can
         # reach any broker path; risk-reducing management intents remain usable.
-        if intent.intent_type == IntentType.OPEN and (
-            intent.identity_version != IDENTITY_VERSION
-            or intent.identity != IDENTITY_STATEMENT
-        ):
-            reason = "identity_contract_mismatch: refusing new exposure from a non-canonical intent"
-            self._inc("intents_rejected")
-            logger.error("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-            return ExecutionResult(
-                intent=intent, success=False, rejected_by_gate=True,
-                gate_reason=reason, error=reason,
+        if intent.intent_type == IntentType.OPEN:
+            if (
+                intent.identity_version != IDENTITY_VERSION
+                or intent.identity != IDENTITY_STATEMENT
+            ):
+                reason = (
+                    "identity_contract_mismatch: refusing new exposure from a "
+                    "non-canonical intent"
+                )
+                self._inc("intents_rejected")
+                logger.error("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
+            provenance = {
+                "source": str(intent.source or ""),
+                "decision_id": str(intent.decision_id or ""),
+                "campaign_id": str(intent.campaign_id or ""),
+                "opportunity_id": str(intent.opportunity_id or ""),
+            }
+            missing = [
+                name for name, value in provenance.items()
+                if not str(value or "").strip()
+            ]
+            if provenance["source"] != "ai_brain" or missing:
+                reason = (
+                    "brain_opportunity_provenance_required: every new exposure "
+                    "requires source=ai_brain plus decision_id, campaign_id, "
+                    "and activated opportunity_id; "
+                    f"source={provenance['source']!r}, missing={missing}"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
+
+        # Provenance is required on modifications and closes as well as new
+        # exposure. The sole exception is MISSING provenance on an unambiguous
+        # protective action: blocking a close or a tighter stop for missing
+        # metadata would increase risk. Such legacy actions are explicitly marked
+        # and remain auditable; a non-empty but mismatched version is rejected.
+        if intent.intent_type != IntentType.OPEN:
+            version_mismatch = (
+                intent.identity_version != IDENTITY_VERSION
+                or intent.identity != IDENTITY_STATEMENT
             )
+            missing_links = [
+                name for name, value in (
+                    ("decision_id", intent.decision_id),
+                    ("campaign_id", intent.campaign_id),
+                    ("opportunity_id", intent.opportunity_id),
+                )
+                if not str(value or "").strip()
+            ]
+            if version_mismatch:
+                reason = (
+                    "identity_contract_mismatch: management intent carries a "
+                    "non-canonical identity/version; refusing execution"
+                )
+            elif missing_links:
+                if self._is_risk_reducing_without_provenance(intent, open_positions):
+                    logger.warning(
+                        "EXECUTOR | legacy_unattributed protective intent | "
+                        "type={} symbol={} ticket={} missing={}",
+                        intent.intent_type.name, intent.symbol,
+                        intent.position_ticket, missing_links,
+                    )
+                    intent = replace(intent, source="legacy_unattributed")
+                else:
+                    reason = (
+                        "management_provenance_required: intent lacks "
+                        f"{missing_links}; only a protective CLOSE/PARTIAL_CLOSE "
+                        "or demonstrably tighter stop may proceed without links"
+                    )
+                    self._inc("intents_rejected")
+                    logger.error(
+                        "EXECUTOR REJECTED | {} {} | {}",
+                        intent.intent_type.name, intent.position_ticket, reason,
+                    )
+                    return ExecutionResult(
+                        intent=intent, success=False, rejected_by_gate=True,
+                        gate_reason=reason, error=reason,
+                    )
+            if version_mismatch:
+                self._inc("intents_rejected")
+                logger.error(
+                    "EXECUTOR REJECTED | {} {} | {}",
+                    intent.intent_type.name, intent.position_ticket, reason,
+                )
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
 
         # Gold-only is a non-bypassable last-mile check for every new market
         # exposure submitted through this execution plane. Risk-reducing actions
@@ -299,33 +417,6 @@ class ActionExecutor:
                 reason = (
                     f"gold_only_invariant: rejected new exposure for {intent.symbol!r}; "
                     "only explicitly allowlisted XAUUSD aliases are accepted"
-                )
-                self._inc("intents_rejected")
-                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-                return ExecutionResult(
-                    intent=intent,
-                    success=False,
-                    rejected_by_gate=True,
-                    gate_reason=reason,
-                    error=reason,
-                )
-
-            # In Gold mode, identity text alone is not authority: every new
-            # exposure must be explicitly authored by the CognitiveBrain and
-            # linked to a decision, campaign, and activated opportunity. Legacy
-            # mechanical entry paths are denied here until they use that contract.
-            provenance = {
-                "source": str(intent.source or ""),
-                "decision_id": str(intent.decision_id or ""),
-                "campaign_id": str(intent.campaign_id or ""),
-                "opportunity_id": str(intent.opportunity_id or ""),
-            }
-            missing = [key for key, value in provenance.items() if not value]
-            if provenance["source"] != "ai_brain" or missing:
-                reason = (
-                    "brain_opportunity_provenance_required: Gold-mode OPEN requires "
-                    "source=ai_brain plus decision_id, campaign_id, and opportunity_id; "
-                    f"source={provenance['source']!r}, missing={missing}"
                 )
                 self._inc("intents_rejected")
                 logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
