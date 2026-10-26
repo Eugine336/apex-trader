@@ -175,7 +175,7 @@ This section supersedes older test counts where they differ; it does not mark th
 
 ### Latest available full-suite evidence
 
-The latest available route-audit branch workflow completed lint successfully and test collection successfully, but the Python 3.12 test job failed with **175 failed, 3,742 passed, 12 skipped**; Python 3.11 was cancelled. This run predates the fixes listed below. The suite is not verified green.
+The latest completed route-audit branch workflow at the time of this snapshot completed lint and collection, but Python 3.12 failed with **175 failed, 3,742 passed, 12 skipped** and Python 3.11 was cancelled. That run predates the fixes listed below. New full CI run [#1942](https://github.com/Eugine336/apex-trader/actions/runs/40280936900) and Gold-focused run [#325](https://github.com/Eugine336/apex-trader/actions/runs/40280936955) are now running against head `cc702c0c353690f4d9d2d3e6b7b61c819688aa78`; their results are pending, so the suite is not yet verified green.
 
 ### Root-cause fixes committed after that run
 
@@ -187,7 +187,7 @@ The latest available route-audit branch workflow completed lint successfully and
 
 ### Remaining verified gaps
 
-- A full-suite rerun is unavailable while the repository's GitHub Actions quota is exhausted. These latest commits have not been executed by CI; do not describe them as test-passing.
+- A full-suite rerun was unavailable at the time of the earlier snapshot. CI has since been triggered on the latest branch head; see the current workflow links in the 2026-10-26 validation snapshot. Until those runs complete, the latest changes are not test-passing evidence.
 - The repository tree still contains tracked runtime SQLite databases and SQLite -wal/-shm files. They may contain persistent trading, campaign, and learning state. Do not delete them blindly; preserve/export the data before changing tracking policy.
 - The static entry-route audit is not runtime proof of every entry, pending-order, reversal, scale-in, exit, and stop-management path. Recording fake-broker call traces and a controlled demo cycle remain necessary.
 - The full-suite silent-exception audit reports hundreds of existing handlers. Do not mass-insert noisy logs or weaken the audit to manufacture a pass; classify intentional fail-safe fallbacks and genuinely silent failures, then remediate by subsystem.
