@@ -1,6 +1,6 @@
 # Apex identity — system-wide implementation audit
 
-> **Audit baseline:** repository main at commit 7a74844f708486e33c5125a9dace3ed04db604c2 (2026-10-24; re-verified 2026-10-25).  
+> **Audit baseline:** main at commit `0c874882dcb5317e5e5fb38b0ac1c6fde753a3fd` (2026-10-26, immediately before this identity-policy/runtime-database cleanup branch). Status remains subject to focused and full CI evidence.  
 > **Purpose:** replace optimistic documentation-only completion claims with source-backed runtime gates. Refresh this audit after every migration PR.  
 > **Authority:** APEX_IDENTITY.md and APEX_Constitution.md.
 
@@ -185,10 +185,20 @@ The latest completed route-audit branch workflow at the time of this snapshot co
 - The conviction-sizing regression now derives its expected multiplier from the continuous conviction curve instead of asserting an obsolete fixed 0.5 factor.
 - Removed process-global fake dependency injection from tests/test_risk_sizing_fixes.py; the old setup could leave mocked torch, numpy, pandas, and other dependencies in sys.modules, contaminating unrelated tests in the same pytest process.
 
+### Current branch policy controls (2026-10-26)
+
+The machine-readable contract in `cognition/identity.py` exposes the actionability policy and keeps confidence dimensions separate. This branch enforces:
+- Provider-assisted action: effective confidence >= 0.55; aggregate uncertainty <= 0.60; at least 2 responding advisors; at least 3 independent fresh market-evidence domains; fresh verified execution-cost evidence; an activated opportunity; strictly positive net EV; shared portfolio/risk/broker admission.
+- Native-only fallback: confidence >= 0.70; uncertainty <= 0.50; sizing multiplier <= 0.50; the same market-domain, activation, expectancy, verified-cost and shared-admission requirements.
+- Reverse confidence >= 0.70; unknown council coverage is treated as degraded; degraded-confidence multiplier <= 0.70.
+- Configured or direct-constructor values cannot lower these floors/caps. `.env` remains unmodified.
+
+No database binaries are seeded in Git. SQLite store code and schema initialization remain. A clean checkout recreates stores through the owning runtime components. Confirm startup/integration behavior before live trading; a repository commit cannot delete already-existing deployment-host files.
+
 ### Remaining verified gaps
 
 - A full-suite rerun was unavailable at the time of the earlier snapshot. CI has since been triggered on the latest branch head; see the current workflow links in the 2026-10-26 validation snapshot. Until those runs complete, the latest changes are not test-passing evidence.
-- The repository tree still contains tracked runtime SQLite databases and SQLite -wal/-shm files. They may contain persistent trading, campaign, and learning state. Do not delete them blindly; preserve/export the data before changing tracking policy.
+- Superseded by the 2026-10-26 cleanup branch: it removes all 62 tracked SQLite artifacts (26 database files and 36 WAL/SHM sidecars) from the current Git tree. Runtime store/schema initialization code remains; required stores are created by runtime components rather than committed as binary seeds. This changes the repository tree only: deployment-host files are unaffected, and older Git commits retain historical blobs.
 - The static entry-route audit is not runtime proof of every entry, pending-order, reversal, scale-in, exit, and stop-management path. Recording fake-broker call traces and a controlled demo cycle remain necessary.
 - The full-suite silent-exception audit reports hundreds of existing handlers. Do not mass-insert noisy logs or weaken the audit to manufacture a pass; classify intentional fail-safe fallbacks and genuinely silent failures, then remediate by subsystem.
 - Learning promotion remains unverified against cost-aware walk-forward splits and an untouched holdout. No learning or optimizer threshold should be lowered to make tests pass.

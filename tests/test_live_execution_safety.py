@@ -267,7 +267,7 @@ class TestDbFilesUntracked:
             cwd=str(Path(__file__).parent.parent), check=True,
         )
         paths = [item.decode("utf-8", errors="strict")
-                 for item in result.stdout.split(b"\\0") if item]
+                 for item in result.stdout.split(b"\0") if item]
         suffixes = (".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite",
                     ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".sqlite-journal",
                     "-wal", "-shm", "-journal")

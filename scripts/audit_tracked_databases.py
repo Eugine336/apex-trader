@@ -10,7 +10,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 tracked_paths = subprocess.run(
     ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True
-).stdout.split(b"\\0")
+).stdout.split(b"\0")
 artifact_suffixes = (
     ".db", ".db-wal", ".db-shm", ".db-journal",
     ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm",

@@ -1,0 +1,85 @@
+name: Audit Legacy Identity Pathways
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cognition/**"
+      - "execution/**"
+      - "event_driven_bootstrap.py"
+      - "core/system_context.py"
+      - "config.py"
+      - ".env.example"
+      - ".gitignore"
+      - "docs/APEX_IDENTITY.md"
+      - "docs/APEX_Constitution.md"
+      - "scripts/audit_tracked_databases.py"
+      - "tests/test_apex_identity_and_contextual_patterns.py"
+      - "tests/test_event_driven_identity_contract.py"
+      - "tests/test_brain_ev_primary_gate.py"
+      - "tests/test_live_execution_safety.py"
+      - "**/*.db"
+      - "**/*.sqlite"
+      - "**/*.sqlite3"
+  pull_request:
+    branches: [main]
+    paths:
+      - "cognition/**"
+      - "execution/**"
+      - "event_driven_bootstrap.py"
+      - "core/system_context.py"
+      - "config.py"
+      - ".env.example"
+      - ".gitignore"
+      - "docs/APEX_IDENTITY.md"
+      - "docs/APEX_Constitution.md"
+      - "scripts/audit_tracked_databases.py"
+      - "tests/test_apex_identity_and_contextual_patterns.py"
+      - "tests/test_event_driven_identity_contract.py"
+      - "tests/test_brain_ev_primary_gate.py"
+      - "tests/test_live_execution_safety.py"
+      - "**/*.db"
+      - "**/*.sqlite"
+      - "**/*.sqlite3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install focused identity-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest ruff loguru numpy pandas aiosqlite
+      - name: Compile identity and execution-boundary modules
+        run: |
+          python -m py_compile cognition/identity.py cognition/contracts.py cognition/brain.py cognition/brain_reasoning.py cognition/loop.py config.py core/system_context.py event_driven_bootstrap.py execution/action_executor.py execution/risk_gate.py
+      - name: Enforce canonical identity and admission thresholds
+        run: |
+          python -c "import tick, pytest; raise SystemExit(pytest.main(['tests/test_apex_identity_and_contextual_patterns.py','tests/test_event_driven_identity_contract.py','tests/test_brain_ev_primary_gate.py','tests/test_live_execution_safety.py::TestDbFilesUntracked::test_no_database_artifacts_tracked','-q']))"
+      - name: Verify no SQLite runtime artifacts are tracked
+        run: |
+          python scripts/audit_tracked_databases.py
+          python - <<'PY'
+          import subprocess
+          suffixes = (".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite", ".sqlite3",
+                      ".sqlite-wal", ".sqlite-shm", ".sqlite-journal", "-wal", "-shm", "-journal")
+          paths = subprocess.run(["git", "ls-files", "-z"], check=True, capture_output=True).stdout.split(b"\0")
+          found = [p.decode() for p in paths if p and p.decode().lower().endswith(suffixes)]
+          assert not found, "tracked database artifacts remain: " + ", ".join(found)
+          PY
+      - name: Lint changed identity and admission surfaces
+        run: |
+          ruff check cognition/identity.py cognition/brain.py config.py core/system_context.py tests/test_apex_identity_and_contextual_patterns.py tests/test_event_driven_identity_contract.py tests/test_brain_ev_primary_gate.py scripts/audit_tracked_databases.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
