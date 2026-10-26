@@ -327,22 +327,49 @@ class ActionExecutor:
         # protective action: blocking a close or a tighter stop for missing
         # metadata would increase risk. Such legacy actions are explicitly marked
         # and remain auditable; a non-empty but mismatched version is rejected.
-        if intent.intent_type != IntentType.OPEN and intent.identity_version != IDENTITY_VERSION:
-            missing_version = not str(intent.identity_version or "").strip()
-            if missing_version and self._is_risk_reducing_without_provenance(
-                intent, open_positions,
-            ):
-                logger.warning(
-                    "EXECUTOR | legacy_unattributed protective intent | type={} symbol={} ticket={}",
-                    intent.intent_type.name, intent.symbol, intent.position_ticket,
+        if intent.intent_type != IntentType.OPEN:
+            version_mismatch = (
+                intent.identity_version != IDENTITY_VERSION
+                or intent.identity != IDENTITY_STATEMENT
+            )
+            missing_links = [
+                name for name, value in (
+                    ("decision_id", intent.decision_id),
+                    ("campaign_id", intent.campaign_id),
+                    ("opportunity_id", intent.opportunity_id),
                 )
-                intent = replace(intent, source="legacy_unattributed")
-            else:
+                if not str(value or "").strip()
+            ]
+            if version_mismatch:
                 reason = (
-                    "identity_contract_mismatch: management intent requires "
-                    "the canonical identity_version; only missing provenance on "
-                    "an unambiguous de-risking action may proceed"
+                    "identity_contract_mismatch: management intent carries a "
+                    "non-canonical identity/version; refusing execution"
                 )
+            elif missing_links:
+                if self._is_risk_reducing_without_provenance(intent, open_positions):
+                    logger.warning(
+                        "EXECUTOR | legacy_unattributed protective intent | "
+                        "type={} symbol={} ticket={} missing={}",
+                        intent.intent_type.name, intent.symbol,
+                        intent.position_ticket, missing_links,
+                    )
+                    intent = replace(intent, source="legacy_unattributed")
+                else:
+                    reason = (
+                        "management_provenance_required: intent lacks "
+                        f"{missing_links}; only a protective CLOSE/PARTIAL_CLOSE "
+                        "or demonstrably tighter stop may proceed without links"
+                    )
+                    self._inc("intents_rejected")
+                    logger.error(
+                        "EXECUTOR REJECTED | {} {} | {}",
+                        intent.intent_type.name, intent.position_ticket, reason,
+                    )
+                    return ExecutionResult(
+                        intent=intent, success=False, rejected_by_gate=True,
+                        gate_reason=reason, error=reason,
+                    )
+            if version_mismatch:
                 self._inc("intents_rejected")
                 logger.error(
                     "EXECUTOR REJECTED | {} {} | {}",
