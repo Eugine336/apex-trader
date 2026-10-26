@@ -582,14 +582,24 @@ class EventStore:
                         "marking store DEGRADED; events are being dropped: {}",
                         self._write_error_streak, self._db_path, exc,
                     )
+            finally:
+                # Queue.empty() only means the writer has dequeued the rows;
+                # it does not mean SQLite has committed them. task_done lets
+                # flush() wait for both queued and in-flight writes.
+                for _ in batch:
+                    self._queue.task_done()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Block until the queue is drained or *timeout* elapses."""
+        """Block until all queued and in-flight writes finish or timeout elapses."""
         deadline = time.monotonic() + timeout
-        while not self._queue.empty() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._queue.all_tasks_done.wait(remaining)
 
     def close(self) -> None:
         """Drain remaining events and shut down the writer thread."""
@@ -603,6 +613,8 @@ class EventStore:
                         remaining.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
+                    else:
+                        self._queue.task_done()
                 # Acquire the DB lock before touching the connection — if the
                 # writer thread failed to join within the timeout it may still
                 # be mid-write, and an unsynchronised access here would race it.
