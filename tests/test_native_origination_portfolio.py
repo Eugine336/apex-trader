@@ -213,7 +213,7 @@ def test_portfolio_rejection_has_no_legacy_lot_size_fallback(monkeypatch):
     system._origination_lot_size = lambda *args, **kwargs: legacy_calls.append(args) or 1.0
 
     sink = system._make_origination_sink()
-    sink(_origination())
+    assert sink(_origination()) is False
 
     assert len(portfolio.calls) == 1
     assert system._aggregator.batches == []
@@ -224,7 +224,7 @@ def test_approved_lots_reach_the_shared_intent_aggregator(monkeypatch):
     system, _portfolio, _risk, _pm = _system(monkeypatch, approved_size=0.03)
 
     sink = system._make_origination_sink()
-    sink(_origination())
+    assert sink(_origination()) is True
 
     assert len(system._aggregator.batches) == 1
     intents = system._aggregator.batches[0]
@@ -247,7 +247,7 @@ def test_approved_stake_is_forwarded_as_stake_not_lots(monkeypatch):
     )
 
     sink = system._make_origination_sink()
-    sink(_origination())
+    assert sink(_origination()) is True
 
     assert len(system._aggregator.batches) == 1
     intent = system._aggregator.batches[0][0]
