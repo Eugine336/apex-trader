@@ -296,6 +296,12 @@ class PositionWorker:
         for index in range(start_index, len(intents)):
             intent = intents[index]
             original_source = str(intent.source or "")
+            logger.warning(
+                "[pos-worker] LEGACY_MECHANICAL_FALLBACK fired | type={} symbol={} "
+                "ticket={} original_source={} reason={}",
+                intent.intent_type.name, intent.symbol, intent.position_ticket,
+                original_source, intent.reason,
+            )
             intents[index] = replace(
                 intent,
                 source="legacy_mechanical",
