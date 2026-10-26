@@ -11,6 +11,7 @@ def _out(decision_type, symbol="XAUUSD", confidence=0.7):
     dec = SimpleNamespace(
         decision_type=decision_type, symbol=symbol, confidence=confidence,
         thesis="because reasons", decision_id="dec-1",
+        identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
     )
     return SimpleNamespace(decision=dec)
 
@@ -60,6 +61,13 @@ def test_fault_safe_on_garbage():
     assert translate_management(None, None) is None
     assert translate_management(object(), object()) is None
     assert translate_management(_out(DecisionType.EXIT, symbol=""), _pos(symbol="")) is None
+
+
+def test_noncanonical_management_identity_is_not_rewritten():
+    output = _out(DecisionType.EXIT)
+    output.decision.identity_version = "old-version"
+
+    assert translate_management(output, _pos()) is None
 
 
 def test_action_to_dict_is_bounded():
