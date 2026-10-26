@@ -11,6 +11,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
 
+from cognition.identity import (
+    ACTION_CONFIDENCE_FLOOR,
+    ACTION_UNCERTAINTY_CEILING,
+    DEGRADED_CONFIDENCE_MULTIPLIER_CEILING,
+    MIN_ADVISORS_FOR_ACTION,
+    MIN_MARKET_EVIDENCE_DOMAINS,
+    NET_EXPECTED_VALUE_FLOOR_R,
+    REVERSE_CONFIDENCE_FLOOR,
+)
+
 # Bumped to "5" after the Opportunistic Intelligence rewire (Sessions 1-4):
 # killing hard SCALP/SWING gating, structure-derived targets, market-driven
 # stall/management, learned HTF gate, and full learning-loop attribution all
@@ -3826,8 +3836,8 @@ class CognitionConfig:
     single_path: bool = True
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
-    min_confidence_to_act: float = 0.55
-    max_uncertainty_to_act: float = 0.6
+    min_confidence_to_act: float = ACTION_CONFIDENCE_FLOOR
+    max_uncertainty_to_act: float = ACTION_UNCERTAINTY_CEILING
     # Identity requirement: net expected value is the default actionability gate,
     # not an optional upgrade to a raw confidence floor. A market thesis cannot
     # originate exposure without positive EV after estimated costs.
@@ -3835,16 +3845,16 @@ class CognitionConfig:
     # positive EV); confidence still contributes to EV and sizing.
     # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
     ev_primary_gate: bool = True
-    ev_action_threshold_r: float = 0.0
+    ev_action_threshold_r: float = NET_EXPECTED_VALUE_FLOOR_R
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
-    min_advisors_for_action: int = 1
+    min_advisors_for_action: int = MIN_ADVISORS_FOR_ACTION
     # Identity requirement: market action needs a minimum breadth of independent
     # evidence domains. Three permits lean but multi-dimensional market reads while
     # rejecting single-domain direction proxies; the runtime may require more.
     # env COGNITION_MIN_EVIDENCE_DOMAINS.
-    min_evidence_domains: int = 3
+    min_evidence_domains: int = MIN_MARKET_EVIDENCE_DOMAINS
     # Article XXI / V-013 — when the council under-delivers (most available
     # advisors did not respond) the Brain attenuates its effective confidence by
     # this multiplier: degraded cognition is ENFORCED, not merely observed.
@@ -3882,7 +3892,7 @@ class CognitionConfig:
     # Retained for compatibility, but live management-sink scaling is suppressed
     # until it carries a first-class activated opportunity and whole-book review.
     allow_scale_in: bool = False
-    manage_reverse_confidence: float = 0.7
+    manage_reverse_confidence: float = REVERSE_CONFIDENCE_FLOOR
     manage_exit_floor: float = 0.3
     # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
     # over-concentrated in one correlated leg (concentration >= the limit) the
@@ -4114,24 +4124,39 @@ class CognitionConfig:
                 "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
             )
             self.event_driven = True
-        if self.min_evidence_domains < 3:
-            logger.warning(
-                "[config] minimum evidence domains %s is below the identity floor of 3; forcing 3",
-                self.min_evidence_domains,
-            )
-            self.min_evidence_domains = 3
-        if self.min_advisors_for_action < 1:
-            logger.warning(
-                "[config] minimum advisors %s is below the identity floor of 1; forcing 1",
-                self.min_advisors_for_action,
-            )
-            self.min_advisors_for_action = 1
+        # Hard identity floors/caps apply to constructors and env overrides.
+        if self.min_confidence_to_act < ACTION_CONFIDENCE_FLOOR:
+            logger.warning("[config] confidence floor below identity minimum; enforcing %.2f", ACTION_CONFIDENCE_FLOOR)
+            self.min_confidence_to_act = ACTION_CONFIDENCE_FLOOR
+        if self.max_uncertainty_to_act > ACTION_UNCERTAINTY_CEILING:
+            logger.warning("[config] uncertainty ceiling exceeds identity maximum; enforcing %.2f", ACTION_UNCERTAINTY_CEILING)
+            self.max_uncertainty_to_act = ACTION_UNCERTAINTY_CEILING
+        if not math.isfinite(float(self.ev_action_threshold_r)):
+            raise ValueError(f"CognitionConfig.ev_action_threshold_r must be finite, got {self.ev_action_threshold_r!r}")
+        if self.ev_action_threshold_r < NET_EXPECTED_VALUE_FLOOR_R:
+            logger.warning("[config] negative net-EV threshold violates identity; enforcing %.2fR", NET_EXPECTED_VALUE_FLOOR_R)
+            self.ev_action_threshold_r = NET_EXPECTED_VALUE_FLOOR_R
+        if self.min_evidence_domains < MIN_MARKET_EVIDENCE_DOMAINS:
+            logger.warning("[config] market evidence-domain floor is %s; enforcing it", MIN_MARKET_EVIDENCE_DOMAINS)
+            self.min_evidence_domains = MIN_MARKET_EVIDENCE_DOMAINS
+        if self.min_advisors_for_action < MIN_ADVISORS_FOR_ACTION:
+            logger.warning("[config] advisor quorum floor is %s; enforcing it", MIN_ADVISORS_FOR_ACTION)
+            self.min_advisors_for_action = MIN_ADVISORS_FOR_ACTION
+        if self.manage_reverse_confidence < REVERSE_CONFIDENCE_FLOOR:
+            logger.warning("[config] reverse-confidence floor is %.2f; enforcing it", REVERSE_CONFIDENCE_FLOOR)
+            self.manage_reverse_confidence = REVERSE_CONFIDENCE_FLOOR
+        if not self.degrade_on_unknown_council:
+            logger.warning("[config] unknown council coverage must be treated as degraded; enforcing identity policy")
+            self.degrade_on_unknown_council = True
 
         if not (0.0 <= float(self.degraded_confidence_multiplier) <= 1.0):
             raise ValueError(
                 "CognitionConfig.degraded_confidence_multiplier must be in [0, 1], got "
                 f"{self.degraded_confidence_multiplier!r}"
             )
+        if self.degraded_confidence_multiplier > DEGRADED_CONFIDENCE_MULTIPLIER_CEILING:
+            logger.warning("[config] degraded-confidence multiplier above identity ceiling; enforcing %.2f", DEGRADED_CONFIDENCE_MULTIPLIER_CEILING)
+            self.degraded_confidence_multiplier = DEGRADED_CONFIDENCE_MULTIPLIER_CEILING
         if float(self.manage_min_interval_seconds) < 0:
             raise ValueError(
                 "CognitionConfig.manage_min_interval_seconds must be >= 0, got "
