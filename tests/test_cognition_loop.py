@@ -822,8 +822,8 @@ class _FakeRegistry:
         self.managed = []
 
     def observe_thesis(self, symbol, direction, should_act, ev_over_flat=0.0,
-                       confidence=0.0, now=None):
-        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence))
+                       confidence=0.0, now=None, campaign_id=""):
+        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence, campaign_id))
 
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
                    pnl=0.0, ticket="", now=None):
