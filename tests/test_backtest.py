@@ -416,7 +416,7 @@ def test_backtest_config_defaults_active():
     assert cfg.backtest.enabled is True
     assert cfg.backtest.default_spread_pips == 2.0
     # The decision config still exists alongside the new backtest section.
-    assert cfg.decision is not None
+    assert cfg.layered_decision is not None
 
 
 def test_backtest_config_validation():
