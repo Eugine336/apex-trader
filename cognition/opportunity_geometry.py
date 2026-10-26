@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Optional
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 
 def _finite_positive(value: Any) -> Optional[float]:
     if isinstance(value, bool):
@@ -51,9 +53,13 @@ class OpportunityGeometry:
     entry_timeframe: str = ""
     stop_timeframe: str = ""
     target_timeframe: str = ""
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "identity_version": self.identity_version,
+            "identity": self.identity,
             "direction": self.direction,
             "entry_price": self.entry_price,
             "stop_price": self.stop_price,
@@ -85,7 +91,8 @@ def derive_opportunity_geometry(
     default or guessed ATR multiple is introduced.
 
     Activation requires a directional completed-bar breakout, a trend plus
-    same-direction completed-bar momentum, or a counter-side sweep/reclaim.
+    same-direction completed-bar momentum, a measured range rotation at an edge
+    with a fresh response, or a counter-side sweep/reclaim.
     Unavailable, stale, conflicting, or incomplete inputs return None.
     """
     side = str(direction or "").strip().upper()
@@ -97,10 +104,14 @@ def derive_opportunity_geometry(
     except Exception:
         return None
 
+    state_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
     structures: list[dict[str, Any]] = []
     momenta: list[dict[str, Any]] = []
     liquidity: list[dict[str, Any]] = []
     for item in fresh:
+        evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+        if state_symbol and evidence_symbol and evidence_symbol != state_symbol:
+            continue
         measurements = getattr(item, "measurements", None)
         if not isinstance(measurements, dict):
             continue
