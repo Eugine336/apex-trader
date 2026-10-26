@@ -305,3 +305,34 @@ def test_counter_direction_alone_does_not_reduce_or_exit():
         hypotheses=[opposite_hypothesis],
     )
     assert result.action == "hold"
+
+
+def test_brain_ignores_campaign_memory_for_mismatched_position():
+    store = CampaignMemoryStore(db_path=":memory:")
+    store.record_open(
+        symbol="EURUSD",
+        direction="SHORT",
+        fingerprint={},
+        campaign_id="campaign-mismatch",
+        spec={
+            "thesis": "Thesis from a different held side",
+            "invalidation_conditions": ["Different side condition"],
+            "identity_version": IDENTITY_VERSION,
+        },
+    )
+    brain = CognitiveBrain(reasoner=None)
+    brain.bind_campaign_memory(store)
+    state = _state(markers=({"state": "invalidated"}, {"state": "invalidated"}))
+    try:
+        out = brain.manage(
+            PositionView(
+                symbol="EURUSD", direction="LONG", campaign_id="campaign-mismatch",
+            ),
+            state,
+        )
+        assert out.decision.decision_type == DecisionType.HOLD
+        baseline = out.decision.questions_answered["native_management_baseline"]
+        assert baseline["action"] == "hold"
+        assert "original thesis" in baseline["reason"]
+    finally:
+        store.close()
