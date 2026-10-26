@@ -158,8 +158,8 @@ class TestConvictionScaling:
     def test_conviction_overrides_score_for_sizing(self):
         """When conviction is provided, the stale score must not drive sizing.
 
-        Low conviction (0.50 → factor 0.5) on a high score (95) should size
-        DOWN, proving the score is no longer the sizing input.
+        Low conviction (0.50) on a high score (95) should size DOWN according
+        to the continuous conviction curve, proving score is not the sizing input.
         """
         engine = self._make_engine()
         base = engine.assess(**self._base_assess_kwargs(), score=0)
@@ -167,7 +167,8 @@ class TestConvictionScaling:
             **self._base_assess_kwargs(), score=95, conviction=0.50,
         )
         assert low_conv.approved
-        assert abs(low_conv.risk_pct - base.risk_pct * 0.5) < 1e-6
+        expected_factor = engine._scale_by_conviction(0.50)
+        assert abs(low_conv.risk_pct - base.risk_pct * expected_factor) < 1e-6
 
     def test_high_conviction_full_risk(self):
         engine = self._make_engine()
