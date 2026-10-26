@@ -1988,18 +1988,27 @@ class CognitiveBrain:
                     continue
                 timestamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
 
+                # A numerical fallback is not verified execution evidence.
+                # Only measurements explicitly marked verified can authorize an
+                # opportunity; all defaults remain diagnostic.
+                if measurements.get("cost_verified") is not True:
+                    continue
                 total = self._cost_value(measurements.get("estimated_total_cost_r"))
                 if total is not None:
-                    candidates.append((timestamp, total, "estimated_total_cost_r"))
+                    candidates.append((
+                        timestamp, total,
+                        str(measurements.get("cost_source") or "verified execution cost"),
+                    ))
                     continue
 
                 spread = self._cost_value(measurements.get("estimated_spread_r"))
                 slippage = self._cost_value(measurements.get("estimated_slippage_r"))
-                if spread is not None or slippage is not None:
+                if spread is not None and slippage is not None:
                     candidates.append((
                         timestamp,
-                        (spread or 0.0) + (slippage or 0.0),
-                        "estimated_spread_r + estimated_slippage_r",
+                        spread + slippage,
+                        str(measurements.get("cost_source") or
+                            "verified spread + slippage"),
                     ))
             if candidates:
                 _, cost, source = max(candidates, key=lambda item: item[0])
