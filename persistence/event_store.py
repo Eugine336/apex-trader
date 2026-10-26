@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from cognition.provenance import attach_provenance
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 from runtime_paths import data_dir as _data_dir  # noqa: E402
@@ -281,10 +283,26 @@ class EventStore:
     ) -> str:
         """Enqueue an event for background persistence.  Returns event_id."""
         eid = generate_id()
+        # Add canonical provenance to every newly written event without changing
+        # the existing SQLite schema or rewriting any historical row. Explicit
+        # decision/opportunity/campaign IDs come from the producer's payload.
+        event_payload = attach_provenance(
+            payload if isinstance(payload, dict) else {},
+            event_id=eid,
+            parent_event_id=parent_id or "",
+            decision_id=(payload or {}).get("decision_id", "") if isinstance(payload, dict) else "",
+            opportunity_id=(payload or {}).get("opportunity_id", "") if isinstance(payload, dict) else "",
+            campaign_id=(payload or {}).get("campaign_id", "") if isinstance(payload, dict) else "",
+        )
         try:
-            payload_json = json.dumps(payload) if payload else None
+            payload_json = json.dumps(event_payload)
         except (TypeError, ValueError):
-            payload_json = json.dumps({"_serialization_error": True, "repr": repr(payload)[:500]})
+            payload_json = json.dumps({
+                "identity_version": event_payload.get("identity_version", ""),
+                "event_id": eid,
+                "_serialization_error": True,
+                "repr": repr(event_payload)[:500],
+            })
         with self._seq_lock:
             self._seq += 1
             seq = self._seq
