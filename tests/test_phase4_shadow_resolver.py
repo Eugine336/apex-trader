@@ -585,3 +585,18 @@ class TestOutcomeClassification:
     def test_stall_positive_pnl(self):
         t = self._make_trade(close_reason="Stall exit — 70min", pnl_pips=3)
         assert _classify_outcome(t) == "BREAKEVEN"
+
+
+
+def test_shadow_store_disables_corrupt_database_without_modifying_it(tmp_path):
+    """A corrupt shadow DB must be preserved and disabled, never auto-reset."""
+    db_path = tmp_path / "corrupt-shadow.db"
+    original = b"not a valid SQLite database; preserve this file"
+    db_path.write_bytes(original)
+
+    store = ShadowStore(db_path=db_path)
+
+    assert store.is_degraded is True
+    assert store.degraded_reason
+    assert store._conn is None
+    assert db_path.read_bytes() == original
