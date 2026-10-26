@@ -1888,11 +1888,28 @@ class CognitiveBrain:
                 except Exception as exc:  # noqa: BLE001 — missing memory never authorises a trade
                     logger.debug("[brain] campaign memory read ignored for %s: %s", campaign_id, exc)
 
-            # Process-local history is a fallback only: it can enrich a campaign
-            # whose persistence record is missing fields, but cannot replace them.
+            # Process-local history is only a safe fallback when it belongs to
+            # THIS exact Brain-authored campaign. Same-symbol history may describe
+            # an older trade or an opposite-side thesis and must never be attached
+            # to the currently held position by coincidence.
             if not campaign.get("original_thesis") or not campaign.get("invalidation_conditions"):
                 prior = self._last.get(str(symbol or ""))
-                prior_decision = getattr(prior, "decision", None) if prior is not None else None
+                prior_campaign = getattr(prior, "campaign", None) if prior is not None else None
+                prior_campaign_id = str(
+                    getattr(prior_campaign, "campaign_id", "") or ""
+                )
+                current_campaign_id = str(campaign.get("campaign_id") or "")
+                prior_decision = (
+                    getattr(prior, "decision", None)
+                    if current_campaign_id and prior_campaign_id == current_campaign_id
+                    else None
+                )
+                if prior is not None and prior_decision is None:
+                    logger.debug(
+                        "[brain] process-local thesis ignored for %s: "
+                        "campaign id does not match held campaign",
+                        current_campaign_id or symbol,
+                    )
                 if prior_decision is not None:
                     thesis = str(getattr(prior_decision, "thesis", "") or "")
                     inval = list(getattr(prior_decision, "invalidation_conditions", []) or [])
