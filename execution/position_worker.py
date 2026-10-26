@@ -76,22 +76,15 @@ class WorkerConfig:
     discretionary_exits_enabled: bool = False
     legacy_mechanical_exit_fallback_enabled: bool = False
 
-    # ── V-009 (was V-03): LEGACY mechanical directional exits ──────────────────
-    # (Constitution §I/§IV/§V/§XVII). The invalidation / conviction-collapse /
-    # structure-loss-stall / H1-candle-against-side exits close a live position
-    # from a re-derived scan direction+score or an opposing HTF candle — i.e.
-    # "does the market still agree with our side?". That is a directional
-    # comparison the constitution forbids as an exit authority; the correct path
-    # is THESIS-based cognitive management. These four are LEGACY / MECHANICAL and
-    # run ONLY in the non-cognition fallback mode (``discretionary_exits_enabled``
-    # True). When this flag is False they are DEFERRED to the AI Cognitive Brain,
-    # while the non-directional risk mechanics (TP / breakeven / trailing /
-    # dynamic-SL / opportunity-cost) and the always-on catastrophic safety floor
-    # (hard SL + weekend / session / spread + absolute-profit backstop, plus the
-    # time-based stall fallback) remain. Default True ⇒ behaviour unchanged; every
-    # firing is logged as a WARNING so operators can see the mechanical path is
-    # active and migrate to Brain-managed (thesis-based) exits. Default False: the
-    # three scan-direction/score and opposing-HTF mechanical exits are deferred.
+    # ── V-009: legacy mechanical directional exits ───────────────────────────
+    # Re-derived scan direction/score and opposing-HTF closes are not thesis
+    # authorities. The entire deterministic discretionary suite (TP, breakeven,
+    # trailing, stall, invalidation, conviction, HTF, opportunity-cost) is opt-in
+    # through RiskConfig.legacy_mechanical_exit_fallback_enabled, default False.
+    # This sub-switch only selects the directional subset after that explicit
+    # fallback permission is granted. Any emitted legacy intent is tagged and
+    # warning-logged. Hard SL, weekend/session/spread protection and the absolute
+    # profit backstop remain the independent safety floor.
     scan_directional_exits_enabled: bool = False
 
     # ── TradeManager params ───────────────────────────────────────────
