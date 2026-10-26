@@ -270,6 +270,9 @@ class Campaign:
     campaign_id: str
     symbol: str
     direction: str                       # LONG | SHORT
+    # Original decision/opportunity lineage is retained for management and audit.
+    originating_decision_id: str = ""
+    opportunity_id: str = ""
     state: CampaignState = CampaignState.ACTIVE
     ev_over_flat: float = 0.0            # latest thesis edge over the do-nothing baseline (R)
     confidence: float = 0.0             # latest supporting-evidence confidence (0..1)
@@ -341,6 +344,8 @@ class Campaign:
         opportunity = _clamp01(0.5 * conf + 0.5 * _clamp01(ev))
         return {
             "campaign_id": self.campaign_id,
+            "originating_decision_id": self.originating_decision_id,
+            "opportunity_id": self.opportunity_id,
             "symbol": self.symbol,
             "direction": self.direction,
             "state": self.state.value,
@@ -441,6 +446,8 @@ class CampaignRegistry:
         confidence: float = 0.0,
         now: Optional[float] = None,
         campaign_id: str = "",
+        opportunity_id: str = "",
+        decision_id: str = "",
     ) -> Optional[Campaign]:
         """Fold one dominant-thesis read into the campaign store.
 
@@ -479,6 +486,8 @@ class CampaignRegistry:
                         campaign_id=requested_id or f"{sym}:{d}:{self._seq}",
                         symbol=sym,
                         direction=d,
+                        originating_decision_id=str(decision_id or "").strip(),
+                        opportunity_id=str(opportunity_id or "").strip(),
                         state=CampaignState.ACTIVE,
                         opened_at_iso=now_iso,
                         opened_at_epoch=t,
@@ -498,6 +507,31 @@ class CampaignRegistry:
                         "[campaign] identity mismatch for live %s %s: "
                         "registry=%s requested=%s; preserving existing identity",
                         sym, d, camp.campaign_id, requested_id,
+                    )
+                incoming_decision = str(decision_id or "").strip()
+                incoming_opportunity = str(opportunity_id or "").strip()
+                if not camp.originating_decision_id and incoming_decision:
+                    camp.originating_decision_id = incoming_decision
+                elif (
+                    incoming_decision
+                    and camp.originating_decision_id
+                    and incoming_decision != camp.originating_decision_id
+                    and requested_id == camp.campaign_id
+                ):
+                    logger.debug(
+                        "[campaign] preserve original decision lineage for {}",
+                        camp.campaign_id,
+                    )
+                if not camp.opportunity_id and incoming_opportunity:
+                    camp.opportunity_id = incoming_opportunity
+                elif (
+                    incoming_opportunity and camp.opportunity_id
+                    and incoming_opportunity != camp.opportunity_id
+                    and requested_id == camp.campaign_id
+                ):
+                    logger.debug(
+                        "[campaign] preserve original opportunity lineage for {}",
+                        camp.campaign_id,
                     )
                 camp.refresh(ev_over_flat, confidence, now_iso, t)
                 return camp
