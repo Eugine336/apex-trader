@@ -22,8 +22,16 @@ for rel in tracked:
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=1.0)
         try:
-            integrity = conn.execute("PRAGMA quick_check").fetchone()
-            print(f"INTEGRITY={integrity[0] if integrity else 'NO_RESULT'}")
+            integrity_rows = conn.execute("PRAGMA quick_check").fetchall()
+            integrity_issues = [str(row[0]) for row in integrity_rows if row and row[0] != "ok"]
+            if integrity_issues:
+                print(f"INTEGRITY=ISSUES COUNT={len(integrity_issues)}")
+                for issue in integrity_issues[:50]:
+                    print(f"INTEGRITY_ISSUE={issue}")
+                if len(integrity_issues) > 50:
+                    print(f"INTEGRITY_ISSUES_TRUNCATED={len(integrity_issues) - 50}")
+            else:
+                print("INTEGRITY=ok")
             tables = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall()
