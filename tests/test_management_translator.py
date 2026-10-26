@@ -85,3 +85,20 @@ def test_management_action_preserves_campaign_and_opportunity_provenance():
     payload = action.to_dict()
     assert payload["campaign_id"] == "campaign-7"
     assert payload["opportunity_id"] == "opportunity-9"
+
+def test_management_action_prefers_brain_decision_opportunity_provenance():
+    output = _out(DecisionType.EXIT)
+    output.decision.preferred_opportunity_id = "brain-opportunity-12"
+    output.decision.campaign_id = "brain-campaign-4"
+    position = _pos()
+    position.opportunity_id = "position-opportunity-old"
+    position.campaign_id = "position-campaign-old"
+
+    action = translate_management(output, position)
+
+    assert action is not None
+    assert action.identity_version == IDENTITY_VERSION
+    assert action.identity == IDENTITY_STATEMENT
+    assert action.decision_id == "dec-1"
+    assert action.campaign_id == "brain-campaign-4"
+    assert action.opportunity_id == "brain-opportunity-12"
