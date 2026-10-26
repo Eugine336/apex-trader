@@ -253,14 +253,14 @@ class TestModuleExecution:
         assert "D1" in wm.structure_by_tf()
         assert wm.fvgs_by_tf().get("D1") is None
 
-    def test_m15_close_populates_fvg_only(self):
+    def test_m15_close_populates_fvg_and_structure(self):
         event = _make_candle_close(tf="M15")
         self.bus.publish("candle_close", event)
         assert _wait_processed(self.handler, 1)
         wm = self.store.get("EURUSD")
         assert wm is not None
         assert "M15" in wm.fvgs_by_tf()
-        assert wm.structure_by_tf().get("M15") is None
+        assert "M15" in wm.structure_by_tf()
 
 
 # ---------------------------------------------------------------------------
@@ -495,10 +495,10 @@ class TestTFModuleMap:
         assert set(TF_MODULE_MAP.keys()) == {"M5", "M15", "H1", "H4", "D1"}
 
     def test_m5_modules(self):
-        assert set(TF_MODULE_MAP["M5"]) == {"fvg", "order_block", "volume", "inducement"}
+        assert set(TF_MODULE_MAP["M5"]) == {"fvg", "order_block", "volume", "inducement", "structure"}
 
     def test_m15_modules(self):
-        assert TF_MODULE_MAP["M15"] == ["fvg"]
+        assert TF_MODULE_MAP["M15"] == ["fvg", "structure"]
 
     def test_h1_modules(self):
         expected = {"fvg", "order_block", "liquidity", "volume", "wyckoff", "structure"}
