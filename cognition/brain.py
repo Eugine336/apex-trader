@@ -2544,7 +2544,6 @@ class CognitiveBrain:
             if available_market_domains is None or available_market_domains < required_domains:
                 return None
 
-            supporting = {pattern_name(p) for p in lead.supporting_patterns}
 
             # Activation is evaluated from the current evidence, not membership
             # in a fixed catalogue of familiar pattern names. Require multiple
