@@ -222,6 +222,52 @@ class CampaignMemoryStore:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[memory] record_open(%s %s) fault: %s", sym, d, exc)
 
+    def get_open_campaign(self, campaign_id: str) -> Optional[dict]:
+        """Read the original thesis/spec for one still-open campaign by ID.
+
+        This is an additive, read-only lookup used by native position management.
+        It never creates a database, mutates rows, or falls back to another
+        campaign merely because its symbol/direction match.
+        """
+        cid = str(campaign_id or "").strip()
+        if not cid or self._conn is None or self._degraded:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT campaign_id, symbol, direction, opened_ms, "
+                    "fingerprint_json, spec_json FROM campaign_memory "
+                    "WHERE campaign_id=? AND closed=0 "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cid,),
+                ).fetchone()
+            if row is None:
+                return None
+            campaign, symbol, direction, opened_ms, fingerprint_json, spec_json = row
+            try:
+                fingerprint = json.loads(fingerprint_json or "{}")
+                if not isinstance(fingerprint, dict):
+                    fingerprint = {}
+            except (TypeError, ValueError):
+                fingerprint = {}
+            try:
+                spec = json.loads(spec_json or "{}")
+                if not isinstance(spec, dict):
+                    spec = {}
+            except (TypeError, ValueError):
+                spec = {}
+            return {
+                "campaign_id": str(campaign or ""),
+                "symbol": str(symbol or ""),
+                "direction": str(direction or ""),
+                "opened_ms": int(opened_ms or 0),
+                "fingerprint": fingerprint,
+                "spec": spec,
+            }
+        except Exception as exc:  # noqa: BLE001 — management memory is advisory input
+            logger.debug("[memory] get_open_campaign(%s) fault: %s", cid, exc)
+            return None
+
     def record_close(self, campaign: Any, *, now_ms: Optional[int] = None) -> Optional[dict]:
         """Persist a terminal campaign outcome + post-mortem, stitched to its OPEN.
 
