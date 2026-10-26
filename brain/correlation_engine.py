@@ -122,7 +122,27 @@ class CorrelationEngine:
         risk_pct: float = 0.02,
     ) -> tuple[bool, str]:
         candidate = OpenTrade(pair=pair, direction=direction, risk_pct=risk_pct)
-        normalized = [self._normalize_trade(t) for t in open_trades] + [candidate]
+        existing_trades = [self._normalize_trade(t) for t in open_trades]
+        normalized = existing_trades + [candidate]
+
+        # Opposing positions in the exact same instrument are a hedge even when
+        # currency decomposition nets their exposure to zero. Detect this before
+        # aggregate exposure checks so netting cannot hide the conflict.
+        if not self.allow_intentional_hedge:
+            opposing_same_pair = next(
+                (
+                    trade for trade in existing_trades
+                    if trade.pair.upper() == pair.upper()
+                    and trade.direction.upper() != direction.upper()
+                ),
+                None,
+            )
+            if opposing_same_pair is not None:
+                return False, (
+                    f"Opposing hedge on {pair}: existing "
+                    f"{opposing_same_pair.direction.upper()} conflicts with "
+                    f"candidate {direction.upper()}"
+                )
 
         if self._count_correlated(pair, normalized[:-1]) >= self.max_correlated_trades:
             return False, f"Too many correlated trades with {pair}"
