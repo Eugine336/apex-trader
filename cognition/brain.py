@@ -1991,6 +1991,9 @@ class CognitiveBrain:
                 # A numerical fallback is not verified execution evidence.
                 # Only measurements explicitly marked verified can authorize an
                 # opportunity; all defaults remain diagnostic.
+                # Legacy/test evidence without an explicit verification field
+                # is treated as unverified. It can inform diagnostics but cannot
+                # authorize new exposure.
                 if measurements.get("cost_verified") is not True:
                     continue
                 total = self._cost_value(measurements.get("estimated_total_cost_r"))
