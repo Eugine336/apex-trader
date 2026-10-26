@@ -53,6 +53,8 @@ class OriginationIntent:
     identity: str = IDENTITY_STATEMENT
     confidence: float = 0.0
     meta: dict = field(default_factory=dict)
+    reference_entry_price: Optional[float] = None
+    payoff_geometry: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -71,6 +73,8 @@ class OriginationIntent:
             "decision_id": self.decision_id,
             "opportunity_id": self.opportunity_id,
             "confidence": round(self.confidence, 4),
+            "reference_entry_price": self.reference_entry_price,
+            "payoff_geometry": dict(self.payoff_geometry),
         }
 
 
@@ -182,8 +186,66 @@ def translate(
         if balance and balance > 0 and risk_fraction > 0 and exposure > 0:
             stake = float(balance) * float(risk_fraction) * float(exposure)
         intent_meta = getattr(spec, "initial_execution_intent", {}) or {}
-        sl = intent_meta.get("sl") if isinstance(intent_meta, dict) else None
-        tp = intent_meta.get("tp") if isinstance(intent_meta, dict) else None
+        if not isinstance(intent_meta, dict):
+            return None
+        geometry = intent_meta.get("payoff_geometry")
+        if not isinstance(geometry, dict):
+            return None
+        if (
+            str(geometry.get("identity_version", "") or "") != IDENTITY_VERSION
+            or str(geometry.get("identity", "") or "") != IDENTITY_STATEMENT
+            or geometry.get("activated") is not True
+            or str(geometry.get("direction", "") or "").upper() != direction
+            or str(geometry.get("symbol", "") or "").strip().upper() != symbol.strip().upper()
+        ):
+            return None
+        evidence_ids = geometry.get("evidence_ids")
+        if not isinstance(evidence_ids, (list, tuple)) or not any(
+            str(item or "").strip() for item in evidence_ids
+        ):
+            return None
+
+        def positive_number(value: Any) -> Optional[float]:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return parsed if math.isfinite(parsed) and parsed > 0.0 else None
+
+        reference_entry = positive_number(intent_meta.get("entry_price"))
+        geometry_entry = positive_number(geometry.get("entry_price"))
+        geometry_stop = positive_number(geometry.get("stop_price"))
+        geometry_target = positive_number(geometry.get("target_price"))
+        sl = positive_number(intent_meta.get("sl"))
+        tp = positive_number(intent_meta.get("tp"))
+        risk = positive_number(geometry.get("risk_distance"))
+        reward = positive_number(geometry.get("reward_distance"))
+        reward_r = positive_number(geometry.get("reward_r"))
+        if None in (
+            reference_entry, geometry_entry, geometry_stop, geometry_target,
+            sl, tp, risk, reward, reward_r,
+        ):
+            return None
+        tolerance = max(1e-9, abs(reference_entry) * 1e-8)
+        if (
+            abs(reference_entry - geometry_entry) > tolerance
+            or abs(sl - geometry_stop) > tolerance
+            or abs(tp - geometry_target) > tolerance
+        ):
+            return None
+        if direction == "LONG":
+            ordered = geometry_stop < reference_entry < geometry_target
+        else:
+            ordered = geometry_target < reference_entry < geometry_stop
+        actual_risk = abs(reference_entry - geometry_stop)
+        actual_reward = abs(geometry_target - reference_entry)
+        if (
+            not ordered
+            or abs(actual_risk - risk) > max(tolerance, risk * 1e-6)
+            or abs(actual_reward - reward) > max(tolerance, reward * 1e-6)
+            or abs(actual_reward / actual_risk - reward_r) > 1e-5
+        ):
+            return None
         return OriginationIntent(
             symbol=symbol,
             direction=direction,
@@ -199,6 +261,8 @@ def translate(
             identity=spec_identity,
             confidence=_clampf(getattr(spec, "confidence", 0.0), 0.0, 1.0, 0.0),
             meta={"objectives": list(getattr(spec, "objectives", []) or [])},
+            reference_entry_price=reference_entry,
+            payoff_geometry=dict(geometry),
         )
     except Exception:  # noqa: BLE001 — translation must never raise
         return None
