@@ -47,7 +47,8 @@ FLAT = "FLAT"
 
 _SYSTEM_PROMPT = (
     IDENTITY_STATEMENT
-    + "\n\nROLE: You are the Cognitive Brain. You reason over competing market "
+    + "\n\nROLE: You harvest and compare opportunities rather than predict a single direction. "
+    "You are the Cognitive Brain. You reason over competing market "
     "opportunities; you are not a direction predictor. You receive a "
     "STRUCTURED REPRESENTATION OF MARKET REALITY for one instrument (a "
     "reconstructed multi-timeframe price picture — OHLC candles, current price "
