@@ -2759,7 +2759,9 @@ class EventDrivenSystem:
         # Read-only: fold the replayable event log into the order_ids it
         # believes are open and compare to the broker's live positions.  Logs
         # any mismatch (missed closes / orphan positions) so an unclean restart
-        # is visible; never opens or closes anything.  Best-effort.
+        # is visible; never opens or closes anything. An unavailable or partial
+        # broker position snapshot is NOT an empty book: mark safety degraded so
+        # new exposure is refused while protective management can continue.
         try:
             from persistence.recovery import (
                 find_confirmed_close_deals,
@@ -2897,7 +2899,13 @@ class EventDrivenSystem:
                         "event log (audit: orphan_at_broker_no_log_entry)", adopted,
                     )
         except Exception as exc:
-            logger.debug("[event-driven] event-log reconciliation failed: {}", exc)
+            logger.error(
+                "[event-driven] broker/event reconciliation UNVERIFIED; "
+                "new exposure must remain blocked: {}", exc,
+            )
+            ctx = self._ctx
+            if ctx is not None and hasattr(ctx, "_mark_safety_degraded"):
+                ctx._mark_safety_degraded("BrokerPositionReconciliation")
 
         # ── Restore PortfolioGovernor daily tally + loss-cap halt ─────────
         # Must run before the loops so an active daily-loss halt is enforced
