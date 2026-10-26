@@ -8,10 +8,11 @@ has its own real history (main, data-backup, and dev branches) -- cloning it
 properly preserves that, whereas initializing in place would orphan it.
 
 This script NEVER deletes anything with live content:
-  - If data/ has real files in it, they are copied into the fresh
-    apex-trader-data clone first (so nothing is lost), then the OLD data/
-    directory is renamed to data_preclone_backup/ rather than removed. You
-    can compare and delete that backup yourself once you're satisfied.
+  - Existing data-repo files are NEVER overwritten. Identical files are left
+    unchanged; missing files are copied only after every path is preflighted.
+    Any non-identical collision aborts before data/ is renamed or relinked.
+  - An existing data-repo checkout is never pulled or mutated by this helper.
+  - The old data/ directory is renamed to data_preclone_backup/ and retained.
   - If data/ is already a junction/symlink, or already its own git repo,
     the script does nothing and reports that.
 
@@ -83,9 +84,27 @@ def main() -> int:
         return 0
 
     # --- Step 1: clone apex-trader-data as a sibling, if not already there ---
+    if (sibling_dir.exists() and not (sibling_dir / ".git").exists()):
+        print(f"ERROR: {sibling_dir} exists but is not a git repository. Leave data/ untouched and resolve it manually.")
+        return 1
     if (sibling_dir / ".git").exists():
-        print(f"[1/4] {sibling_dir} already exists as a git repo -- pulling latest instead of cloning.")
-        _run(["git", "pull"], cwd=str(sibling_dir), dry_run=ns.dry_run)
+        # Never mutate an existing data repository during a migration. Pulling can
+        # change remote state or conflict with local databases before we compare it.
+        ok, status = _run(["git", "status", "--porcelain"], cwd=str(sibling_dir), dry_run=ns.dry_run)
+        if not ok:
+            print(f"ERROR: cannot inspect data-repo working tree: {status}")
+            return 1
+        if status.strip():
+            print("ERROR: data-repo working tree is not clean. No pull, copy, rename or junction switch performed.")
+            print(status)
+            return 1
+        ok, remote = _run(["git", "remote", "get-url", "origin"], cwd=str(sibling_dir), dry_run=ns.dry_run)
+        if not ok or remote.strip().rstrip("/") != ns.data_repo_url.rstrip("/"):
+            print("ERROR: existing sibling repo remote does not match the configured data repository.")
+            print(f"Expected: {ns.data_repo_url}")
+            print(f"Actual: {remote.strip()}")
+            return 1
+        print(f"[1/4] Existing data repo validated; not pulling or mutating it.")
     else:
         print(f"[1/4] Cloning {ns.data_repo_url} -> {sibling_dir}")
         ok, out = _run(["git", "clone", ns.data_repo_url, str(sibling_dir)], dry_run=ns.dry_run)
@@ -93,22 +112,55 @@ def main() -> int:
             print(f"FAILED: {out}")
             return 1
 
-    # --- Step 2: copy current live data/ contents into the sibling clone ---
-    if data_dir.exists() and any(data_dir.iterdir()) and not ns.dry_run:
-        print(f"[2/4] Copying live files from {data_dir} into {sibling_dir} (never overwritten, only added/updated)")
-        for item in data_dir.iterdir():
-            if item.name == ".git":
+    # --- Step 2: preflight all files before copying any state ---
+    # Never overwrite an existing file, especially SQLite databases/WAL/SHM.
+    # Conflicts abort before the source data/ is renamed or junctioned.
+    files_to_copy: list[tuple[Path, Path]] = []
+    conflicts: list[str] = []
+    if data_dir.exists() and not _is_junction_or_symlink(data_dir):
+        for source in sorted(data_dir.rglob("*")):
+            if not source.is_file() or ".git" in source.parts:
                 continue
-            dest = sibling_dir / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True)
+            relative = source.relative_to(data_dir)
+            target = sibling_dir / relative
+            if target.exists():
+                try:
+                    same = target.is_file() and source.stat().st_size == target.stat().st_size
+                    if same:
+                        import hashlib
+                        def _sha256(path: Path) -> str:
+                            h = hashlib.sha256()
+                            with path.open("rb") as handle:
+                                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                                    h.update(chunk)
+                            return h.hexdigest()
+                        same = _sha256(source) == _sha256(target)
+                except OSError:
+                    same = False
+                if not same:
+                    conflicts.append(str(relative))
             else:
-                shutil.copy2(item, dest)
-        print("  copy complete.")
-    elif ns.dry_run:
-        print(f"[2/4] [dry-run] would copy live files from {data_dir} into {sibling_dir}")
+                files_to_copy.append((source, target))
+    if conflicts:
+        print("[2/4] ERROR: conflicting files already exist in the data repository.")
+        for name in conflicts:
+            print(f"  CONFLICT (not overwritten): {name}")
+        print("No files copied; source data/ has not been renamed or relinked. Back up and reconcile these files manually.")
+        return 1
+    print(f"[2/4] Preflight complete: {len(files_to_copy)} missing file(s) to copy; matching files remain unchanged.")
+    if ns.dry_run:
+        for source, target in files_to_copy:
+            print(f"  [dry-run] copy {source} -> {target}")
     else:
-        print("[2/4] data/ is empty or missing -- nothing to copy.")
+        try:
+            for source, target in files_to_copy:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            print("  copy complete; no existing target file was overwritten.")
+        except Exception as exc:
+            print(f"ERROR while copying state: {exc}")
+            print("No junction switch performed; original data/ remains in place. Any newly copied files are non-overwriting additions.")
+            return 1
 
     # --- Step 3: move the old plain data/ aside (never delete outright) ---
     backup_dir = repo_root / "data_preclone_backup"
