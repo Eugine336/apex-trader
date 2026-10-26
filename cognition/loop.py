@@ -720,7 +720,16 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] symbols provider fault: %s", exc)
             return 0
-        self._open_keys = self._current_open_keys()
+        try:
+            self._open_keys = self._current_open_keys()
+            book_verified = True
+        except Exception as exc:  # noqa: BLE001
+            self._open_keys = set()
+            book_verified = False
+            logger.warning(
+                "[cognition-loop] cycle can reason, but origination is deferred because "
+                "the broker book is unverified: %s", exc,
+            )
         made = 0
         cycle_outputs: list = []
         for symbol in self._select_cycle_batch(symbols):
@@ -736,7 +745,13 @@ class CognitionLoop:
         # lower-EV opportunities. Missing/faulting portfolio cognition or unknown
         # live exposure must not silently authorize new campaigns.
         portfolio_outputs = self._reason_portfolio(cycle_outputs)
-        if self.origination_mode != "off":
+        if not book_verified:
+            for candidate in portfolio_outputs:
+                if self._is_open_campaign_candidate(candidate):
+                    self._demote_unreviewed_campaign(
+                        candidate, "broker position book unverified — new exposure suppressed",
+                    )
+        if self.origination_mode != "off" and book_verified:
             for output in portfolio_outputs:
                 self._maybe_originate(output, now=now)
         self._manage_open_positions(now=now)
@@ -809,7 +824,10 @@ class CognitionLoop:
             return cycle_outputs
 
         try:
-            existing = list(self._position_source() or [])
+            raw_existing = self._position_source()
+            if raw_existing is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            existing = list(raw_existing)
             result = fn(list(cycle_outputs), existing)
             if result is None:
                 raise RuntimeError("Brain portfolio review returned no result")
