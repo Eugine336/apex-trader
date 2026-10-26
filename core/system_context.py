@@ -1397,6 +1397,25 @@ class SystemContext:
                             return {"estimated_total_cost_r": _default_cost_r,
                                     "cost_verified": False,
                                     "cost_source": "invalid live bid/ask; configured fallback"}
+                        # A quote is only current if its broker source timestamp is
+                        # present, timezone-aware, and within the short live-cost
+                        # validity window. The constant bounds quote freshness; it
+                        # is not a trading signal/confidence cutoff.
+                        from datetime import datetime, timezone
+                        quote_time = getattr(info, "time", None)
+                        if not isinstance(quote_time, datetime):
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "quote timestamp unavailable"}
+                        if quote_time.tzinfo is None:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "quote timestamp has no timezone"}
+                        quote_age = (datetime.now(timezone.utc) - quote_time.astimezone(timezone.utc)).total_seconds()
+                        if quote_age < 0.0 or quote_age > 5.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": f"quote stale or future-dated (age={quote_age:.3f}s)"}
                         # Resolve symbol-specific pip size and a conservative
                         # risk-distance proxy. The execution sink recomputes the
                         # final size/EV against the actual stop and broker costs.
