@@ -371,6 +371,8 @@ class Campaign:
     def to_dict(self) -> dict:
         return {
             "campaign_id": self.campaign_id,
+            "originating_decision_id": self.originating_decision_id,
+            "opportunity_id": self.opportunity_id,
             "symbol": self.symbol,
             "direction": self.direction,
             "state": self.state.value,
