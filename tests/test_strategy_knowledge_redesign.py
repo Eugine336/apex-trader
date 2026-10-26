@@ -58,7 +58,7 @@ def test_missing_requirements_remain_explicit_even_when_a_lens_is_relevant():
         {"pattern_tags": ["support", "resistance"]},
     )
     result = next(
-        item for item in assess_strategy_lenses([evidence]) 
+        item for item in assess_strategy_lenses([evidence])
         if item["key"] == "support_resistance"
     )
     assert result["status"] == "relevant"
