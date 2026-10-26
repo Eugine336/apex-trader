@@ -392,3 +392,14 @@ def test_is_component_saturated():
         reg.record_management(s, "LONG", "hold", confidence=0.6, ev_over_flat=1.0)
     assert reg.is_component_saturated("NZDUSD", max_per_component=2) is True   # USD x3 > 2
     assert reg.is_component_saturated("EURGBP", max_per_component=2) is False  # EUR x1, GBP x1
+
+
+def test_observe_thesis_uses_brain_campaign_id_when_provided():
+    reg = CampaignRegistry(enabled=True)
+    camp = reg.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.4, confidence=0.8,
+        campaign_id="brain-campaign-123",
+    )
+    assert camp is not None
+    assert camp.campaign_id == "brain-campaign-123"
+    assert reg.get("EURUSD", "LONG").campaign_id == "brain-campaign-123"
