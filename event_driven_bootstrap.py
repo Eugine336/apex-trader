@@ -5862,6 +5862,49 @@ class EventDrivenSystem:
         if entry_fill_price <= 0:
             entry_fill_price = float(expected_price or 0.0)
 
+        # Persist a per-ticket entry snapshot before any downstream observer can
+        # fail. Close-side attribution reads this same ticket key for entry price,
+        # timestamp, lots, stops/targets and the pip-size fallback safety flag.
+        # This is process-local bookkeeping only; it does not touch the database.
+        try:
+            if order_id:
+                contexts = getattr(self, "_entry_context", None)
+                if isinstance(contexts, dict):
+                    prior = contexts.get(order_id)
+                    entry_context = dict(prior) if isinstance(prior, dict) else {}
+                    entry_context.update({
+                        "symbol": str(symbol or ""),
+                        "direction": str(direction or "").upper(),
+                        "entry_price": entry_fill_price,
+                        "entry_time": datetime.now(timezone.utc),
+                        "lots": float(
+                            getattr(result, "lots", getattr(result, "volume", 0.0)) or 0.0
+                        ),
+                        "sl": float(
+                            getattr(result, "sl", getattr(result, "stop_loss", 0.0)) or 0.0
+                        ),
+                        "tp": float(
+                            getattr(result, "tp", getattr(result, "take_profit", 0.0)) or 0.0
+                        ),
+                        "pip_size_fallback": str(symbol or "") in (
+                            getattr(self, "_pip_size_fallback_symbols", set()) or set()
+                        ),
+                        "zone_type": getattr(result, "zone_type", entry_context.get("zone_type")),
+                        "regime": getattr(result, "regime", entry_context.get("regime")),
+                        "concepts": list(
+                            getattr(result, "concepts", entry_context.get("concepts", [])) or []
+                        ),
+                        "score": int(
+                            getattr(result, "score", entry_context.get("score", 0)) or 0
+                        ),
+                        "confluences": list(
+                            getattr(result, "confluences", entry_context.get("confluences", [])) or []
+                        ),
+                    })
+                    contexts[order_id] = entry_context
+        except Exception as exc:  # noqa: BLE001 — missing attribution must not block execution
+            logger.warning("[post-fill] entry-context capture failed for %s: %s", order_id, exc)
+
         try:
             if ctx.account_risk is not None and balance and balance > 0:
                 acct = ctx.account_key(symbol, self._pm)
