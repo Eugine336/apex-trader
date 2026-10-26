@@ -266,13 +266,13 @@ class TestEventDrivenSystem:
         config = MagicMock()
         # The bootstrap subscribes only to configured symbols; MagicMock's
         # implicit empty iterable previously made this test exercise no route.
-        config.enabled_pairs = ["EURUSD", "V75"]
+        config.enabled_pairs = ["EURUSD", "V75_1S"]
         pm = _mock_platform_manager()
         system = EventDrivenSystem(config, pm)
 
         mt5, deriv = system._classify_symbols()
         assert "EURUSD" in mt5
-        assert "V75" in deriv
+        assert "V75_1S" in deriv
 
     @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
         "EURUSD": SimpleNamespace(
