@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - redesign/route-audit-and-ci-recovery
+    paths:
+      - "data/**/*.db"
+      - "data/**/*.db-wal"
+      - "data/**/*.db-shm"
+      - "shadow_journal.db-wal"
+      - "shadow_journal.db-shm"
+      - "scripts/audit_tracked_databases.py"
+      - ".github/workflows/database-inventory-audit.yml"
   workflow_dispatch:
 
 permissions:
