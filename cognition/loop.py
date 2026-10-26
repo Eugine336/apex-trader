@@ -960,8 +960,21 @@ class CognitionLoop:
         """
         try:
             self._open_keys = self._current_open_keys()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[cognition-loop] event origination deferred — broker book unverified: %s",
+                exc,
+            )
+            output = self._reason_over_symbol(symbol, now=now)
+            # Re-evaluate/observe the market, but do not send a new exposure
+            # candidate to portfolio admission when duplicate/open-book state is unknown.
+            if output is not None:
+                self._demote_unreviewed_campaign(
+                    output, "broker position book unverified — new exposure suppressed",
+                )
+            self._decisions += 1 if output is not None else 0
+            self._event_reasons += 1 if output is not None else 0
+            return 1 if output is not None else 0
         output = self._reason_over_symbol(symbol, now=now)
         made = 1 if output is not None else 0
         # Event-driven origination still requires a current book-wide exposure
@@ -1267,9 +1280,15 @@ class CognitionLoop:
         if self._position_source is None or not hasattr(self._brain, "manage"):
             return 0
         try:
-            positions = list(self._position_source() or [])
+            raw_positions = self._position_source()
+            if raw_positions is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            positions = list(raw_positions)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] position source fault: %s", exc)
+            logger.warning(
+                "[cognition-loop] position book unverified; skip stale-book management/rearm: %s",
+                exc,
+            )
             return 0
         managed = 0
         for pos in positions:
@@ -1517,9 +1536,15 @@ class CognitionLoop:
         if not sym:
             return 0
         try:
-            positions = list(self._position_source() or [])
+            raw_positions = self._position_source()
+            if raw_positions is None:
+                raise RuntimeError("broker position source returned no confirmation")
+            positions = list(raw_positions)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] position source fault: %s", exc)
+            logger.warning(
+                "[cognition-loop] position book unverified; skip symbol management: %s",
+                exc,
+            )
             return 0
         managed = 0
         for pos in positions:
