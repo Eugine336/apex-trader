@@ -67,8 +67,13 @@ class _Reasoner:
 
 def _ev(domain, measurements, *, conf=0.9, module=None):
     return Evidence(
-        source_module=module or f"m_{domain}", domain=domain, confidence=conf,
-        uncertainty=1.0 - conf, measurements=dict(measurements),
+        source_module=module or f"m_{domain}",
+        domain=domain,
+        symbol="EURUSD",
+        observation=f"{domain} observer measurement: {dict(measurements)}",
+        confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements=dict(measurements),
         relevance_horizon_seconds=900.0,
     )
 
