@@ -27,6 +27,7 @@ Usage (run from the apex-trader repo root, e.g.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -50,9 +51,20 @@ def _run(args: list[str], cwd: str | None = None, dry_run: bool = False) -> tupl
 
 
 def _is_junction_or_symlink(path: Path) -> bool:
+    """Recognize symlinks and Windows directory junctions without following them."""
     try:
-        return path.is_symlink()
-    except OSError:
+        if path.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        if callable(isjunction) and isjunction(path):
+            return True
+        # Python versions without os.path.isjunction: Windows reparse points
+        # are exposed through st_file_attributes. Do not classify ordinary dirs.
+        stat = path.lstat()
+        reparse_flag = getattr(stat, "st_file_attributes", 0)
+        reparse_bit = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return bool(reparse_flag & reparse_bit)
+    except (OSError, ValueError):
         return False
 
 
