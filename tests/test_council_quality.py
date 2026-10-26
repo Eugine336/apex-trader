@@ -67,9 +67,16 @@ def _decide(opinion, uncertainty=0.1):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    # The helper supplies exactly three independent market domains above;
+    # pass that derived coverage metadata as the production consolidator does.
     return _brain()._from_opinion(
         "BTCUSD", state,
-        {"aggregate_uncertainty": uncertainty}, opinion, None,
+        {
+            "aggregate_uncertainty": uncertainty,
+            "market_domain_count": 3,
+            "market_domains_present": ["structure", "liquidity", "momentum"],
+        },
+        opinion, None,
     )
 
 
