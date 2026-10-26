@@ -263,7 +263,7 @@ class TestLoopbackBypassEndToEnd:
 
     def test_loopback_trust_off_requires_key_even_local(self):
         api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "0"})
-        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        client = _test_client_with_address(api.create_app(), ("127.0.0.1", 5))
         assert client.get("/api/status").status_code == 401
 
     def test_loopback_ws_connects_without_key(self):
