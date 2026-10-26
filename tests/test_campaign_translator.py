@@ -73,6 +73,8 @@ def test_translate_carries_provenance():
     assert intent.identity == IDENTITY_STATEMENT
     assert intent.to_dict()["identity_version"] == IDENTITY_VERSION
     assert intent.to_dict()["identity"] == IDENTITY_STATEMENT
+    assert intent.opportunity_id == spec.opportunity_id
+    assert intent.to_dict()["opportunity_id"] == spec.opportunity_id
 
 
 def test_translate_never_raises_on_garbage():
