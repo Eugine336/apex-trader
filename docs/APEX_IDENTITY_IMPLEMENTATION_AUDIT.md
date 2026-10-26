@@ -197,3 +197,12 @@ The latest available route-audit branch workflow completed lint successfully and
 ### Protected operating boundaries
 
 The .env file remains out of scope: do not read, display, copy, recreate, rename, or modify it. No broker orders have been sent and live trading has not been enabled by this recovery pass.
+### Additional failure-triage changes in this pass
+
+- All dashboard auth tests now use the Starlette-version-compatible client-address helper; three remaining tests had bypassed the helper and still passed the unsupported client keyword directly.
+- The Deriv token-refresh test builder now initializes the retry/failure streak that production connector initialization owns.
+- The per-user process environment builder now honors its explicit repo_root argument and omits APEX_REPO_DIR when no root was supplied, rather than leaking the parent checkout path into an isolated process.
+- The post-close MFE/MAE observation test now matches the declared read-only, evidence-collection default; this tracker does not itself authorize or mutate a trade.
+- The Composio adapter test now asserts the current v3 tools/execute request contract rather than the retired v2 endpoint.
+
+These are code/test-contract corrections inferred from the failing run and source contracts. Because the quota prevents a rerun, each remains pending execution verification.
