@@ -95,6 +95,20 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
         relevance_horizon_seconds=900.0,
     ))
+    # Entry-path tests must carry a fresh, explicit spread/slippage estimate.
+    # A diagnostic default is not verified execution-cost evidence and must not
+    # authorize exposure; negative-EV tests need this evidence too so they reach
+    # the EV verdict rather than stopping earlier at the cost-verification gate.
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol,
+        observation="fresh test spread and slippage quote",
+        confidence=conf,
+        uncertainty=unc,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
