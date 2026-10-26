@@ -239,6 +239,54 @@ class TestStdlibIntercept:
             stdlib_log.propagate = orig_propagate
 
 
+def test_flush_waits_for_inflight_sqlite_commit(tmp_path):
+    """An empty queue is not enough: flush must wait for the active writer."""
+    store = EventStore(db_path=str(tmp_path / "flush-race.db"))
+    real_conn = store._conn
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    class _BlockingConnection:
+        def executemany(self, *args, **kwargs):
+            write_started.set()
+            if not release_write.wait(timeout=3.0):
+                raise TimeoutError("test did not release blocked write")
+            return real_conn.executemany(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    store._conn = _BlockingConnection()
+    try:
+        store.emit("FLUSH_RACE", "INFO", payload={"message": "in flight"})
+        assert write_started.wait(timeout=2.0)
+        # The writer has dequeued the row, so Queue.empty() is true while the
+        # SQLite write is still blocked.
+        assert store._queue.empty()
+
+        flush_finished = threading.Event()
+
+        def _flush():
+            store.flush(timeout=2.0)
+            flush_finished.set()
+
+        waiter = threading.Thread(target=_flush)
+        waiter.start()
+        time.sleep(0.05)
+        assert not flush_finished.is_set()
+
+        release_write.set()
+        waiter.join(timeout=2.0)
+        assert flush_finished.is_set()
+        assert any(
+            row.get("event_type") == "FLUSH_RACE"
+            for row in store.query(event_type="FLUSH_RACE")
+        )
+    finally:
+        release_write.set()
+        store.close()
+
+
 # ── Writer-loop recursion safety ──────────────────────────────────────────────
 
 
