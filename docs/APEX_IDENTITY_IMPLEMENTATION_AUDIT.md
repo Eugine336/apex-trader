@@ -241,3 +241,18 @@ No broker orders were sent and live trading was not enabled. `.env` was not acce
 ## Latest CI evidence update — 2026-10-26
 
 The latest completed full workflow on the prior PR head reports 140 failures, 3,785 passes, and 12 skips on Python 3.12; lint passed and Python 3.11 was cancelled. The focused Gold desk workflow passed on both Python 3.11 and 3.12. These are not a full-suite pass. A dashboard TestClient compatibility fix was committed afterward; it is not yet validated by a subsequent run. The PR must remain unmerged while the full suite and critical execution/management tests remain red or unverified.
+
+
+## Current validation refresh — 2026-10-26
+
+The canonical identity remains sourced from `cognition/identity.py`; no alternate identity constant was added by the recovery work. Identity propagation source coverage is present across observations, decisions, campaigns, entry intents, management intents, and learning records, but full runtime call-path validation is incomplete.
+
+The current recovery head is `313d04fbcd835eb82e19e8db44bd6e0660453c8b`. Its full CI run is still in progress: https://github.com/Eugine336/apex-trader/actions/runs/40306586682. The most recent completed full suite on a prior head failed with 50 failures and 3,888 passes. Gold-focused tests passed on several earlier recovery heads; that is not a full identity/execution proof.
+
+Remaining identity-critical verification:
+- prove every broker-mutating path is reachable only after canonical Brain opportunity admission, portfolio/risk gates, and identity validation;
+- prove live position management preserves the same identity and campaign/opportunity provenance;
+- verify fail-closed behavior for stale/missing feeds and degraded persistence;
+- validate outcome lineage and cost-aware walk-forward learning with an untouched holdout.
+
+PR #758 remains draft/unmerged. No live orders have been sent, and `.env` was not accessed or modified.
