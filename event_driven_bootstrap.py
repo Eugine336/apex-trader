@@ -2898,6 +2898,43 @@ class EventDrivenSystem:
                         "[recovery] adopted {} broker orphan position(s) into the "
                         "event log (audit: orphan_at_broker_no_log_entry)", adopted,
                     )
+
+            # A successful API response is not enough: reconciliation must agree
+            # after any evidenced history-based close repair and orphan adoption.
+            # Remaining mismatches mean Apex does not know the whole book; allow
+            # analysis and protective management, but prohibit new exposure.
+            unresolved = bool(
+                report is None
+                or getattr(report, "store_degraded", False)
+                or getattr(report, "log_open", set())
+                or getattr(report, "missing_from_broker", set())
+                or getattr(report, "orphan_at_broker", set())
+            )
+            if unresolved:
+                logger.error(
+                    "[recovery] broker/event state remains UNRECONCILED — "
+                    "new exposure disabled until state is reviewed; report=%s",
+                    (
+                        "missing report" if report is None else {
+                            "store_degraded": getattr(report, "store_degraded", False),
+                            "log_open": sorted(getattr(report, "log_open", set()) or set()),
+                            "missing_from_broker": sorted(
+                                getattr(report, "missing_from_broker", set()) or set()
+                            ),
+                            "orphan_at_broker": sorted(
+                                getattr(report, "orphan_at_broker", set()) or set()
+                            ),
+                        }
+                    ),
+                )
+                ctx = self._ctx
+                if ctx is not None:
+                    marker = getattr(ctx, "_mark_safety_degraded", None)
+                    if callable(marker):
+                        marker("BrokerPositionReconciliation")
+                    loop = getattr(ctx, "cognition_loop", None)
+                    if loop is not None:
+                        loop.broker_book_verified = False
         except Exception as exc:
             logger.error(
                 "[event-driven] broker/event reconciliation UNVERIFIED; "
