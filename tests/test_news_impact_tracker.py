@@ -7,6 +7,7 @@ Pending baselines persist to JSON so a restart inside the window keeps them.
 """
 
 from datetime import datetime, timedelta, timezone
+import math
 
 from brain.news_impact_tracker import NewsImpactTracker
 
@@ -60,7 +61,7 @@ def test_capture_then_measure_after_30min(tmp_path):
     symbol, currency, move_pips, atr_pips = calib.calls[0]
     assert symbol == "EURUSD"
     assert currency == "USD"
-    assert move_pips == 30.0
+    assert math.isclose(move_pips, 30.0, abs_tol=1e-9)
     assert atr_pips == 20.0
     assert trk._pending == {}
 
