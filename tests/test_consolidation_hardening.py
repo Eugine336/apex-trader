@@ -224,3 +224,56 @@ def test_pip_size_fallback_tag_present_in_entry_context():
 def test_module_parses():
     """Sanity: the edited bootstrap module is syntactically valid."""
     ast.parse(_BOOTSTRAP_PATH.read_text(encoding="utf-8"))
+
+
+def test_order_fill_persists_per_ticket_entry_context_without_database_access(monkeypatch):
+    """The close path must recover the entry record, including pip-size provenance."""
+    class _FakeEventStore:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, *args, **kwargs):
+            self.events.append((args, kwargs))
+
+    store = _FakeEventStore()
+    monkeypatch.setattr(edb, "get_event_store", lambda: store)
+
+    system = edb.EventDrivenSystem.__new__(edb.EventDrivenSystem)
+    system._ctx = SimpleNamespace(
+        account_risk=None,
+        execution_monitor=None,
+        outcome_feedback=None,
+        signal_ledger=None,
+        rl_bridge=None,
+    )
+    system._entry_context = {}
+    system._pip_size_fallback_symbols = {"XAUUSD"}
+
+    result = SimpleNamespace(
+        order_id="ticket-entry-context",
+        fill_price=2350.5,
+        lots=0.1,
+        sl=2344.0,
+        tp=2362.0,
+        zone_type="breakout",
+        regime="trending",
+        concepts=["fvg", "order_flow"],
+        score=83,
+        confluences=["structure", "momentum"],
+    )
+    system._on_order_filled(
+        "XAUUSD", "LONG", result, balance=1000.0,
+        expected_price=2350.0, order_ts=0.0,
+    )
+
+    context = system._entry_context["ticket-entry-context"]
+    assert context["entry_price"] == 2350.5
+    assert context["lots"] == 0.1
+    assert context["sl"] == 2344.0 and context["tp"] == 2362.0
+    assert context["pip_size_fallback"] is True
+    assert context["zone_type"] == "breakout"
+    assert context["regime"] == "trending"
+    assert context["concepts"] == ["fvg", "order_flow"]
+    assert context["score"] == 83
+    assert context["confluences"] == ["structure", "momentum"]
+    assert [args[0] for args, _kwargs in store.events] == [edb.DE.ORDER_FILLED, edb.DE.TRADE_OPEN]

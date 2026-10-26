@@ -167,9 +167,11 @@ class TestEventDrivenSystemProperties:
         from event_driven_bootstrap import EventDrivenSystem
         assert hasattr(EventDrivenSystem, "tick_store")
 
-    def test_ed_system_has_entry_orchestrator_property(self):
+    def test_ed_system_does_not_expose_retired_entry_orchestrator(self):
         from event_driven_bootstrap import EventDrivenSystem
-        assert hasattr(EventDrivenSystem, "entry_orchestrator")
+        # Legacy EntryOrchestrator authority was intentionally retired; the
+        # Brain/CognitionLoop is the active cognitive and origination path.
+        assert not hasattr(EventDrivenSystem, "entry_orchestrator")
 
     def test_ed_system_has_executor_property(self):
         from event_driven_bootstrap import EventDrivenSystem

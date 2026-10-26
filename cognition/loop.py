@@ -337,13 +337,13 @@ class EvidenceConsolidator:
                         need = max(_f(cons.get("aggregate_uncertainty", 1.0)),
                                    _f(cons.get("conflict_ratio", 0.0)))
                         if getattr(self._reasoning, "panel", False):
-                            depth: Optional[int] = 0      # full panel — all advisors
+                            depth: Optional[int] = None    # uncapped panel — all advisors
                         elif need < 0.34:
                             depth = 1
                         elif need < 0.67:
                             depth = 2
                         else:
-                            depth = 0                      # critical ⇒ consult all
+                            depth = None                   # critical ⇒ consult all
                         consult = self._consult(ms.symbol, payload, now, depth)
                         for e in evidence_from_reasoning(ms.symbol, consult):
                             ms.add(e)
@@ -534,9 +534,19 @@ class CognitionLoop:
         self._max_exposure = min(1.0, max(0.0, float(origination_max_exposure)))
         self._balance_provider = balance_provider
         self._memory = memory
+        # Native position management reads the original thesis from the existing
+        # store. CognitiveBrain must not create or open persistence itself.
+        memory_binder = getattr(self._brain, "bind_campaign_memory", None)
+        if self._memory is not None and callable(memory_binder):
+            try:
+                memory_binder(self._memory)
+            except Exception as exc:  # noqa: BLE001 — absent memory cannot stop the loop
+                logger.debug("[cognition-loop] native memory binding ignored: %s", exc)
         self._operations_author = operations_author
         self._operations_sink = operations_sink
-        self._origination_sink: Optional[Callable[[Any], None]] = None
+        # None remains accepted for older void callbacks; False explicitly means
+        # that admission rejected the intent and no campaign may be registered.
+        self._origination_sink: Optional[Callable[[Any], Optional[bool]]] = None
         self._is_market_open: Optional[Callable[[str], bool]] = None
         self._name = str(name or "cognition-loop")
         # Management realisation (Part VI): the mode mirrors origination —
@@ -571,6 +581,7 @@ class CognitionLoop:
         self._managed = 0
         self._orig_intended = 0
         self._orig_submitted = 0
+        self._orig_suppressed = 0
         self._memory_opens = 0
         self._ops_submitted = 0
         self._event_reasons = 0
@@ -622,7 +633,7 @@ class CognitionLoop:
         self._pattern_tracker = pattern_tracker
         self._origination_patterns: dict = {}
 
-    def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
+    def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
         """Wire the live order-submission sink (set by the system that owns the
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
@@ -1275,7 +1286,15 @@ class CognitionLoop:
             # Suppress repeats within a cycle regardless of submission outcome.
             self._open_keys.add((symbol, direction))
             if self.origination_mode == "live" and self._origination_sink is not None:
-                self._origination_sink(intent)
+                sink_result = self._origination_sink(intent)
+                if sink_result is False:
+                    self._orig_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] origination rejected for %s %s — "
+                        "not registering a live campaign",
+                        symbol, direction,
+                    )
+                    return
                 self._orig_submitted += 1
                 logger.info(
                     "[cognition-loop] originated LIVE %s %s (stake=%s)",
@@ -1512,7 +1531,10 @@ class CognitionLoop:
             )
             ev = float(getattr(campaign, "expected_value", 0.0) or 0.0)
             exposure = float(getattr(campaign, "desired_exposure", 0.0) or 0.0)
-            reg.observe_thesis(symbol, direction, True, ev_over_flat=ev, confidence=conf)
+            reg.observe_thesis(
+                symbol, direction, True, ev_over_flat=ev, confidence=conf,
+                campaign_id=str(getattr(campaign, "campaign_id", "") or ""),
+            )
             reg.record_leg(symbol, direction, "open", size=exposure)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] campaign open fault (%s): %s", symbol, exc)
@@ -1730,6 +1752,7 @@ class CognitionLoop:
             "origination_sink_wired": self._origination_sink is not None,
             "orig_intended": self._orig_intended,
             "orig_submitted": self._orig_submitted,
+            "orig_suppressed": self._orig_suppressed,
             "memory_enabled": self._memory is not None,
             "memory_opens": self._memory_opens,
             "operations_enabled": (self._operations_author is not None

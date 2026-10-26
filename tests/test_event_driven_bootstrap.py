@@ -255,8 +255,8 @@ class TestEventDrivenSystem:
             symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
             pip_size=0.0001,
         ),
-        "V75": SimpleNamespace(
-            symbol="V75", platform=SimpleNamespace(value="deriv"),
+        "V75_1S": SimpleNamespace(
+            symbol="V75_1S", platform=SimpleNamespace(value="deriv"),
             pip_size=0.01,
         ),
     })
@@ -387,91 +387,14 @@ class TestBrokerPortCompatibility:
         assert result.success
 
 
-# ── Test: Entry integration via on_entry_decision ────────────────────
+# ── Retired legacy entry callback ─────────────────────────────────────
 
-
-class TestEntryDecisionCallback:
-    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
-        "EURUSD": SimpleNamespace(
-            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
-            pip_size=0.0001, pip_value_per_lot=10.0,
-        ),
-    })
-    @patch("event_driven_bootstrap.build_context_for_symbol")
-    @patch("event_driven_bootstrap.PositionSizer")
-    def test_entry_decision_callback_places_order(self, mock_sizer_cls, mock_ctx, caplog):
+class TestEntryDecisionCallbackRetired:
+    def test_direct_entry_callback_is_not_exposed(self):
+        """EntryOrchestrator callbacks are retired; origination belongs to the Brain."""
         from event_driven_bootstrap import EventDrivenSystem
 
-        mock_ctx_obj = MagicMock()
-        mock_ctx_obj.uses_stake = False
-        mock_ctx.return_value = mock_ctx_obj
-
-        mock_sizer = MagicMock()
-        mock_result = SimpleNamespace(lots=0.02, stake_usd=0.0, sizing_mode="lots")
-        mock_sizer.calculate.return_value = mock_result
-        mock_sizer_cls.return_value = mock_sizer
-
-        config = MagicMock()
-        config.risk.max_open_trades = 5
-        config.risk.max_correlated_trades = 2
-        config.risk.risk_per_trade_pct = 0.75
-        pm = _mock_platform_manager()
-        pm.get_platform_balance.return_value = 10000.0
-        pm.execute_entry.return_value = SimpleNamespace(
-            success=True, order_id="T123", lots=0.02, error=None,
-        )
-
-        system = EventDrivenSystem(config, pm)
-        decision = {
-            "symbol": "EURUSD",
-            "direction": "LONG",
-            "entry_price": 1.1000,
-            "stop_loss": 1.0950,
-            "tp1": 1.1075,
-            "conviction": 88,
-        }
-        system._on_entry_decision(decision)
-        pm.execute_entry.assert_called_once()
-
-    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
-        "EURUSD": SimpleNamespace(
-            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
-            pip_size=0.0001, pip_value_per_lot=10.0,
-        ),
-    })
-    @patch("event_driven_bootstrap.build_context_for_symbol")
-    @patch("event_driven_bootstrap.PositionSizer")
-    def test_entry_decision_skips_zero_lots(self, mock_sizer_cls, mock_ctx, caplog):
-        from event_driven_bootstrap import EventDrivenSystem
-
-        mock_ctx_obj = MagicMock()
-        mock_ctx_obj.uses_stake = False
-        mock_ctx.return_value = mock_ctx_obj
-
-        mock_sizer = MagicMock()
-        mock_result = SimpleNamespace(lots=0.0, stake_usd=0.0, sizing_mode="skip_inflated")
-        mock_sizer.calculate.return_value = mock_result
-        mock_sizer_cls.return_value = mock_sizer
-
-        config = MagicMock()
-        config.risk.max_open_trades = 5
-        config.risk.max_correlated_trades = 2
-        config.risk.risk_per_trade_pct = 0.75
-        pm = _mock_platform_manager()
-        pm.get_platform_balance.return_value = 10000.0
-
-        system = EventDrivenSystem(config, pm)
-        decision = {
-            "symbol": "EURUSD",
-            "direction": "LONG",
-            "entry_price": 1.1000,
-            "stop_loss": 1.0950,
-            "tp1": 1.1075,
-            "conviction": 88,
-        }
-        system._on_entry_decision(decision)
-        pm.execute_entry.assert_not_called()
-
+        assert not hasattr(EventDrivenSystem, "_on_entry_decision")
 
 # ── Tier 1–3 data-path helper functions ──────────────────────────────
 

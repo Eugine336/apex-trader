@@ -322,6 +322,7 @@ class _OpenBrain:
         self._dir = direction
         self._exp = exposure
         self._conf = confidence
+        self.last_campaign = None
 
     def reason(self, market_state, now=None):
         sym = market_state.symbol
@@ -333,6 +334,7 @@ class _OpenBrain:
             symbol=sym, direction=self._dir, desired_exposure=self._exp,
             confidence=self._conf, decision_id=decision.decision_id,
         )
+        self.last_campaign = campaign
         return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
 
     def reason_portfolio(self, outputs, existing_positions):
@@ -822,8 +824,8 @@ class _FakeRegistry:
         self.managed = []
 
     def observe_thesis(self, symbol, direction, should_act, ev_over_flat=0.0,
-                       confidence=0.0, now=None):
-        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence))
+                       confidence=0.0, now=None, campaign_id=""):
+        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence, campaign_id))
 
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
                    pnl=0.0, ticket="", now=None):
@@ -843,15 +845,35 @@ class _FakeRegistry:
 
 def test_origination_live_births_campaign():
     reg = _FakeRegistry()
+    brain = _OpenBrain(direction="LONG")
     loop = CognitionLoop(
-        _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
         origination_mode="live", campaign_registry=reg,
         position_source=lambda: [],
     )
     loop.set_origination_sink(lambda intent: None)
     loop.run_once()
     assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
+    assert reg.theses[0][5] == brain.last_campaign.campaign_id
     assert ("EURUSD", "LONG", "open") == reg.legs[0][:3]
+
+
+def test_rejected_live_sink_does_not_register_a_campaign():
+    reg = _FakeRegistry()
+    brain = _OpenBrain(direction="LONG")
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", campaign_registry=reg,
+        position_source=lambda: [],
+    )
+    loop.set_origination_sink(lambda _intent: False)
+    loop.run_once()
+
+    status = loop.get_status()
+    assert reg.theses == []
+    assert reg.legs == []
+    assert status["orig_submitted"] == 0
+    assert status["orig_suppressed"] == 1
 
 
 def test_management_records_campaign_health():

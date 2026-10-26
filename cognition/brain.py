@@ -47,6 +47,7 @@ from cognition.contracts import (
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
+from cognition.native_management import NativePositionManager
 from cognition.pattern_rules import pattern_name
 
 logger = logging.getLogger("apex.cognition.brain")
@@ -288,6 +289,8 @@ class CognitiveBrain:
             independent_min_confidence=independent_min_confidence,
             independent_max_uncertainty=independent_max_uncertainty,
         )
+        self._native_management = NativePositionManager()
+        self._campaign_memory: Optional[Any] = None
         self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
         self._independent_originations = 0
         # Article X — pattern EVOLUTION. An optional
@@ -353,6 +356,15 @@ class CognitiveBrain:
     def identity_contract() -> dict[str, object]:
         """Return Apex's canonical, machine-readable non-negotiable identity."""
         return identity_contract()
+
+    def bind_campaign_memory(self, memory: Any) -> None:
+        """Bind the existing campaign-memory store for read-only thesis retrieval.
+
+        The Brain never creates a store or opens a database. Memory can enrich an
+        existing campaign's original thesis; unavailable memory only reduces
+        context and cannot itself authorise an action.
+        """
+        self._campaign_memory = memory
 
     @property
     def available(self) -> bool:
@@ -1396,28 +1408,75 @@ class CognitiveBrain:
         try:
             consolidation = market_state.consolidation(now)
             uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
+
+            # Management must run the native evidence -> hypothesis -> criticism
+            # pass on EVERY position cycle, before consulting an optional provider.
+            # A provider outage is infrastructure state, never the market verdict.
+            analysis, native_hypotheses = self._native_reasoning(
+                market_state, consolidation, symbol,
+            )
+            payload = self._management_evidence_payload(
+                symbol, market_state, consolidation, position,
+            )
+            campaign_context = payload.get("campaign", {})
+            native_verdict = self._native_management.assess(
+                position,
+                market_state,
+                campaign_context=campaign_context,
+                consolidation=consolidation,
+                analysis=analysis,
+                hypotheses=native_hypotheses,
+                now=now,
+                max_uncertainty=self.max_uncertainty_to_act,
+                min_evidence_domains=self.min_evidence_domains,
+            )
+            payload["native_analysis"] = analysis.to_dict()
+            payload["native_hypotheses"] = [
+                item.to_dict() for item in native_hypotheses[:8]
+            ]
+            payload["native_management_baseline"] = native_verdict.to_dict()
+
             if not self.available:
-                return self._record_management(self._manage_pkg(
-                    symbol, want, DecisionType.HOLD, 0.0, uncertainty,
-                    "reasoner unavailable — hold (no change)"))
-            # Article XX / Flaw 4 — read council coverage up front so a DEGRADED
-            # council cannot authorise a state change (EXIT / REVERSE / SCALE_IN).
-            # Cognitive uncertainty (too few advisors) is distinct from market
-            # uncertainty (the thesis genuinely deteriorating): the former holds,
-            # it never liquidates. None ⇒ no council metadata (gate unenforced).
+                # No advisor: the native manager is the actual verdict, not a
+                # hard-coded HOLD. Ambiguous evidence still yields HOLD safely.
+                native_action = DecisionType(native_verdict.action)
+                output = self._manage_pkg(
+                    symbol, want, native_action, native_verdict.confidence,
+                    uncertainty, native_verdict.reason,
+                )
+                self._attach_native_management_context(
+                    output, native_verdict, analysis, native_hypotheses,
+                )
+                return self._record_management(output)
+
+            # Advisor coverage is metadata about the advisor, not a substitute
+            # for native evidence. Native risk reduction remains available.
             advisors_responded, advisors_available, advisors_total = (
                 self._extract_advisor_counts(market_state)
             )
-            # Change 4 — the management payload carries the CAMPAIGN CONTEXT (held
-            # side, entry, P&L, duration, original thesis/invalidation) so the
-            # reasoner evaluates the existing position, not the market in the
-            # abstract.
-            payload = self._management_evidence_payload(
-                symbol, market_state, consolidation, position)
             opinion = self._manage_reason(symbol, payload, now)
             if opinion is None:
-                return self._record_management(self._manage_pkg(
-                    symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
+                # A failed/throttled/unusable provider response cannot mask a
+                # reasoned native risk reduction. Without one, retain the position.
+                native_action = DecisionType(native_verdict.action)
+                if native_action not in {
+                    DecisionType.EXIT, DecisionType.TIGHTEN_RISK,
+                    DecisionType.SCALE_OUT, DecisionType.PROTECT_PROFIT,
+                }:
+                    native_action = DecisionType.HOLD
+                reason = (
+                    native_verdict.reason if native_action != DecisionType.HOLD
+                    else "no usable advisor management opinion; native reassessment: "
+                         + native_verdict.reason
+                )
+                output = self._manage_pkg(
+                    symbol, want, native_action, native_verdict.confidence,
+                    uncertainty, reason,
+                )
+                self._attach_native_management_context(
+                    output, native_verdict, analysis, native_hypotheses,
+                )
+                return self._record_management(output)
             conf = _clamp01(getattr(opinion, "confidence", 0.0))
             # Part XXV — resolve the confidence PROFILE. Risk-ADDING actions
             # (SCALE_IN) require the effective conviction (the weakest dimension),
@@ -1465,9 +1524,15 @@ class CognitiveBrain:
             pre_quorum_action = action
             action, why = self._apply_management_quorum(
                 symbol, action, why, advisors_responded, advisors_available)
-            # When the guard OVERRODE the model's action, the record must explain
-            # the override (why we held), not echo the model's original rationale.
-            reason_txt = why if action != pre_quorum_action else (rationale or why)
+            pre_native_action = action
+            action, why = self._apply_native_management_baseline(
+                action, why, native_verdict,
+            )
+            # Record the reason for whichever guard changed the requested action.
+            if action != pre_native_action:
+                reason_txt = why
+            else:
+                reason_txt = why if action != pre_quorum_action else (rationale or why)
             logger.info(
                 "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
@@ -1477,8 +1542,13 @@ class CognitiveBrain:
                 ("?" if advisors_available is None else advisors_available),
                 reason_txt[:120],
             )
-            return self._record_management(self._manage_pkg(
-                symbol, want, action, eff_conf, uncertainty, reason_txt, opinion=opinion))
+            output = self._manage_pkg(
+                symbol, want, action, eff_conf, uncertainty, reason_txt, opinion=opinion,
+            )
+            self._attach_native_management_context(
+                output, native_verdict, analysis, native_hypotheses,
+            )
+            return self._record_management(output)
         except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
             logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
             with self._lock:
@@ -1599,6 +1669,62 @@ class CognitiveBrain:
                 f"required advisors) — insufficient cognition for {action.value}, holding")
         return action, why
 
+    @staticmethod
+    def _apply_native_management_baseline(
+        advisor_action: "DecisionType",
+        advisor_reason: str,
+        native_verdict: Any,
+    ) -> "tuple[DecisionType, str]":
+        """Let the native Brain strengthen risk reduction, never add exposure.
+
+        The native manager cannot veto an advisor's already risk-reducing action.
+        When the advisor says HOLD, REVERSE, SCALE_IN, or another non-protective
+        action, a campaign-scoped native EXIT/TIGHTEN/SCALE_OUT/PROTECT verdict
+        takes precedence. This keeps native risk management alive through
+        provider degradation without creating a second execution path.
+        """
+        try:
+            native_action = DecisionType(str(getattr(native_verdict, "action", "hold")))
+        except (TypeError, ValueError):
+            return advisor_action, advisor_reason
+        protective = {
+            DecisionType.EXIT, DecisionType.TERMINATE_CAMPAIGN,
+            DecisionType.TIGHTEN_RISK, DecisionType.SCALE_OUT,
+            DecisionType.PROTECT_PROFIT,
+        }
+        if native_action not in protective or advisor_action in protective:
+            return advisor_action, advisor_reason
+        reason = str(getattr(native_verdict, "reason", "") or "").strip()
+        if not reason:
+            return advisor_action, advisor_reason
+        return native_action, "native management baseline: " + reason
+
+    @staticmethod
+    def _attach_native_management_context(
+        output: BrainOutput,
+        verdict: Any,
+        analysis: Any,
+        hypotheses: list[Any],
+    ) -> None:
+        """Keep the provider-independent management verdict auditable on output."""
+        try:
+            decision = getattr(output, "decision", None)
+            if decision is None:
+                return
+            questions = getattr(decision, "questions_answered", None)
+            if not isinstance(questions, dict):
+                questions = {}
+                decision.questions_answered = questions
+            questions["native_management_baseline"] = verdict.to_dict()
+            if callable(getattr(analysis, "to_dict", None)):
+                questions["native_analysis"] = analysis.to_dict()
+            questions["native_hypotheses"] = [
+                item.to_dict() for item in list(hypotheses or [])[:8]
+                if callable(getattr(item, "to_dict", None))
+            ]
+        except Exception as exc:  # noqa: BLE001 — observability must not break management
+            logger.debug("[brain] native management context attach ignored: %s", exc)
+
     def _manage_pkg(self, symbol: str, held_dir: str, action: "DecisionType",
                     confidence: float, uncertainty: float, reason: str,
                     *, opinion: Any = None) -> BrainOutput:
@@ -1718,22 +1844,83 @@ class CognitiveBrain:
                 "campaign_id": str(getattr(position, "campaign_id", "") or ""),
                 "entry_confidence": getattr(position, "entry_confidence", None),
             }
-            # Original thesis / invalidation from the Brain's origination record
-            # for this symbol, when available (a position opened elsewhere simply
-            # has no prior record — the context is still valid, just thinner).
-            prior = self._last.get(str(symbol or ""))
-            prior_decision = getattr(prior, "decision", None) if prior is not None else None
-            if prior_decision is not None:
-                thesis = str(getattr(prior_decision, "thesis", "") or "")
-                inval = list(getattr(prior_decision, "invalidation_conditions", []) or [])
-                if thesis:
-                    campaign["original_thesis"] = thesis[:500]
-                if inval:
-                    campaign["invalidation_conditions"] = [str(i)[:200] for i in inval][:6]
-                dtype = getattr(prior_decision, "decision_type", None)
-                dval = getattr(dtype, "value", None)
-                if dval:
-                    campaign["entry_decision_type"] = dval
+            # Recover the ORIGINAL campaign thesis by exact campaign id before
+            # consulting process-local history. A later market opinion must not
+            # overwrite the thesis that justified this position.
+            campaign_memory = getattr(self, "_campaign_memory", None)
+            get_open_campaign = getattr(campaign_memory, "get_open_campaign", None)
+            campaign_id = str(campaign.get("campaign_id") or "")
+            if campaign_id and callable(get_open_campaign):
+                try:
+                    stored = get_open_campaign(campaign_id)
+                    stored_matches_position = (
+                        isinstance(stored, dict)
+                        and str(stored.get("symbol") or "").upper() == str(symbol or "").upper()
+                        and str(stored.get("direction") or "").upper()
+                        == str(campaign.get("held_direction") or "").upper()
+                        and str(stored.get("campaign_id") or "") == campaign_id
+                    )
+                    if stored_matches_position:
+                        spec = stored.get("spec", {})
+                        if isinstance(spec, dict):
+                            thesis = str(spec.get("thesis") or "").strip()
+                            if thesis and not campaign.get("original_thesis"):
+                                campaign["original_thesis"] = thesis[:500]
+                            raw_invalidation = spec.get("invalidation_conditions") or []
+                            if isinstance(raw_invalidation, str):
+                                raw_invalidation = [raw_invalidation]
+                            if not campaign.get("invalidation_conditions") and isinstance(
+                                raw_invalidation, (list, tuple)
+                            ):
+                                campaign["invalidation_conditions"] = [
+                                    str(item)[:200] for item in raw_invalidation if str(item).strip()
+                                ][:8]
+                            campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
+                            campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
+                            campaign["entry_expected_value"] = spec.get("expected_value")
+                            campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
+                    elif stored is not None:
+                        logger.warning(
+                            "[brain] campaign memory identity mismatch for %s; "
+                            "stored thesis ignored (position=%s %s)",
+                            campaign_id, symbol, campaign.get("held_direction", ""),
+                        )
+                except Exception as exc:  # noqa: BLE001 — missing memory never authorises a trade
+                    logger.debug("[brain] campaign memory read ignored for %s: %s", campaign_id, exc)
+
+            # Process-local history is only a safe fallback when it belongs to
+            # THIS exact Brain-authored campaign. Same-symbol history may describe
+            # an older trade or an opposite-side thesis and must never be attached
+            # to the currently held position by coincidence.
+            if not campaign.get("original_thesis") or not campaign.get("invalidation_conditions"):
+                prior = self._last.get(str(symbol or ""))
+                prior_campaign = getattr(prior, "campaign", None) if prior is not None else None
+                prior_campaign_id = str(
+                    getattr(prior_campaign, "campaign_id", "") or ""
+                )
+                current_campaign_id = str(campaign.get("campaign_id") or "")
+                prior_decision = (
+                    getattr(prior, "decision", None)
+                    if current_campaign_id and prior_campaign_id == current_campaign_id
+                    else None
+                )
+                if prior is not None and prior_decision is None:
+                    logger.debug(
+                        "[brain] process-local thesis ignored for %s: "
+                        "campaign id does not match held campaign",
+                        current_campaign_id or symbol,
+                    )
+                if prior_decision is not None:
+                    thesis = str(getattr(prior_decision, "thesis", "") or "")
+                    inval = list(getattr(prior_decision, "invalidation_conditions", []) or [])
+                    if thesis and not campaign.get("original_thesis"):
+                        campaign["original_thesis"] = thesis[:500]
+                    if inval and not campaign.get("invalidation_conditions"):
+                        campaign["invalidation_conditions"] = [str(i)[:200] for i in inval][:8]
+                    dtype = getattr(prior_decision, "decision_type", None)
+                    dval = getattr(dtype, "value", None)
+                    if dval:
+                        campaign["entry_decision_type"] = dval
             # Item 8 — thread the CURRENTLY VISIBLE opportunity set for this
             # symbol into the management payload so the reasoner can compare the
             # live campaign against newly emerging opportunities (the management

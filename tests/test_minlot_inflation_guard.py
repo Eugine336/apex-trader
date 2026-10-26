@@ -75,6 +75,10 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._connected = True
     c._magic = 202500
     c._deviation = 20
+    c._max_tick_age_seconds = 120.0
+    c._max_slippage_pips = 0.0
+    c._min_rr_after_adjust = 1.5
+    c._preserve_rr_after_adjust = True
     c._broker_name = "test"
     c._symbol_cache = {"XTIUSD": "XTIUSD", "EURUSD": "EURUSD"}
     c._not_found_warned = set()
@@ -108,7 +112,7 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
         return SimpleNamespace(
             retcode=10009, order=1001, price=1.1000, comment="",
         )
-    mt5_mock.order_send = fake_order_send
+    mt5_mock.order_send = MagicMock(side_effect=fake_order_send)
     return mt5_mock, sent
 
 
