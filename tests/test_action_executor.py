@@ -861,7 +861,7 @@ def test_gold_feed_health_callback_failure_fails_closed():
             gold_feed_health_check=broken_health_check,
         ),
     )
-    blocked = executor.execute(_open_intent("XAUUSD"), {})
+    blocked = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
     assert not blocked.success
     assert blocked.rejected_by_gate
     assert "gold_feed_unhealthy" in blocked.gate_reason
