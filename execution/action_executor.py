@@ -16,6 +16,7 @@ backoff sleeps run outside the lock so one retrying intent never stalls others.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field, replace
 from threading import Lock
@@ -217,6 +218,82 @@ class ActionExecutor:
         self._circuit_log_lock = Lock()
 
     @staticmethod
+    def _payoff_geometry_error(intent: Intent) -> Optional[str]:
+        """Validate canonical, activated, evidence-backed geometry at the broker boundary.
+
+        The Brain is the sole market judge. This gate does not derive or replace
+        any price level; it only checks that the exact evidence-backed geometry
+        survives translation intact and remains ordered around the live entry.
+        """
+        geometry = intent.payoff_geometry
+        if not isinstance(geometry, dict):
+            return "market_payoff_geometry_missing"
+        if (
+            str(geometry.get("identity_version", "") or "") != IDENTITY_VERSION
+            or str(geometry.get("identity", "") or "") != IDENTITY_STATEMENT
+        ):
+            return "market_payoff_geometry_identity_mismatch"
+        symbol = str(intent.symbol or "").strip().upper()
+        geometry_symbol = str(geometry.get("symbol", "") or "").strip().upper()
+        if not symbol or geometry_symbol != symbol:
+            return "market_payoff_geometry_symbol_mismatch"
+        side = str(intent.direction or "").strip().upper()
+        side = "LONG" if side in {"LONG", "BUY"} else ("SHORT" if side in {"SHORT", "SELL"} else "")
+        if not side or str(geometry.get("direction", "") or "").upper() != side:
+            return "market_payoff_geometry_direction_mismatch"
+        if geometry.get("activated") is not True:
+            return "market_payoff_geometry_not_activated"
+        evidence_ids = geometry.get("evidence_ids")
+        if not isinstance(evidence_ids, (list, tuple)) or not any(
+            str(item or "").strip() for item in evidence_ids
+        ):
+            return "market_payoff_geometry_has_no_evidence_provenance"
+
+        def finite_positive(value: Any) -> Optional[float]:
+            if isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return number if math.isfinite(number) and number > 0.0 else None
+
+        entry = finite_positive(geometry.get("entry_price"))
+        stop = finite_positive(geometry.get("stop_price"))
+        target = finite_positive(geometry.get("target_price"))
+        risk = finite_positive(geometry.get("risk_distance"))
+        reward = finite_positive(geometry.get("reward_distance"))
+        reward_r = finite_positive(geometry.get("reward_r"))
+        live_entry = finite_positive(intent.entry_price)
+        intent_stop = finite_positive(intent.new_sl)
+        intent_target = finite_positive(intent.new_tp)
+        if None in (entry, stop, target, risk, reward, reward_r, live_entry, intent_stop, intent_target):
+            return "market_payoff_geometry_contains_invalid_price_or_distance"
+
+        tolerance = max(1e-9, abs(entry) * 1e-8)
+        if (
+            abs(intent_stop - stop) > tolerance
+            or abs(intent_target - target) > tolerance
+        ):
+            return "market_payoff_geometry_levels_changed_after_brain_decision"
+        if side == "LONG":
+            if not (stop < entry < target and intent_stop < live_entry < intent_target):
+                return "market_payoff_geometry_not_ordered_around_live_entry"
+        else:
+            if not (target < entry < stop and intent_target < live_entry < intent_stop):
+                return "market_payoff_geometry_not_ordered_around_live_entry"
+
+        actual_risk = abs(entry - stop)
+        actual_reward = abs(target - entry)
+        if (
+            abs(actual_risk - risk) > max(tolerance, risk * 1e-6)
+            or abs(actual_reward - reward) > max(tolerance, reward * 1e-6)
+            or abs((actual_reward / actual_risk) - reward_r) > 1e-5
+        ):
+            return "market_payoff_geometry_distance_mismatch"
+        return None
+
+    @staticmethod
     def _is_risk_reducing_without_provenance(
         intent: Intent,
         open_positions: dict[str, dict],
@@ -335,6 +412,18 @@ class ActionExecutor:
                 name for name, value in provenance.items()
                 if not str(value or "").strip()
             ]
+            geometry_error = self._payoff_geometry_error(intent)
+            if geometry_error:
+                reason = (
+                    "brain_market_geometry_required: refusing OPEN without intact "
+                    f"activated geometry from fresh market evidence ({geometry_error})"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
             if provenance["source"] != "ai_brain" or missing:
                 reason = (
                     "brain_opportunity_provenance_required: every new exposure "
