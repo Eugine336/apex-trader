@@ -220,3 +220,19 @@ The canonical source remains `cognition/identity.py`; this pass propagates its e
 - **Regression coverage:** added assertions for observation snapshots, serialized decisions/campaigns, learning records, translator provenance, execution-intent propagation, and rejection of a mismatched OPEN identity. Removed import-time global torch/RL mocks from the bankruptcy and MTF-observation tests to prevent test-order contamination of the RL suite.
 
 **Validation status:** these latest edits have been committed to the route-audit branch, but no test run has executed against the current head. The last available workflow is from an earlier head and failed; Actions quota is exhausted. Do not treat the new assertions or the full suite as verified until tests are run in a local environment or CI becomes available. No broker orders were sent; `.env` remains untouched.
+
+
+## Verification refresh — 2026-10-26, PR #758 recovery
+
+The live PR head was rechecked before this refresh. The branch includes the identity propagation and management-intent changes described above. The management translator now prefers the Brain decision's `preferred_opportunity_id` (and explicit decision campaign metadata when present) over older position metadata, with a regression test for that precedence. This is a source-level correction; it is not a runtime validation result.
+
+- **Canonical identity source:** implemented in `cognition/identity.py`; duplicate canonical constants were not introduced.
+- **Observation/decision/campaign serialization:** implemented in source; focused test execution at the current head remains unverified.
+- **Entry intent identity gate:** implemented and covered by tests in source; broker-dispatch behavior remains unverified in this environment.
+- **Management identity/provenance:** implemented in the translator and intent factories; translator provenance precedence now has a regression test. The full live-position-to-executor path remains only partially runtime-verified.
+- **Broker-route audit:** AST guard implemented; it is not a complete runtime call-graph proof.
+- **Learning lineage:** identity fields are present in entry/outcome journal code; end-to-end lineage and OOS/holdout behavior remain unverified.
+- **RL test isolation:** global dependency mocks were removed from the two named tests in source; cross-suite isolation is unverified without executing the suite.
+- **Validation:** workflow #1911 (run ID 40275835782) is completed with failure on older head `a90a8f540f4f32d06098d24c36fa097218244c1f`. Main workflow #1902 is also failed. No successful workflow is established for the latest head. The current tool environment does not provide a checked-out repository for local test execution, so no local test result is claimed.
+
+No broker orders were sent and live trading was not enabled. `.env` was not accessed or modified.
