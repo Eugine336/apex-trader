@@ -56,12 +56,14 @@ class OpportunityGeometry:
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
     symbol: str = ""
+    evidence_timestamp_epoch: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "identity_version": self.identity_version,
             "identity": self.identity,
             "symbol": self.symbol,
+            "evidence_timestamp_epoch": self.evidence_timestamp_epoch,
             "direction": self.direction,
             "entry_price": self.entry_price,
             "stop_price": self.stop_price,
@@ -289,6 +291,7 @@ def derive_opportunity_geometry(
         stop_timeframe=stop_record["timeframe"],
         target_timeframe=target_record["timeframe"],
         symbol=state_symbol,
+        evidence_timestamp_epoch=entry_record["time"],
     )
 
 
