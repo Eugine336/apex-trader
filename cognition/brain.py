@@ -2338,8 +2338,11 @@ class CognitiveBrain:
             # or above 0.50 uncertainty only when its uncertainty-adjusted,
             # cost-adjusted expectancy still supports it. These values inform EV
             # and sizing; they are not universal strategy-selection switches.
-            uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
-                if consolidation else _clamp01(analysis.evidence_uncertainty)
+            uncertainty = _clamp01(
+                (consolidation or {}).get(
+                    "aggregate_uncertainty", analysis.evidence_uncertainty,
+                )
+            )
             # Native fallback may not invent a cost estimate. A current execution
             # cost observation from the shared consolidator is mandatory; use its
             # actual net round-trip estimate for EV rather than a constant default.
@@ -2399,6 +2402,9 @@ class CognitiveBrain:
                 {
                     "id": native_opportunity_id,
                     "direction": direction,
+                    # This path has validated the current hypothesis and net EV;
+                    # the shared execution admission rechecks activation and live
+                    # broker conditions immediately before submitting an order.
                     "state": "ACTIVE",
                     "thesis": lead.statement,
                     "why_now": "; ".join(analysis.observations[:4]) or lead.statement,
