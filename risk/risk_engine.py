@@ -234,6 +234,39 @@ class RiskEngine:
             )
         checks.append(f"Open trades: {len(trades)}/{self.risk_cfg.max_open_trades}")
 
+        # Defense in depth: reject opposite-side exposure in the same instrument
+        # before aggregate currency/cluster calculations. This remains explicit at
+        # the RiskEngine boundary even if correlation decomposition changes.
+        if not self.risk_cfg.allow_intentional_hedge:
+            opposing = next(
+                (
+                    t for t in trades
+                    if (
+                        (str(t.get("pair", "")) if isinstance(t, dict) else str(getattr(t, "pair", ""))).upper()
+                        == pair.upper()
+                        and (str(t.get("direction", "")) if isinstance(t, dict) else str(getattr(t, "direction", ""))).upper()
+                        != direction.upper()
+                    )
+                ),
+                None,
+            )
+            if opposing is not None:
+                opposing_direction = (
+                    str(opposing.get("direction", ""))
+                    if isinstance(opposing, dict)
+                    else str(getattr(opposing, "direction", ""))
+                ).upper()
+                reason = (
+                    f"Opposing hedge on {pair.upper()}: existing "
+                    f"{opposing_direction} conflicts with candidate {direction.upper()}"
+                )
+                rejections.append(reason)
+                logger.warning("[RiskEngine] REJECTED {}: {}", pair, reason)
+                return self._build_assessment(
+                    False, 0.0, 0.0, 0.0, checks, rejections, mode,
+                    dd_status, len(trades), now,
+                )
+
         corr_trades = self._to_open_trades(trades)
         can_open, corr_reason = self.correlation_engine.can_open_trade(
             pair, direction, corr_trades, risk_pct=risk_pct_decimal,
