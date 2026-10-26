@@ -50,13 +50,37 @@ def _close_intent(ticket: str = "12345") -> Intent:
 
 def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **overrides) -> Intent:
     values = dict(
-        symbol=symbol, direction="BUY", lots=0.10, sl=1.0, tp=2.0,
-        source="test", reason="test",
+        symbol=symbol, direction="BUY", lots=0.10, entry_price=1.1,
+        sl=1.0, tp=2.0, source="test", reason="test",
     )
     if brain_provenance:
         values.update(source="ai_brain", decision_id="decision-test",
                       campaign_id="campaign-test", opportunity_id="opportunity-test")
     values.update(overrides)
+    if "payoff_geometry" not in overrides:
+        entry = float(values["entry_price"])
+        stop = float(values["sl"])
+        target = float(values["tp"])
+        side = "LONG" if str(values["direction"]).upper() in ("LONG", "BUY") else "SHORT"
+        geometry = {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
+            "symbol": str(values["symbol"]),
+            "direction": side,
+            "entry_price": entry,
+            "stop_price": stop,
+            "target_price": target,
+            "risk_distance": abs(entry - stop),
+            "reward_distance": abs(target - entry),
+            "reward_r": abs(target - entry) / abs(entry - stop),
+            "activated": True,
+            "activation_reason": "synthetic completed-bar fixture",
+            "invalidation_reason": "synthetic structural level",
+            "evidence_ids": ["test-evidence-1", "test-evidence-2"],
+            "entry_timeframe": "M5",
+            "evidence_timestamp_epoch": time.time(),
+        }
+        values["payoff_geometry"] = geometry
     return Intent.open(**values)
 
 
