@@ -129,6 +129,15 @@ def main() -> int:
     print(f"sibling repo: {sibling_dir}")
     print()
 
+    # Refuse before cloning or copying if the preserved source backup path is
+    # already occupied. This prevents a partial migration that copies state but
+    # cannot safely complete the topology switch.
+    backup_dir = repo_root / "data_preclone_backup"
+    if data_dir.exists() and not ns.dry_run and backup_dir.exists():
+        print(f"ERROR: {backup_dir} already exists from a previous run.")
+        print("No source files copied, renamed or relinked. Review the existing backup manually.")
+        return 1
+
     if not data_dir.exists():
         print("data/ doesn't exist yet -- nothing to preserve, will just clone + junction.")
     elif _is_junction_or_symlink(data_dir):
@@ -200,13 +209,9 @@ def main() -> int:
             return 1
 
     # --- Step 3: move the old plain data/ aside (never delete outright) ---
-    backup_dir = repo_root / "data_preclone_backup"
     if data_dir.exists():
-        print(f"[3/4] Renaming old {data_dir} -> {backup_dir} (kept for your own review)")
+        print(f"[3/4] Renaming old {data_dir} -> {backup_dir} (retained for verification)")
         if not ns.dry_run:
-            if backup_dir.exists():
-                print(f"  ERROR: {backup_dir} already exists from a previous run. Resolve manually before re-running.")
-                return 1
             # Verify all source files at the target before changing topology.
             ok, conflict = verify_copied_files(data_dir, sibling_dir)
             if not ok:
@@ -235,7 +240,7 @@ def main() -> int:
         return 1
 
     print("\nDone. data/ is now a junction into the dedicated apex-trader-data repo.")
-    print(f"Once you've confirmed everything looks right, you can delete {backup_dir}.")
+    print(f"Keep {backup_dir} until you have verified all databases and explicitly approved cleanup.")
     print("sync_data_repo()/compact_repo_history() will now recognize data/ as dedicated and resume normal auto-sync.")
     return 0
 
