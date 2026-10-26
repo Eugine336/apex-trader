@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from cognition.contracts import DecisionType
 from cognition.management_translator import ManagementAction, translate_management
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 def _out(decision_type, symbol="XAUUSD", confidence=0.7):
@@ -66,3 +67,6 @@ def test_action_to_dict_is_bounded():
     d = a.to_dict()
     assert d["kind"] == "close" and d["symbol"] == "XAUUSD"
     assert isinstance(a, ManagementAction)
+    assert d["identity_version"] == IDENTITY_VERSION
+    assert d["identity"] == IDENTITY_STATEMENT
+    assert d["decision_id"] == "dec-1"
