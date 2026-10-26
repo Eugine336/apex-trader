@@ -506,7 +506,7 @@ def test_commission_divides_by_lot_size():
         tmp_path = Path(tmp)
         _setup_test_data(tmp_path, "EURUSD")
 
-        with patch("rl.mtf_environment.INSTRUMENT_REGISTRY", {
+        with patch("config.INSTRUMENT_REGISTRY", {
             "EURUSD": type("Info", (), {
                 "pip_size": 0.0001,
                 "typical_spread_pips": 1.0,
