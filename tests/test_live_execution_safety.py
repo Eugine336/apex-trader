@@ -256,14 +256,15 @@ class TestShadowLoadWeightsOnly:
 
 
 class TestDbFilesUntracked:
-    """Verify no .db files are tracked in git index."""
+    """Verify SQLite databases and transient sidecars are not tracked in git."""
 
-    def test_no_db_files_tracked(self):
+    def test_no_database_artifacts_tracked(self):
         import subprocess
+        from pathlib import Path
 
         result = subprocess.run(
-            ["git", "ls-files", "*.db"],
-            capture_output=True, text=True, cwd=str(__import__("pathlib").Path(__file__).parent.parent),
+            ["git", "ls-files", "*.db", "*.db-wal", "*.db-shm"],
+            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
         )
         tracked = result.stdout.strip()
-        assert tracked == "", f"These .db files are still tracked:\n{tracked}"
+        assert tracked == "", f"These SQLite runtime artifacts are still tracked:\n{tracked}"
