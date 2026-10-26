@@ -287,6 +287,7 @@ def _fake_ctx(ml_adapter):
         outcome_logger=None,
         regime_detector=None,
         re_entry_manager=None,
+        governance=None,
     )
 
 
