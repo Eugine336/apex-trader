@@ -132,6 +132,7 @@ def derive_opportunity_geometry(
                 "breakout_direction": str(measurements.get("breakout_direction", "") or "").lower(),
                 "trend_state": str(measurements.get("trend_state", "") or "").lower(),
                 "trend_strength": _finite(measurements.get("trend_strength")),
+                "range_rotation": bool(measurements.get("range_rotation", False)),
                 "upper_wick": _finite(measurements.get("upper_wick")),
                 "lower_wick": _finite(measurements.get("lower_wick")),
                 "timeframe": str(measurements.get("timeframe", "") or ""),
@@ -201,6 +202,20 @@ def derive_opportunity_geometry(
         item for item in liquidity
         if item["side"] == matching_sweep_side
     ]
+    # Range rotation is a distinct market state, not a pattern-name gate. It
+    # requires a measured range edge plus a fresh response in the candidate
+    # direction; merely being in a range or touching an edge is insufficient.
+    matching_range_rotation = [
+        record for record in structures
+        if record["trend_state"] == "range"
+        and record["range_rotation"]
+        and (
+            (record["range_position"] is not None and record["range_position"] <= 0.15)
+            if side == "LONG" else
+            (record["range_position"] is not None and record["range_position"] >= 0.85)
+        )
+    ]
+    range_response = bool(matching_range_rotation and matching_momentum)
 
     if matching_breakout:
         activation_reason = (
@@ -211,6 +226,11 @@ def derive_opportunity_geometry(
         activation_reason = (
             f"confirmed {matching_trend[0]['trend_state']} structure and "
             f"same-direction completed-bar momentum"
+        )
+    elif range_response:
+        activation_reason = (
+            f"measured range rotation at the {'lower' if side == 'LONG' else 'upper'} "
+            "boundary with a fresh directional response"
         )
     elif matching_sweeps:
         activation_reason = (
@@ -230,6 +250,8 @@ def derive_opportunity_geometry(
             if "item" in record:
                 ids.add(str(getattr(record["item"], "evidence_id", "") or ""))
     for record in matching_sweeps[:1]:
+        ids.add(str(getattr(record["item"], "evidence_id", "") or ""))
+    for record in matching_range_rotation[:1]:
         ids.add(str(getattr(record["item"], "evidence_id", "") or ""))
     ids.discard("")
 
