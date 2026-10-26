@@ -127,6 +127,19 @@ def test_v3_brain_declines_when_council_metadata_is_missing():
     for dom in ("structure", "momentum", "liquidity"):
         ms.add(Evidence(source_module=f"m_{dom}", domain=dom, confidence=0.9,
                         uncertainty=0.1, relevance_horizon_seconds=900.0))
+    # Cost evidence is independently supplied so this test reaches the council
+    # coverage gate rather than stopping earlier at the execution-cost gate.
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol="XAUUSD",
+        observation="fresh measured execution cost for test",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test quote"},
+        relevance_horizon_seconds=60.0,
+    ))
+    add_market_geometry(ms, "LONG")
     out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
         min_advisors_for_action=1,
