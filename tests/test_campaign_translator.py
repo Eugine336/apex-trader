@@ -1,5 +1,6 @@
 """Tests for the campaign translator (Phase G — origination from the Brain's spec)."""
 
+import time
 from types import SimpleNamespace
 
 from cognition.campaign_translator import (
@@ -33,6 +34,7 @@ def _geometry(symbol, direction, entry, sl, tp):
         "entry_timeframe": "M5",
         "stop_timeframe": "M5",
         "target_timeframe": "M5",
+        "evidence_timestamp_epoch": time.time(),
     }
 
 
