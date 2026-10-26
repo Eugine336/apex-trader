@@ -1207,7 +1207,7 @@ class CognitiveBrain:
         # the LESSER of confidence and EV-proportional sizing — a high-confidence
         # trade with poor payoff geometry is sized down; an excellent-payoff
         # trade is sized to (never above) its confidence, for risk control.
-        ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default)))
+        ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, reward_r)))
         # Article XIX — a shallow advisor reply is sized down: the effective
         # conviction is pulled toward the act threshold in proportion to how thin
         # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
@@ -1224,7 +1224,17 @@ class CognitiveBrain:
             symbol=symbol, thesis=decision.thesis, direction=direction,
             desired_exposure=desired_exposure,
             expected_value=expected_value,
-            initial_execution_intent={"kind": "market", "confidence": round(eff_conf, 4)},
+            initial_execution_intent={
+                "kind": "market",
+                "confidence": round(eff_conf, 4),
+                **({
+                    "entry_price": geometry.entry_price,
+                    "sl": geometry.stop_price,
+                    "tp": geometry.target_price,
+                    "payoff_geometry": geometry.to_dict(),
+                    "geometry_evidence_ids": list(geometry.evidence_ids),
+                } if geometry is not None else {}),
+            },
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
             confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
@@ -2743,9 +2753,16 @@ class CognitiveBrain:
             campaign = CampaignSpecification(
                 symbol=symbol, thesis=lead.statement, direction=direction,
                 desired_exposure=desired_exposure, expected_value=expected_value,
-                initial_execution_intent={"kind": "market",
-                                          "confidence": round(lead_conf, 4),
-                                          "independent_origination": True},
+                initial_execution_intent={
+                    "kind": "market",
+                    "confidence": round(lead_conf, 4),
+                    "independent_origination": True,
+                    "entry_price": geometry.entry_price,
+                    "sl": geometry.stop_price,
+                    "tp": geometry.target_price,
+                    "payoff_geometry": geometry.to_dict(),
+                    "geometry_evidence_ids": list(geometry.evidence_ids),
+                },
                 supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf,
                 invalidation_conditions=invalidation_conditions,
