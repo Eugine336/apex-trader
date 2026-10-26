@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
+from cognition.identity import IDENTITY_VERSION
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import assess_strategy_lenses
 
@@ -91,6 +92,7 @@ class EvidenceAnalysis:
 
     # Context-sensitive analytical lenses. These are not trade signals.
     strategy_lenses: list[dict] = field(default_factory=list)
+    identity_version: str = IDENTITY_VERSION
 
     def summary(self) -> str:
         cov = ", ".join(f"{k} {v:.2f}" for k, v in sorted(self.domain_coverage.items()))
@@ -112,6 +114,7 @@ class EvidenceAnalysis:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "domain_coverage": {k: round(v, 4) for k, v in self.domain_coverage.items()},
             "coverage_gap": round(self.coverage_gap, 4),
             "observations": list(self.observations),
@@ -137,6 +140,7 @@ class BrainHypothesis:
     invalidation: str = ""
     opportunity_implication: str = ""
     criticism: str = ""  # self-criticism notes (Article IV)
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         self.confidence = _clamp01(self.confidence)
@@ -149,6 +153,7 @@ class BrainHypothesis:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "statement": self.statement,
             "supporting_patterns": [pattern_name(p) for p in self.supporting_patterns],
             "contradicting_patterns": [pattern_name(p) for p in self.contradicting_patterns],
