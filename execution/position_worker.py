@@ -19,7 +19,7 @@ Thread-safe by construction: no mutable shared state, no side effects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -62,7 +62,9 @@ class WorkerConfig:
     """
 
     # ── Management authority (Constitution Part VI / X) ───────────────
-    # True (default) → the worker runs the FULL deterministic management suite
+    # Explicit legacy mechanical fallback. Default False: thesis-based native Brain
+    # management owns discretionary exits. Set True only for a reviewed fallback.
+    # True → the worker runs the FULL deterministic management suite
     # (TP / breakeven / trailing / stall / invalidation / conviction / HTF /
     # dynamic-SL / opportunity-cost). False → the worker runs ONLY the always-on
     # catastrophic safety floor (hard stop-loss, weekend / session / spread
@@ -71,7 +73,7 @@ class WorkerConfig:
     # reasoning rather than a predefined level or timer. The broker-side
     # protective stop attached at entry remains the hard capital floor in either
     # case, so a position is never unprotected even if the Brain/provider is down.
-    discretionary_exits_enabled: bool = True
+    discretionary_exits_enabled: bool = False
 
     # ── V-009 (was V-03): LEGACY mechanical directional exits ──────────────────
     # (Constitution §I/§IV/§V/§XVII). The invalidation / conviction-collapse /
@@ -87,9 +89,9 @@ class WorkerConfig:
     # (hard SL + weekend / session / spread + absolute-profit backstop, plus the
     # time-based stall fallback) remain. Default True ⇒ behaviour unchanged; every
     # firing is logged as a WARNING so operators can see the mechanical path is
-    # active and migrate to Brain-managed (thesis-based) exits. When the Brain is
-    # the live manager every discretionary exit is already deferred to it.
-    scan_directional_exits_enabled: bool = True
+    # active and migrate to Brain-managed (thesis-based) exits. Default False: the
+    # three scan-direction/score and opposing-HTF mechanical exits are deferred.
+    scan_directional_exits_enabled: bool = False
 
     # ── TradeManager params ───────────────────────────────────────────
     breakeven_buffer_pips: float = 2.0
@@ -280,6 +282,26 @@ class PositionWorker:
             source, snap.symbol, snap.direction, detail,
         )
 
+    @staticmethod
+    def _label_legacy_mechanical(
+        intents: list[Intent], start_index: int,
+    ) -> None:
+        """Label discretionary worker actions for audit when legacy fallback fires.
+
+        Preserve the original check name inside the reason while assigning the
+        canonical source label required by the migration contract.
+        """
+        if start_index >= len(intents):
+            return
+        for index in range(start_index, len(intents)):
+            intent = intents[index]
+            original_source = str(intent.source or "")
+            intents[index] = replace(
+                intent,
+                source="legacy_mechanical",
+                reason=f"[legacy_source={original_source}] {intent.reason}",
+            )
+
     def evaluate(
         self,
         snap: PositionSnapshot,
@@ -330,30 +352,38 @@ class PositionWorker:
         if not snap.sl_pending_confirmation:
             self._check_stop_loss(snap, intents)          # safety floor — always
         if discretionary:
+            legacy_start = len(intents)
             self._check_tp1(snap, intents)
             self._check_breakeven(snap, intents)
             self._check_tp3(snap, intents)
             self._check_tp2(snap, intents)
             self._check_stall(snap, now, intents, scan=scan)
+            self._label_legacy_mechanical(intents, legacy_start)
 
         # ── Layer 2: Exit checks (ExitChecksMixin logic) ─────────────
         self._check_absolute_profit_protection(snap, intents)   # safety floor — always
         if discretionary:
+            legacy_start = len(intents)
             self._check_dynamic_sl_tightening(snap, intents)
+            self._label_legacy_mechanical(intents, legacy_start)
         self._check_weekend_protection(snap, now, intents)      # safety floor — always
 
         if discretionary and scan is not None and past_grace:
             # V-03 — these read a compressed scan direction/score; defer to the
             # Brain when scan-directional exits are disabled.
             if self.cfg.scan_directional_exits_enabled:
+                legacy_start = len(intents)
                 self._check_invalidation(snap, scan, intents)
                 self._check_conviction_collapse(snap, intents)
+                self._label_legacy_mechanical(intents, legacy_start)
 
         if market is not None:
             if discretionary:
+                legacy_start = len(intents)
                 trailed = self._check_structure_trailing(snap, market, out=intents)
                 if not trailed:
                     self._check_atr_trailing(snap, market, out=intents)
+                self._label_legacy_mechanical(intents, legacy_start)
                 # V-009 — the H1 candle-against-side close is a MECHANICAL
                 # directional exit (it cuts a live campaign because the last HTF
                 # candle printed against the held side — "does price still agree
@@ -361,11 +391,15 @@ class PositionWorker:
                 # the other compressed direction/score exits so it too defers to
                 # the Brain when scan-directional exits are disabled.
                 if past_grace and self.cfg.scan_directional_exits_enabled:
+                    legacy_start = len(intents)
                     self._check_htf_candle_close(snap, market, intents)
+                    self._label_legacy_mechanical(intents, legacy_start)
             self._check_spread_deterioration(snap, market, intents)  # safety floor
             self._check_session_close(snap, now, intents)            # safety floor
             if discretionary:
+                legacy_start = len(intents)
                 self._check_opportunity_cost(snap, now, market, intents)
+                self._label_legacy_mechanical(intents, legacy_start)
 
         return self._drop_too_close_sl_moves(snap, intents)
 
