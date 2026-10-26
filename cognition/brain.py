@@ -45,7 +45,8 @@ from cognition.contracts import (
     MarketState,
     Opportunity,
 )
-from cognition.expected_value import expected_value_r, reward_risk_from_opinion
+from cognition.expected_value import expected_value_r
+from cognition.opportunity_geometry import derive_opportunity_geometry
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
 from cognition.native_management import NativePositionManager
 from cognition.pattern_rules import pattern_name
@@ -695,7 +696,32 @@ class CognitiveBrain:
         # former confidence-as-EV proxy. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
-        reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
+        geometry = (
+            derive_opportunity_geometry(market_state, direction, now=now)
+            if direction in (LONG, SHORT) else None
+        )
+        geometry_qualified = direction not in (LONG, SHORT) or geometry is not None
+        # For a directional view, advisor-reported excursions cannot stand in for
+        # market structure. If geometry is unavailable, set no favourable payoff
+        # and keep the opportunity fail-closed at the shared EV/admission gates.
+        reward_r = geometry.reward_r if geometry is not None else 0.0
+        risk_r = 1.0
+        if geometry is not None and driving_opp is not None:
+            driving_opp.entry_price = geometry.entry_price
+            driving_opp.stop_price = geometry.stop_price
+            driving_opp.target_price = geometry.target_price
+            driving_opp.risk_distance = geometry.risk_distance
+            driving_opp.reward_distance = geometry.reward_distance
+            driving_opp.reward_r = geometry.reward_r
+            driving_opp.geometry_evidence_ids = list(geometry.evidence_ids)
+            driving_opp.target_logic = (
+                f"Market-derived target {geometry.target_price:.10g}; "
+                f"entry {geometry.entry_price:.10g}; stop {geometry.stop_price:.10g}; "
+                f"payoff geometry {geometry.reward_r:.4f}R"
+            )
+            driving_opp.invalidation_conditions = list(dict.fromkeys(
+                list(driving_opp.invalidation_conditions) + [geometry.invalidation_reason]
+            ))
         # Net EV includes the best available cost estimate. The configured
         # default remains diagnostic only; it cannot substitute for verified,
         # fresh execution-cost evidence when the Brain authorizes a campaign.
@@ -715,6 +741,14 @@ class CognitiveBrain:
             "what_is_happening": primary_hyp or rationale,
             "reasoning_mode": "native_plus_advisor",
             "external_advisor_status": "available",
+            "payoff_geometry_status": (
+                "qualified_from_fresh_completed_market_evidence"
+                if geometry is not None else (
+                    "not_required_non_directional" if direction not in (LONG, SHORT)
+                    else "missing_structural_geometry_fail_closed"
+                )
+            ),
+            "market_derived_geometry": geometry.to_dict() if geometry is not None else None,
             "why_is_it_happening": primary_hyp or rationale,
             "evidence_supports": f"{len(supporting)} evidence items lean {direction}",
             "evidence_contradicts": "; ".join(alternatives) if alternatives
@@ -912,8 +946,9 @@ class CognitiveBrain:
         # fresh verified costs, adequate data quality and shared portfolio/risk review.
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
+        ev_ok = ev_ok and geometry_qualified
         if self.ev_primary_gate:
-            ev_ok = expected_value > self.ev_action_threshold_r
+            ev_ok = expected_value > self.ev_action_threshold_r and geometry_qualified
         # The legacy non-EV-primary mode may alter how opportunities are described,
         # but it may not substitute a fixed confidence/uncertainty cutoff for EV.
         directional_and_qualified = directional and ev_ok
@@ -924,6 +959,7 @@ class CognitiveBrain:
             and domain_ok
             and cost_verified
             and has_actionable_opportunity
+            and geometry_qualified
         )
         if not act:
             if (is_harvesting and driving_opp is not None
@@ -1171,7 +1207,7 @@ class CognitiveBrain:
         # the LESSER of confidence and EV-proportional sizing — a high-confidence
         # trade with poor payoff geometry is sized down; an excellent-payoff
         # trade is sized to (never above) its confidence, for risk control.
-        ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default)))
+        ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, reward_r)))
         # Article XIX — a shallow advisor reply is sized down: the effective
         # conviction is pulled toward the act threshold in proportion to how thin
         # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
@@ -1188,7 +1224,17 @@ class CognitiveBrain:
             symbol=symbol, thesis=decision.thesis, direction=direction,
             desired_exposure=desired_exposure,
             expected_value=expected_value,
-            initial_execution_intent={"kind": "market", "confidence": round(eff_conf, 4)},
+            initial_execution_intent={
+                "kind": "market",
+                "confidence": round(eff_conf, 4),
+                **({
+                    "entry_price": geometry.entry_price,
+                    "sl": geometry.stop_price,
+                    "tp": geometry.target_price,
+                    "payoff_geometry": geometry.to_dict(),
+                    "geometry_evidence_ids": list(geometry.evidence_ids),
+                } if geometry is not None else {}),
+            },
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
             confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
@@ -2537,6 +2583,13 @@ class CognitiveBrain:
                 return None
 
             direction = lead.direction_implication
+            # A native opportunity needs a real, activated market-structure
+            # geometry. Missing stop/target levels or activation evidence means
+            # observe; never manufacture the previous configured reward multiple.
+            geometry = derive_opportunity_geometry(market_state, direction)
+            if geometry is None or not geometry.activated:
+                return None
+
             # Acknowledge uncertainty continuously rather than converting it into
             # a universal binary cutoff. Uncertainty attenuates the probability
             # estimate used for expectancy; it does not alone prohibit a market
@@ -2549,7 +2602,7 @@ class CognitiveBrain:
             )
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 uncertainty_adjusted_conf, lead)
-            reward_r, risk_r = self.reward_r_default, 1.0
+            reward_r, risk_r = geometry.reward_r, 1.0
             cost_r = self._execution_cost_r(market_state)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
@@ -2582,7 +2635,8 @@ class CognitiveBrain:
                 if market_coverage else 0.0
             )
             native_opportunity_id = (
-                f"native:{symbol}:{'+'.join(sorted(supporting))}"
+                f"native:{symbol}:{direction}:{geometry.entry_price:.10g}:"
+                f"{','.join(geometry.evidence_ids[:3])}"
             )[:160]
             native_opportunity = Opportunity.from_reply(
                 {
@@ -2595,6 +2649,8 @@ class CognitiveBrain:
                     "thesis": lead.statement,
                     "why_now": "; ".join(analysis.observations[:4]) or lead.statement,
                     "entry_conditions": [
+                        geometry.activation_reason,
+                        f"Market-derived entry {geometry.entry_price:.10g}; stop {geometry.stop_price:.10g}; target {geometry.target_price:.10g}",
                         f"Current evidence supports this hypothesis across {len(independent_domains)} independent market domains",
                         *[str(getattr(item, "observation", "") or "")[:180] for item in directional_facts[:4]],
                         "Fresh quote, broker feasibility, protective-risk checks and common admission must pass before submission",
@@ -2602,11 +2658,22 @@ class CognitiveBrain:
                     "confirmation_conditions": [
                         "The activation evidence remains valid at final execution admission",
                     ],
-                    "invalidation_conditions": [lead.invalidation] if lead.invalidation else [],
+                    "invalidation_conditions": list(dict.fromkeys(
+                        [geometry.invalidation_reason] + ([lead.invalidation] if lead.invalidation else [])
+                    )),
                     "target_logic": (
-                        f"Screening geometry assumes {reward_r:.2f}R reward / {risk_r:.2f}R risk; "
-                        "the execution plane must resolve broker-valid protection and prices"
+                        f"Market-derived structural target {geometry.target_price:.10g} versus "
+                        f"entry {geometry.entry_price:.10g}; protective invalidation {geometry.stop_price:.10g}; "
+                        f"reward {geometry.reward_distance:.10g} / risk {geometry.risk_distance:.10g} "
+                        f"= {reward_r:.4f}R"
                     ),
+                    "entry_price": geometry.entry_price,
+                    "stop_price": geometry.stop_price,
+                    "target_price": geometry.target_price,
+                    "risk_distance": geometry.risk_distance,
+                    "reward_distance": geometry.reward_distance,
+                    "reward_r": geometry.reward_r,
+                    "geometry_evidence_ids": list(geometry.evidence_ids),
                     "quality": lead_conf,
                     "asymmetry": reward_r / max(0.01, reward_r + risk_r),
                     "evidence_strength": evidence_strength,
@@ -2642,6 +2709,8 @@ class CognitiveBrain:
                 "brain_book_comparison": considered,
                 "brain_independent_opportunity_id": native_opportunity.opportunity_id,
                 "brain_independent_opportunity_state": native_opportunity.state.value,
+                "market_derived_geometry": geometry.to_dict(),
+                "payoff_geometry_status": "qualified_from_fresh_completed_market_evidence",
                 "reasoner_state": reason_txt,
             }
             if pattern_mod_note:
@@ -2650,7 +2719,7 @@ class CognitiveBrain:
                 questions["supporting_patterns"] = list(lead_pattern_names)
             base_exposure = min(
                 lead_conf,
-                min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default))),
+                min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
             )
             desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
             questions["sizing_rationale"] = (
@@ -2684,9 +2753,16 @@ class CognitiveBrain:
             campaign = CampaignSpecification(
                 symbol=symbol, thesis=lead.statement, direction=direction,
                 desired_exposure=desired_exposure, expected_value=expected_value,
-                initial_execution_intent={"kind": "market",
-                                          "confidence": round(lead_conf, 4),
-                                          "independent_origination": True},
+                initial_execution_intent={
+                    "kind": "market",
+                    "confidence": round(lead_conf, 4),
+                    "independent_origination": True,
+                    "entry_price": geometry.entry_price,
+                    "sl": geometry.stop_price,
+                    "tp": geometry.target_price,
+                    "payoff_geometry": geometry.to_dict(),
+                    "geometry_evidence_ids": list(geometry.evidence_ids),
+                },
                 supporting_evidence_ids=supporting_evidence_ids,
                 confidence=lead_conf,
                 invalidation_conditions=invalidation_conditions,
