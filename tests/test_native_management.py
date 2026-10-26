@@ -361,3 +361,27 @@ def test_risk_domain_invalidation_does_not_count_as_independent_market_confirmat
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
+
+
+def test_process_local_thesis_is_not_reused_across_campaign_ids():
+    from types import SimpleNamespace
+
+    brain = CognitiveBrain(reasoner=None)
+    brain._last["EURUSD"] = SimpleNamespace(
+        campaign=SimpleNamespace(campaign_id="older-campaign"),
+        decision=SimpleNamespace(
+            thesis="thesis from a closed/older position",
+            invalidation_conditions=["old invalidation condition"],
+            decision_type=DecisionType.OPEN_CAMPAIGN,
+        ),
+    )
+    position = PositionView(
+        symbol="EURUSD", direction="LONG", campaign_id="current-campaign",
+    )
+    state = _state()
+    payload = brain._management_evidence_payload(
+        "EURUSD", state, state.consolidation(), position,
+    )
+    campaign = payload["campaign"]
+    assert "original_thesis" not in campaign
+    assert "invalidation_conditions" not in campaign
