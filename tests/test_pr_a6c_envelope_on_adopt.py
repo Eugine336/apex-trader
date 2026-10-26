@@ -11,7 +11,7 @@ Tests:
 """
 
 import json
-
+from datetime import datetime, timedelta, timezone
 
 from adaptive.score_optimizer import (
     ADAPTIVE_WEIGHT_ENVELOPE_PCT,
@@ -20,6 +20,12 @@ from adaptive.score_optimizer import (
     ScoringWeights,
     load_saved_weights,
 )
+
+def _use_isolated_weights_path(monkeypatch, tmp_path):
+    import adaptive.score_optimizer as so_mod
+
+    monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
+
 
 BASELINE = ScoringWeights()
 BASELINE_DICT = BASELINE.as_dict()
@@ -53,12 +59,17 @@ def _build_volume_predictive_dataset(n_train: int = 70, n_val: int = 30) -> list
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "session", "volume"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "session", "volume"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
@@ -69,12 +80,17 @@ def _build_overfit_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "session"] if is_win else ["structure", "fvg", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
@@ -96,7 +112,8 @@ class TestTwelveFactorModel:
     def test_factor_keys_count(self):
         assert len(FACTOR_KEYS) == 12
 
-    def test_fitted_vector_has_all_12_keys(self, tmp_path):
+    def test_fitted_vector_has_all_12_keys(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w.json")
         trades = _build_volume_predictive_dataset()
@@ -126,26 +143,29 @@ class TestTwelveFactorModel:
 
 
 class TestOOSGatePreserved:
-    def test_overfit_candidate_rejected(self, tmp_path):
+    def test_overfit_candidate_rejected(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w.json")
         original = ScoringWeights()
         result = opt.optimize(_build_overfit_dataset(), min_trades=50)
         assert result.as_dict() == original.as_dict()
 
-    def test_no_write_on_rejection(self, tmp_path):
-        fp = tmp_path / "w.json"
+    def test_no_write_on_rejection(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
+        fp = tmp_path / "scoring_weights.json"
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(fp)
         opt.optimize(_build_overfit_dataset(), min_trades=50)
-        assert not fp.exists()
+        assert not (tmp_path / "scoring_weights.json").exists()
 
-    def test_genuine_improvement_adopted(self, tmp_path):
+    def test_genuine_improvement_adopted(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w.json")
         result = opt.optimize(_build_volume_predictive_dataset(), min_trades=50)
         assert result.as_dict() != ScoringWeights().as_dict()
-        assert (tmp_path / "w.json").exists()
+        assert (tmp_path / "scoring_weights.json").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -154,14 +174,16 @@ class TestOOSGatePreserved:
 
 
 class TestEnvelopeOnAdopt:
-    def test_oos_path_all_factors_within_envelope(self, tmp_path):
+    def test_oos_path_all_factors_within_envelope(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """Normal OOS-validated adopt: every saved factor within ±25% of baseline."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w.json")
         result = opt.optimize(_build_volume_predictive_dataset(), min_trades=50)
         _assert_within_envelope(result, label="OOS adopt: ")
 
-    def test_oos_path_persisted_file_within_envelope(self, tmp_path):
+    def test_oos_path_persisted_file_within_envelope(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """The file on disk must also be within the envelope (not just the return value)."""
         fp = tmp_path / "w.json"
         opt = ScoreOptimizer()
@@ -171,7 +193,8 @@ class TestEnvelopeOnAdopt:
         reloaded = ScoringWeights(**{k: v for k, v in data.items() if k in ScoringWeights.__dataclass_fields__})
         _assert_within_envelope(reloaded, label="persisted: ")
 
-    def test_small_sample_path_within_envelope(self, tmp_path):
+    def test_small_sample_path_within_envelope(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """Small-sample fallback (_fit_and_adopt) also clamps before saving."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w.json")
@@ -179,7 +202,8 @@ class TestEnvelopeOnAdopt:
         result = opt.optimize(small, min_trades=30)
         _assert_within_envelope(result, label="small-sample: ")
 
-    def test_volume_clamped_when_pushed_beyond_envelope(self, tmp_path):
+    def test_volume_clamped_when_pushed_beyond_envelope(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """Volume (baseline 5, ±25% = [4, 6]) is pushed to ~7-8 by normalisation
         before the clamp caps it at 6."""
         opt = ScoreOptimizer()
@@ -189,7 +213,8 @@ class TestEnvelopeOnAdopt:
         hi = round(BASELINE_DICT["volume"] * 1.25)
         assert rd["volume"] <= hi, f"volume {rd['volume']} exceeds envelope upper {hi}"
 
-    def test_extreme_random_dataset_all_factors_bounded(self, tmp_path):
+    def test_extreme_random_dataset_all_factors_bounded(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """Random tags across all 12 factors — every adopted factor stays within envelope."""
         import random
 
@@ -212,7 +237,8 @@ class TestEnvelopeOnAdopt:
 
 
 class TestNoPostClampRenorm:
-    def test_saved_total_may_differ_from_canonical(self, tmp_path):
+    def test_saved_total_may_differ_from_canonical(self, tmp_path, monkeypatch):
+        _use_isolated_weights_path(monkeypatch, tmp_path)
         """When the clamp adjusts factors, the sum is NOT re-normalised to 123.
         The saved total may be less than (or occasionally equal to) 123."""
         opt = ScoreOptimizer()
