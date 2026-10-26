@@ -1,0 +1,22 @@
+name: Read-only tracked database inventory
+
+on:
+  push:
+    branches:
+      - redesign/route-audit-and-ci-recovery
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Report schema and row counts only
+        run: python scripts/audit_tracked_databases.py
