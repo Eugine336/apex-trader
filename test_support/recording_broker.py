@@ -122,3 +122,7 @@ class RecordingFakeBroker:
             "tp": tp,
         })
         return self.open_return
+
+
+# Backward-compatible name used by existing executor test helpers.
+FakeBroker = RecordingFakeBroker
