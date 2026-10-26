@@ -16,6 +16,8 @@ def _state(
     breakout="up",
     trend="uptrend",
     momentum=0.001,
+    range_position=0.5,
+    range_rotation=False,
 ):
     now = time.time()
     stamp = now if timestamp is None else timestamp
@@ -34,9 +36,10 @@ def _state(
             "current_close": close,
             "prior_range_high": high,
             "prior_range_low": low,
-            "range_position": 0.5,
+            "range_position": range_position,
             "breakout_direction": breakout,
             "trend_state": trend,
+            "range_rotation": range_rotation,
             "trend_strength": 0.4,
         },
         timestamp_epoch=stamp,
@@ -100,6 +103,19 @@ def test_unconfirmed_direction_without_activation_fails_closed():
     state = _state(breakout="none", trend="range", momentum=0.0)
 
     assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_measured_range_rotation_can_activate_without_a_named_pattern():
+    state = _state(
+        breakout="none", trend="range", momentum=0.001,
+        range_position=0.1, range_rotation=True,
+    )
+    geometry = derive_opportunity_geometry(state, "LONG")
+
+    assert geometry is not None
+    assert geometry.activated
+    assert "measured range rotation" in geometry.activation_reason
+    assert geometry.target_price > geometry.entry_price > geometry.stop_price
 
 
 def test_stale_completed_bar_evidence_cannot_define_geometry():
