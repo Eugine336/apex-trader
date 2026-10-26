@@ -10,8 +10,12 @@ from cognition.contracts import CampaignSpecification
 
 
 def _spec(**kw) -> CampaignSpecification:
-    base = dict(symbol="EURUSD", direction="LONG", desired_exposure=0.5,
-                confidence=0.8, thesis="momentum breakout")
+    base = dict(
+        symbol="EURUSD", direction="LONG", desired_exposure=0.5,
+        confidence=0.8, thesis="momentum breakout",
+        decision_id="decision-default", opportunity_id="opportunity-default",
+        opportunity_state="ACTIVE",
+    )
     base.update(kw)
     return CampaignSpecification(**base)
 
@@ -63,7 +67,9 @@ def test_translate_carries_stop_and_target_from_intent():
 
 
 def test_translate_carries_provenance():
-    spec = _spec(campaign_id="c123", decision_id="d456")
+    spec = _spec(
+        campaign_id="c123", decision_id="d456", opportunity_id="o789",
+    )
     intent = translate(spec, balance=5_000.0)
     assert intent.campaign_id == "c123"
     assert intent.decision_id == "d456"
@@ -75,6 +81,19 @@ def test_translate_carries_provenance():
     assert intent.to_dict()["identity"] == IDENTITY_STATEMENT
     assert intent.opportunity_id == spec.opportunity_id
     assert intent.to_dict()["opportunity_id"] == spec.opportunity_id
+
+
+def test_translate_rejects_noncanonical_identity_instead_of_rewriting_it():
+    assert translate(_spec(identity_version="old-version")) is None
+    assert translate(_spec(identity="competing identity")) is None
+
+
+def test_translate_requires_decision_campaign_and_activated_opportunity_links():
+    assert translate(_spec(decision_id="")) is None
+    assert translate(_spec(opportunity_id="")) is None
+    assert translate(_spec(campaign_id="")) is None
+    assert translate(_spec(opportunity_state="FORMING")) is None
+    assert translate(_spec(opportunity_state="UNKNOWN")) is None
 
 
 def test_translate_never_raises_on_garbage():
