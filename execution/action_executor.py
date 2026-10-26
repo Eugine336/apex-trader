@@ -310,6 +310,33 @@ class ActionExecutor:
                     error=reason,
                 )
 
+            # In Gold mode, identity text alone is not authority: every new
+            # exposure must be explicitly authored by the CognitiveBrain and
+            # linked to a decision, campaign, and activated opportunity. Legacy
+            # mechanical entry paths are denied here until they use that contract.
+            provenance = {
+                "source": str(intent.source or ""),
+                "decision_id": str(intent.decision_id or ""),
+                "campaign_id": str(intent.campaign_id or ""),
+                "opportunity_id": str(intent.opportunity_id or ""),
+            }
+            missing = [key for key, value in provenance.items() if not value]
+            if provenance["source"] != "ai_brain" or missing:
+                reason = (
+                    "brain_opportunity_provenance_required: Gold-mode OPEN requires "
+                    "source=ai_brain plus decision_id, campaign_id, and opportunity_id; "
+                    f"source={provenance['source']!r}, missing={missing}"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent,
+                    success=False,
+                    rejected_by_gate=True,
+                    gate_reason=reason,
+                    error=reason,
+                )
+
             if self._cfg.require_gold_feed_health:
                 health_check = self._cfg.gold_feed_health_check
                 try:
