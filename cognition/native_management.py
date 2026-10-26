@@ -19,11 +19,15 @@ with its invalidation conditions. Ambiguous or incomplete assessments HOLD.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Optional
 
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
+
+logger = logging.getLogger("apex.cognition.native_management")
 
 
 def _clamp01(value: Any, default: float = 1.0) -> float:
@@ -481,8 +485,11 @@ class NativePositionManager:
                     str(item) for item in (getattr(analysis, "contradictions", []) or [])
                     if str(item).strip()
                 ]
-            except Exception:
-                # Native analysis enrichment is optional; the fail-safe result is HOLD.
+            except Exception as exc:  # noqa: BLE001 — native enrichment must not break management
+                logger.debug(
+                    "[native-management] analysis enrichment ignored for %s: %s",
+                    symbol, exc,
+                )
                 native_patterns = set()
                 analysis_domains = set()
                 analysis_contradictions = []
@@ -508,7 +515,11 @@ class NativePositionManager:
                     hypothesis_confidence = _clamp01(
                         getattr(hypothesis, "confidence", 0.0), 0.0
                     )
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 — malformed hypothesis is non-authoritative
+                    logger.debug(
+                        "[native-management] invalid hypothesis confidence for %s: %s",
+                        symbol, exc,
+                    )
                     hypothesis_confidence = 0.0
                 active_contradictions = {
                     str(item).lower()
@@ -581,7 +592,11 @@ class NativePositionManager:
                 ),
                 **base,
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — faulty cognition must never liquidate
+            logger.warning(
+                "[native-management] assessment failed for %s; preserving position: %s",
+                getattr(position, "symbol", "?"), exc,
+            )
             # This manager sits on the management path. A faulty assessment must
             # never liquidate a position or prevent the surrounding cycle.
             return self._hold(
