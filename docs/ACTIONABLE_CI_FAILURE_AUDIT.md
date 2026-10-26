@@ -59,3 +59,18 @@ Supersedes the older pending-workflow note above. Rechecked GitHub state:
 - No local checkout was available in the current execution environment, so focused tests and Ruff were not run locally. The current-head changes remain **unverified by test execution**.
 
 Keep the PR draft/unmerged until focused local tests or CI validate the current head. No broker orders were sent, no live trading was enabled, and `.env` was not accessed or changed.
+
+
+## Latest validation snapshot — PR #758 head `8cefc7289ad2c73d469ca3c4f25614fdbbed7d3c`
+
+The latest completed full CI run (workflow run 1946, https://github.com/Eugine336/apex-trader/actions/runs/40284186260) is **red**: lint passed; Python 3.12 reported **140 failed, 3,785 passed, 12 skipped**; Python 3.11 was cancelled. The focused Gold desk workflow (run 330, https://github.com/Eugine336/apex-trader/actions/runs/40284186222) passed on Python 3.11 and 3.12.
+
+Failure evidence includes distinct clusters rather than one universal root cause:
+- RL suite contamination: many tests see incomplete mocked `torch.nn` (`Conv1d` missing) and `torch.cuda` missing; the source of the leaked module state still needs isolation.
+- Cognition/admission fixtures: several legacy positive-path tests now correctly receive `CONTINUE_OBSERVING` when quorum, market-domain coverage, or cost evidence is missing.
+- Test/API and fixture mismatches: dashboard TestClient peer-address keyword mismatch, missing fixture fields, old method/field expectations, and timing assertions.
+- Stateful artifacts: tracked `.db` files, malformed/reused SQLite state, optimizer/OOS persistence mismatches.
+- Production/source gaps requiring triage: RL environment `random_start`, WorldModel quality fields, dashboard/process lifecycle behavior, and the large silent-exception-handler inventory.
+- The silent-handler test reports 395 locations; classify and repair intentional fail-safe handlers versus genuine swallowed failures rather than mass-adding logs or changing runtime behavior blindly.
+
+After this run, the two remaining direct `TestClient(..., client=...)` calls in `tests/test_dashboard_auth.py` were replaced with the existing cross-version `_test_client_with_address` helper in commit `b31293f0e15581095ccf80cb1a61c7c2499dc793`. That specific fix has **not yet been shown to pass a new workflow**. Do not reuse the earlier run as evidence for the new commit.
