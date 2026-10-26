@@ -206,7 +206,7 @@ def test_loop_open_book_read_fault_blocks_new_origination_but_reasons():
     loop.set_origination_sink(lambda intent: submitted.append(intent))
 
     assert loop.run_once() == 1
-    assert brain.reviewed_book == []
+    assert brain.calls == ["EURUSD"]
     assert submitted == []
     assert loop.get_status()["orig_submitted"] == 0
 
