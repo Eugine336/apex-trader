@@ -594,8 +594,14 @@ class Opportunity:
     confirmation_conditions: list[str] = field(default_factory=list)
     invalidation_conditions: list[str] = field(default_factory=list)
     target_logic: str = ""
-    # Market-derived payoff geometry. These values are authoritative only when
-    # attached by the native geometry resolver, never copied from advisor text.
+    quality: float = 0.0
+    asymmetry: float = 0.0
+    urgency: float = 0.0
+    evidence_strength: float = 0.0
+    competing_opportunities: list[str] = field(default_factory=list)
+    is_preferred: bool = False
+    # Appended fields preserve the existing positional constructor contract.
+    # These are authoritative only when filled by the native geometry resolver.
     entry_price: Optional[float] = None
     stop_price: Optional[float] = None
     target_price: Optional[float] = None
@@ -603,12 +609,6 @@ class Opportunity:
     reward_distance: Optional[float] = None
     reward_r: Optional[float] = None
     geometry_evidence_ids: list[str] = field(default_factory=list)
-    quality: float = 0.0
-    asymmetry: float = 0.0
-    urgency: float = 0.0
-    evidence_strength: float = 0.0
-    competing_opportunities: list[str] = field(default_factory=list)
-    is_preferred: bool = False
 
     def __post_init__(self) -> None:
         d = str(self.direction or "FLAT").upper()
