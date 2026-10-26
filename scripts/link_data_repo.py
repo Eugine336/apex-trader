@@ -166,7 +166,7 @@ def main() -> int:
             print(f"Expected: {ns.data_repo_url}")
             print(f"Actual: {remote.strip()}")
             return 1
-        print(f"[1/4] Existing data repo validated; not pulling or mutating it.")
+        print("[1/4] Existing data repo validated; not pulling or mutating it.")
     elif not ns.dry_run:
         print(f"[1/4] Cloning {ns.data_repo_url} -> {sibling_dir}")
         ok, out = _run(["git", "clone", ns.data_repo_url, str(sibling_dir)], dry_run=False)
