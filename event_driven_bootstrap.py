@@ -2024,6 +2024,291 @@ class EventDrivenSystem:
 
         return _source
 
+    def _size_brain_origination_with_portfolio(
+        self, origination: Any, symbol: str, direction: str, sl: float,
+    ) -> Optional[dict[str, Any]]:
+        """Use the shared PortfolioDivision for every Brain-authored new exposure.
+
+        Missing broker-book confirmation, account risk state, instrument economics,
+        or the initialized portfolio division fails closed. The Brain's normalized
+        exposure scales the configured per-trade risk budget; it is not replaced by
+        a second confidence multiplier or a separate inline lot-size algorithm.
+        """
+        try:
+            import math
+            from portfolio.models import PortfolioAccount, PortfolioCandidate, SizingFactors
+
+            ctx = getattr(self, "_ctx", None)
+            division = getattr(ctx, "portfolio", None)
+            account_risk = getattr(ctx, "account_risk", None)
+            platform_manager = getattr(self, "_pm", None)
+            if division is None or account_risk is None or platform_manager is None:
+                logger.error(
+                    "[origination-sink] {} skipped — PortfolioDivision, account-risk "
+                    "state, or PlatformManager is unavailable",
+                    symbol,
+                )
+                return None
+
+            internal_symbol = resolve_to_internal(symbol)
+            instrument = INSTRUMENT_REGISTRY.get(internal_symbol)
+            if instrument is None:
+                logger.error(
+                    "[origination-sink] {} skipped — instrument economics are not registered",
+                    symbol,
+                )
+                return None
+
+            tick_store = getattr(self, "_tick_store", None)
+            tick = tick_store.get_latest(symbol) if tick_store is not None else None
+            if tick is None:
+                logger.warning(
+                    "[origination-sink] {} skipped — no current broker-market tick for sizing",
+                    symbol,
+                )
+                return None
+            is_long = direction == "LONG"
+            entry = float(
+                (getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0))
+                or getattr(tick, "mid", 0.0)
+                or 0.0
+            )
+            if not math.isfinite(entry) or entry <= 0.0:
+                logger.warning("[origination-sink] {} skipped — invalid live entry price", symbol)
+                return None
+
+            balance = float(platform_manager.get_platform_balance(symbol) or 0.0)
+            if not math.isfinite(balance) or balance <= 0.0:
+                logger.warning(
+                    "[origination-sink] {} skipped — account balance is unavailable/invalid",
+                    symbol,
+                )
+                return None
+
+            account_key_fn = getattr(ctx, "account_key", None)
+            if not callable(account_key_fn):
+                logger.error(
+                    "[origination-sink] {} skipped — risk-silo account key is unavailable",
+                    symbol,
+                )
+                return None
+            account_key = str(account_key_fn(symbol, platform_manager) or "")
+            if not account_key:
+                logger.error(
+                    "[origination-sink] {} skipped — could not resolve the account risk silo",
+                    symbol,
+                )
+                return None
+            if (
+                bool(account_risk.daily_loss_halted(account_key))
+                or bool(account_risk.flatten_breached(account_key))
+            ):
+                logger.warning(
+                    "[origination-sink] {} skipped — account {} is daily-loss halted/breached",
+                    symbol, account_key,
+                )
+                return None
+
+            # get_all_open_positions raises if any connected platform cannot
+            # confirm its book. Never size from a partial or unknown portfolio.
+            book = list(platform_manager.get_all_open_positions())
+            daily_pnl = float(account_risk.combined_pnl(account_key))
+            daily_loss_cap_pct = float(account_risk.daily_loss_cap_pct)
+            if not math.isfinite(daily_pnl) or not math.isfinite(daily_loss_cap_pct):
+                logger.error(
+                    "[origination-sink] {} skipped — account loss-budget inputs are invalid",
+                    symbol,
+                )
+                return None
+
+            exposure = float(getattr(origination, "exposure", 0.0) or 0.0)
+            cognition_cfg = getattr(getattr(self, "_config", None), "cognition", None)
+            base_risk_fraction = float(
+                getattr(cognition_cfg, "origination_risk_fraction", 0.01)
+                if cognition_cfg is not None else 0.01
+            )
+            if (
+                not math.isfinite(exposure)
+                or not math.isfinite(base_risk_fraction)
+                or exposure <= 0.0
+                or base_risk_fraction <= 0.0
+            ):
+                logger.info(
+                    "[origination-sink] {} skipped — Brain exposure/base-risk budget is zero/invalid",
+                    symbol,
+                )
+                return None
+            exposure = min(1.0, max(0.0, exposure))
+            # Brain exposure is already a normalized decision from the single
+            # CognitiveBrain. Apply it to the configured per-trade risk fraction
+            # exactly once; do not multiply by confidence a second time.
+            base_risk_pct = base_risk_fraction * exposure
+            if base_risk_pct <= 0.0:
+                return None
+
+            platform_context = build_context_for_symbol(internal_symbol)
+            pip_size = float(self._safe_pip_size(symbol))
+            pip_value_per_lot = float(self._effective_pip_value(symbol, pip_size))
+            if not bool(getattr(platform_context, "uses_stake", False)) and (
+                not math.isfinite(pip_size)
+                or not math.isfinite(pip_value_per_lot)
+                or pip_size <= 0.0
+                or pip_value_per_lot <= 0.0
+            ):
+                logger.error(
+                    "[origination-sink] {} skipped — cannot verify broker pip economics",
+                    symbol,
+                )
+                return None
+
+            broker = str(platform_manager.get_broker_name(symbol) or "")
+            confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
+            candidate = PortfolioCandidate(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry,
+                stop_loss=float(sl),
+                conviction=min(100.0, max(0.0, confidence * 100.0)),
+                context=platform_context,
+                pip_size=pip_size,
+                pip_value_per_lot=pip_value_per_lot,
+                broker=broker,
+            )
+            account = PortfolioAccount(
+                balance=balance,
+                account_key=account_key,
+                daily_pnl=daily_pnl,
+                daily_loss_cap_pct=daily_loss_cap_pct,
+            )
+            verdict = division.evaluate(
+                candidate,
+                book,
+                account,
+                SizingFactors(base_risk_pct=base_risk_pct),
+            )
+            approved_size = float(getattr(verdict, "approved_size", 0.0) or 0.0)
+            approved = bool(getattr(verdict, "approved", False))
+            sizing_mode = str(getattr(verdict, "sizing_mode", "lots") or "lots")
+            if not approved or not math.isfinite(approved_size) or approved_size <= 0.0:
+                logger.info(
+                    "[origination-sink] {} {} declined by PortfolioDivision — {}",
+                    symbol, direction, str(getattr(verdict, "reason", "") or "no approved size"),
+                )
+                return None
+            if sizing_mode == "stake":
+                return {
+                    "lots": 0.0,
+                    "stake_usd": approved_size,
+                    "sizing_mode": "stake",
+                    "entry_price": entry,
+                    "risk_pct": float(getattr(verdict, "risk_pct", 0.0) or 0.0),
+                    "max_loss": float(getattr(verdict, "max_loss", 0.0) or 0.0),
+                    "rationale": list(getattr(verdict, "rationale", []) or []),
+                }
+            return {
+                "lots": approved_size,
+                "stake_usd": None,
+                "sizing_mode": "lots",
+                "entry_price": entry,
+                "risk_pct": float(getattr(verdict, "risk_pct", 0.0) or 0.0),
+                "max_loss": float(getattr(verdict, "max_loss", 0.0) or 0.0),
+                "rationale": list(getattr(verdict, "rationale", []) or []),
+            }
+        except Exception as exc:  # noqa: BLE001 — size/admission failure must not bypass the portfolio layer
+            logger.warning(
+                "[origination-sink] {} skipped — PortfolioDivision sizing failed: {}",
+                symbol, exc,
+            )
+            return None
+
+    def _opportunity_qualifies_stake(
+        self, symbol: str, direction: str, sl: float, tp: float,
+        stake_usd: float, confidence: float,
+    ) -> bool:
+        """Net-EV check for stake-sized contracts using stake as max loss at SL.
+
+        Stake-based brokers do not express size in lots. The approved stake is the
+        defined loss at the supplied stop, so it provides the price-move conversion
+        needed by the same net-EV gate. If required price, stop, stake, spread or
+        configured fee inputs are invalid, decline rather than bypass qualification.
+        """
+        try:
+            import math
+            from cognition.opportunity import qualify_net_ev
+
+            stake = float(stake_usd)
+            if not math.isfinite(stake) or stake <= 0.0:
+                return False
+            tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+            if tick is None:
+                return False
+            is_long = str(direction or "").upper() == "LONG"
+            entry = float(
+                (getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0))
+                or getattr(tick, "mid", 0.0)
+                or 0.0
+            )
+            pip_size = float(self._safe_pip_size(symbol))
+            risk_distance = abs(entry - float(sl))
+            if (
+                not math.isfinite(entry) or entry <= 0.0
+                or not math.isfinite(pip_size) or pip_size <= 0.0
+                or not math.isfinite(risk_distance) or risk_distance <= 0.0
+            ):
+                return False
+            # By the portfolio sizing contract, stake is the maximum loss at the
+            # stop. Therefore stake / stop-distance is the stake-size money
+            # conversion, not a lot-size proxy.
+            money_per_price = stake / risk_distance
+            try:
+                spread_pips = float(self._get_spread_pips(symbol) or 0.0)
+            except Exception as exc:  # noqa: BLE001 — missing spread is not a free trade
+                logger.debug("[opportunity] stake spread lookup failed {}: {}", symbol, exc)
+                return False
+            if not math.isfinite(spread_pips) or spread_pips < 0.0:
+                return False
+            cognition_cfg = getattr(self._config, "cognition", None)
+            per_lot_commission = float(
+                getattr(cognition_cfg, "commission_per_lot_round_trip", 0.0) or 0.0
+            ) if cognition_cfg is not None else 0.0
+            # A per-lot fee cannot safely be converted into a stake-based fee
+            # without a broker contract schedule; don't silently ignore it.
+            if per_lot_commission > 0.0:
+                logger.warning(
+                    "[opportunity] {} stake-sized entry declined — configured "
+                    "per-lot commission cannot be mapped to stake economics", symbol,
+                )
+                return False
+            slippage_pips = 1.0
+            cost_ccy = (spread_pips + slippage_pips) * pip_size * money_per_price
+            if not math.isfinite(cost_ccy) or cost_ccy <= 0.0:
+                return False
+            q = qualify_net_ev(
+                entry=entry,
+                sl=float(sl),
+                tp=float(tp),
+                confidence=confidence,
+                money_per_price=money_per_price,
+                cost_ccy=cost_ccy,
+                min_edge_ccy=float(
+                    getattr(cognition_cfg, "opportunity_min_net_ev", 0.0)
+                    if cognition_cfg is not None else 0.0
+                ),
+                cost_multiple=float(
+                    getattr(cognition_cfg, "opportunity_cost_multiple", 2.0)
+                    if cognition_cfg is not None else 2.0
+                ),
+            )
+            if not q.qualified:
+                logger.info(
+                    "[opportunity] {} {} stake-sized entry REJECTED — {}",
+                    symbol, direction, q.reason,
+                )
+            return bool(q.qualified)
+        except Exception as exc:  # noqa: BLE001 — qualification faults must fail closed
+            logger.debug("[opportunity] stake qualification failed for {}: {}", symbol, exc)
+            return False
+
     def _make_origination_sink(self):
         """Build the LIVE origination sink for Brain-originated entries (Phase G).
 
@@ -2056,25 +2341,34 @@ class EventDrivenSystem:
                         symbol, direction,
                     )
                     return
-                # The Brain 'chooses' a concrete, broker-valid lot (never 0 →
-                # broker) — conviction-scaled risk snapped to the instrument's
-                # volume ladder. Decline cleanly if none can be formed.
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
-                lots = self._origination_lot_size(symbol, direction, sl, confidence)
-                if lots <= 0:
-                    logger.info(
-                        "[origination-sink] {} {} skipped — no broker-valid lot "
-                        "(risk below broker minimum; enable opportunity-harvest to take min lot)",
-                        symbol, direction,
-                    )
+                sized = self._size_brain_origination_with_portfolio(
+                    origination, symbol, direction, float(sl),
+                )
+                if sized is None:
+                    # PortfolioDivision is the sizing authority. Missing or
+                    # rejected portfolio sizing must never fall back to an inline
+                    # lot calculation that bypasses account/book limits.
                     return
-                # Part XIX Art 1/7 — the market is presumed noise: only proceed
-                # if expected NET value after real round-trip cost is positive.
-                if not self._opportunity_qualifies(
-                    symbol, direction, sl, tp, lots, confidence,
-                ):
-                    return
-                idem_key = generate_idempotency_key(symbol, direction, lots)
+                lots = float(sized["lots"])
+                stake_usd = sized.get("stake_usd")
+                entry_price = float(sized["entry_price"])
+                if sized["sizing_mode"] == "stake":
+                    if not self._opportunity_qualifies_stake(
+                        symbol, direction, float(sl), float(tp),
+                        float(stake_usd or 0.0), confidence,
+                    ):
+                        return
+                    quantity_for_key = float(stake_usd or 0.0)
+                else:
+                    # Part XIX Art 1/7 — only proceed with positive expected NET
+                    # value after a broker-truth round-trip cost estimate.
+                    if lots <= 0.0 or not self._opportunity_qualifies(
+                        symbol, direction, sl, tp, lots, confidence,
+                    ):
+                        return
+                    quantity_for_key = lots
+                idem_key = generate_idempotency_key(symbol, direction, quantity_for_key)
                 comment = build_order_comment(
                     "APEX", idem_key,
                     score=round(confidence, 4),
@@ -2083,9 +2377,10 @@ class EventDrivenSystem:
                     symbol=symbol,
                     direction=direction,
                     lots=lots,
+                    entry_price=entry_price,
                     sl=float(sl),
                     tp=float(tp),
-                    stake_usd=None,
+                    stake_usd=(float(stake_usd) if stake_usd is not None else None),
                     comment=comment,
                     idempotency_key=idem_key,
                     source="ai_brain",
