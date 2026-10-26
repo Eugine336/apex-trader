@@ -666,7 +666,12 @@ class RiskConfig:
     # The hard-SL floor and the non-directional risk mechanics (TP / breakeven /
     # trailing / time-based stall) are unaffected. env
     # RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
-    scan_directional_exits_enabled: bool = True
+    scan_directional_exits_enabled: bool = False
+    # Explicit opt-in for the legacy fixed-level/time-based exit suite.
+    # Default false: native thesis-based management remains the default even
+    # when every external reasoning provider is unavailable.
+    # env RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED.
+    legacy_mechanical_exit_fallback_enabled: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -976,6 +981,10 @@ class RiskConfig:
         )
         self.scan_directional_exits_enabled = _llm_env_bool(
             "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
+        )
+        self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
+            "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
+            self.legacy_mechanical_exit_fallback_enabled,
         )
         self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
             "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
