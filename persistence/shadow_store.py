@@ -176,11 +176,21 @@ class ShadowStore:
             self._conn.execute(_CREATE_IDX_TS)
             self._conn.execute(_CREATE_IDX_CORR)
             self._conn.commit()
-        except Exception:
-            print(
-                f"[ShadowStore] DB connect/init failed: {self._db_path}",
-                file=sys.stderr,
+        except Exception as exc:
+            self._degraded_reason = (
+                f"database initialization failed ({type(exc).__name__}): {exc}"
             )
+            logger.exception(
+                "[ShadowStore] DB connect/init failed for {} — persistence disabled "
+                "without modifying the database",
+                self._db_path,
+            )
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+            self._conn = None
 
     @property
     def is_degraded(self) -> bool:
