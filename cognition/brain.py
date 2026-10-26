@@ -699,6 +699,9 @@ class CognitiveBrain:
         # former confidence-as-EV proxy. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
+        # Bind payoff geometry to the selected opportunity in this decision;
+        # never mutate an unrelated opportunity or rely on an undefined local.
+        driving_opp = decision.preferred_opportunity
         geometry = (
             derive_opportunity_geometry(market_state, direction, now=now)
             if direction in (LONG, SHORT) else None
