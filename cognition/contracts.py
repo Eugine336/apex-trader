@@ -243,6 +243,7 @@ class Evidence:
     evidence_id: str = ""
     timestamp_iso: str = ""
     timestamp_epoch: float = 0.0
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         if not self.evidence_id:
@@ -281,6 +282,7 @@ class Evidence:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "evidence_id": self.evidence_id,
             "timestamp": self.timestamp_iso,
             "source_module": self.source_module,
@@ -536,6 +538,7 @@ class Hypothesis:
     supporting_evidence_ids: list[str] = field(default_factory=list)
     contradicting_evidence_ids: list[str] = field(default_factory=list)
     horizon_seconds: Optional[float] = None
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         self.probability = _clamp01(self.probability)
@@ -544,6 +547,7 @@ class Hypothesis:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "statement": self.statement,
             "probability": round(self.probability, 4),
             "direction": self.direction,
@@ -589,6 +593,7 @@ class Opportunity:
     evidence_strength: float = 0.0
     competing_opportunities: list[str] = field(default_factory=list)
     is_preferred: bool = False
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         d = str(self.direction or "FLAT").upper()
@@ -674,6 +679,7 @@ class Opportunity:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
             "id": self.opportunity_id,
             "direction": self.direction,
             "state": self.state.value,
@@ -731,6 +737,7 @@ class DecisionPackage:
     reasoner: str = ""                 # which Brain produced it (provenance)
     decision_id: str = ""
     created_iso: str = ""
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         if not self.decision_id:
@@ -811,7 +818,7 @@ class DecisionPackage:
 
     def to_dict(self) -> dict:
         return {
-            "identity_version": IDENTITY_VERSION,
+            "identity_version": self.identity_version,
             "identity": IDENTITY_STATEMENT,
             "decision_id": self.decision_id,
             "created": self.created_iso,
@@ -867,6 +874,7 @@ class CampaignSpecification:
     decision_id: str = ""              # link back to the DecisionPackage
     campaign_id: str = ""
     created_iso: str = ""
+    identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         if not self.campaign_id:
@@ -879,7 +887,7 @@ class CampaignSpecification:
 
     def to_dict(self) -> dict:
         return {
-            "identity_version": IDENTITY_VERSION,
+            "identity_version": self.identity_version,
             "identity": IDENTITY_STATEMENT,
             "campaign_id": self.campaign_id,
             "created": self.created_iso,
