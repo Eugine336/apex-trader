@@ -419,6 +419,130 @@ class NativePositionManager:
                     **base,
                 )
 
+            # Real producers do not have to manufacture new campaign-state
+            # measurement keys for the provider-independent Brain to be useful.
+            # Reuse its existing structural analysis and self-criticised
+            # counter-hypotheses as a conservative *risk-reduction-only* fallback.
+            # Generic adverse patterns can never authorize EXIT.
+            native_patterns: set[str] = set()
+            analysis_domains: set[str] = set()
+            analysis_uncertainty = uncertainty
+            analysis_contradictions: list[str] = []
+            try:
+                from cognition.pattern_rules import pattern_name
+
+                native_patterns = {
+                    pattern_name(item)
+                    for item in list(getattr(analysis, "detected_patterns", []) or [])
+                }
+                coverage = getattr(analysis, "domain_coverage", {}) or {}
+                if isinstance(coverage, dict):
+                    analysis_domains = {
+                        str(domain).lower() for domain in coverage
+                        if str(domain).lower() not in {
+                            "reasoning", "execution_quality", "risk", "portfolio_risk",
+                        }
+                    }
+                analysis_uncertainty = max(
+                    uncertainty,
+                    _clamp01(getattr(analysis, "evidence_uncertainty", uncertainty)),
+                )
+                analysis_contradictions = [
+                    str(item) for item in (getattr(analysis, "contradictions", []) or [])
+                    if str(item).strip()
+                ]
+            except Exception:
+                # Native analysis enrichment is optional; the fail-safe result is HOLD.
+                native_patterns = set()
+                analysis_domains = set()
+                analysis_contradictions = []
+
+            adverse_patterns = native_patterns & {
+                "momentum_divergence",
+                "trend_exhaustion",
+                "multi_tf_conflict",
+                "liquidity_sweep_absorbed",
+                "liquidity_sweep_reclaimed",
+                "liquidity_sweep_with_momentum_exhaustion",
+                "failed_breakout",
+                "volatility_compression",
+                "range_rotation",
+                "execution_degraded",
+            }
+            directional_challengers = []
+            for hypothesis in list(hypotheses or []):
+                direction = str(
+                    getattr(hypothesis, "direction_implication", "") or ""
+                ).upper()
+                try:
+                    hypothesis_confidence = _clamp01(
+                        getattr(hypothesis, "confidence", 0.0), 0.0
+                    )
+                except Exception:
+                    hypothesis_confidence = 0.0
+                active_contradictions = {
+                    str(item).lower()
+                    for item in (getattr(hypothesis, "contradicting_patterns", []) or [])
+                } & native_patterns
+                if (
+                    direction in {"LONG", "SHORT"}
+                    and direction != held_side
+                    and hypothesis_confidence >= 0.65
+                    and active_contradictions
+                ):
+                    directional_challengers.append((hypothesis_confidence, hypothesis))
+
+            sufficient_native_coverage = len(analysis_domains) >= required_domains
+            uncertainty_acceptable = analysis_uncertainty <= max_unc
+            if (
+                sufficient_native_coverage
+                and uncertainty_acceptable
+                and (
+                    len(adverse_patterns) >= 2
+                    or "execution_degraded" in adverse_patterns
+                    or (
+                        directional_challengers
+                        and bool(analysis_contradictions)
+                    )
+                )
+            ):
+                profit_r = _finite_number(getattr(position, "profit_r", None))
+                action = "scale_out" if profit_r is not None and profit_r > 0.0 else "tighten_risk"
+                challenger = (
+                    max(directional_challengers, key=lambda item: item[0])[1]
+                    if directional_challengers else None
+                )
+                challenger_note = (
+                    f"; strongest counter-hypothesis is "
+                    f"{getattr(challenger, 'direction_implication', '')} "
+                    f"at {_clamp01(getattr(challenger, 'confidence', 0.0), 0.0):.2f}"
+                    if challenger is not None else ""
+                )
+                return NativeManagementVerdict(
+                    action=action,
+                    thesis_state="native_evidence_deteriorating",
+                    reason=(
+                        "native Brain found corroborated adverse structure/market conflict "
+                        "with adequate fresh domain coverage; reduce exposure, not exit"
+                        + challenger_note
+                    ),
+                    confidence=(
+                        max(directional_challengers, key=lambda item: item[0])[0]
+                        if directional_challengers else 0.6
+                    ),
+                    uncertainty=analysis_uncertainty,
+                    campaign_id=campaign_id,
+                    original_thesis=original_thesis,
+                    invalidation_conditions=invalidation_conditions,
+                    evidence_ids=evidence_ids,
+                    evidence_domains=tuple(sorted(analysis_domains)),
+                    execution_cost_r=cost_r,
+                    expected_value_after_cost_r=ev_after_cost,
+                    whole_book_risk_state=book_state,
+                    evidence_count=len(fresh),
+                    hypothesis_count=len(hypotheses or []),
+                )
+
             return NativeManagementVerdict(
                 action="hold", thesis_state="uncertain",
                 reason=(
