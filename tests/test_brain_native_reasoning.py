@@ -106,16 +106,21 @@ def _strong_long_state(symbol="EURUSD"):
     """A rich, low-uncertainty state whose evidence structurally leans LONG."""
     ms = MarketState(symbol=symbol)
     ms.add(_ev("structure", {"displacement": 150, "bos": True,
-                             "structural_integrity": 0.85, "support": True}))
-    ms.add(_ev("volume", {"volume_z": 1.8, "expansion": True}))
-    ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8}))
-    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
-    ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1}))
+                             "structural_integrity": 0.85, "support": True},
+                   module="structure.observer"))
+    ms.add(_ev("volume", {"volume_z": 1.8, "expansion": True},
+                   module="volume.observer"))
+    ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8},
+                   module="order_flow.observer"))
+    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"},
+                   module="momentum.observer"))
+    ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1},
+                   module="multi_timeframe.observer"))
     ms.add(_ev("execution_quality", {
         "estimated_total_cost_r": 0.05,
         "cost_verified": True,
         "cost_source": "simulated live quote for test",
-    }))
+    }, module="execution_cost.observer"))
     return _with_verified_council(ms)
 
 
