@@ -138,3 +138,28 @@ def test_store_is_fail_safe_on_garbage_close():
     store.record_close(object())                 # no to_dict / not a mapping
     assert store.count() == 0
     store.close()
+
+
+def test_get_open_campaign_returns_exact_original_spec():
+    store = _store()
+    store.record_open(
+        symbol="EURUSD",
+        direction="LONG",
+        fingerprint={"domains": {"structure": 0.8}},
+        campaign_id="campaign-open",
+        spec={
+            "thesis": "Original entry thesis",
+            "invalidation_conditions": ["Structural break failed"],
+            "opportunity_id": "opportunity-1",
+            "identity_version": "apex-constitution-v1",
+        },
+    )
+    try:
+        found = store.get_open_campaign("campaign-open")
+        assert found is not None
+        assert found["campaign_id"] == "campaign-open"
+        assert found["spec"]["thesis"] == "Original entry thesis"
+        assert found["spec"]["invalidation_conditions"] == ["Structural break failed"]
+        assert store.get_open_campaign("missing-campaign") is None
+    finally:
+        store.close()
