@@ -45,8 +45,12 @@ class Check:
     summary: str
     # Production files whose mere existence is a violation (retired modules).
     exists: list[str] = field(default_factory=list)
+    # Production files that must exist because they enforce a constitutional invariant.
+    required_files: list[str] = field(default_factory=list)
     # (relative_path, compiled-regex) pairs; each match line is a violation.
     patterns: list[tuple[str, "re.Pattern[str]"]] = field(default_factory=list)
+    # (relative_path, compiled-regex) pairs that must match at least once.
+    required_patterns: list[tuple[str, "re.Pattern[str]"]] = field(default_factory=list)
     # Method-call regexes that must not appear in ANY production file — a live
     # call site for a retired decider. Scanned tree-wide (see ``_scan_tree``),
     # excluding tests, this script, and the retired-cluster files listed in
@@ -65,6 +69,42 @@ def _p(path: str, pattern: str) -> "tuple[str, re.Pattern[str]]":
 # deletes/rewires the offending code, the corresponding violations disappear and
 # the guard moves toward a clean (exit 0) live path.
 CHECKS: list[Check] = [
+
+    Check(
+        id="provider_resource_accounting",
+        clause="§21-§37: providers are finite, failure-prone cognitive resources; capacity, health, cooldowns and local/cloud diversity are first-class",
+        pr="Provider-constitution guard",
+        summary="Provider accounting/router primitives required by the APEX resource constitution are missing from the live codebase.",
+        required_files=[
+            "llm/provider_budget.py",
+            "llm/health.py",
+            "llm/model_manager.py",
+            "llm/provider_tiers.py",
+        ],
+        required_patterns=[
+            _p("llm/provider_budget.py", r"class\s+ProviderBudget\b"),
+            _p("llm/provider_budget.py", r"def\s+estimate_tokens\b"),
+            _p("llm/provider_budget.py", r"def\s+blocked_until\b"),
+            _p("llm/model_manager.py", r"class\s+ModelManager\b"),
+            _p("llm/model_manager.py", r"def\s+_ordered\b"),
+            _p("llm/model_manager.py", r"def\s+describe\b"),
+            _p("llm/health.py", r"class\s+CircuitBreaker\b"),
+            _p("llm/health.py", r"def\s+bench\b"),
+            _p("llm/provider_tiers.py", r"TIER_3"),
+        ],
+    ),
+    Check(
+        id="live_code_audit_mandate",
+        clause="Audit mandate: documentation is not compliance; raw reachable code is the authority",
+        pr="Constitutional audit mandate",
+        summary="The executable audit mandate must be available so operators can launch live-code audits without relying on README prose.",
+        required_files=["scripts/apex_live_code_audit_mandate.py"],
+        required_patterns=[
+            _p("scripts/apex_live_code_audit_mandate.py", r"AUDIT THE LIVE RAW CODE"),
+            _p("scripts/apex_live_code_audit_mandate.py", r"VIOLATION REGISTER FORMAT"),
+            _p("scripts/apex_live_code_audit_mandate.py", r"Provider constraints are operating reality"),
+        ],
+    ),
     Check(
         id="retired_entry_pipeline",
         clause="§XXX (a capability that is not reachable from the live path is not implemented) / §XXIX complete-cycle",
@@ -213,6 +253,26 @@ def _scan_exists(check: Check) -> list[Violation]:
     return out
 
 
+def _scan_required(check: Check) -> list[Violation]:
+    out: list[Violation] = []
+    for rel in check.required_files:
+        if not (REPO_ROOT / rel).exists():
+            out.append(Violation(check.id, "missing-file", rel, 0, "required constitutional guard missing"))
+    for rel, rx in check.required_patterns:
+        fp = REPO_ROOT / rel
+        if not fp.exists():
+            # The missing file is already reported above when declared there.
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            out.append(Violation(check.id, "unreadable-file", rel, 0, "required constitutional guard unreadable"))
+            continue
+        if not rx.search(text):
+            out.append(Violation(check.id, "missing-pattern", rel, 0, f"required pattern absent: {rx.pattern}"))
+    return out
+
+
 def _scan_patterns(check: Check) -> list[Violation]:
     out: list[Violation] = []
     for rel, rx in check.patterns:
@@ -273,7 +333,7 @@ def _scan_tree(check: Check) -> list[Violation]:
 def run() -> "list[tuple[Check, list[Violation]]]":
     results: list[tuple[Check, list[Violation]]] = []
     for check in CHECKS:
-        violations = _scan_exists(check) + _scan_patterns(check) + _scan_tree(check)
+        violations = _scan_exists(check) + _scan_required(check) + _scan_patterns(check) + _scan_tree(check)
         results.append((check, violations))
     return results
 
