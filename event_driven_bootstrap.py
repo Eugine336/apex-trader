@@ -2913,6 +2913,11 @@ class EventDrivenSystem:
                 brain_loop = getattr(ctx, "cognition_loop", None)
                 if brain_loop is None:
                     brain_loop = getattr(self, "_cognition_loop", None)
+                if brain_loop is None:
+                    # Bootstrap creates the loop before startup recovery. Keep a
+                    # direct reference so the reconciliation breaker reaches the
+                    # actual admission boundary, not just the context diagnostic.
+                    brain_loop = getattr(self, "_cognition_loop_instance", None)
                 if brain_loop is not None:
                     try:
                         setattr(brain_loop, "broker_book_verified", False)
