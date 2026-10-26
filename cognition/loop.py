@@ -609,6 +609,10 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition-loop] portfolio source wiring fault: %s", exc)
         self._open_keys: set = set()
+        # Startup recovery owns this circuit breaker. An unverified broker/event
+        # reconciliation may not be represented as an empty book; keep observing
+        # but prohibit all new exposure until the operator resolves the mismatch.
+        self.broker_book_verified = True
         # Article X — pattern EVOLUTION. When wired, the loop feeds the tracker
         # the originated patterns at campaign open (via ``_record_open_memory``)
         # and their realised outcome at campaign close (via management), so the
@@ -721,6 +725,8 @@ class CognitionLoop:
             logger.debug("[cognition-loop] symbols provider fault: %s", exc)
             return 0
         try:
+            if not self.broker_book_verified:
+                raise RuntimeError("startup broker/event reconciliation remains unverified")
             self._open_keys = self._current_open_keys()
             book_verified = True
         except Exception as exc:  # noqa: BLE001
@@ -977,6 +983,8 @@ class CognitionLoop:
         caller's), keeping any LLM latency off the market-data path. Fail-safe.
         """
         try:
+            if not self.broker_book_verified:
+                raise RuntimeError("startup broker/event reconciliation remains unverified")
             self._open_keys = self._current_open_keys()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
