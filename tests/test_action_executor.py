@@ -842,7 +842,7 @@ def test_gold_only_open_requires_fresh_feed_when_runtime_enables_health_gate():
     assert broker.open_calls == []
 
     healthy["value"] = True
-    allowed = executor.execute(_open_intent("XAUUSD"), {})
+    allowed = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
     assert allowed.success, allowed.error
     assert [call["symbol"] for call in broker.open_calls] == ["XAUUSD"]
 
