@@ -10,6 +10,7 @@ the connector:
 Uses the same dep-stubbing pattern as test_p2_execution_features.py.
 """
 import sys
+import time
 from types import SimpleNamespace, ModuleType
 from unittest.mock import MagicMock
 
@@ -77,7 +78,7 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
     mt5_mock.TRADE_RETCODE_DONE = 10009
 
     mt5_mock.symbol_info_tick = MagicMock(return_value=SimpleNamespace(
-        ask=1.1000, bid=1.0998,
+        ask=1.1000, bid=1.0998, time=int(time.time()),
     ))
     mt5_mock.symbol_select = MagicMock()
     mt5_mock.symbol_info = MagicMock(return_value=SimpleNamespace(
