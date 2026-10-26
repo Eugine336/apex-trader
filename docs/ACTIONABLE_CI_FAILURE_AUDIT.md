@@ -47,3 +47,15 @@ The prior statement that CI could not be rerun because of exhausted Actions quot
 - Gold-focused tests: https://github.com/Eugine336/apex-trader/actions/runs/40280936955
 
 These are pending at this update. Do not infer success from a running workflow. The previous completed full-suite result remains red, and the new provenance-gate changes must pass the focused suite before the PR is considered mergeable.
+
+
+## Verification refresh — 2026-10-26, PR #758
+
+Supersedes the older pending-workflow note above. Rechecked GitHub state:
+- PR #758 remains open and draft; latest inspected head is `3193635346bf920278882be1f56bb4dda6149b07` after the management provenance fix and its regression test.
+- Workflow #1911 (`40275835782`) completed with **failure** on older head `a90a8f540f4f32d06098d24c36fa097218244c1f`. Do not treat it as a run against the current head.
+- Workflow #1902 (`40270654561`) completed with **failure** on `main` at `b92833bf4ff90eb64e1049862346a6934707dcc2`; Python 3.12 reported 177 failures, 3,738 passes, 12 skips, and Python 3.11 was cancelled.
+- The workflows previously described as pending on `cc702c0c353690f4d9d2d3e6b7b61c819688aa78` are not evidence of current-head success. Their final status was not established in this check.
+- No local checkout was available in the current execution environment, so focused tests and Ruff were not run locally. The current-head changes remain **unverified by test execution**.
+
+Keep the PR draft/unmerged until focused local tests or CI validate the current head. No broker orders were sent, no live trading was enabled, and `.env` was not accessed or changed.
