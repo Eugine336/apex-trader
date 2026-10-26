@@ -57,7 +57,7 @@ def _decide(opinion, uncertainty=0.1):
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol="BTCUSD", observation="verified test execution cost",
         confidence=0.9, uncertainty=0.1,
-        measurements={"estimated_total_cost_r": 0.05},
+        measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
         relevance_horizon_seconds=60.0,
     ))
     consolidation = ms.consolidation()
