@@ -79,7 +79,16 @@ def _build_overfit_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
 
 
 class TestOOSValidationGate:
-    def test_genuinely_predictive_factor_adopted(self, tmp_path):
+    @staticmethod
+    def _use_isolated_weights_path(monkeypatch, tmp_path):
+        # ScoreOptimizer resolves persistence through runtime_paths.data_dir();
+        # DEFAULT_PATH is documentation-only and is intentionally not opened.
+        import adaptive.score_optimizer as so_mod
+
+        monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
+
+    def test_genuinely_predictive_factor_adopted(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Factor predictive in both halves -> candidate ADOPTED."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
@@ -89,7 +98,8 @@ class TestOOSValidationGate:
         assert result.total == 123
         assert (tmp_path / "weights.json").exists()
 
-    def test_overfit_trap_rejected(self, tmp_path):
+    def test_overfit_trap_rejected(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Factor reverses in validation -> candidate REJECTED, incumbent retained."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
@@ -98,7 +108,8 @@ class TestOOSValidationGate:
         result = opt.optimize(trades, min_trades=50)
         assert result.as_dict() == original.as_dict()
 
-    def test_no_write_on_rejection(self, tmp_path):
+    def test_no_write_on_rejection(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Rejected candidate must not be persisted to disk."""
         fp = tmp_path / "weights.json"
         opt = ScoreOptimizer()
@@ -107,7 +118,8 @@ class TestOOSValidationGate:
         opt.optimize(trades, min_trades=50)
         assert not fp.exists()
 
-    def test_small_validation_fallback(self, tmp_path):
+    def test_small_validation_fallback(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Below MIN_VALIDATION -> falls back to fit-on-all without OOS gate."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
@@ -116,7 +128,8 @@ class TestOOSValidationGate:
         assert result.total == 123
         assert (tmp_path / "weights.json").exists()
 
-    def test_deterministic_decision(self):
+    def test_deterministic_decision(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Same input twice -> identical result."""
         trades = _build_predictive_dataset()
         opt1 = ScoreOptimizer()
