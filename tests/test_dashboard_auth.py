@@ -253,7 +253,7 @@ class TestLoopbackBypassEndToEnd:
 
     def test_loopback_mutating_without_key(self):
         api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
-        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        client = _test_client_with_address(api.create_app(), ("127.0.0.1", 5))
         assert client.post("/api/control", json={"action": "pause"}).status_code == 200
 
     def test_remote_still_requires_key(self):
