@@ -528,7 +528,7 @@ class BrainReasoner:
                 "range_rotation" in names
                 or (
                     str(regime.get("trend_context", "")).lower() == "range"
-                    and int(regime.get("range_timeframes", 0) or 0) >= 2
+                    and (_num(regime.get("range_timeframes")) or 0.0) >= 2
                 )
             )
             if range_context:
