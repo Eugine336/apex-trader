@@ -36,8 +36,10 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "source_timestamp_known": True,
             "timeframe": "M5",
             "current_close": 1.100,
-            "prior_range_high": 1.120,
-            "prior_range_low": 1.090,
+            # The synthetic structure is oriented to provide positive payoff
+            # geometry for whichever side a scenario is explicitly testing.
+            "prior_range_high": 1.120 if side == "LONG" else 1.110,
+            "prior_range_low": 1.090 if side == "LONG" else 1.080,
             "range_position": 0.5,
             "breakout_direction": breakout,
             "trend_state": trend,
