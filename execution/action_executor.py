@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional, Protocol
 from loguru import logger
 
 from execution.intents import Intent, IntentType
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from execution.risk_gate import GateConfig, RiskGate
 from platforms.circuit_breaker import CircuitBreaker
 
@@ -272,6 +273,21 @@ class ActionExecutor:
             Current account drawdown percentage.
         """
         self._inc("intents_received")
+
+        # The canonical identity is versioned and carried with Brain-originated
+        # intent provenance. Reject a malformed/mismatched OPEN before it can
+        # reach any broker path; risk-reducing management intents remain usable.
+        if intent.intent_type == IntentType.OPEN and (
+            intent.identity_version != IDENTITY_VERSION
+            or intent.identity != IDENTITY_STATEMENT
+        ):
+            reason = "identity_contract_mismatch: refusing new exposure from a non-canonical intent"
+            self._inc("intents_rejected")
+            logger.error("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+            return ExecutionResult(
+                intent=intent, success=False, rejected_by_gate=True,
+                gate_reason=reason, error=reason,
+            )
 
         # Gold-only is a non-bypassable last-mile check for every new market
         # exposure submitted through this execution plane. Risk-reducing actions
