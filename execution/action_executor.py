@@ -310,17 +310,44 @@ class ActionExecutor:
         # The canonical identity is versioned and carried with Brain-originated
         # intent provenance. Reject a malformed/mismatched OPEN before it can
         # reach any broker path; risk-reducing management intents remain usable.
-        if intent.intent_type == IntentType.OPEN and (
-            intent.identity_version != IDENTITY_VERSION
-            or intent.identity != IDENTITY_STATEMENT
-        ):
-            reason = "identity_contract_mismatch: refusing new exposure from a non-canonical intent"
-            self._inc("intents_rejected")
-            logger.error("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-            return ExecutionResult(
-                intent=intent, success=False, rejected_by_gate=True,
-                gate_reason=reason, error=reason,
-            )
+        if intent.intent_type == IntentType.OPEN:
+            if (
+                intent.identity_version != IDENTITY_VERSION
+                or intent.identity != IDENTITY_STATEMENT
+            ):
+                reason = (
+                    "identity_contract_mismatch: refusing new exposure from a "
+                    "non-canonical intent"
+                )
+                self._inc("intents_rejected")
+                logger.error("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
+            provenance = {
+                "source": str(intent.source or ""),
+                "decision_id": str(intent.decision_id or ""),
+                "campaign_id": str(intent.campaign_id or ""),
+                "opportunity_id": str(intent.opportunity_id or ""),
+            }
+            missing = [
+                name for name, value in provenance.items()
+                if not str(value or "").strip()
+            ]
+            if provenance["source"] != "ai_brain" or missing:
+                reason = (
+                    "brain_opportunity_provenance_required: every new exposure "
+                    "requires source=ai_brain plus decision_id, campaign_id, "
+                    "and activated opportunity_id; "
+                    f"source={provenance['source']!r}, missing={missing}"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
 
         # Provenance is required on modifications and closes as well as new
         # exposure. The sole exception is MISSING provenance on an unambiguous
@@ -390,33 +417,6 @@ class ActionExecutor:
                 reason = (
                     f"gold_only_invariant: rejected new exposure for {intent.symbol!r}; "
                     "only explicitly allowlisted XAUUSD aliases are accepted"
-                )
-                self._inc("intents_rejected")
-                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-                return ExecutionResult(
-                    intent=intent,
-                    success=False,
-                    rejected_by_gate=True,
-                    gate_reason=reason,
-                    error=reason,
-                )
-
-            # In Gold mode, identity text alone is not authority: every new
-            # exposure must be explicitly authored by the CognitiveBrain and
-            # linked to a decision, campaign, and activated opportunity. Legacy
-            # mechanical entry paths are denied here until they use that contract.
-            provenance = {
-                "source": str(intent.source or ""),
-                "decision_id": str(intent.decision_id or ""),
-                "campaign_id": str(intent.campaign_id or ""),
-                "opportunity_id": str(intent.opportunity_id or ""),
-            }
-            missing = [key for key, value in provenance.items() if not value]
-            if provenance["source"] != "ai_brain" or missing:
-                reason = (
-                    "brain_opportunity_provenance_required: Gold-mode OPEN requires "
-                    "source=ai_brain plus decision_id, campaign_id, and opportunity_id; "
-                    f"source={provenance['source']!r}, missing={missing}"
                 )
                 self._inc("intents_rejected")
                 logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
