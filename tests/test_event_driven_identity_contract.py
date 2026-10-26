@@ -136,3 +136,16 @@ def test_brain_identity_and_provenance_reach_execution_intent():
     kwargs = {item.arg: item.value for item in calls[0].keywords if item.arg}
     for name in ("decision_id", "campaign_id", "opportunity_id", "identity_version", "identity"):
         assert name in kwargs, f"origination provenance missing from execution Intent.open: {name}"
+
+
+def test_brain_management_identity_and_provenance_reach_execution_intents():
+    module = _parse("event_driven_bootstrap.py")
+    factory = _function(module, "_make_management_sink")
+    sink = _function(factory, "_sink")
+    required = {"decision_id", "campaign_id", "opportunity_id", "identity_version", "identity"}
+    for method in ("close", "partial_close", "modify_sl"):
+        calls = _calls(sink, attribute=method)
+        assert calls, f"expected a management {method} intent site"
+        for call in calls:
+            kwargs = {item.arg: item.value for item in call.keywords if item.arg}
+            assert required <= kwargs.keys(), f"{method} intent lost Brain provenance: {required - kwargs.keys()}"
