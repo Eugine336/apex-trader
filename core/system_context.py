@@ -1515,8 +1515,12 @@ class SystemContext:
                                 ),
                             ))
                         return out
-                    except Exception:  # noqa: BLE001
-                        return []
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[cognition] broker position source unavailable; "
+                            "new exposure must remain blocked: %s", exc,
+                        )
+                        raise
 
                 def _cognition_balance(symbol: str) -> float:
                     # Per-symbol platform balance for Brain-originated sizing.
