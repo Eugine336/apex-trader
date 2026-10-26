@@ -521,16 +521,25 @@ class BrainReasoner:
                     ),
                 ))
 
-            # A range is a market state, not an instruction to trade. The Brain
-            # may separately consider range-edge reactions when they are present.
-            if "range_rotation" in names:
+            # A range is a market state, not an instruction to trade. It can be
+            # inferred either from a detected range-rotation pattern or from
+            # repeated, independently observed timeframe states.
+            range_context = (
+                "range_rotation" in names
+                or (
+                    str(regime.get("trend_context", "")).lower() == "range"
+                    and (_num(regime.get("range_timeframes")) or 0.0) >= 2
+                )
+            )
+            if range_context:
+                range_support = ["range_rotation"] if "range_rotation" in names else []
                 hyps.append(self._make(
                     statement=(
                         f"Multiple completed timeframes on {symbol} are rotating inside "
-                        "recent ranges while volatility contracts; a range-edge reaction "
-                        "and a genuine breakout are both possible."
+                        "recent ranges; a range-edge reaction and a genuine breakout "
+                        "remain competing possibilities."
                     ),
-                    support=["range_rotation"],
+                    support=range_support,
                     against=[name for name in names if name in (
                         "volatility_expansion_breakout", "event_window_breakout",
                         "volume_confirmed_breakout",
@@ -620,16 +629,61 @@ class BrainReasoner:
                     ),
                 ))
 
+            # Regime-derived trend context is a separate native hypothesis family.
+            # This prevents the Brain from treating a quiet pattern detector as proof
+            # that no thesis exists when several completed timeframes independently
+            # show a persistent trend. It remains conditional and is not an order.
+            trend_context = str(regime.get("trend_context", "") or "").lower()
+            try:
+                trend_timeframes = int(regime.get("trend_timeframes", 0) or 0)
+            except (TypeError, ValueError):
+                trend_timeframes = 0
+            has_directional_thesis = any(
+                h.direction_implication in (LONG, SHORT) for h in hyps
+            )
+            if (
+                not has_directional_thesis
+                and trend_timeframes >= 2
+                and trend_context in ("uptrend", "downtrend")
+            ):
+                direction = LONG if trend_context == "uptrend" else SHORT
+                momentum = str(regime.get("momentum", "") or "").lower()
+                caveat = (
+                    " Momentum is decelerating, so a pullback or trend transition "
+                    "is a live competing explanation."
+                    if momentum == "decelerating"
+                    else " Continuation still requires fresh follow-through and executable net value."
+                )
+                hyps.append(self._make(
+                    statement=(
+                        f"Completed-timeframe structure on {symbol} is aligned with a "
+                        f"{trend_context}; conditional continuation is plausible, not certain."
+                        + caveat
+                    ),
+                    support=[n for n in names if n in _CONTINUATION_PATTERNS],
+                    against=[n for n in names if n in _CONTRA_PATTERNS],
+                    analysis=analysis,
+                    direction=direction,
+                    invalidation=(
+                        "Completed higher-timeframe structure breaks, alignment degrades, "
+                        "or cost-adjusted expectancy becomes non-positive"
+                    ),
+                    opportunity=(
+                        f"{direction} trend-context hypothesis; wait for fresh confirmation "
+                        "and common opportunity admission"
+                    ),
+                ))
+
             # 4) Consolidation / no-edge thesis (when nothing exploitable was found).
             if not hyps:
                 hyps.append(self._make(
-                    statement="Market is in consolidation/noise. No exploitable structure detected.",
+                    statement="Market state is unresolved from available evidence; no directional edge is established.",
                     support=[],
                     against=names,
                     analysis=analysis,
                     direction=FLAT,
-                    invalidation="A clear structural pattern (displacement, sweep, break) emerges",
-                    opportunity="none",
+                    invalidation="Fresh, independent evidence supports a testable market-state hypothesis",
+                    opportunity="observe; do not infer that missing evidence means a trade or a proven consolidation",
                 ))
 
             # ALWAYS generate at least one counter-hypothesis (Article IV).

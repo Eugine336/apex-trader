@@ -141,3 +141,14 @@ This PR does **not** close the full identity backlog. Still required: fresh all-
 
 No `.env` file was accessed or changed as part of this work. No broker orders were sent and no live broker configuration was changed. Demo-account testing remains a separate validation stage after code validation.
 
+## 2026-10-26 native hypothesis follow-up
+
+The follow-up branch adds conditional native hypotheses from independently observed completed-timeframe context:
+- A trend-context hypothesis can be formed when multiple completed timeframes agree, even if the named-pattern detector is quiet. Decelerating momentum is explicitly surfaced as a pullback/transition alternative.
+- A neutral range hypothesis can be formed from repeated timeframe range states without requiring a single `range_rotation` pattern tag.
+- The fallback is now described as unresolved evidence rather than asserting that all unrecognized conditions are "consolidation/noise".
+
+These hypotheses remain interpretations, not entry signals. They do not create a first-class opportunity, bypass whole-book admission, or imply a profitable edge. Tests exercise both trend/pullback and range-state cases without named patterns.
+
+**Still unresolved:** direct broker API call-graph proof for all instruments, full runtime management-thesis wiring, broader adversarial scenario tests, and cost-aware walk-forward/holdout evidence. The full repository CI baseline remains red; focused workflow results are reported separately. Demo-account testing has not been performed.
+

@@ -186,6 +186,46 @@ def test_hypothesis_direction_emerges_from_structured_evidence_short():
     assert lead is not None and lead.direction_implication == SHORT
 
 
+def test_regime_derived_multitimeframe_trend_hypothesis_survives_empty_pattern_list():
+    # A quiet named-pattern detector is not proof that no directional market
+    # state exists when multiple completed timeframes independently agree.
+    analysis = EvidenceAnalysis(
+        domain_coverage={"structure": 0.85, "multi_timeframe": 0.8},
+        evidence_uncertainty=0.25,
+        regime_indicators={
+            "trend_context": "uptrend",
+            "trend_timeframes": 3,
+            "momentum": "decelerating",
+            "structure": LONG,
+            "order_flow": "balanced",
+        },
+        detected_patterns=[],
+    )
+    hypotheses = BrainReasoner().generate_hypotheses(analysis, "EURUSD")
+    trend = next(h for h in hypotheses if "trend-context hypothesis" in h.opportunity_implication)
+    assert trend.direction_implication == LONG
+    assert "pullback" in trend.statement
+    assert any("counter" in h.opportunity_implication.lower() for h in hypotheses)
+
+
+def test_multitimeframe_range_state_is_hypothesized_without_named_range_pattern():
+    analysis = EvidenceAnalysis(
+        domain_coverage={"structure": 0.8, "volatility": 0.75},
+        evidence_uncertainty=0.3,
+        regime_indicators={
+            "trend_context": "range",
+            "range_timeframes": 2,
+            "trend_timeframes": 0,
+            "volatility": "compressing",
+        },
+        detected_patterns=[],
+    )
+    hypotheses = BrainReasoner().generate_hypotheses(analysis, "EURUSD")
+    range_hypothesis = next(h for h in hypotheses if h.direction_implication == "FLAT")
+    assert "competing possibilities" in range_hypothesis.statement
+    assert "do not trade" not in range_hypothesis.opportunity_implication.lower()
+
+
 # ── Article X: every defined pattern rule fires on crafted evidence ───────────
 
 _PATTERN_CASES = [
