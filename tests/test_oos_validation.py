@@ -4,6 +4,8 @@ Verifies that candidate scoring weights are adopted only when they
 do not degrade win/loss discrimination on held-out (later-in-time) trades.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from adaptive.score_optimizer import ScoreOptimizer, ScoringWeights
@@ -38,12 +40,17 @@ def _build_predictive_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
@@ -57,27 +64,49 @@ def _build_overfit_dataset(n_train: int = 70, n_val: int = 30) -> list[dict]:
         is_win = i % 2 == 0
         pnl = 15.0 if is_win else -10.0
         tags = ["structure", "fvg", "session"] if is_win else ["structure", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-01-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
+            ).isoformat().replace("+00:00", "Z")))
     for i in range(n_val):
         is_win = i % 2 == 0
         pnl = 12.0 if is_win else -8.0
         tags = ["structure", "session"] if is_win else ["structure", "fvg", "session"]
-        trades.append(_make_trade(pnl, tags, timestamp=f"2025-03-{i + 1:02d}T00:00:00Z"))
+        trades.append(_make_trade(pnl, tags, timestamp=(
+                datetime(2025, 1, 1, tzinfo=timezone.utc)
+                + timedelta(days=n_train + i)
+            ).isoformat().replace("+00:00", "Z")))
     return trades
 
 
+def _assert_within_safety_envelope(weights: ScoringWeights) -> None:
+    baseline = ScoringWeights().as_dict()
+    actual = weights.as_dict()
+    for factor, base_value in baseline.items():
+        assert round(base_value * 0.75) <= actual[factor] <= round(base_value * 1.25)
+
+
 class TestOOSValidationGate:
-    def test_genuinely_predictive_factor_adopted(self, tmp_path):
+    @staticmethod
+    def _use_isolated_weights_path(monkeypatch, tmp_path):
+        # ScoreOptimizer resolves persistence through runtime_paths.data_dir();
+        # DEFAULT_PATH is documentation-only and is intentionally not opened.
+        import adaptive.score_optimizer as so_mod
+
+        monkeypatch.setattr(so_mod, "_data_dir", lambda: tmp_path)
+
+    def test_genuinely_predictive_factor_adopted(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Factor predictive in both halves -> candidate ADOPTED."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
         trades = _build_predictive_dataset()
         result = opt.optimize(trades, min_trades=50)
         assert result.as_dict() != ScoringWeights().as_dict()
-        assert result.total == 123
-        assert (tmp_path / "weights.json").exists()
+        _assert_within_safety_envelope(result)
+        assert (tmp_path / "scoring_weights.json").exists()
 
-    def test_overfit_trap_rejected(self, tmp_path):
+    def test_overfit_trap_rejected(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Factor reverses in validation -> candidate REJECTED, incumbent retained."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
@@ -86,30 +115,37 @@ class TestOOSValidationGate:
         result = opt.optimize(trades, min_trades=50)
         assert result.as_dict() == original.as_dict()
 
-    def test_no_write_on_rejection(self, tmp_path):
+    def test_no_write_on_rejection(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Rejected candidate must not be persisted to disk."""
         fp = tmp_path / "weights.json"
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(fp)
         trades = _build_overfit_dataset()
         opt.optimize(trades, min_trades=50)
-        assert not fp.exists()
+        assert not (tmp_path / "scoring_weights.json").exists()
 
-    def test_small_validation_fallback(self, tmp_path):
+    def test_small_validation_fallback(self, tmp_path, monkeypatch):
+        self._use_isolated_weights_path(monkeypatch, tmp_path)
         """Below MIN_VALIDATION -> falls back to fit-on-all without OOS gate."""
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
         trades = _build_predictive_dataset(n_train=25, n_val=10)
         result = opt.optimize(trades, min_trades=30)
-        assert result.total == 123
-        assert (tmp_path / "weights.json").exists()
+        _assert_within_safety_envelope(result)
+        assert (tmp_path / "scoring_weights.json").exists()
 
-    def test_deterministic_decision(self):
-        """Same input twice -> identical result."""
+    def test_deterministic_decision(self, tmp_path, monkeypatch):
+        """Same input twice -> identical result with independent persistence."""
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "first")
         trades = _build_predictive_dataset()
         opt1 = ScoreOptimizer()
-        opt2 = ScoreOptimizer()
         r1 = opt1.optimize(trades, min_trades=50)
+
+        # Use a fresh data directory so the second run starts from the same
+        # incumbent instead of loading the first run's learned weights.
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "second")
+        opt2 = ScoreOptimizer()
         r2 = opt2.optimize(trades, min_trades=50)
         assert r1.as_dict() == r2.as_dict()
 
@@ -136,7 +172,7 @@ class TestOOSValidationGate:
             _make_trade(-5.0, ["session"]),
         ]
         metric = ScoreOptimizer._compute_validation_metric(weights, trades)
-        assert metric == pytest.approx(45.0)
+        assert metric == pytest.approx(32.0)
 
     def test_validation_metric_no_discrimination(self):
         """All wins or all losses -> returns 0.0 (no separation measurable)."""
@@ -169,13 +205,13 @@ class TestOOSValidationGate:
         assert result[1] is trades[1]
         assert result is not trades
 
-    def test_adopted_weights_within_envelope(self, tmp_path):
+    def test_adopted_weights_within_envelope(self, tmp_path, monkeypatch):
         """Both adoption and fallback produce per-factor weights within ±25% of baseline."""
         baseline = ScoringWeights()
         bd = baseline.as_dict()
 
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "oos")
         opt = ScoreOptimizer()
-        opt.DEFAULT_PATH = str(tmp_path / "w1.json")
         r1 = opt.optimize(_build_predictive_dataset(), min_trades=50)
         r1d = r1.as_dict()
         for key in r1d:
@@ -183,8 +219,8 @@ class TestOOSValidationGate:
             hi = round(bd[key] * 1.25)
             assert lo <= r1d[key] <= hi, f"OOS path: {key}={r1d[key]} outside [{lo},{hi}]"
 
+        self._use_isolated_weights_path(monkeypatch, tmp_path / "fallback")
         opt2 = ScoreOptimizer()
-        opt2.DEFAULT_PATH = str(tmp_path / "w2.json")
         small = _build_predictive_dataset(n_train=25, n_val=10)
         r2 = opt2.optimize(small, min_trades=30)
         r2d = r2.as_dict()

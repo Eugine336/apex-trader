@@ -86,6 +86,29 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
             observation="instrument reading", confidence=conf, uncertainty=unc,
             polarity=0.0, relevance_horizon_seconds=900.0,
         ))
+    # Positive-path fixtures must explicitly establish council coverage; an
+    # unconfirmed advisor quorum is correctly non-actionable in production.
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_panel", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="two independent advisors returned opinions",
+        confidence=conf, uncertainty=unc, polarity=0.0,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        relevance_horizon_seconds=900.0,
+    ))
+    # Entry-path tests must carry a fresh, explicit spread/slippage estimate.
+    # A diagnostic default is not verified execution-cost evidence and must not
+    # authorize exposure; negative-EV tests need this evidence too so they reach
+    # the EV verdict rather than stopping earlier at the cost-verification gate.
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol,
+        observation="fresh test spread and slippage quote",
+        confidence=conf,
+        uncertainty=unc,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
@@ -182,8 +205,10 @@ def test_expected_value_is_not_a_confidence_proxy():
     out = brain.reason(_rich_state())
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     ev = out.decision.expected_value
-    # EV_R = p_win*reward_r - (1-p_win)*risk_r = 0.8*2 - 0.2*1 = 1.4
-    assert abs(ev - 1.4) < 1e-9, f"expected 1.4, got {ev}"
+    # EV_R = p_win*reward_r - (1-p_win)*risk_r - verified_cost_r
+    # = 0.8*2 - 0.2*1 - 0.05 = 1.35. The rich fixture deliberately
+    # supplies fresh execution-cost evidence, so cognition must account for it.
+    assert abs(ev - 1.35) < 1e-9, f"expected 1.35 after verified cost, got {ev}"
     assert ev != out.decision.confidence
 
 

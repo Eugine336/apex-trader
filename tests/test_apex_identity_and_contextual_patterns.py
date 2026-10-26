@@ -140,6 +140,8 @@ def test_council_and_execution_metadata_do_not_pad_market_domain_coverage():
         relevance_horizon_seconds=60.0,
     ))
     consolidation = state.consolidation()
+    assert consolidation["identity_version"] == IDENTITY_VERSION
+    assert consolidation["identity"] == IDENTITY_STATEMENT
     assert consolidation["domain_count"] == 3
     assert consolidation["market_domain_count"] == 1
     assert consolidation["market_domains_present"] == ["structure"]

@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from enum import IntEnum
 from typing import Optional
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 
 class IntentType(IntEnum):
     """Action type ordered by priority — higher value = more urgent.
@@ -58,6 +60,12 @@ class Intent:
     stake_usd: Optional[float] = None
     comment: Optional[str] = None
     idempotency_key: Optional[str] = None
+    # Canonical identity and Brain provenance follow the intent to the shared executor.
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
+    decision_id: str = ""
+    campaign_id: str = ""
+    opportunity_id: str = ""
 
     @staticmethod
     def close(
@@ -67,6 +75,11 @@ class Intent:
         source: str,
         reason: str,
         direction: Optional[str] = None,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -77,6 +90,11 @@ class Intent:
             source=source,
             reason=reason,
             direction=direction,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.CLOSE,
         )
 
@@ -94,6 +112,11 @@ class Intent:
         stake_usd: Optional[float] = None,
         comment: str = "",
         idempotency_key: str = "",
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         """An intent to OPEN a new position.
@@ -116,6 +139,11 @@ class Intent:
             stake_usd=stake_usd,
             comment=comment,
             idempotency_key=idempotency_key,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.OPEN,
         )
 
@@ -127,6 +155,11 @@ class Intent:
         new_sl: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -137,6 +170,11 @@ class Intent:
             source=source,
             reason=reason,
             new_sl=new_sl,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.MODIFY_SL,
         )
 
@@ -148,6 +186,11 @@ class Intent:
         new_tp: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -158,6 +201,11 @@ class Intent:
             source=source,
             reason=reason,
             new_tp=new_tp,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.MODIFY_TP,
         )
 
@@ -169,6 +217,11 @@ class Intent:
         fraction: float,
         source: str,
         reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -179,5 +232,10 @@ class Intent:
             source=source,
             reason=reason,
             close_fraction=fraction,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            identity_version=identity_version,
+            identity=identity,
             priority=IntentType.PARTIAL_CLOSE,
         )

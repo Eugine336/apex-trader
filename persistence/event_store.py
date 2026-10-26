@@ -152,9 +152,34 @@ class EventStore:
         )
         # Use WAL and full synchronous to prioritise durability over raw
         # write throughput — this reduces the chance of corruption on
-        # abrupt shutdowns at the cost of some performance.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=FULL")
+        # abrupt shutdowns at the cost of some performance. A malformed DB
+        # can fail at journal-mode setup before integrity_check is reachable,
+        # so catch that failure and preserve the original file before recovery.
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=FULL")
+        except sqlite3.DatabaseError as exc:
+            self._db_degraded = True
+            logger.critical(
+                "[event_store] database setup failed for {} — preserving the "
+                "unreadable file and creating a fresh event store: {}",
+                self._db_path, exc,
+            )
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+            quarantined = self._db_path.with_name(
+                self._db_path.name + f".corrupt.{ts}"
+            )
+            shutil.move(str(self._db_path), str(quarantined))
+            logger.warning("[event_store] preserved unreadable database at {}", quarantined)
+            self._conn = sqlite3.connect(
+                str(self._db_path), timeout=10, check_same_thread=False
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=FULL")
         # Detect a corrupt/malformed DB up front. A "database disk image is
         # malformed" file would otherwise silently drop every event and make
         # startup recovery report a clean (empty) open-position set — masking
@@ -188,12 +213,41 @@ class EventStore:
                     self._conn.execute("PRAGMA synchronous=FULL")
                 except Exception as exc:
                     logger.exception("Failed to rotate corrupt DB: {}", exc)
+        except sqlite3.DatabaseError as exc:
+            self._db_degraded = True
+            logger.critical(
+                "[event_store] integrity_check could not run for {} — preserving "
+                "the malformed file and recovering to a fresh store: {}",
+                self._db_path, exc,
+            )
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+            quarantined = self._db_path.with_name(
+                self._db_path.name + f".corrupt.{ts}"
+            )
+            try:
+                shutil.move(str(self._db_path), str(quarantined))
+                logger.warning("[event_store] preserved unreadable database at {}", quarantined)
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=FULL")
+            except Exception:
+                # If preservation/reopen fails, refuse startup rather than
+                # accidentally treating a corrupt event log as an empty one.
+                logger.exception("[event_store] failed to preserve/reopen malformed database")
+                raise
         except Exception as exc:
             self._db_degraded = True
             logger.critical(
-                "[event_store] integrity_check could not run for {} — treating DB "
-                "as degraded: {}", self._db_path, exc,
+                "[event_store] integrity check failed unexpectedly for {}: {}",
+                self._db_path, exc,
             )
+            raise
         self._conn.execute(_CREATE_EVENTS)
         # Migrate DBs created before the seq column existed.
         existing_cols = {

@@ -94,7 +94,13 @@ class ReconciliationReport:
 
     @property
     def is_clean(self) -> bool:
-        return not self.missing_from_broker and not self.orphan_at_broker
+        # A degraded event store cannot establish trustworthy broker/log
+        # agreement, even when the observed sets happen to be empty.
+        return (
+            not self.store_degraded
+            and not self.missing_from_broker
+            and not self.orphan_at_broker
+        )
 
 
 def reconcile(
@@ -191,22 +197,30 @@ def run_startup_recovery(
     Read-only: logs discrepancies (and optionally calls *emit* with the report
     for telemetry); never opens or closes positions.
     """
+    # A degraded store must not be replayed: it may raise while reading or
+    # silently produce an incomplete position set. Treat every broker position
+    # as unreconciled and require operator verification instead of claiming a
+    # clean empty log.
+    store_degraded = bool(getattr(store, "is_degraded", False))
+    if store_degraded:
+        report = reconcile([], broker_order_ids)
+        report.store_degraded = True
+        logger.critical(
+            "[recovery] event store is DEGRADED (corrupt/unwritable DB) — "
+            "reconciliation is UNRELIABLE; {} broker position(s) remain "
+            "unreconciled. Verify broker positions manually.",
+            len(report.broker_open),
+        )
+        if emit is not None:
+            try:
+                emit(report)
+            except Exception as exc:
+                logger.debug("[recovery] emit failed for degraded report: {}", exc)
+        return report
+
     log_open_details = build_log_open_details(store, checkpoint_db=checkpoint_db)
     report = reconcile(log_open_details.keys(), broker_order_ids)
     report.log_open_details = log_open_details
-    # If the event DB is corrupt, the folded "open" set is unreliable: a
-    # malformed DB yields zero log-open and would otherwise report "clean".
-    # Surface it loudly so the caller can degrade safety rather than trust an
-    # empty reconciliation.
-    store_degraded = bool(getattr(store, "is_degraded", False))
-    report.store_degraded = store_degraded
-    if store_degraded:
-        logger.critical(
-            "[recovery] event store is DEGRADED (corrupt/unwritable DB) — "
-            "reconciliation against the event log is UNRELIABLE; {} broker "
-            "position(s) seen. Verify open positions manually.",
-            len(report.broker_open),
-        )
     if report.is_clean:
         logger.info(
             "[recovery] event-log reconciliation clean — {} open position(s) "

@@ -34,6 +34,8 @@ vocabulary is trivially importable and testable everywhere.
 
 from __future__ import annotations
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 import logging
 import time
 import uuid
@@ -465,6 +467,8 @@ class MarketState:
             + 0.2 * coverage_gap
         )
         return {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "symbol": self.symbol,
             "evidence_total": total,
             "evidence_fresh": n,
@@ -807,6 +811,8 @@ class DecisionPackage:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "decision_id": self.decision_id,
             "created": self.created_iso,
             "symbol": self.symbol,
@@ -873,6 +879,8 @@ class CampaignSpecification:
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "campaign_id": self.campaign_id,
             "created": self.created_iso,
             "symbol": self.symbol,

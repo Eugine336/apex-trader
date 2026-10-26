@@ -152,3 +152,107 @@ These hypotheses remain interpretations, not entry signals. They do not create a
 
 **Still unresolved:** direct broker API call-graph proof for all instruments, full runtime management-thesis wiring, broader adversarial scenario tests, and cost-aware walk-forward/holdout evidence. The full repository CI baseline remains red; focused workflow results are reported separately. Demo-account testing has not been performed.
 
+
+
+## 2026-10-26 exposure-route audit guard follow-up
+
+A standard-library AST regression test was added in `tests/test_broker_mutation_route_audit.py`. It checks that runtime orchestration and other production modules do not call exposure-increasing broker APIs directly, outside the shared executor/gateway boundary. Broker adapters and simulated backtest execution remain explicit implementation exceptions. This is a static guardrail; it is not equivalent to a runtime call trace or broker demo.
+
+### Current full-suite failure classification
+
+The latest completed `main` CI run (#1902) reports **177 failed, 3,738 passed, 12 skipped** on Python 3.12; the Python 3.11 test job was cancelled. Lint passes and test collection succeeds. Failures include:
+- stale test contracts that expect a campaign to open when advisor quorum metadata is absent or unconfirmed; the Brain now correctly records unconfirmed coverage and continues observing;
+- test/API compatibility mismatches (for example, dashboard tests pass a `client=` argument not accepted by the installed Starlette `TestClient`);
+- legacy tests asserting removed bootstrap methods or prior pipeline behavior;
+- genuine subsystem/fixture failures that still require individual triage.
+
+These categories must not be collapsed into “legacy failures” without checking each one. Do not relax fail-closed decision gates just to make old positive-path tests pass; positive-path fixtures should provide explicit, valid council coverage. Do not mark the redesign complete until the route audit, failure triage, focused tests, full CI, walk-forward/holdout evaluation, and controlled demo validation have evidence.
+
+Operational boundary remains unchanged: `.env` is off-limits; no broker orders or live configuration changes are permitted during this work.
+## 2026-10-26 recovery pass — post-run findings
+
+This section supersedes older test counts where they differ; it does not mark the redesign complete.
+
+### Latest available full-suite evidence
+
+The latest completed route-audit branch workflow at the time of this snapshot completed lint and collection, but Python 3.12 failed with **175 failed, 3,742 passed, 12 skipped** and Python 3.11 was cancelled. That run predates the fixes listed below. New full CI run [#1942](https://github.com/Eugine336/apex-trader/actions/runs/40280936900) and Gold-focused run [#325](https://github.com/Eugine336/apex-trader/actions/runs/40280936955) are now running against head `cc702c0c353690f4d9d2d3e6b7b61c819688aa78`; their results are pending, so the suite is not yet verified green.
+
+### Root-cause fixes committed after that run
+
+- Cognitive conformance fixtures now include a fresh, explicit execution-quality quote with estimated_total_cost_r, so their EV assertions reach the EV gate rather than failing earlier because execution cost is unverified. Production fail-closed behavior is unchanged.
+- RiskConfig.allow_intentional_hedge now defaults to false. Same-instrument opposing exposure requires explicit opt-in.
+- The zero-stop-distance regression now expects a non-tradeable zero-lot result (skip_invalid_stop), rather than expecting the minimum lot for an invalid stop.
+- The conviction-sizing regression now derives its expected multiplier from the continuous conviction curve instead of asserting an obsolete fixed 0.5 factor.
+- Removed process-global fake dependency injection from tests/test_risk_sizing_fixes.py; the old setup could leave mocked torch, numpy, pandas, and other dependencies in sys.modules, contaminating unrelated tests in the same pytest process.
+
+### Remaining verified gaps
+
+- A full-suite rerun was unavailable at the time of the earlier snapshot. CI has since been triggered on the latest branch head; see the current workflow links in the 2026-10-26 validation snapshot. Until those runs complete, the latest changes are not test-passing evidence.
+- The repository tree still contains tracked runtime SQLite databases and SQLite -wal/-shm files. They may contain persistent trading, campaign, and learning state. Do not delete them blindly; preserve/export the data before changing tracking policy.
+- The static entry-route audit is not runtime proof of every entry, pending-order, reversal, scale-in, exit, and stop-management path. Recording fake-broker call traces and a controlled demo cycle remain necessary.
+- The full-suite silent-exception audit reports hundreds of existing handlers. Do not mass-insert noisy logs or weaken the audit to manufacture a pass; classify intentional fail-safe fallbacks and genuinely silent failures, then remediate by subsystem.
+- Learning promotion remains unverified against cost-aware walk-forward splits and an untouched holdout. No learning or optimizer threshold should be lowered to make tests pass.
+- Broker demo reconciliation and live-position management have not been validated end-to-end.
+
+### Protected operating boundaries
+
+The .env file remains out of scope: do not read, display, copy, recreate, rename, or modify it. No broker orders have been sent and live trading has not been enabled by this recovery pass.
+### Additional failure-triage changes in this pass
+
+- All dashboard auth tests now use the Starlette-version-compatible client-address helper; three remaining tests had bypassed the helper and still passed the unsupported client keyword directly.
+- The Deriv token-refresh test builder now initializes the retry/failure streak that production connector initialization owns.
+- The per-user process environment builder now honors its explicit repo_root argument and omits APEX_REPO_DIR when no root was supplied, rather than leaking the parent checkout path into an isolated process.
+- The post-close MFE/MAE observation test now matches the declared read-only, evidence-collection default; this tracker does not itself authorize or mutate a trade.
+- The Composio adapter test now asserts the current v3 tools/execute request contract rather than the retired v2 endpoint.
+
+These are code/test-contract corrections inferred from the failing run and source contracts. Because the quota prevents a rerun, each remains pending execution verification.
+
+
+## 2026-10-26 canonical identity propagation pass
+
+The canonical source remains `cognition/identity.py`; this pass propagates its exact identity statement/version across the lifecycle instead of duplicating alternate wording:
+
+- **Observation:** `MarketState.consolidation()` exposes `identity_version` and the exact canonical identity alongside freshness, coverage, conflict and uncertainty.
+- **Analysis and decision:** `DecisionPackage.to_dict()` and `CognitiveBrain.get_status()` expose the same canonical identity/version.
+- **Campaign and execution hand-off:** `CampaignSpecification.to_dict()`, `OriginationIntent`, and the immutable execution `Intent` carry identity plus decision/campaign/opportunity provenance. The Brain origination sink propagates those fields into the shared `Intent.open` path.
+- **Execution boundary:** `ActionExecutor` rejects a new OPEN intent if its identity version or statement differs from the canonical contract, before any broker dispatch. This does not block risk-reducing management actions on existing positions.
+- **Learning:** entry/outcome journal records include the identity version and exact statement, keeping the decision contract attached to later outcome attribution.
+- **Regression coverage:** added assertions for observation snapshots, serialized decisions/campaigns, learning records, translator provenance, execution-intent propagation, and rejection of a mismatched OPEN identity. Removed import-time global torch/RL mocks from the bankruptcy and MTF-observation tests to prevent test-order contamination of the RL suite.
+
+**Validation status:** these latest edits have been committed to the route-audit branch, but no test run has executed against the current head. The last available workflow is from an earlier head and failed; Actions quota is exhausted. Do not treat the new assertions or the full suite as verified until tests are run in a local environment or CI becomes available. No broker orders were sent; `.env` remains untouched.
+
+
+## Verification refresh — 2026-10-26, PR #758 recovery
+
+The live PR head was rechecked before this refresh. The branch includes the identity propagation and management-intent changes described above. The management translator now prefers the Brain decision's `preferred_opportunity_id` (and explicit decision campaign metadata when present) over older position metadata, with a regression test for that precedence. This is a source-level correction; it is not a runtime validation result.
+
+- **Canonical identity source:** implemented in `cognition/identity.py`; duplicate canonical constants were not introduced.
+- **Observation/decision/campaign serialization:** implemented in source; focused test execution at the current head remains unverified.
+- **Entry intent identity gate:** implemented and covered by tests in source; broker-dispatch behavior remains unverified in this environment.
+- **Management identity/provenance:** implemented in the translator and intent factories; translator provenance precedence now has a regression test. The full live-position-to-executor path remains only partially runtime-verified.
+- **Broker-route audit:** AST guard implemented; it is not a complete runtime call-graph proof.
+- **Learning lineage:** identity fields are present in entry/outcome journal code; end-to-end lineage and OOS/holdout behavior remain unverified.
+- **RL test isolation:** global dependency mocks were removed from the two named tests in source; cross-suite isolation is unverified without executing the suite.
+- **Validation:** workflow #1911 (run ID 40275835782) is completed with failure on older head `a90a8f540f4f32d06098d24c36fa097218244c1f`. Main workflow #1902 is also failed. No successful workflow is established for the latest head. The current tool environment does not provide a checked-out repository for local test execution, so no local test result is claimed.
+
+No broker orders were sent and live trading was not enabled. `.env` was not accessed or modified.
+
+
+## Latest CI evidence update — 2026-10-26
+
+The latest completed full workflow on the prior PR head reports 140 failures, 3,785 passes, and 12 skips on Python 3.12; lint passed and Python 3.11 was cancelled. The focused Gold desk workflow passed on both Python 3.11 and 3.12. These are not a full-suite pass. A dashboard TestClient compatibility fix was committed afterward; it is not yet validated by a subsequent run. The PR must remain unmerged while the full suite and critical execution/management tests remain red or unverified.
+
+
+## Current validation refresh — 2026-10-26
+
+The canonical identity remains sourced from `cognition/identity.py`; no alternate identity constant was added by the recovery work. Identity propagation source coverage is present across observations, decisions, campaigns, entry intents, management intents, and learning records, but full runtime call-path validation is incomplete.
+
+The current recovery head is `313d04fbcd835eb82e19e8db44bd6e0660453c8b`. Its full CI run is still in progress: https://github.com/Eugine336/apex-trader/actions/runs/40306586682. The most recent completed full suite on a prior head failed with 50 failures and 3,888 passes. Gold-focused tests passed on several earlier recovery heads; that is not a full identity/execution proof.
+
+Remaining identity-critical verification:
+- prove every broker-mutating path is reachable only after canonical Brain opportunity admission, portfolio/risk gates, and identity validation;
+- prove live position management preserves the same identity and campaign/opportunity provenance;
+- verify fail-closed behavior for stale/missing feeds and degraded persistence;
+- validate outcome lineage and cost-aware walk-forward learning with an untouched holdout.
+
+PR #758 remains draft/unmerged. No live orders have been sent, and `.env` was not accessed or modified.

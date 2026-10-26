@@ -619,7 +619,8 @@ class RiskConfig:
     # the same pair / same broker already holds more than this many positions.
     max_pair_concentration: int = 0
     max_broker_positions: int = 0
-    allow_intentional_hedge: bool = True
+    # Conservative default: same-instrument opposing positions are rejected unless explicitly opted in.
+    allow_intentional_hedge: bool = False
     margin_guardian_enabled: bool = True
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0

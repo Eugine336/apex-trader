@@ -121,11 +121,16 @@ class ApexMultiTFTradingEnv:
 
     def reset(self) -> tuple[np.ndarray, np.ndarray, int]:
         min_start = WINDOW + ATR_PERIOD + 20
-        if self.random_start:
+        # Keep reset robust for lightweight test doubles / restored legacy
+        # instances created without running __init__. Normal instances always
+        # define these attributes in __init__.
+        random_start = bool(getattr(self, "random_start", False))
+        max_episode_steps = getattr(self, "max_episode_steps", None)
+        if random_start:
             # Sample a starting bar so episodes cover the whole history rather
             # than always replaying from the same point; leave room for one full
             # episode when a length cap is set.
-            top = len(self._m5_feat) - 2 - (self.max_episode_steps or 0)
+            top = len(self._m5_feat) - 2 - (max_episode_steps or 0)
             top = max(min_start, top)
             self.idx = int(np.random.randint(min_start, top + 1)) if top > min_start else min_start
         else:
@@ -206,8 +211,10 @@ class ApexMultiTFTradingEnv:
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
 
-        if (self.max_episode_steps is not None
-                and (self.idx - self._episode_start) >= self.max_episode_steps):
+        max_episode_steps = getattr(self, "max_episode_steps", None)
+        episode_start = getattr(self, "_episode_start", 0)
+        if (max_episode_steps is not None
+                and (self.idx - episode_start) >= max_episode_steps):
             done = True
 
         if self.balance <= 0 and not done:

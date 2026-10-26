@@ -200,9 +200,11 @@ class TestStartupCheckDegradedStore:
 
             check = StartupCheck()
             result = check._check_database()
-            assert result.passed is True
+            # A degraded position store cannot establish duplicate-order
+            # protection or persisted state; startup must fail closed.
+            assert result.passed is False
             assert "DEGRADED" in result.message
-            assert "may be inaccurate" in result.message
+            assert "Cannot verify duplicate-order protection" in result.message
 
     def test_healthy_store_normal_message(self, tmp_path):
         from platforms.startup_check import StartupCheck

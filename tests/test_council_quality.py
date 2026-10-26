@@ -9,7 +9,7 @@ to :class:`~cognition.influence.InfluenceLedger`.
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
-from cognition.contracts import DecisionType, MarketState
+from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
 from cognition.influence import InfluenceLedger
 from llm.reasoner import LLMOpinion
 
@@ -32,8 +32,43 @@ def _decide(opinion, uncertainty=0.1):
             "evidence_strength": opinion.confidence,
         }]
         opinion.preferred_opportunity_id = "auto"
+    state = MarketState(symbol="BTCUSD")
+    for i, domain in enumerate((
+        EvidenceDomain.STRUCTURE,
+        EvidenceDomain.LIQUIDITY,
+        EvidenceDomain.MOMENTUM,
+    )):
+        state.add(Evidence(
+            source_module=f"test_market_{i}",
+            domain=domain,
+            symbol="BTCUSD",
+            observation="eligible non-directional market evidence",
+            confidence=0.9,
+            uncertainty=uncertainty,
+            relevance_horizon_seconds=900.0,
+        ))
+    state.add(Evidence(
+        source_module="reasoning_engine.test_panel",
+        domain=EvidenceDomain.REASONING,
+        symbol="BTCUSD",
+        observation="two independent advisors returned opinions",
+        confidence=0.9,
+        uncertainty=uncertainty,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        relevance_horizon_seconds=900.0,
+    ))
+    state.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol="BTCUSD",
+        observation="fresh test spread and slippage quote",
+        confidence=0.9,
+        uncertainty=uncertainty,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return _brain()._from_opinion(
-        "BTCUSD", MarketState(symbol="BTCUSD"),
+        "BTCUSD", state,
         {"aggregate_uncertainty": uncertainty}, opinion, None,
     )
 

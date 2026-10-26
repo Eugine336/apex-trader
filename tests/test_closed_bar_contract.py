@@ -65,9 +65,10 @@ class _RecordStructure:
     def __init__(self) -> None:
         self.seen: int | None = None
 
-    def analyze(self, df, pip_size=None):
+    def analyze(self, df, pip_size=None, context=None):
         self.seen = len(df)
-        return {}
+        # Current WyckoffEngine consumes the structure result's trend field.
+        return SimpleNamespace(trend="up", structure="higher_highs")
 
 
 def test_structural_modules_get_closed_bar_observational_get_live(monkeypatch):

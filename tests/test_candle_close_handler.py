@@ -14,8 +14,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Ensure torch stub exists before any rl imports
-if "torch" not in sys.modules:
+# Prefer the real PyTorch installation. A sys.modules-only check is insufficient:
+# the package may be installed but not imported yet, and installing a stub here
+# contaminates every later RL test in the same pytest process.
+try:
+    import torch as _torch
+except ImportError:
+    _torch = None
+
+if _torch is None:
     _torch = types.ModuleType("torch")
     _torch.nn = types.ModuleType("torch.nn")
     _torch.optim = types.ModuleType("torch.optim")
@@ -246,14 +253,14 @@ class TestModuleExecution:
         assert "D1" in wm.structure_by_tf()
         assert wm.fvgs_by_tf().get("D1") is None
 
-    def test_m15_close_populates_fvg_only(self):
+    def test_m15_close_populates_fvg_and_structure(self):
         event = _make_candle_close(tf="M15")
         self.bus.publish("candle_close", event)
         assert _wait_processed(self.handler, 1)
         wm = self.store.get("EURUSD")
         assert wm is not None
         assert "M15" in wm.fvgs_by_tf()
-        assert wm.structure_by_tf().get("M15") is None
+        assert "M15" in wm.structure_by_tf()
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +425,12 @@ class TestThreadSafety:
             bus, store, _fetcher_factory(candles), max_workers=4,
         )
 
-        symbols = [f"SYM{i}" for i in range(8)]
+        # Use registered instruments: the current analysis path rejects
+        # unknown symbols before invoking structural modules.
+        symbols = [
+            "EURUSD", "GBPUSD", "USDJPY", "XAUUSD",
+            "AUDUSD", "USDCAD", "NZDUSD", "USDCHF",
+        ]
         for sym in symbols:
             bus.publish("candle_close", _make_candle_close(symbol=sym, tf="M5"))
 
@@ -488,10 +500,10 @@ class TestTFModuleMap:
         assert set(TF_MODULE_MAP.keys()) == {"M5", "M15", "H1", "H4", "D1"}
 
     def test_m5_modules(self):
-        assert set(TF_MODULE_MAP["M5"]) == {"fvg", "order_block", "volume", "inducement"}
+        assert set(TF_MODULE_MAP["M5"]) == {"fvg", "order_block", "volume", "inducement", "structure"}
 
     def test_m15_modules(self):
-        assert TF_MODULE_MAP["M15"] == ["fvg"]
+        assert TF_MODULE_MAP["M15"] == ["fvg", "structure"]
 
     def test_h1_modules(self):
         expected = {"fvg", "order_block", "liquidity", "volume", "wyckoff", "structure"}

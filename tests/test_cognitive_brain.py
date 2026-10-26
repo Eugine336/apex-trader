@@ -4,6 +4,7 @@ import pytest
 
 from cognition.brain import CognitiveBrain
 from cognition.contracts import DecisionType, Evidence, MarketState
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 class _Opinion:
@@ -48,6 +49,30 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
                     uncertainty=0.1, polarity=polarity))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
                     uncertainty=0.1, polarity=polarity))
+    # The Brain has a hard three-domain floor plus an advisor-quorum gate.
+    # Keep this fixture genuinely eligible so positive-path tests test EV and
+    # campaign construction rather than relying on absent council metadata.
+    ms.add(Evidence(source_module="s3", domain="volatility", confidence=0.9,
+                    uncertainty=0.1, polarity=polarity))
+    from cognition.contracts import EvidenceDomain
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_panel", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="two independent advisors returned opinions",
+        confidence=0.9, uncertainty=0.1, polarity=0.0,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+    ))
+    # Action-path fixtures must include fresh execution-cost evidence; a
+    # diagnostic default is intentionally insufficient to authorize exposure.
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol,
+        observation="fresh test spread and slippage quote",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
@@ -108,7 +133,15 @@ def test_status_and_latest():
     brain.reason(_confident_state(symbol="EURUSD"))
     st = brain.get_status()
     assert st["decisions"] == 1 and st["campaigns_opened"] == 1
-    assert brain.latest("EURUSD") is not None
+    assert st["identity_version"] == IDENTITY_VERSION
+    assert st["identity"] == IDENTITY_STATEMENT
+    latest = brain.latest("EURUSD")
+    assert latest is not None
+    assert latest.decision.to_dict()["identity_version"] == IDENTITY_VERSION
+    assert latest.decision.to_dict()["identity"] == IDENTITY_STATEMENT
+    assert latest.campaign is not None
+    assert latest.campaign.to_dict()["identity_version"] == IDENTITY_VERSION
+    assert latest.campaign.to_dict()["identity"] == IDENTITY_STATEMENT
 
 
 def test_required_questions_are_recorded():

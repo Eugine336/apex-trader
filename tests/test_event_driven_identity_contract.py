@@ -125,3 +125,27 @@ def test_legacy_pending_order_callback_cannot_reach_broker_connector():
         isinstance(node.value, ast.Constant) and node.value.value is None
         for node in returns
     )
+
+
+def test_brain_identity_and_provenance_reach_execution_intent():
+    module = _parse("event_driven_bootstrap.py")
+    factory = _function(module, "_make_origination_sink")
+    sink = _function(factory, "_sink")
+    calls = _calls(sink, attribute="open")
+    assert len(calls) == 1, "Brain origination must submit exactly one shared OPEN intent"
+    kwargs = {item.arg: item.value for item in calls[0].keywords if item.arg}
+    for name in ("decision_id", "campaign_id", "opportunity_id", "identity_version", "identity"):
+        assert name in kwargs, f"origination provenance missing from execution Intent.open: {name}"
+
+
+def test_brain_management_identity_and_provenance_reach_execution_intents():
+    module = _parse("event_driven_bootstrap.py")
+    factory = _function(module, "_make_management_sink")
+    sink = _function(factory, "_sink")
+    required = {"decision_id", "campaign_id", "opportunity_id", "identity_version", "identity"}
+    for method in ("close", "partial_close", "modify_sl"):
+        calls = _calls(sink, attribute=method)
+        assert calls, f"expected a management {method} intent site"
+        for call in calls:
+            kwargs = {item.arg: item.value for item in call.keywords if item.arg}
+            assert required <= kwargs.keys(), f"{method} intent lost Brain provenance: {required - kwargs.keys()}"

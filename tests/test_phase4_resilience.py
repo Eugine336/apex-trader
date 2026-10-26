@@ -4,6 +4,7 @@ Tests for auto-reconnect, health watchdog, circuit breaker, maintenance, and sta
 """
 
 import os
+import sqlite3
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
@@ -197,7 +198,15 @@ class TestDailyMaintenance:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
             db_path = data_dir / "apex_positions.db"
-            db_path.write_text("test")
+            # The backup routine uses SQLite's online backup API, so the
+            # fixture must be a valid SQLite database rather than arbitrary text.
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE managed_positions (order_id TEXT PRIMARY KEY)"
+                )
+                conn.execute(
+                    "INSERT INTO managed_positions(order_id) VALUES (?)", ("test-order",)
+                )
 
             m = DailyMaintenance(data_dir=str(data_dir))
             result = m._backup_database()

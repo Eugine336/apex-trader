@@ -264,12 +264,15 @@ class TestEventDrivenSystem:
         from event_driven_bootstrap import EventDrivenSystem
 
         config = MagicMock()
+        # The bootstrap subscribes only to configured symbols; MagicMock's
+        # implicit empty iterable previously made this test exercise no route.
+        config.enabled_pairs = ["EURUSD", "V75_1S"]
         pm = _mock_platform_manager()
         system = EventDrivenSystem(config, pm)
 
         mt5, deriv = system._classify_symbols()
         assert "EURUSD" in mt5
-        assert "V75" in deriv
+        assert "V75_1S" in deriv
 
     @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
         "EURUSD": SimpleNamespace(
@@ -312,10 +315,14 @@ class TestEventDrivenSystem:
         assert "tick_store" in stats
         assert "candle_handler" in stats
         assert "executor" in stats
-        assert "entry" in stats
+        # Entry orchestration is represented by the CognitiveBrain/Executor
+        # pipeline; the removed legacy "entry" stats bucket is not part of the
+        # current operational metrics contract.
         assert "position_evals" in stats
         assert "tick_router" in stats
         assert "candle_detector" in stats
+        assert "tick_eval" in stats
+        assert "zone_edge" in stats
 
     @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
         "EURUSD": SimpleNamespace(

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from cognition.contracts import DecisionType
 from cognition.management_translator import ManagementAction, translate_management
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 def _out(decision_type, symbol="XAUUSD", confidence=0.7):
@@ -66,3 +67,38 @@ def test_action_to_dict_is_bounded():
     d = a.to_dict()
     assert d["kind"] == "close" and d["symbol"] == "XAUUSD"
     assert isinstance(a, ManagementAction)
+    assert d["identity_version"] == IDENTITY_VERSION
+    assert d["identity"] == IDENTITY_STATEMENT
+    assert d["decision_id"] == "dec-1"
+
+
+def test_management_action_preserves_campaign_and_opportunity_provenance():
+    pos = SimpleNamespace(
+        symbol="XAUUSD", direction="LONG", campaign_id="campaign-7",
+        opportunity_id="opportunity-9",
+    )
+    action = translate_management(_out(DecisionType.EXIT), pos)
+    assert action is not None
+    assert action.decision_id == "dec-1"
+    assert action.campaign_id == "campaign-7"
+    assert action.opportunity_id == "opportunity-9"
+    payload = action.to_dict()
+    assert payload["campaign_id"] == "campaign-7"
+    assert payload["opportunity_id"] == "opportunity-9"
+
+def test_management_action_prefers_brain_decision_opportunity_provenance():
+    output = _out(DecisionType.EXIT)
+    output.decision.preferred_opportunity_id = "brain-opportunity-12"
+    output.decision.campaign_id = "brain-campaign-4"
+    position = _pos()
+    position.opportunity_id = "position-opportunity-old"
+    position.campaign_id = "position-campaign-old"
+
+    action = translate_management(output, position)
+
+    assert action is not None
+    assert action.identity_version == IDENTITY_VERSION
+    assert action.identity == IDENTITY_STATEMENT
+    assert action.decision_id == "dec-1"
+    assert action.campaign_id == "brain-campaign-4"
+    assert action.opportunity_id == "brain-opportunity-12"

@@ -271,7 +271,8 @@ def test_position_size_zero_sl(sizer):
         stop_loss=1.10,
         pip_size=0.0001,
     )
-    assert result.lots == 0.01
+    assert result.lots == 0.0
+    assert result.sizing_mode == "skip_invalid_stop"
 
 
 def test_position_size_for_instrument(sizer):

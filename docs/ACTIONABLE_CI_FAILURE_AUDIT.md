@@ -1,0 +1,91 @@
+# Apex Trader CI Failure Audit
+
+Date: 2026-10-26
+Base commit: b92833bf4ff90eb64e1049862346a6934707dcc2
+Workflow run: https://github.com/Eugine336/apex-trader/actions/runs/40270654561
+
+## Status
+
+This is a triage record, not a claim that the suite is fixed. The main-branch full-suite run is red. Python 3.12 completed with 177 failures, 3,738 passes, and 12 skips; Python 3.11 was cancelled during the test step. Lint and test collection passed. Do not deploy or enable broker execution on the basis of the focused tests alone.
+
+## High-priority failure clusters observed in the run
+
+1. **Cognitive admission / test-contract mismatch**: several campaign-opening tests now receive `CONTINUE_OBSERVING` because advisor quorum and independent market-domain coverage are unconfirmed. Do not weaken the production fail-closed gates to satisfy legacy fixtures. Repair fixtures to provide authentic, explicit coverage metadata, and preserve negative tests proving missing quorum/domain metadata blocks exposure.
+2. **Python dependency/API compatibility**: `tests/test_dashboard_auth.py` passes `client=(host, port)` to Starlette/FastAPI `TestClient`, but the installed TestClient rejects that keyword. Align the test harness with the pinned dependency version or deliberately update the dependency lock and validate compatibility.
+3. **Stateful-test isolation and persistent artifacts**: failures mention SQLite schema/foreign-key state, malformed database reuse, learner recency fields, optimizer persistence, and tracked `.db` files. Each test must use isolated temporary paths, explicit schemas, and deterministic clocks; runtime data files must not be tracked.
+4. **Contract drift between implementation and legacy tests**: examples include renamed/moved event-driven bootstrap methods, changed intent types, instrument configuration defaults, changed module/timeframe mapping, and order-comment format. Classify each against the current architecture before changing code or tests; do not reintroduce deprecated execution paths just to satisfy stale assertions.
+5. **Market-data freshness test fixtures**: Deriv order tests use timestamps that are now rejected as stale. Use explicit current/fixed clocks and assert stale ticks are rejected; do not disable stale-data protection.
+6. **OOS/learning validation failures**: optimizer/OOS-gate expectations and persistence tests fail. These are material because learning changes must remain sample-aware, cost-aware, walk-forward validated, and separated from untouched holdout data. Do not relax acceptance thresholds to make tests green.
+
+## Execution-route audit observations
+
+- `execution/action_executor.py` is the intended serialized, risk-gated broker execution boundary.
+- `platforms/platform_manager.py` contains connector-level order dispatch and pending-order methods. Such methods are dangerous if reachable outside the approved admission path.
+- `event_driven_bootstrap.py` still wires a legacy NewsPlanner callback, but `tests/test_event_driven_identity_contract.py` asserts that the update path and staging callback cannot submit pending orders. Keep that route disabled until it is redesigned around first-class Brain opportunities and whole-book admission.
+- `risk/spread_bootstrap.py` is a startup spread-seeding utility, but historical audit notes flag direct connector access. Verify its current call graph before considering the route closed.
+- Static tests are not enough to prove every route safe. Add integration tests with a recording fake broker that assert no broker-mutating method is called when any upstream gate rejects or when market data, council coverage, portfolio state, or risk context is unavailable.
+
+## Required completion gates
+
+- [ ] Resolve each failure cluster without weakening safety invariants.
+- [ ] Obtain a full green test run on every supported Python version.
+- [ ] Add call-graph coverage for all broker mutation entry points, including direct connector calls, pending orders, scale-ins, reversals, and startup helpers.
+- [ ] Prove whole-book admission, exposure limits, stale-feed rejection, idempotency, and safe degradation with recording fake-broker tests.
+- [ ] Verify position-thesis reassessment and all-instrument shared Brain routing.
+- [ ] Validate learning with deterministic walk-forward splits and a truly untouched holdout; include transaction costs and minimum sample thresholds.
+- [ ] Only after those gates pass, run controlled demo-account validation with explicit opt-in and telemetry. No live orders.
+
+## Protected configuration
+
+The `.env` file is out of scope and must not be read, copied, recreated, renamed, or modified during this work. This audit does not change broker credentials or send orders.
+
+
+## CI status refresh — 2026-10-26
+
+The prior statement that CI could not be rerun because of exhausted Actions quota is superseded: new workflows are now running on branch head `cc702c0c353690f4d9d2d3e6b7b61c819688aa78`:
+- Full CI: https://github.com/Eugine336/apex-trader/actions/runs/40280936900
+- Gold-focused tests: https://github.com/Eugine336/apex-trader/actions/runs/40280936955
+
+These are pending at this update. Do not infer success from a running workflow. The previous completed full-suite result remains red, and the new provenance-gate changes must pass the focused suite before the PR is considered mergeable.
+
+
+## Verification refresh — 2026-10-26, PR #758
+
+Supersedes the older pending-workflow note above. Rechecked GitHub state:
+- PR #758 remains open and draft; latest inspected head is `3193635346bf920278882be1f56bb4dda6149b07` after the management provenance fix and its regression test.
+- Workflow #1911 (`40275835782`) completed with **failure** on older head `a90a8f540f4f32d06098d24c36fa097218244c1f`. Do not treat it as a run against the current head.
+- Workflow #1902 (`40270654561`) completed with **failure** on `main` at `b92833bf4ff90eb64e1049862346a6934707dcc2`; Python 3.12 reported 177 failures, 3,738 passes, 12 skips, and Python 3.11 was cancelled.
+- The workflows previously described as pending on `cc702c0c353690f4d9d2d3e6b7b61c819688aa78` are not evidence of current-head success. Their final status was not established in this check.
+- No local checkout was available in the current execution environment, so focused tests and Ruff were not run locally. The current-head changes remain **unverified by test execution**.
+
+Keep the PR draft/unmerged until focused local tests or CI validate the current head. No broker orders were sent, no live trading was enabled, and `.env` was not accessed or changed.
+
+
+## Latest validation snapshot — PR #758 head `8cefc7289ad2c73d469ca3c4f25614fdbbed7d3c`
+
+The latest completed full CI run (workflow run 1946, https://github.com/Eugine336/apex-trader/actions/runs/40284186260) is **red**: lint passed; Python 3.12 reported **140 failed, 3,785 passed, 12 skipped**; Python 3.11 was cancelled. The focused Gold desk workflow (run 330, https://github.com/Eugine336/apex-trader/actions/runs/40284186222) passed on Python 3.11 and 3.12.
+
+Failure evidence includes distinct clusters rather than one universal root cause:
+- RL suite contamination: many tests see incomplete mocked `torch.nn` (`Conv1d` missing) and `torch.cuda` missing; the source of the leaked module state still needs isolation.
+- Cognition/admission fixtures: several legacy positive-path tests now correctly receive `CONTINUE_OBSERVING` when quorum, market-domain coverage, or cost evidence is missing.
+- Test/API and fixture mismatches: dashboard TestClient peer-address keyword mismatch, missing fixture fields, old method/field expectations, and timing assertions.
+- Stateful artifacts: tracked `.db` files, malformed/reused SQLite state, optimizer/OOS persistence mismatches.
+- Production/source gaps requiring triage: RL environment `random_start`, WorldModel quality fields, dashboard/process lifecycle behavior, and the large silent-exception-handler inventory.
+- The silent-handler test reports 395 locations; classify and repair intentional fail-safe handlers versus genuine swallowed failures rather than mass-adding logs or changing runtime behavior blindly.
+
+After this run, the two remaining direct `TestClient(..., client=...)` calls in `tests/test_dashboard_auth.py` were replaced with the existing cross-version `_test_client_with_address` helper in commit `b31293f0e15581095ccf80cb1a61c7c2499dc793`. That specific fix has **not yet been shown to pass a new workflow**. Do not reuse the earlier run as evidence for the new commit.
+
+
+## Current recovery status — 2026-10-26, PR #758
+
+This section supersedes older workflow-quota and pending-status notes above.
+
+- Latest completed full suite on commit `c8275d179cf5c93ed378525030ad58364b3f3674`: **50 failed, 3,888 passed, 162 warnings** on Python 3.12; Python 3.11 was cancelled after the paired job failed. Ruff/lint passed.
+- Latest full CI on current recovery branch head `313d04fbcd835eb82e19e8db44bd6e0660453c8b` is running: https://github.com/Eugine336/apex-trader/actions/runs/40306586682. Do not infer success until completed.
+- Gold-focused tests passed on several recent branch heads, including `6a7452642aebc6c9b3dd2dbe855703f1cac81ec9`; this does not substitute for full CI.
+- Confirmed test-fixture repairs: registered symbols in the candle-concurrency test; current StructureEngine spy signature; AppConfig's current `layered_decision` section; and fail-closed startup expectations for a degraded position store. A learner-persistence test now patches the canonical `adaptive.*` modules rather than compatibility shims.
+- Runtime state audit: a read-only inventory examined 26 tracked SQLite files. `data/apex_shadow.db` has SQLite integrity errors affecting indexes; `data/counterfactual.db` has two index-integrity errors. The shadow store now disables persistence on initialization/integrity failure and preserves the original file rather than continuing as if healthy. This change is not yet validated by a completed full-suite run.
+- The test `test_no_database_artifacts_tracked` still fails because database and WAL/SHM artifacts are tracked. They were not removed because they may contain position, event, or learning state; a safe state-preserving migration is required before untracking them.
+- The remaining failures include risk/decision contract drift, legacy event-driven API expectations, stale-market fixtures, test-order/persistence isolation, execution-worker behavior, and a 397-handler silent-exception audit. These require individual triage; do not mass-edit exception handlers or relax fail-closed risk gates.
+
+PR #758 remains draft and unmerged. Do not merge until full CI is green and the live entry/position-management paths are validated with a recording fake broker. No broker orders were sent. The `.env` file remains out of scope and untouched.

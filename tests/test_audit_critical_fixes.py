@@ -101,6 +101,7 @@ class TestEventStoreCorruption:
         # store still yields an (empty) report whose store_degraded is surfaced.
         report = run_startup_recovery(_DegradedStore(), [])
         assert report.store_degraded is True
+        assert report.is_clean is False
 
 
 # ── C4 — PositionEvaluator inflight store is self-contained ────────────────

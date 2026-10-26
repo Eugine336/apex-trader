@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 import threading
 import uuid
 from dataclasses import dataclass
@@ -134,6 +133,7 @@ class ShadowStore:
         self._db_path = db_path or _DB_PATH
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self._degraded_reason: Optional[str] = None
         # Serialises all access to the shared sqlite connection. The resolver
         # thread and the dashboard reader touch this store concurrently; without
         # a lock their cursors race on the single connection.
@@ -149,6 +149,25 @@ class ShadowStore:
             )
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=FULL")
+            # This store is observational/learning state, but corrupt indexes
+            # can make shadow outcomes unreliable. Never silently read or
+            # write through a failed integrity check, and never auto-rebuild
+            # or discard the operator's existing database.
+            check_rows = self._conn.execute("PRAGMA integrity_check").fetchall()
+            issues = [
+                str(row[0]) for row in check_rows
+                if row and str(row[0]).strip().lower() != "ok"
+            ]
+            if issues:
+                self._degraded_reason = "; ".join(issues[:10])
+                logger.critical(
+                    "[ShadowStore] integrity check failed for {} — store disabled "
+                    "without modifying the database: {}",
+                    self._db_path, self._degraded_reason,
+                )
+                self._conn.close()
+                self._conn = None
+                return
             self._conn.execute(_CREATE_CONTRACTS)
             self._migrate_source_column()
             self._conn.execute(_CREATE_IDX_STATUS)
@@ -156,11 +175,31 @@ class ShadowStore:
             self._conn.execute(_CREATE_IDX_TS)
             self._conn.execute(_CREATE_IDX_CORR)
             self._conn.commit()
-        except Exception:
-            print(
-                f"[ShadowStore] DB connect/init failed: {self._db_path}",
-                file=sys.stderr,
+        except Exception as exc:
+            self._degraded_reason = (
+                f"database initialization failed ({type(exc).__name__}): {exc}"
             )
+            logger.exception(
+                "[ShadowStore] DB connect/init failed for {} — persistence disabled "
+                "without modifying the database",
+                self._db_path,
+            )
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+            self._conn = None
+
+    @property
+    def is_degraded(self) -> bool:
+        """Whether persistence is disabled because the database is unreliable."""
+        return self._degraded_reason is not None
+
+    @property
+    def degraded_reason(self) -> Optional[str]:
+        """Integrity failure details, without exposing stored shadow records."""
+        return self._degraded_reason
 
     def _migrate_source_column(self) -> None:
         """Add the `source` column to pre-existing databases (best-effort)."""

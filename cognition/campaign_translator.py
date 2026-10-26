@@ -16,6 +16,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
 
 def _clampf(v: Any, lo: float, hi: float, default: float) -> float:
     try:
@@ -46,11 +48,16 @@ class OriginationIntent:
     source: str = "ai_brain"
     campaign_id: str = ""
     decision_id: str = ""
+    opportunity_id: str = ""
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
     confidence: float = 0.0
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
+            "identity_version": self.identity_version,
+            "identity": self.identity,
             "symbol": self.symbol,
             "direction": self.direction,
             "exposure": round(self.exposure, 4),
@@ -62,6 +69,7 @@ class OriginationIntent:
             "source": self.source,
             "campaign_id": self.campaign_id,
             "decision_id": self.decision_id,
+            "opportunity_id": self.opportunity_id,
             "confidence": round(self.confidence, 4),
         }
 
@@ -168,6 +176,9 @@ def translate(
             reason=str(getattr(spec, "thesis", "") or "")[:280],
             campaign_id=str(getattr(spec, "campaign_id", "") or ""),
             decision_id=str(getattr(spec, "decision_id", "") or ""),
+            opportunity_id=str(getattr(spec, "opportunity_id", "") or ""),
+            identity_version=IDENTITY_VERSION,
+            identity=IDENTITY_STATEMENT,
             confidence=_clampf(getattr(spec, "confidence", 0.0), 0.0, 1.0, 0.0),
             meta={"objectives": list(getattr(spec, "objectives", []) or [])},
         )

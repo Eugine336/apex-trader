@@ -6,35 +6,7 @@ reward=-1.0 — the agent must never continue trading on a wiped-out
 account.
 """
 
-import sys
-import types
-
 import numpy as np
-from unittest.mock import MagicMock
-
-# Pre-seed torch and heavy rl submodules as mocks before any rl import
-for _mod_name in [
-    "torch", "torch.nn", "torch.nn.functional",
-    "rl.network", "rl.environment", "rl.trainer",
-    "rl.shadow", "rl.bridge", "rl.authority", "rl.evaluator",
-    "brain.swap_model",
-]:
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-if "config" not in sys.modules:
-    _config_stub = types.ModuleType("config")
-    _config_stub.INSTRUMENT_REGISTRY = {}
-
-    class _Info:
-        pip_size = 0.0001
-        typical_spread_pips = 1.5
-        pip_value_per_lot = 10.0
-        class category:
-            value = "forex"
-    _config_stub.INSTRUMENT_REGISTRY["EURUSD"] = _Info()
-    sys.modules["config"] = _config_stub
-
 
 def _make_env(initial_balance=10_000.0, n_bars=500):
     """Build a minimal ApexMultiTFTradingEnv with stubbed data."""

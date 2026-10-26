@@ -15,6 +15,7 @@ from execution.action_executor import (
     _is_transient,
 )
 from execution.risk_gate import GateConfig
+from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
 # ── Fake broker ──────────────────────────────────────────────────────
@@ -122,11 +123,16 @@ def _close_intent(ticket: str = "12345") -> Intent:
     return Intent.close(symbol="EURUSD", ticket=ticket, source="test", reason="test")
 
 
-def _open_intent(symbol: str = "V50_1S") -> Intent:
-    return Intent.open(
+def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = False, **overrides) -> Intent:
+    values = dict(
         symbol=symbol, direction="BUY", lots=0.10, sl=1.0, tp=2.0,
         source="test", reason="test",
     )
+    if brain_provenance:
+        values.update(source="ai_brain", decision_id="decision-test",
+                      campaign_id="campaign-test", opportunity_id="opportunity-test")
+    values.update(overrides)
+    return Intent.open(**values)
 
 
 def _sl_intent(ticket: str = "12345", new_sl: float = 1.08100) -> Intent:
@@ -790,7 +796,7 @@ def test_gold_only_execution_guard_rejects_non_gold_new_exposure():
     assert broker.open_calls == []
 
     # Exact broker aliases are allowed; prefix lookalikes are not.
-    xau = executor.execute(_open_intent("XAUUSDm"), {})
+    xau = executor.execute(_open_intent("XAUUSDm", brain_provenance=True), {})
     assert xau.success, xau.error
     assert broker.open_calls[-1]["symbol"] == "XAUUSDm"
 
@@ -829,14 +835,14 @@ def test_gold_only_open_requires_fresh_feed_when_runtime_enables_health_gate():
         ),
     )
 
-    blocked = executor.execute(_open_intent("XAUUSD"), {})
+    blocked = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
     assert not blocked.success
     assert blocked.rejected_by_gate
     assert "gold_feed_unhealthy" in blocked.gate_reason
     assert broker.open_calls == []
 
     healthy["value"] = True
-    allowed = executor.execute(_open_intent("XAUUSD"), {})
+    allowed = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
     assert allowed.success, allowed.error
     assert [call["symbol"] for call in broker.open_calls] == ["XAUUSD"]
 
@@ -855,8 +861,48 @@ def test_gold_feed_health_callback_failure_fails_closed():
             gold_feed_health_check=broken_health_check,
         ),
     )
-    blocked = executor.execute(_open_intent("XAUUSD"), {})
+    blocked = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
     assert not blocked.success
     assert blocked.rejected_by_gate
     assert "gold_feed_unhealthy" in blocked.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_with_mismatched_identity_is_rejected_before_broker_call():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.open(
+        symbol="EURUSD", direction="BUY", lots=0.10, sl=1.0, tp=2.0,
+        source="test", reason="identity mismatch",
+        identity_version=IDENTITY_VERSION, identity="not the canonical Apex identity",
+    )
+    result = executor.execute(intent, open_positions={})
+    assert result.success is False
+    assert result.rejected_by_gate is True
+    assert "identity_contract_mismatch" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_intent_carries_canonical_identity_by_default():
+    intent = _open_intent()
+    assert intent.identity_version == IDENTITY_VERSION
+    assert intent.identity == IDENTITY_STATEMENT
+
+
+def test_gold_only_rejects_legacy_entry_without_brain_opportunity_provenance():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, ExecutorConfig(gold_only=True))
+    result = executor.execute(_open_intent("XAUUSD"), {})
+    assert not result.success and result.rejected_by_gate
+    assert "brain_opportunity_provenance_required" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_gold_only_rejects_brain_entry_without_activated_opportunity_id():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, ExecutorConfig(gold_only=True))
+    intent = _open_intent("XAUUSD", brain_provenance=True, opportunity_id="")
+    result = executor.execute(intent, {})
+    assert not result.success and result.rejected_by_gate
+    assert "opportunity_id" in result.gate_reason
     assert broker.open_calls == []

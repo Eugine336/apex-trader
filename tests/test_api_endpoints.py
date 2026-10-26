@@ -77,7 +77,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("APEX_API_JWT_SECRET", "endpoint-test-secret")
     monkeypatch.setenv("APEX_API_VAULT_KEY", "endpoint-test-vault-key")
     app = create_app(ApiConfig())
-    app.dependency_overrides[get_process_manager] = lambda: _FakePM()
+    # The process manager is a long-lived dependency; returning a new fake for
+    # every request loses the started instance before /status can observe it.
+    fake_process_manager = _FakePM()
+    app.dependency_overrides[get_process_manager] = lambda: fake_process_manager
     with TestClient(app) as c:
         yield c
 

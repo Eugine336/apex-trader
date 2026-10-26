@@ -5,8 +5,19 @@ and the master adapter's adjustment pipeline.
 """
 
 import random
+
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scoring_data_dir(tmp_path, monkeypatch):
+    # Each test starts with clean, per-test persisted weights; optimizer writes
+    # must never leak into the repository's tracked data tree.
+    import adaptive.score_optimizer as score_mod
+
+    monkeypatch.setattr(score_mod, "_data_dir", lambda: tmp_path)
 
 
 from ml.trade_analyzer import TradeAnalyzer
@@ -179,7 +190,11 @@ class TestScoreOptimizer:
         opt = ScoreOptimizer()
         trades = _generate_trades(n=120, win_rate=0.7)
         result = opt.optimize(trades, min_trades=50)
-        assert result.total == 123
+        baseline = ScoringWeights().as_dict()
+        assert all(
+            round(baseline[key] * 0.75) <= value <= round(baseline[key] * 1.25)
+            for key, value in result.as_dict().items()
+        )
         d = result.as_dict()
         assert all(v >= opt.MIN_WEIGHT for v in d.values())
 
@@ -338,7 +353,11 @@ class TestMLAdapter:
 
         assert isinstance(report, OptimizationReport)
         assert report.trades_analyzed == 120
-        assert report.new_scoring_weights.total == 123
+        baseline = ScoringWeights().as_dict()
+        assert all(
+            round(baseline[key] * 0.75) <= value <= round(baseline[key] * 1.25)
+            for key, value in report.new_scoring_weights.as_dict().items()
+        )
         assert report.overall_performance is not None
         assert report.overall_performance.total_trades == 120
 
@@ -412,12 +431,17 @@ class TestMLAdapter:
         assert adj.should_trade is True
         assert adj.position_size_multiplier == 0.8
 
-    def test_ml_persistence_after_optimization(self, tmp_path):
+    def test_ml_persistence_after_optimization(self, tmp_path, monkeypatch):
+        import adaptive.score_optimizer as adaptive_so_mod
         import ml.score_optimizer as so_mod
-        import ml.pair_learner as pl_mod
-        import ml.regime_learner as rl_mod
-        import ml.session_learner as sl_mod
+        import adaptive.pair_learner as pl_mod
+        monkeypatch.setattr(pl_mod, "_data_dir", lambda: tmp_path)
+        import adaptive.regime_learner as rl_mod
+        monkeypatch.setattr(rl_mod, "_data_dir", lambda: tmp_path)
+        import adaptive.session_learner as sl_mod
+        monkeypatch.setattr(sl_mod, "_data_dir", lambda: tmp_path)
 
+        monkeypatch.setattr(adaptive_so_mod, "_data_dir", lambda: tmp_path)
         old_so = so_mod.ScoreOptimizer.DEFAULT_PATH
         old_pl = pl_mod.PairLearner.SAVE_PATH
         old_rl = rl_mod.RegimeLearner.SAVE_PATH

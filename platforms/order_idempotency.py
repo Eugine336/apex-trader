@@ -15,7 +15,7 @@ _MT5_COMMENT_MAX = 31
 
 _SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 
-_DELIM = "_"
+_DELIM = "-"
 
 _VALID_PREFIXES = ("APEX", "APND")
 
@@ -129,7 +129,7 @@ def extract_idempotency_key(comment: str) -> str | None:
        or ``<PREFIX>|<score>|<session>|<idem_key>``
        where PREFIX is APEX/APEX_PEND, idem_key is at index 1 or 3.
     """
-    for delim in (_DELIM, "|"):
+    for delim in (_DELIM, "_", "|"):
         parts = comment.split(delim)
         if len(parts) < 2:
             continue

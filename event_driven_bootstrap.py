@@ -2086,6 +2086,11 @@ class EventDrivenSystem:
                     idempotency_key=idem_key,
                     source="ai_brain",
                     reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
+                    decision_id=str(getattr(origination, "decision_id", "") or ""),
+                    campaign_id=str(getattr(origination, "campaign_id", "") or ""),
+                    opportunity_id=str(getattr(origination, "opportunity_id", "") or ""),
+                    identity_version=str(getattr(origination, "identity_version", "") or ""),
+                    identity=str(getattr(origination, "identity", "") or ""),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
@@ -2401,6 +2406,11 @@ class EventDrivenSystem:
                     intents.append(Intent.close(
                         symbol=symbol, ticket=ticket, source="ai_brain",
                         reason=reason, direction=held,
+                        decision_id=str(getattr(action, "decision_id", "") or ""),
+                        campaign_id=str(getattr(action, "campaign_id", "") or ""),
+                        opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        identity_version=str(getattr(action, "identity_version", "") or ""),
+                        identity=str(getattr(action, "identity", "") or ""),
                     ))
                 elif kind == "partial_close":
                     frac = float(getattr(action, "fraction", 0.0) or 0.0)
@@ -2409,6 +2419,11 @@ class EventDrivenSystem:
                     intents.append(Intent.partial_close(
                         symbol=symbol, ticket=ticket, fraction=frac,
                         source="ai_brain", reason=reason,
+                        decision_id=str(getattr(action, "decision_id", "") or ""),
+                        campaign_id=str(getattr(action, "campaign_id", "") or ""),
+                        opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        identity_version=str(getattr(action, "identity_version", "") or ""),
+                        identity=str(getattr(action, "identity", "") or ""),
                     ))
                 elif kind in ("tighten_sl", "protect_sl"):
                     new_sl = _protective_sl(pos, kind)
@@ -2418,6 +2433,11 @@ class EventDrivenSystem:
                     intents.append(Intent.modify_sl(
                         symbol=symbol, ticket=ticket, new_sl=float(new_sl),
                         source="ai_brain", reason=reason,
+                        decision_id=str(getattr(action, "decision_id", "") or ""),
+                        campaign_id=str(getattr(action, "campaign_id", "") or ""),
+                        opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        identity_version=str(getattr(action, "identity_version", "") or ""),
+                        identity=str(getattr(action, "identity", "") or ""),
                     ))
                 elif kind == "reverse":
                     target = str(getattr(action, "target_direction", "") or "").upper()
@@ -2432,6 +2452,11 @@ class EventDrivenSystem:
                         symbol=symbol, ticket=ticket, source="ai_brain",
                         reason="brain_reverse_close_then_reassess",
                         direction=held,
+                        decision_id=str(getattr(action, "decision_id", "") or ""),
+                        campaign_id=str(getattr(action, "campaign_id", "") or ""),
+                        opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        identity_version=str(getattr(action, "identity_version", "") or ""),
+                        identity=str(getattr(action, "identity", "") or ""),
                     ))
                     logger.info(
                         "[mgmt-sink] {} reverse requested {}→{}; closing held side "
