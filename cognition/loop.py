@@ -1534,6 +1534,8 @@ class CognitionLoop:
             reg.observe_thesis(
                 symbol, direction, True, ev_over_flat=ev, confidence=conf,
                 campaign_id=str(getattr(campaign, "campaign_id", "") or ""),
+                opportunity_id=str(getattr(campaign, "opportunity_id", "") or ""),
+                decision_id=str(getattr(decision, "decision_id", "") or ""),
             )
             reg.record_leg(symbol, direction, "open", size=exposure)
         except Exception as exc:  # noqa: BLE001
