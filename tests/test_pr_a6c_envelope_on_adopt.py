@@ -271,25 +271,31 @@ class TestCorruptFileWarning:
         result = load_saved_weights(str(fp))
         assert result.as_dict() == ScoringWeights().as_dict()
 
-    def test_standalone_loader_logs_warning_on_corrupt(self, tmp_path, caplog):
-        import logging
+    def test_standalone_loader_logs_warning_on_corrupt(self, tmp_path, monkeypatch):
+        from unittest.mock import Mock
+        import adaptive.score_optimizer as so_mod
 
+        warning = Mock()
+        monkeypatch.setattr(so_mod.logger, "warning", warning)
         fp = tmp_path / "corrupt.json"
         fp.write_text("NOT JSON {{{")
-        with caplog.at_level(logging.WARNING):
-            load_saved_weights(str(fp))
-        assert any("Could not parse" in msg for msg in caplog.messages)
+        load_saved_weights(str(fp))
+        assert warning.called
+        assert "Could not parse" in str(warning.call_args)
 
     def test_standalone_loader_returns_defaults_when_missing(self, tmp_path):
         result = load_saved_weights(str(tmp_path / "nonexistent.json"))
         assert result.as_dict() == ScoringWeights().as_dict()
 
-    def test_instance_loader_also_warns_on_corrupt(self, tmp_path, caplog):
-        import logging
+    def test_instance_loader_also_warns_on_corrupt(self, tmp_path, monkeypatch):
+        from unittest.mock import Mock
+        import adaptive.score_optimizer as so_mod
 
+        warning = Mock()
+        monkeypatch.setattr(so_mod.logger, "warning", warning)
         fp = tmp_path / "corrupt.json"
         fp.write_text("NOT JSON {{{")
         opt = ScoreOptimizer()
-        with caplog.at_level(logging.WARNING):
-            opt.load_weights(str(fp))
-        assert any("Could not parse" in msg for msg in caplog.messages)
+        opt.load_weights(str(fp))
+        assert warning.called
+        assert "Could not parse" in str(warning.call_args)
