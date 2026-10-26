@@ -339,12 +339,15 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
         store.close()
 
 
-def test_risk_domain_invalidation_does_not_count_as_independent_market_confirmation():
+def test_risk_domain_invalidation_does_not_count_as_market_coverage():
     manager = NativePositionManager()
-    state = _state(markers=({"state": "invalidated"},))
+    # Two genuine market domains corroborate invalidation, but that remains
+    # below the three-domain floor. Risk telemetry normalizes to OTHER in the
+    # contract layer and must not count as a third market domain.
+    state = _state(markers=({"state": "invalidated"}, {"state": "invalidated"}))
     state.add(Evidence(
         source_module="portfolio.risk_monitor",
-        domain="risk",
+        domain="other",
         symbol="EURUSD",
         observation="risk dashboard repeats an invalidation status",
         confidence=0.99,
@@ -361,6 +364,7 @@ def test_risk_domain_invalidation_does_not_count_as_independent_market_confirmat
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
+    assert "market-domain coverage" in result.reason
 
 
 def test_process_local_thesis_is_not_reused_across_campaign_ids():
