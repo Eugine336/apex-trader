@@ -1099,22 +1099,23 @@ class CognitionLoop:
             logger.debug("[cognition-loop] author operations fault: %s", exc)
 
     def _current_open_keys(self) -> set:
-        """Set of ``(symbol, direction)`` for currently open positions/campaigns.
+        """Return confirmed open symbol/sides; never convert a read failure to an empty book.
 
-        Used to suppress duplicate origination for a book the Brain already holds.
-        Fail-safe: an unreadable position source yields an empty set.
+        A failed or unavailable broker snapshot is unknown exposure, not proof
+        that the account has no positions. The caller may log/defer; admission
+        must not proceed using an unverified empty set.
         """
-        keys: set = set()
         if self._position_source is None:
-            return keys
-        try:
-            for pos in list(self._position_source() or []):
-                sym = str(getattr(pos, "symbol", "") or "")
-                d = str(getattr(pos, "direction", "") or "").upper()
-                if sym and d in ("LONG", "SHORT"):
-                    keys.add((sym, d))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] open-keys read fault: %s", exc)
+            raise RuntimeError("broker position source is not configured")
+        raw = self._position_source()
+        if raw is None:
+            raise RuntimeError("broker position source returned no confirmation")
+        keys: set = set()
+        for pos in list(raw):
+            sym = str(getattr(pos, "symbol", "") or "")
+            d = str(getattr(pos, "direction", "") or "").upper()
+            if sym and d in ("LONG", "SHORT"):
+                keys.add((sym, d))
         return keys
 
     def _record_open_memory(self, output: Any, market_state: Any, *,
