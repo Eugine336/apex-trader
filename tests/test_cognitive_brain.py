@@ -48,6 +48,18 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
                     uncertainty=0.1, polarity=polarity))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
                     uncertainty=0.1, polarity=polarity))
+    # The Brain has a hard three-domain floor plus an advisor-quorum gate.
+    # Keep this fixture genuinely eligible so positive-path tests test EV and
+    # campaign construction rather than relying on absent council metadata.
+    ms.add(Evidence(source_module="s3", domain="volatility", confidence=0.9,
+                    uncertainty=0.1, polarity=polarity))
+    from cognition.contracts import EvidenceDomain
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_panel", domain=EvidenceDomain.REASONING,
+        symbol=symbol, observation="two independent advisors returned opinions",
+        confidence=0.9, uncertainty=0.1, polarity=0.0,
+        measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+    ))
     return ms
 
 
