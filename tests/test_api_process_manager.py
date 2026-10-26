@@ -136,9 +136,12 @@ def test_tail_log_returns_lines(config, db, tmp_path):
 
 def test_reconcile_marks_running_as_stopped(config, db):
     pm = ProcessManager(config, db)
-    db.upsert_instance(5, "RUNNING", pid=12345)
+    # trading_instances.user_id has a foreign key to users; seed a valid owner
+    # instead of relying on SQLite foreign-key enforcement being disabled.
+    user_id = db.create_user("reconcile@example.test", "test-hash")
+    db.upsert_instance(user_id, "RUNNING", pid=12345)
     pm.reconcile_on_startup()
-    assert db.get_instance(5)["status"] == STATUS_STOPPED
+    assert db.get_instance(user_id)["status"] == STATUS_STOPPED
 
 
 def test_spawn_disables_dashboard_api_key(config, db, tmp_path, monkeypatch):
