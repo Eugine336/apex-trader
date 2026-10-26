@@ -173,6 +173,8 @@ class PositionView:
     hold_seconds: float = 0.0
     size: float = 0.0
     campaign_id: str = ""
+    opportunity_id: str = ""
+    originating_decision_id: str = ""
     entry_confidence: Optional[float] = None
 
 
