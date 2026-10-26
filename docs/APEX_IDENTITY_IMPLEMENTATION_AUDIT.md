@@ -109,3 +109,35 @@ Outcome attribution → memory/calibration → validated adaptation
 - The M1 pattern module added alongside this audit is a neutral observer; it does not make the old M1 entry pipeline authoritative.
 - COGNITION_ORIGINATION_MODE=live only permits a qualified Brain campaign to reach the configured sink. It is not proof that the external provider is healthy, the Brain can qualify a trade on the current market, every symbol is data-complete, or the broker path has passed a live demo.
 - This audit lists known gaps and acceptance gates; it is not a statement that all rows are already closed.
+
+## 2026-10-26 redesign workbench update
+
+**Branch:** `redesign/native-intelligence-workbench`  
+**Review:** [PR #756](https://github.com/Eugine336/apex-trader/pull/756)  
+**Status at this update:** partial implementation; not a production-readiness sign-off.
+
+### Landed on the workbench branch
+
+- Expanded `cognition.strategy_knowledge.STRATEGY_LENSES` from 17 to 38 analytical/operational lenses, spanning structure, momentum, regime/volatility, macro/news context, relative value, auction/profile, execution, portfolio survival, and learning validation.
+- Changed concept matching to token/phrase boundaries and excluded source-module paths from being treated as market evidence.
+- Required a concept match to occur in a domain consumed by that lens before labelling it relevant. A relevance result is attention allocation only, not direction, a qualified setup, or order authority.
+- Kept declared data requirements separate from known missing context; the registry does not claim that required data is present.
+- Hardened the MT5 stale-tick warning throttle so partially constructed connectors still reject stale ticks rather than raising an unrelated attribute error.
+- Added regression coverage for registry breadth, provenance/sub-string false positives, missing evidence, repeated-source inflation, and lens limitations.
+- Corrected the regime-learner test fixture to isolate its actual persistence root; setting only `SAVE_PATH` was insufficient because the learner resolves its directory through `runtime_paths.data_dir()`.
+
+### Validation snapshot
+
+- Latest focused workflow for the strategy-knowledge / market-data workbench passed.
+- Repository lint passed.
+- Full CI is still red. On the previous head `ec2fe85d192e9e4e8a42eff0f74471fd05b5b2dd`, Python 3.11 reported 178 failures, 3,735 passes, and 12 skips; the Python 3.12 matrix job was cancelled after the Python 3.11 failure. This is not a green full-suite result, and the baseline contains extensive unrelated legacy failures.
+- The regime-learner persistence fixture correction was made after that run and requires a fresh CI run before its effect can be confirmed.
+
+### Explicitly not complete
+
+This PR does **not** close the full identity backlog. Still required: fresh all-route audit of every exposure-increasing API; complete proof that every entry passes through native Brain, first-class opportunity, whole-book admission and common risk/execution; broader adversarial tests of native hypotheses and advisor-outage operation; per-instrument feed/freshness and broker-truth verification; cost-aware walk-forward and untouched holdout evaluation; and controlled demo-account telemetry. No strategy family is proven profitable by its presence in this registry. Do not enable live exposure on the strength of this workbench change.
+
+### Operational boundary
+
+No `.env` file was accessed or changed as part of this work. No broker orders were sent and no live broker configuration was changed. Demo-account testing remains a separate validation stage after code validation.
+

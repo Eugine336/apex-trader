@@ -114,6 +114,11 @@ class TestRegimeLearnerTunable:
         from adaptive.regime_learner import RegimeLearner
 
         monkeypatch.setattr(RegimeLearner, "SAVE_PATH", str(tmp_path / "r.json"))
+        # RegimeLearner resolves persistence through runtime_paths.data_dir();
+        # SAVE_PATH contributes only the basename. Isolate the actual data root
+        # so a developer/CI runner's existing learned profile cannot leak into
+        # this fixture and invalidate rollback's empty-snapshot assertion.
+        monkeypatch.setattr("adaptive.regime_learner._data_dir", lambda: tmp_path)
         return RegimeLearner()
 
     def test_metadata(self, learner):
