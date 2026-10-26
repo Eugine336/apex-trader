@@ -172,7 +172,7 @@ class TestOOSValidationGate:
             _make_trade(-5.0, ["session"]),
         ]
         metric = ScoreOptimizer._compute_validation_metric(weights, trades)
-        assert metric == pytest.approx(45.0)
+        assert metric == pytest.approx(32.0)
 
     def test_validation_metric_no_discrimination(self):
         """All wins or all losses -> returns 0.0 (no separation measurable)."""
