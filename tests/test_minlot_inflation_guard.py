@@ -80,6 +80,9 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._not_found_warned = set()
     c._reject_on_minlot_inflation = reject_on_minlot_inflation
     c._mapper = None
+    # Production __init__ supplies this freshness limit. The test deliberately
+    # bypasses __init__, so make the required safety setting explicit.
+    c._max_tick_age_seconds = 120.0
     return c
 
 
