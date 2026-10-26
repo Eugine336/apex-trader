@@ -191,7 +191,9 @@ class TestShadowStoreQueryOutcomes:
             gate_map[gate][r["outcome"]] = r["cnt"]
         assert gate_map["M1_confirmation"]["WIN"] == 1
         assert gate_map["M1_confirmation"]["LOSS"] == 1
-        assert gate_map["M1_confirmation"]["EXPIRED"] == 1
+        # Expired rows do not carry a thesis-based resolution record, so they
+        # remain visible through reporting APIs but cannot enter learner input.
+        assert "EXPIRED" not in gate_map["M1_confirmation"]
         assert gate_map["spread_check"]["WIN"] == 2
 
     def test_get_all_contracts(self, tmp_shadow_db):
