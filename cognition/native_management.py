@@ -240,9 +240,17 @@ class NativePositionManager:
                 # Execution/risk telemetry can tighten risk through the dedicated
                 # safety channels above, but it is not an independent MARKET
                 # domain capable of corroborating original-thesis invalidation.
-                if domain in {
-                    "reasoning", "execution_quality", "risk", "portfolio_risk",
-                }:
+                if (
+                    domain in {
+                        "reasoning", "execution_quality", "risk",
+                        "portfolio", "portfolio_risk",
+                    }
+                    or "risk" in source.lower()
+                    or "portfolio" in source.lower()
+                ):
+                    # Domain strings not represented by EvidenceDomain normalize
+                    # to OTHER, so source-family checks are needed to prevent
+                    # portfolio/risk telemetry from masquerading as market proof.
                     continue
 
                 raw_state = _text(
