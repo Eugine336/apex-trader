@@ -891,31 +891,20 @@ class CognitiveBrain:
             driving_opp is not None and driving_opp.is_actionable
         )
 
-        # Constitutional gate: only OPEN a campaign when the Brain can answer
-        # with sufficient confidence AND uncertainty is acceptable AND there is a
-        # direction AND the expected value clears the threshold AND the advisory
-        # quorum + evidence-domain coverage are adequate AND a first-class,
-        # structured opportunity has actually ACTIVATED (V-002). Otherwise do
-        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
-        # a good thesis at negative EV, thin coverage, a lone advisor, or an
-        # unactivated/absent opportunity is not an executable trade).
+        # Apex chooses methods from the current market state. A global scalar
+        # confidence floor or uncertainty ceiling must not replace that reasoning.
+        # Confidence profile and market uncertainty continuously shape EV and size;
+        # they are not universal binary entry recipes. Exposure still requires a
+        # directional, activated first-class opportunity, positive cost-adjusted
+        # EV, verified advisor quorum where applicable, independent market evidence,
+        # fresh verified costs, adequate data quality and shared portfolio/risk review.
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
-        # V-01 — net EV is the mandatory actionability criterion. Confidence
-        # and the weakest thesis/opportunity/timing/execution dimension shape EV
-        # and sizing, but positive EV alone is insufficient: a campaign also needs
-        # an activated first-class opportunity, verified advisor quorum, three
-        # independent market evidence domains, fresh execution costs, acceptable
-        # data quality and whole-book portfolio review.
         if self.ev_primary_gate:
             ev_ok = expected_value > self.ev_action_threshold_r
-            directional_and_qualified = directional and ev_ok
-        else:
-            directional_and_qualified = (
-                directional
-                and eff_conf >= self.min_confidence_to_act
-                and uncertainty <= self.max_uncertainty_to_act
-            )
+        # The legacy non-EV-primary mode may alter how opportunities are described,
+        # but it may not substitute a fixed confidence/uncertainty cutoff for EV.
+        directional_and_qualified = directional and ev_ok
         act = (
             directional_and_qualified
             and ev_ok
