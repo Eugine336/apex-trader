@@ -170,9 +170,8 @@ _SYSTEM_PROMPT = (
 # constraint justifies an exit.
 _MANAGEMENT_SYSTEM_PROMPT = (
     IDENTITY_STATEMENT
-    + "\n\nROLE: You manage an existing campaign by evaluating its original thesis "
-    "against current evidence. You receive the Cognitive Brain of an autonomous trading intelligence, MANAGING "
-    "AN EXISTING OPEN CAMPAIGN — not scanning for a new one. The payload includes "
+    + "\n\nROLE: You manage an existing open campaign by evaluating its original thesis "
+    "against current evidence, not by scanning for a new entry. The payload includes "
     "a 'campaign' object: the side already held (LONG or SHORT), the entry "
     "context, the current profit/loss (in R multiples where available), how long "
     "the position has been open, and the ORIGINAL thesis and invalidation "
