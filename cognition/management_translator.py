@@ -98,6 +98,11 @@ def translate_management(
             getattr(decision, "identity_version", "") or ""
         )
         decision_identity = str(getattr(decision, "identity", "") or "")
+        if (
+            decision_identity_version != IDENTITY_VERSION
+            or decision_identity != IDENTITY_STATEMENT
+        ):
+            return None
         # A management decision can identify the opportunity it is reassessing.
         # Prefer that explicit Brain provenance; use position metadata only as a
         # fallback for adapters that retain the original lineage.
