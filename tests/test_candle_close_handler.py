@@ -425,7 +425,12 @@ class TestThreadSafety:
             bus, store, _fetcher_factory(candles), max_workers=4,
         )
 
-        symbols = [f"SYM{i}" for i in range(8)]
+        # Use registered instruments: the current analysis path rejects
+        # unknown symbols before invoking structural modules.
+        symbols = [
+            "EURUSD", "GBPUSD", "USDJPY", "XAUUSD",
+            "AUDUSD", "USDCAD", "NZDUSD", "USDCHF",
+        ]
         for sym in symbols:
             bus.publish("candle_close", _make_candle_close(symbol=sym, tf="M5"))
 
