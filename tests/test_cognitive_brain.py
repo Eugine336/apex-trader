@@ -61,6 +61,18 @@ def _confident_state(symbol="EURUSD", polarity=0.8):
         confidence=0.9, uncertainty=0.1, polarity=0.0,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
     ))
+    # Action-path fixtures must include fresh execution-cost evidence; a
+    # diagnostic default is intentionally insufficient to authorize exposure.
+    ms.add(Evidence(
+        source_module="execution_cost.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol=symbol,
+        observation="fresh test spread and slippage quote",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
     return ms
 
 
