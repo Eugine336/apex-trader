@@ -3,7 +3,6 @@
 import time
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState, Opportunity
-from cognition.identity import IDENTITY_VERSION
 from cognition.opportunity_geometry import derive_opportunity_geometry
 
 
