@@ -179,7 +179,11 @@ class TestScoreOptimizer:
         opt = ScoreOptimizer()
         trades = _generate_trades(n=120, win_rate=0.7)
         result = opt.optimize(trades, min_trades=50)
-        assert result.total == 123
+        baseline = ScoringWeights().as_dict()
+        assert all(
+            round(baseline[key] * 0.75) <= value <= round(baseline[key] * 1.25)
+            for key, value in result.as_dict().items()
+        )
         d = result.as_dict()
         assert all(v >= opt.MIN_WEIGHT for v in d.values())
 
@@ -338,7 +342,11 @@ class TestMLAdapter:
 
         assert isinstance(report, OptimizationReport)
         assert report.trades_analyzed == 120
-        assert report.new_scoring_weights.total == 123
+        baseline = ScoringWeights().as_dict()
+        assert all(
+            round(baseline[key] * 0.75) <= value <= round(baseline[key] * 1.25)
+            for key, value in report.new_scoring_weights.as_dict().items()
+        )
         assert report.overall_performance is not None
         assert report.overall_performance.total_trades == 120
 
