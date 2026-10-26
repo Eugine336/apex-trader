@@ -1377,25 +1377,59 @@ class SystemContext:
                 )
 
                 def _execution_cost_source(symbol: str) -> dict:
+                    """Publish live quote costs as verified; configured spread is diagnostic only.
+
+                    The typical-spread registry is a fallback estimate, not a
+                    current broker quote. It must never satisfy the Brain's
+                    verified-cost requirement.
+                    """
                     try:
-                        from config import INSTRUMENT_REGISTRY
-                        info = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        info = platform_manager.get_price(symbol)
                         if info is None:
-                            return {"estimated_total_cost_r": _default_cost_r}
-                        spread_pips = float(getattr(info, "typical_spread_pips", 0.0) or 0.0)
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "configured fallback; no live quote"}
+                        bid = float(getattr(info, "bid", 0.0) or 0.0)
+                        ask = float(getattr(info, "ask", 0.0) or 0.0)
+                        if bid <= 0.0 or ask <= 0.0 or ask < bid:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "invalid live bid/ask; configured fallback"}
+                        # Resolve symbol-specific pip size and a conservative
+                        # risk-distance proxy. The execution sink recomputes the
+                        # final size/EV against the actual stop and broker costs.
+                        from config import INSTRUMENT_REGISTRY
+                        instrument = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        pip_size = float(getattr(instrument, "pip_size", 0.0) or 0.0)
                         stop_pips = _stop_distance_pips if _stop_distance_pips > 0 else 20.0
-                        if spread_pips <= 0.0:
-                            return {"estimated_total_cost_r": _default_cost_r}
-                        spread_r = min(0.5, spread_pips / stop_pips)
-                        # Slippage allowance ≈ half the spread cost.
+                        if pip_size <= 0.0 or stop_pips <= 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "instrument cost geometry unavailable"}
+                        spread_pips = (ask - bid) / pip_size
+                        spread_r = spread_pips / stop_pips
+                        if not math.isfinite(spread_r) or spread_r < 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r,
+                                    "cost_verified": False,
+                                    "cost_source": "non-finite live spread"}
+                        # Slippage remains an estimate, not a broker guarantee;
+                        # keep it explicit in provenance and validate again at submit.
                         slippage_r = 0.5 * spread_r
                         return {
                             "estimated_spread_r": round(spread_r, 6),
                             "estimated_slippage_r": round(slippage_r, 6),
                             "estimated_total_cost_r": round(spread_r + slippage_r, 6),
+                            "cost_verified": True,
+                            "cost_source": "live bid/ask spread + explicit slippage estimate",
                         }
-                    except Exception:  # noqa: BLE001 — cost estimate must never break the loop
-                        return {"estimated_total_cost_r": _default_cost_r}
+                    except Exception as exc:  # noqa: BLE001 — cost estimation must never break cognition
+                        logger.warning(
+                            "[cognition] live execution-cost read unavailable for %s: %s",
+                            symbol, exc,
+                        )
+                        return {"estimated_total_cost_r": _default_cost_r,
+                                "cost_verified": False,
+                                "cost_source": "configured fallback; live quote unavailable"}
 
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
