@@ -347,7 +347,7 @@ def assess_strategy_lenses(
             status=status,
             relevance=round(relevance, 3),
             reasons=tuple(reasons),
-            missing_context=tuple(lens.data_requirements) if status != "relevant" else (),
+            missing_context=tuple(lens.data_requirements),
             limitation=lens.limitation,
         ))
 
