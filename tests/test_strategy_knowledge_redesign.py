@@ -75,7 +75,7 @@ def test_missing_requirements_remain_explicit_even_when_a_lens_is_relevant():
         if item["key"] == "support_resistance"
     )
     assert result["status"] == "relevant"
-    assert result["missing_context"]
+    assert result["data_requirements"]
 
 
 def test_repeated_observations_from_same_module_do_not_inflate_lens_relevance():
