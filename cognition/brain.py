@@ -46,7 +46,21 @@ from cognition.contracts import (
     Opportunity,
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
-from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
+from cognition.identity import (
+    ACTION_CONFIDENCE_FLOOR,
+    ACTION_UNCERTAINTY_CEILING,
+    DEGRADED_CONFIDENCE_MULTIPLIER_CEILING,
+    IDENTITY_STATEMENT,
+    IDENTITY_VERSION,
+    MIN_ADVISORS_FOR_ACTION,
+    MIN_MARKET_EVIDENCE_DOMAINS,
+    NATIVE_ONLY_CONFIDENCE_FLOOR,
+    NATIVE_ONLY_SIZING_MULTIPLIER_CEILING,
+    NATIVE_ONLY_UNCERTAINTY_CEILING,
+    NET_EXPECTED_VALUE_FLOOR_R,
+    REVERSE_CONFIDENCE_FLOOR,
+    identity_contract,
+)
 from cognition.native_management import NativePositionManager
 from cognition.pattern_rules import pattern_name
 
@@ -183,28 +197,28 @@ class CognitiveBrain:
         self,
         reasoner: Optional[Any] = None,
         *,
-        min_confidence_to_act: float = 0.55,
-        max_uncertainty_to_act: float = 0.6,
+        min_confidence_to_act: float = ACTION_CONFIDENCE_FLOOR,
+        max_uncertainty_to_act: float = ACTION_UNCERTAINTY_CEILING,
         ev_primary_gate: bool = True,
-        ev_action_threshold_r: float = 0.0,
+        ev_action_threshold_r: float = NET_EXPECTED_VALUE_FLOOR_R,
         reasoner_name: str = "ai_brain",
         allow_scale_in: bool = False,
-        reverse_confidence: float = 0.7,
+        reverse_confidence: float = REVERSE_CONFIDENCE_FLOOR,
         exit_floor: float = 0.3,
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
-        min_advisors_for_action: int = 2,
-        min_evidence_domains: int = 3,
-        degraded_confidence_multiplier: float = 0.7,
-        degrade_on_unknown_council: bool = False,
+        min_advisors_for_action: int = MIN_ADVISORS_FOR_ACTION,
+        min_evidence_domains: int = MIN_MARKET_EVIDENCE_DOMAINS,
+        degraded_confidence_multiplier: float = DEGRADED_CONFIDENCE_MULTIPLIER_CEILING,
+        degrade_on_unknown_council: bool = True,
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
-        independent_min_confidence: float = 0.7,
-        independent_max_uncertainty: float = 0.5,
-        independent_sizing_multiplier: float = 0.5,
+        independent_min_confidence: float = NATIVE_ONLY_CONFIDENCE_FLOOR,
+        independent_max_uncertainty: float = NATIVE_ONLY_UNCERTAINTY_CEILING,
+        independent_sizing_multiplier: float = NATIVE_ONLY_SIZING_MULTIPLIER_CEILING,
         pattern_tracker: Optional[Any] = None,
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
@@ -216,8 +230,24 @@ class CognitiveBrain:
             self.identity_version, self.identity_statement,
         )
         self._reasoner = reasoner
-        self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
-        self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
+        requested_confidence_floor = float(min_confidence_to_act)
+        self.min_confidence_to_act = min(
+            1.0, max(ACTION_CONFIDENCE_FLOOR, requested_confidence_floor)
+        )
+        if requested_confidence_floor < ACTION_CONFIDENCE_FLOOR:
+            logger.warning(
+                "[apex-identity] requested confidence floor %.3f is below %.2f; enforcing the identity floor",
+                requested_confidence_floor, ACTION_CONFIDENCE_FLOOR,
+            )
+        requested_uncertainty_ceiling = float(max_uncertainty_to_act)
+        self.max_uncertainty_to_act = min(
+            ACTION_UNCERTAINTY_CEILING, max(0.0, requested_uncertainty_ceiling)
+        )
+        if requested_uncertainty_ceiling > ACTION_UNCERTAINTY_CEILING:
+            logger.warning(
+                "[apex-identity] requested uncertainty ceiling %.3f exceeds %.2f; enforcing the identity ceiling",
+                requested_uncertainty_ceiling, ACTION_UNCERTAINTY_CEILING,
+            )
         # Apex identity invariant: exposure is qualified by net expected value,
         # not a raw confidence-floor shortcut. Keep the argument for constructor
         # compatibility, but an explicit False cannot restore the legacy gate.
@@ -228,10 +258,12 @@ class CognitiveBrain:
                 "[apex-identity] ignoring ev_primary_gate=False; net-EV qualification is mandatory"
             )
         self.ev_primary_gate = True
-        self.ev_action_threshold_r = float(ev_action_threshold_r)
+        self.ev_action_threshold_r = max(NET_EXPECTED_VALUE_FLOOR_R, float(ev_action_threshold_r))
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
-        self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
+        self.reverse_confidence = min(
+            1.0, max(REVERSE_CONFIDENCE_FLOOR, float(reverse_confidence))
+        )
         # Retained for config compatibility (wired from ``manage_exit_floor``).
         # V-008 removed the legacy direction-based management tree that consulted
         # this to auto-TIGHTEN on a weakening aligned read; management is now
@@ -241,12 +273,12 @@ class CognitiveBrain:
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
-        self.min_advisors_for_action = max(1, int(min_advisors_for_action))
+        self.min_advisors_for_action = max(MIN_ADVISORS_FOR_ACTION, int(min_advisors_for_action))
         # Article XXXIV — minimum evidence domains: "cannot determine whether an
         # opportunity exists" ≠ "no opportunity". The Brain refuses to act on a
         # thin evidence picture. Three is an identity floor, even for callers that
         # instantiate CognitiveBrain directly instead of using CognitionConfig.
-        self.min_evidence_domains = max(3, int(min_evidence_domains))
+        self.min_evidence_domains = max(MIN_MARKET_EVIDENCE_DOMAINS, int(min_evidence_domains))
         # Article XXI / V-013 — degraded cognition must be recognised AND
         # enforced. When the council under-delivers (most available advisors did
         # not respond) the Brain attenuates its effective conviction by this
@@ -256,8 +288,13 @@ class CognitiveBrain:
         # (library) layer so a Brain deliberately wired without a council is not
         # blanket-penalised, but the deployed system opts in via config, and the
         # unknown state is ALWAYS logged and recorded (never a silent pass).
-        self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
-        self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
+        self.degraded_confidence_multiplier = min(
+            DEGRADED_CONFIDENCE_MULTIPLIER_CEILING,
+            max(0.0, float(degraded_confidence_multiplier)),
+        )
+        self._degrade_on_unknown_council = True
+        if not bool(degrade_on_unknown_council):
+            logger.warning("[apex-identity] unknown council coverage must be treated as degraded")
         # Payoff geometry used to turn win-probability into a genuine expected
         # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
         # not supply explicit excursions. ``min_expected_value`` is retained for
@@ -266,7 +303,8 @@ class CognitiveBrain:
         # current act/no-act behaviour.
         self.reward_r_default = max(0.0, float(reward_r_default))
         self.min_expected_value = (
-            None if min_expected_value is None else float(min_expected_value)
+            None if min_expected_value is None
+            else max(NET_EXPECTED_VALUE_FLOOR_R, float(min_expected_value))
         )
         # Violation V9 (Part XXIV/XXV) — a per-symbol fallback round-trip
         # execution cost in R, subtracted from the strategic EV so a theoretical
@@ -283,15 +321,25 @@ class CognitiveBrain:
         # advisor is available (Article X — discovery without explicit
         # programming). ``independent_sizing_multiplier`` sizes such advisor-less
         # originations conservatively.
+        self.independent_min_confidence = min(
+            1.0, max(NATIVE_ONLY_CONFIDENCE_FLOOR, float(independent_min_confidence))
+        )
+        self.independent_max_uncertainty = min(
+            NATIVE_ONLY_UNCERTAINTY_CEILING,
+            max(0.0, float(independent_max_uncertainty)),
+        )
         self._native = BrainReasoner(
             agreement_boost=agreement_boost,
             disagreement_penalty=disagreement_penalty,
-            independent_min_confidence=independent_min_confidence,
-            independent_max_uncertainty=independent_max_uncertainty,
+            independent_min_confidence=self.independent_min_confidence,
+            independent_max_uncertainty=self.independent_max_uncertainty,
         )
         self._native_management = NativePositionManager()
         self._campaign_memory: Optional[Any] = None
-        self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
+        self.independent_sizing_multiplier = min(
+            NATIVE_ONLY_SIZING_MULTIPLIER_CEILING,
+            max(0.0, float(independent_sizing_multiplier)),
+        )
         self._independent_originations = 0
         # Article X — pattern EVOLUTION. An optional
         # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
@@ -903,13 +951,12 @@ class CognitiveBrain:
             driving_opp is not None and driving_opp.is_actionable
         )
 
-        # Apex chooses methods from the current market state. A global scalar
-        # confidence floor or uncertainty ceiling must not replace that reasoning.
-        # Confidence profile and market uncertainty continuously shape EV and size;
-        # they are not universal binary entry recipes. Exposure still requires a
-        # directional, activated first-class opportunity, positive cost-adjusted
-        # EV, verified advisor quorum where applicable, independent market evidence,
-        # fresh verified costs, adequate data quality and shared portfolio/risk review.
+        # Apex chooses methods from current market state. Confidence and uncertainty
+        # bounds are hard admission constraints, not strategy-selection rules and
+        # not substitutes for multidimensional reasoning. Passing them is insufficient:
+        # action still requires an activated opportunity, positive net EV, verified
+        # advisor quorum, independent market evidence, fresh costs, adequate data
+        # quality and shared portfolio/risk review.
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
         if self.ev_primary_gate:
@@ -917,9 +964,19 @@ class CognitiveBrain:
         # The legacy non-EV-primary mode may alter how opportunities are described,
         # but it may not substitute a fixed confidence/uncertainty cutoff for EV.
         directional_and_qualified = directional and ev_ok
+        confidence_ok = eff_conf >= self.min_confidence_to_act
+        uncertainty_ok = uncertainty <= self.max_uncertainty_to_act
+        questions["actionability_confidence_gate"] = (
+            f"effective confidence {eff_conf:.3f} >= {self.min_confidence_to_act:.3f}: {confidence_ok}"
+        )
+        questions["actionability_uncertainty_gate"] = (
+            f"aggregate uncertainty {uncertainty:.3f} <= {self.max_uncertainty_to_act:.3f}: {uncertainty_ok}"
+        )
         act = (
             directional_and_qualified
             and ev_ok
+            and confidence_ok
+            and uncertainty_ok
             and quorum_ok
             and domain_ok
             and cost_verified
@@ -2549,6 +2606,13 @@ class CognitiveBrain:
             )
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 uncertainty_adjusted_conf, lead)
+            # Native-only operation remains available during provider outages,
+            # but has a stricter mandatory confidence/uncertainty profile.
+            if (
+                lead_conf < self.independent_min_confidence
+                or uncertainty > self.independent_max_uncertainty
+            ):
+                return None
             reward_r, risk_r = self.reward_r_default, 1.0
             cost_r = self._execution_cost_r(market_state)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
