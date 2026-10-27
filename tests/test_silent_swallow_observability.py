@@ -91,7 +91,7 @@ def _has_explicit_fallback_rationale(source_lines: list[str], lineno: int) -> bo
             continue
         if "safe-fallback:" in comment.lower():
             return True
-        if "noqa: BLE001" in comment.upper() and _SAFE_FALLBACK_RATIONALE.search(comment):
+        if "NOQA: BLE001" in comment.upper() and _SAFE_FALLBACK_RATIONALE.search(comment):
             return True
         if line.lstrip().startswith("#") and _SAFE_FALLBACK_RATIONALE.search(comment):
             return True
