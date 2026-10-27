@@ -609,7 +609,6 @@ class Opportunity:
     competing_opportunities: list[str] = field(default_factory=list)
     is_preferred: bool = False
     identity_version: str = IDENTITY_VERSION
-    identity: str = IDENTITY_STATEMENT
     # Market-derived payoff geometry appended to preserve positional callers.
     # Only the native geometry resolver may authoritatively populate these.
     entry_price: Optional[float] = None
@@ -619,6 +618,8 @@ class Opportunity:
     reward_distance: Optional[float] = None
     reward_r: Optional[float] = None
     geometry_evidence_ids: list[str] = field(default_factory=list)
+    # Append new metadata after existing fields to preserve positional callers.
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
         d = str(self.direction or "FLAT").upper()
