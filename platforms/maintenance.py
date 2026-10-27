@@ -155,7 +155,7 @@ class DailyMaintenance:
                 results["data_sync"] = self._sync_data_repo(event_count=event_count)
                 self._last_sync_monotonic = _time.monotonic()
                 if self._sync_orphan_branch:
-                    results["orphan_sync"] = self._sync_orphan_branch_backup()
+                    results["orphan_sync"] = "skipped (automatic branch rewriting disabled)"
                 results["repo_compaction"] = "skipped (automatic history rewriting disabled)"
             else:
                 results["data_sync"] = "skipped (unsafe data topology)"
@@ -459,7 +459,7 @@ class DailyMaintenance:
             logger.critical(
                 "[maintenance] orphan snapshot refused — unsafe topology: {}", reason
             )
-            return f"refused (unsafe data topology: {reason})
+            return f"refused (unsafe data topology: {reason})"
         try:
             from scripts.backup_data import run_backup
         except Exception as exc:
