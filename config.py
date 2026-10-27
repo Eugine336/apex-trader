@@ -3611,7 +3611,7 @@ class ComposioConfig:
 
     Configured entirely from the environment (no hardcoded secret):
 
-      COMPOSIO_API_KEY    your Composio key (blank ⇒ layer stays mock/off)
+      COMPOSIO_API_KEY    your Composio key (blank + live mode ⇒ explicit unavailable adapter)
       COMPOSIO_BASE_URL   API base (default https://backend.composio.dev)
       COMPOSIO_ENTITY_ID  entity/user the actions run as (default "default")
       COMPOSIO_ENABLED    force on/off (defaults ON when a key is present)
@@ -3623,9 +3623,10 @@ class ComposioConfig:
                           explicit approval)
       COMPOSIO_MIN_CONFIDENCE / COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD / COMPOSIO_TIMEOUT_SECONDS
 
-    The key is read from the env into ``api_key`` and is NEVER logged. The layer
-    is fail-safe: an absent/mis-set config is a silent no-op, and even fully
-    enabled it does nothing real until ``dry_run`` is turned off.
+    The key is read from the env into ``api_key`` and is NEVER logged.
+    Explicitly disabled or dry-run mode selects the mock adapter. If live action
+    execution is enabled but credentials are absent, the adapter reports an
+    explicit failure rather than returning mock success.
     """
 
     enabled: bool = False

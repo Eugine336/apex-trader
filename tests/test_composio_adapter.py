@@ -93,3 +93,31 @@ def test_build_adapter_defaults_to_rest():
                           timeout_seconds=20.0, api_version="v3", transport="rest")
     a = build_adapter(cfg)
     assert a.name == "composio"
+
+
+
+def test_build_adapter_does_not_masquerade_as_mock_when_live_key_missing():
+    from types import SimpleNamespace
+    from action.composio import UnavailableActionAdapter, MockActionAdapter
+
+    cfg = SimpleNamespace(enabled=True, dry_run=False, api_key="")
+    adapter = build_adapter(cfg)
+
+    assert isinstance(adapter, UnavailableActionAdapter)
+    assert not isinstance(adapter, MockActionAdapter)
+    result = adapter.execute("COMPOSIO_SEARCH_SEARCH", {"query": "gold"})
+    assert result.ok is False
+    assert result.verified is False
+    assert "COMPOSIO_API_KEY is missing" in result.detail
+
+
+def test_explicit_disabled_or_dry_run_uses_mock_adapter():
+    from types import SimpleNamespace
+    from action.composio import MockActionAdapter
+
+    assert isinstance(build_adapter(SimpleNamespace(
+        enabled=False, dry_run=False, api_key=""
+    )), MockActionAdapter)
+    assert isinstance(build_adapter(SimpleNamespace(
+        enabled=True, dry_run=True, api_key=""
+    )), MockActionAdapter)

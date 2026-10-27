@@ -102,6 +102,25 @@ class MockActionAdapter:
         )
 
 
+
+class UnavailableActionAdapter:
+    """Explicitly report unavailable real integration; never impersonate success."""
+
+    name = "unavailable"
+
+    def __init__(self, reason: str) -> None:
+        self._reason = str(reason or "real action integration unavailable")
+
+    def execute(self, capability: str, params: dict) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            external_ref="",
+            detail=self._reason,
+            verified=False,
+            data={},
+        )
+
+
 class ComposioAdapter:
     """Executes a capability via Composio's REST API (stdlib only). Fail-safe."""
 
@@ -198,17 +217,22 @@ class ComposioAdapter:
 
 
 def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
-    """Pick an adapter from config.
+    """Select the configured adapter without disguising missing live credentials.
 
-    Returns a :class:`MockActionAdapter` whenever the layer is disabled, in
-    ``dry_run`` mode, or missing an API key — so real external calls only happen
-    on an explicit, fully-configured opt-in. Otherwise a :class:`ComposioAdapter`.
+    Explicitly disabled and dry-run configurations use the mock adapter.
+    An enabled, non-dry-run configuration without credentials is unavailable
+    and must fail each requested action; it must not return mock success.
     """
     enabled = bool(getattr(config, "enabled", False)) if config is not None else False
     dry_run = bool(getattr(config, "dry_run", True)) if config is not None else True
     api_key = str(getattr(config, "api_key", "") or "") if config is not None else ""
-    if not enabled or dry_run or not api_key:
+    if not enabled or dry_run:
         return MockActionAdapter()
+    if not api_key:
+        return UnavailableActionAdapter(
+            "COMPOSIO_ENABLED=true and COMPOSIO_DRY_RUN=false, but "
+            "COMPOSIO_API_KEY is missing; real action execution is unavailable"
+        )
     transport_mode = str(
         getattr(config, "transport", "rest") or "rest"
     ).strip().lower() if config is not None else "rest"
@@ -243,4 +267,4 @@ def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
     )
 
 
-__all__ = ["MockActionAdapter", "ComposioAdapter", "build_adapter", "Transport"]
+__all__ = ["MockActionAdapter", "UnavailableActionAdapter", "ComposioAdapter", "build_adapter", "Transport"]
