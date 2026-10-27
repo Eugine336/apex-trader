@@ -156,7 +156,7 @@ def _collect_silent_handlers():
 def test_fail_closed_sentinel_return_is_classified_safe():
     handler = ast.parse(
         "def f():\n    try:\n        pass\n    except Exception:\n        return None\n"
-    ).body[0].handlers[0]
+    ).body[0].body[0].handlers[0]
     handler.body = [ast.Return(value=ast.Constant(value=None))]
     assert _is_silent_handler(handler) is False
 
