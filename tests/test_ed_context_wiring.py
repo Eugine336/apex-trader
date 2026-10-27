@@ -168,7 +168,7 @@ class TestMarketContextChecks:
     """Verify MarketContext-dependent checks fire correctly."""
 
     def test_htf_candle_close_bearish_against_long(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", pnl_pips=5.0)
         market = MarketContext(
             h1_last_closed_open=1.1020,
@@ -242,7 +242,7 @@ class TestBackwardCompat:
         assert len(sl_hit) > 0
 
     def test_tp2_hit_no_context(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", tp2=1.1100, current_price=1.1105)
         intents = worker.evaluate(snap, scan=None, market=None)
         tp2 = [i for i in intents if "tp2" in i.source]
