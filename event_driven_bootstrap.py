@@ -1562,7 +1562,7 @@ class EventDrivenSystem:
         if ctx is not None and ctx.compliance is not None:
             try:
                 ctx.compliance.bind_runtime(
-                    is_market_open=self._check_market_open,
+                    is_market_open=self._entry_market_open,
                     is_broker_available=self._is_broker_available,
                     get_spread_pips=self._get_spread_pips,
                     spread_monitor=getattr(ctx.risk_engine, "spread_monitor", None),
@@ -5679,9 +5679,25 @@ class EventDrivenSystem:
         self._log_market_transition(symbol, is_open, reason)
         return is_open
 
-    def _market_open_status(self, symbol: str) -> "tuple[bool, str]":
+    def _entry_market_open(self, symbol: str) -> bool:
+        """Entry-admission market-open check: unknown state blocks.
+
+        Observation may continue on an unknown market state, but new exposure
+        needs positive evidence the market is open (always-open instrument,
+        fresh tick, or a broker trade_mode that permits trading).
+        """
+        is_open, reason = self._market_open_status(symbol, strict=True)
+        if not is_open:
+            logger.debug("[market-open] entry blocked for {}: {}", symbol, reason)
+        return is_open
+
+    def _market_open_status(self, symbol: str, strict: bool = False) -> "tuple[bool, str]":
         """Pure (is_open, reason) market-open decision — no logging (that is
-        edge-triggered in :meth:`_log_market_transition`)."""
+        edge-triggered in :meth:`_log_market_transition`).
+
+        ``strict=True`` (entry admission) requires positive evidence of an open
+        market; unknown connector/spec/tick state returns closed instead of open.
+        """
         try:
             if is_always_open(symbol):
                 return True, "24/7"
@@ -5690,7 +5706,8 @@ class EventDrivenSystem:
         try:
             connector = self._pm.get_connector(symbol)
         except Exception:  # noqa: BLE001
-            return True, "no connector (fail-open)"
+            return (False, "no connector (unknown, entry blocked)") if strict else (True, "no connector (fail-open)")
+        positive_evidence = False
         # (1) Permission flag — explicit broker disable / close-only.
         spec_fn = getattr(connector, "get_symbol_spec", None)
         if callable(spec_fn):
@@ -5702,6 +5719,8 @@ class EventDrivenSystem:
                 mode = None
             if mode in (0, 3):
                 return False, f"broker trade_mode={mode}"
+            if mode is not None:
+                positive_evidence = True
         # (2) Session signal — no fresh tick ⇒ closed (weekend / holiday).
         # Non-raising; None ⇒ unknown ⇒ fail-open.
         fresh_fn = getattr(connector, "has_fresh_tick", None)
@@ -5713,6 +5732,10 @@ class EventDrivenSystem:
                 fresh = None
             if fresh is False:
                 return False, f"no fresh tick within {_MARKET_CLOSED_TICK_AGE_SECONDS:.0f}s (session closed)"
+            if fresh is True:
+                positive_evidence = True
+        if strict and not positive_evidence:
+            return False, "market state unknown (no fresh tick or trade_mode evidence)"
         return True, "open"
 
     def _log_market_transition(self, symbol: str, is_open: bool, reason: str) -> None:
@@ -5740,23 +5763,23 @@ class EventDrivenSystem:
     def _is_broker_available(self, symbol: str) -> bool:
         """Broker-health permit signal for the ComplianceDivision.
 
-        True when the connector routing ``symbol`` reports a live connection.
-        When the connector or its state can't be determined we return True
-        (the downstream ActionExecutor circuit breaker is the authoritative
-        execution guard — Compliance should not false-block on an unknown).
+        True only when the connector routing ``symbol`` positively reports a
+        live connection. A missing connector or an unreadable state is unknown
+        and blocks new exposure (risk-reducing actions do not use this check).
         """
         try:
             connector = self._pm.get_connector(symbol)
-        except Exception:
-            return True
+        except Exception as exc:
+            logger.warning("[broker-health] no connector for {}: {} (entry blocked)", symbol, exc)
+            return False
         is_conn = getattr(connector, "is_connected", None)
         if not callable(is_conn):
-            return True
+            return False
         try:
             return bool(is_conn())
         except Exception as exc:
-            logger.debug("[broker-health] {} is_connected check failed: {}", symbol, exc)
-            return True
+            logger.warning("[broker-health] {} is_connected check failed: {} (entry blocked)", symbol, exc)
+            return False
 
     def _on_gate_trace(
         self,

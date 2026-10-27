@@ -199,7 +199,7 @@ class ComplianceDivision:
         self, c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
     ) -> CheckOutcome:
         if self._news_guard is None:
-            return CheckOutcome("news_clear", True, "disabled (no news guard)")
+            return CheckOutcome("news_clear", False, "no news guard (fail-closed)")
         status = self._news_guard.check([c.symbol])
         if getattr(status, "is_clear", True):
             return CheckOutcome("news_clear", True, "no news embargo")
@@ -245,7 +245,7 @@ class ComplianceDivision:
         # (realised + unrealised, with hysteresis).  The PortfolioGovernor no
         # longer competes here (V7 — one source of truth).
         if self._account_risk is None:
-            return CheckOutcome("daily_loss", True, "disabled (no account-risk silo)")
+            return CheckOutcome("daily_loss", False, "no account-risk silo (fail-closed)")
         if self._account_risk.daily_loss_halted(a.account_key):
             pct = self._account_risk.combined_pnl_pct(a.account_key)
             return CheckOutcome(
@@ -259,7 +259,7 @@ class ComplianceDivision:
         self, c: ComplianceCandidate, _b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
         if self._account_risk is None:
-            return CheckOutcome("heat_ok", True, "disabled (no account-risk silo)")
+            return CheckOutcome("heat_ok", False, "no account-risk silo (fail-closed)")
         if self._account_risk.heat_blocked(a.account_key):
             heat = self._account_risk.heat(a.account_key)
             return CheckOutcome(
@@ -274,7 +274,7 @@ class ComplianceDivision:
     ) -> CheckOutcome:
         if self._drawdown_guard is None:
             return CheckOutcome(
-                "drawdown_not_frozen", True, "disabled (no drawdown guard)"
+                "drawdown_not_frozen", False, "no drawdown guard (fail-closed)"
             )
         # Import inside the check so the module stays importable without the
         # brain package present (tests / minimal environments).
@@ -310,7 +310,7 @@ class ComplianceDivision:
     ) -> CheckOutcome:
         if self._portfolio_risk_sm is None:
             return CheckOutcome(
-                "portfolio_risk_state", True, "disabled (no portfolio risk SM)"
+                "portfolio_risk_state", False, "no portfolio risk SM (fail-closed)"
             )
         from risk.portfolio_risk_state import PortfolioRiskState
 

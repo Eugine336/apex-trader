@@ -178,3 +178,60 @@ def test_open_symbol_not_logged(monkeypatch):
     for _ in range(3):
         assert self_._check_market_open("EURUSD") is True
     assert [m for m in spy.infos if "market-open" in m] == []
+
+
+# ── Entry admission: unknown market/broker state blocks new exposure ─────────
+
+
+def _bind_entry(conn):
+    ns = _bind(conn)
+    for name in ("_entry_market_open", "_is_broker_available"):
+        setattr(ns, name, types.MethodType(getattr(edb.EventDrivenSystem, name), ns))
+    return ns
+
+
+def test_entry_gate_blocks_when_market_state_is_unknown():
+    # No freshness probe and a spec without trade_mode => no positive evidence.
+    class _Blind:
+        def get_symbol_spec(self, symbol):
+            return {}
+
+    assert _bind_entry(_Blind())._entry_market_open("EURUSD") is False
+    # Observation-side gate keeps its historical behaviour on unknown state.
+    assert _bind_entry(_Blind())._check_market_open("EURUSD") is True
+
+
+def test_entry_gate_opens_only_with_positive_evidence():
+    assert _bind_entry(_Conn(trade_mode=4, fresh=True))._entry_market_open("EURUSD") is True
+    assert _bind_entry(_Conn(trade_mode=4, fresh=None))._entry_market_open("EURUSD") is True  # trade_mode known
+    assert _bind_entry(_Conn(trade_mode=4, fresh=False))._entry_market_open("EURUSD") is False
+    assert _bind_entry(_Conn(trade_mode=0, fresh=True))._entry_market_open("EURUSD") is False
+
+
+def test_entry_gate_blocks_without_connector():
+    ns = _bind_entry(None)
+    ns._pm = types.SimpleNamespace(get_connector=lambda s: (_ for _ in ()).throw(KeyError(s)))
+    assert ns._entry_market_open("EURUSD") is False
+    assert ns._is_broker_available("EURUSD") is False
+
+
+def test_broker_available_requires_positive_connection_report():
+    class _Up:
+        def is_connected(self):
+            return True
+
+    class _Down:
+        def is_connected(self):
+            return False
+
+    class _NoProbe:
+        pass
+
+    class _Raises:
+        def is_connected(self):
+            raise RuntimeError("socket")
+
+    assert _bind_entry(_Up())._is_broker_available("EURUSD") is True
+    assert _bind_entry(_Down())._is_broker_available("EURUSD") is False
+    assert _bind_entry(_NoProbe())._is_broker_available("EURUSD") is False
+    assert _bind_entry(_Raises())._is_broker_available("EURUSD") is False
