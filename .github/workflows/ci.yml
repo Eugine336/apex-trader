@@ -1,4 +1,5 @@
 name: APEX TRADER CI
+# Keep the repository-wide identity and execution-boundary audit in the required CI path.
 
 on:
   push:
