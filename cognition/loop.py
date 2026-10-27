@@ -1476,8 +1476,12 @@ class CognitionLoop:
         # proceed unreasoned.
         if brain is None or not hasattr(brain, "manage"):
             return False, "unavailable", 0.0
-        if not getattr(brain, "available", True):
-            return False, "unavailable", 0.0
+        # Identity (continuous re-evaluation, native independence): an external
+        # advisor outage is an infrastructure state, not a market conclusion.
+        # ``Brain.manage`` falls back to the native thesis-based manager when no
+        # advisor is available, so the review proceeds on native evidence. The
+        # trim still requires a de-risking verdict; a native HOLD or any fault
+        # still vetoes it, so this never fails open.
         try:
             sym = str(getattr(target, "symbol", "") or "")
             ms = self._consolidator.build(sym, now=now)
