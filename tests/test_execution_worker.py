@@ -471,7 +471,7 @@ class TestEntryGracePeriod:
         open_t = NOW - timedelta(seconds=200)
         snap = _snap(pnl_pips=-1.0, open_time=open_t)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) for i in intents)
 
