@@ -1,10 +1,11 @@
 """Audit silent exception handlers and require explicit classification.
 
 A handler that only returns a sentinel can be a valid fail-closed boundary, but
-an unexplained ``pass``/``return None`` can also hide a dangerous failure. This
-test therefore accepts only handlers that log/re-raise or carry an explicit,
-local safe-fallback rationale. Unclassified handlers remain a CI failure; this
-avoids blanket re-raises or meaningless logging on every exception path.
+an unexplained ``pass``/``continue`` or a fail-open sentinel can hide a dangerous
+failure. Explicit fail-closed returns (``None``, ``False``, empty collections, or
+zero) are treated as safe outcomes; bare no-op handlers and fail-open returns
+still need logging, a re-raise, or a local rationale. This avoids blanket
+re-raises or meaningless logging on every exception path.
 """
 
 import ast
@@ -17,12 +18,33 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 _SKIP_DIRS = {"tests", "node_modules", "__pycache__", ".git", ".ddagent"}
 
-_SENTINEL_VALUES = {None, False, 0, True, "", 0.0}
+_SENTINEL_VALUES = {None, False, 0, "", 0.0}
 
 
 def _is_silent_handler(handler: ast.ExceptHandler) -> bool:
-    """Return True if the handler body has no logging, no raise, and only
-    pass / continue / return-of-a-sentinel constant."""
+    """Return True for silent no-op handlers or fail-open/unclassified returns."""
+    # A pure fail-closed sentinel is an explicit safe outcome, not a swallowed
+    # exception that can authorize exposure. Keep bare pass/continue and
+    # fail-open returns visible to the audit.
+    def _safe_closed_return(stmt: ast.stmt) -> bool:
+        if not isinstance(stmt, ast.Return):
+            return False
+        if stmt.value is None:
+            return True
+        if isinstance(stmt.value, ast.Constant) and stmt.value.value in _SENTINEL_VALUES:
+            return True
+        if isinstance(stmt.value, ast.List) and not stmt.value.elts:
+            return True
+        if isinstance(stmt.value, ast.Dict) and not stmt.value.keys:
+            return True
+        return False
+
+    if handler.body and all(
+        _safe_closed_return(stmt)
+        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+        for stmt in handler.body
+    ):
+        return False
     for stmt in handler.body:
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             func = stmt.value.func
