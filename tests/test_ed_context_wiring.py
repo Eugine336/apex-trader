@@ -84,6 +84,17 @@ def _snap(
     )
 
 
+
+
+def _legacy_worker() -> PositionWorker:
+    """Explicitly enable the retired mechanical suite for contract tests only."""
+    return PositionWorker(WorkerConfig(
+        discretionary_exits_enabled=True,
+        legacy_mechanical_exit_fallback_enabled=True,
+        scan_directional_exits_enabled=True,
+    ))
+
+
 class TestConfigAlignment:
     def test_score_threshold_is_60(self):
         from entry.models import EntryConfig
@@ -109,7 +120,7 @@ class TestScanContextChecks:
     """Verify that ScanContext-dependent checks fire correctly."""
 
     def test_invalidation_fires_with_low_score_negative_pnl(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(pnl_pips=-5.0, pnl_dollars=-5.0, current_price=1.0995)
         scan = ScanContext(direction="LONG", score=30, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
@@ -117,7 +128,7 @@ class TestScanContextChecks:
         assert len(close_intents) > 0
 
     def test_invalidation_opposing_signal(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", pnl_pips=5.0)
         scan = ScanContext(direction="SHORT", score=80, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
@@ -252,7 +263,7 @@ class TestBackwardCompat:
 
     def test_stall_exit_fires_on_structure_loss(self):
         # Flat, aged, and the live bias opposes the position → stall fires.
-        worker = PositionWorker()
+        worker = _legacy_worker()
         now = datetime.now(timezone.utc)
         snap = _snap(
             direction="LONG",
