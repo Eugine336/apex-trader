@@ -62,6 +62,15 @@ class DailyMaintenance:
         day_key = (timestamp or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
         return day_key != self._last_maintenance_day
 
+    def _data_topology_status(self) -> tuple[bool, str]:
+        """Return the safety of the configured data directory without mutation."""
+        try:
+            from runtime_paths import data_dir_is_safe
+
+            return data_dir_is_safe(self._data_dir)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"topology check failed: {type(exc).__name__}"
+
     def should_sync(self, *, now: Optional[float] = None) -> bool:
         """True when the data-sync interval has elapsed since the last push.
 
@@ -95,6 +104,13 @@ class DailyMaintenance:
         """
         if not self._auto_sync:
             return "disabled"
+        safe, reason = self._data_topology_status()
+        if not safe:
+            logger.critical(
+                "[maintenance] data sync refused — unsafe data topology: {}", reason
+            )
+            self._last_sync_monotonic = now if now is not None else _time.monotonic()
+            return f"refused (unsafe data topology: {reason})"
         result = self._sync_data_repo(event_count=event_count)
         self._last_sync_monotonic = now if now is not None else _time.monotonic()
         return result
@@ -105,35 +121,47 @@ class DailyMaintenance:
         *,
         event_count: Optional[int] = None,
     ) -> dict:
-        """Run all maintenance tasks. Returns summary dict."""
+        """Run non-destructive housekeeping; preserve operational state by default."""
         day_key = (timestamp or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
         results: dict = {}
+        topology_ok, topology_reason = self._data_topology_status()
+        results["data_topology"] = (
+            "safe" if topology_ok else f"unsafe: {topology_reason}"
+        )
 
-        results["db_backup"] = self._backup_database()
+        # The data directory is operational state. If it sits inside the source
+        # checkout rather than in a dedicated junction/repository, do not create
+        # backups, clean files, or start Git sync/compaction from that path.
+        if topology_ok:
+            results["db_backup"] = self._backup_database()
+            results["stale_cleaned"] = self._clean_stale_data()
+        else:
+            results["db_backup"] = "skipped (unsafe data topology)"
+            results["stale_cleaned"] = "skipped (unsafe data topology)"
+
         results["logs_cleaned"] = self._rotate_logs()
-        results["stale_cleaned"] = self._clean_stale_data()
-        results["event_store_pruned"] = self._prune_event_store()
-        # Reclaim disk space freed by the prune above (DELETE leaves pages in the
-        # file; VACUUM rebuilds it). Runs after the prune so the freed pages are
-        # actually reclaimable this pass.
-        results["databases_vacuumed"] = self._vacuum_databases()
-        # gc sweep + RSS check. Writes a restart marker (never exits) if the
-        # process has crept past the memory ceiling over a long uptime.
+        # Retention pruning and VACUUM rewrite/delete persistent event history.
+        # They are intentionally not automatic; state retention is operator-led.
+        results["event_store_pruned"] = "skipped (automatic event deletion disabled)"
+        results["databases_vacuumed"] = {
+            "event_store": "skipped (automatic database rewrite disabled)",
+            "vacuumed": 0,
+            "checked": 0,
+        }
         results["memory"] = self._memory_maintenance()
 
-        # Push the local data junction to its GitHub remote *after* the local
-        # backup so the freshest snapshot (including today's backup file) is
-        # captured. Non-blocking — never let a git failure abort maintenance.
         if self._auto_sync:
-            results["data_sync"] = self._sync_data_repo(event_count=event_count)
-            # Mark the push time so the interval gate (`should_sync`) waits a
-            # full interval before the next sub-daily push.
-            self._last_sync_monotonic = _time.monotonic()
-            if self._sync_orphan_branch:
-                results["orphan_sync"] = self._sync_orphan_branch_backup()
-            # Compact the data-repo history after the push so a year of hourly
-            # binary commits never bloats the repo past a clonable size.
-            results["repo_compaction"] = self._compact_repo_history()
+            if topology_ok:
+                results["data_sync"] = self._sync_data_repo(event_count=event_count)
+                self._last_sync_monotonic = _time.monotonic()
+                if self._sync_orphan_branch:
+                    results["orphan_sync"] = "skipped (automatic branch rewriting disabled)"
+                results["repo_compaction"] = "skipped (automatic history rewriting disabled)"
+            else:
+                results["data_sync"] = "skipped (unsafe data topology)"
+                if self._sync_orphan_branch:
+                    results["orphan_sync"] = "skipped (unsafe data topology)"
+                results["repo_compaction"] = "skipped (unsafe data topology)"
 
         self._last_maintenance_day = day_key
         return results
@@ -228,15 +256,17 @@ class DailyMaintenance:
         return summary
 
     def _compact_repo_history(self) -> str:
-        """Squash the data-repo git history once it grows too large.
+        """Explicit administrative compaction helper; never called automatically.
 
-        Every auto-sync commits full binary DB snapshots, so a year of hourly
-        commits accumulates thousands of binary diffs that make ``git clone``
-        slow and the on-disk repo huge. This delegates to
-        :func:`scripts.backup_data.compact_repo_history`, which squashes history
-        into a single commit + force-pushes once the pack exceeds the configured
-        size. Best-effort — never raises, returns a status string.
+        Compaction rewrites repository history. It must remain an operator-led
+        action and may not run as part of automatic trading maintenance.
         """
+        safe, reason = self._data_topology_status()
+        if not safe:
+            logger.critical(
+                "[maintenance] repository compaction refused — unsafe topology: {}", reason
+            )
+            return f"refused (unsafe data topology: {reason})"
         try:
             from scripts.backup_data import compact_repo_history
         except Exception as exc:
@@ -325,7 +355,11 @@ class DailyMaintenance:
         return out
 
     def _backup_database(self) -> str:
-        """Copy positions.db to data/backups/positions_YYYY-MM-DD.db"""
+        """Create a consistent positions backup without overwriting/deleting snapshots."""
+        safe, reason = self._data_topology_status()
+        if not safe:
+            return f"skipped (unsafe data topology: {reason})"
+
         db_path = self._data_dir / "apex_positions.db"
         if not db_path.exists():
             return "no_database"
@@ -335,12 +369,12 @@ class DailyMaintenance:
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         backup_path = backup_dir / f"positions_{today}.db"
+        if backup_path.exists():
+            # Do not overwrite an existing backup; preserve all prior snapshots.
+            return f"already_exists_preserved:{backup_path.name}"
 
         try:
-            # Use SQLite's online backup API instead of a raw file copy: it
-            # takes a consistent snapshot even while the DB is being written
-            # (WAL mode), avoiding the torn/corrupt copy a shutil.copy2 can
-            # produce mid-write.
+            # Use SQLite's online backup API to avoid a torn copy while WAL is active.
             src = sqlite3.connect(str(db_path), timeout=30)
             try:
                 dst = sqlite3.connect(str(backup_path), timeout=30)
@@ -355,8 +389,9 @@ class DailyMaintenance:
             logger.warning("Database backup failed: {}", exc)
             return f"error: {exc}"
 
-        deleted = self._cleanup_old_files(backup_dir, "positions_*.db", self._max_backup_days)
-        return f"backed_up:{backup_path.name},old_deleted:{deleted}"
+        # Database backups are never auto-deleted. Retention needs an explicit,
+        # reviewed operator action after checking which snapshots are needed.
+        return f"backed_up:{backup_path.name},old_deleted:0"
 
     def _count_positions(self) -> Optional[int]:
         """Best-effort row count of the positions DB for the commit message."""
@@ -374,11 +409,17 @@ class DailyMaintenance:
             return None
 
     def _sync_data_repo(self, event_count: Optional[int] = None) -> str:
-        """Commit + push the data junction to its GitHub main branch.
+        """Commit + push the data junction only after a safe topology check.
 
         Best-effort: any failure is logged as a warning and reported in the
         summary string without raising, so the trading loop is never affected.
         """
+        safe, reason = self._data_topology_status()
+        if not safe:
+            logger.critical(
+                "[maintenance] data repo sync refused — unsafe topology: {}", reason
+            )
+            return f"refused (unsafe data topology: {reason})"
         try:
             from scripts.backup_data import sync_data_repo
         except Exception as exc:
@@ -408,11 +449,17 @@ class DailyMaintenance:
             return f"error: {exc}"
 
     def _sync_orphan_branch_backup(self) -> str:
-        """Refresh the ``data-backup`` orphan branch with the current state.
+        """Refresh the backup branch only after explicit invocation and safety checks.
 
-        Keeps ``scripts/restore_data.py`` pointed at clean, current data instead
-        of stale pre-migration snapshots. Best-effort, never raises.
+        Best-effort, never raises. The scheduler skips this operation when data
+        topology is not verified.
         """
+        safe, reason = self._data_topology_status()
+        if not safe:
+            logger.critical(
+                "[maintenance] orphan snapshot refused — unsafe topology: {}", reason
+            )
+            return f"refused (unsafe data topology: {reason})"
         try:
             from scripts.backup_data import run_backup
         except Exception as exc:
@@ -435,7 +482,13 @@ class DailyMaintenance:
         return self._cleanup_old_files(self._log_dir, "*.log", self._max_log_days)
 
     def _clean_stale_data(self) -> int:
-        """Clean up temp/stale files. Return count."""
+        """Clean non-state temp/cache files only when the data topology is safe."""
+        safe, reason = self._data_topology_status()
+        if not safe:
+            logger.critical(
+                "[maintenance] stale-data cleanup skipped — unsafe topology: {}", reason
+            )
+            return 0
         count = 0
         for pattern in ("*.tmp", "*.pyc"):
             for f in self._data_dir.glob(pattern):

@@ -113,17 +113,19 @@ class TestVacuumDatabases:
                 summary = m._vacuum_databases()
             assert "error" in summary["event_store"]
 
-    def test_run_includes_vacuum_key(self):
+    def test_scheduled_run_preserves_event_store_without_prune_or_vacuum(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
             m = DailyMaintenance(
                 data_dir=str(data_dir), log_dir=str(Path(tmp) / "logs")
             )
-            with patch("persistence.event_store.get_event_store"):
+            with patch("persistence.event_store.get_event_store") as get_store:
                 result = m.run()
-            assert "databases_vacuumed" in result
-            assert "memory" in result
+            get_store.assert_not_called()
+            assert result["event_store_pruned"].startswith("skipped")
+            assert result["databases_vacuumed"]["vacuumed"] == 0
+            assert result["memory"] is not None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

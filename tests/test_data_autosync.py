@@ -208,7 +208,7 @@ class TestMaintenanceAutoSync:
             # Other maintenance steps still ran.
             assert "db_backup" in result
 
-    def test_orphan_branch_sync_called(self):
+    def test_orphan_branch_sync_is_not_run_automatically(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
@@ -224,8 +224,8 @@ class TestMaintenanceAutoSync:
                 "scripts.backup_data.run_backup", return_value="backed up 3 files",
             ) as mock_orphan:
                 result = m.run()
-            assert result["orphan_sync"] == "backed up 3 files"
-            mock_orphan.assert_called_once()
+            assert result["orphan_sync"] == "skipped (automatic branch rewriting disabled)"
+            mock_orphan.assert_not_called()
 
 
 # ── DailyMaintenance interval-gated sync ───────────────────────────────────
@@ -237,16 +237,22 @@ class TestMaintenanceIntervalSync:
         assert m.should_sync() is False
 
     def test_should_sync_first_time_true_then_waits_interval(self):
-        m = DailyMaintenance(auto_sync_data_repo=True, sync_interval_hours=1.0)
-        # Never synced → due immediately.
-        assert m.should_sync(now=1000.0) is True
-        with patch("scripts.backup_data.sync_data_repo", return_value="synced → origin/main"):
-            res = m.sync_data(event_count=7, now=1000.0)
-        assert res == "synced → origin/main"
-        # Within the interval → not due.
-        assert m.should_sync(now=1000.0 + 1800.0) is False
-        # After the interval → due again.
-        assert m.should_sync(now=1000.0 + 3600.0) is True
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            m = DailyMaintenance(
+                data_dir=str(data_dir), auto_sync_data_repo=True,
+                sync_interval_hours=1.0,
+            )
+            # Never synced → due immediately.
+            assert m.should_sync(now=1000.0) is True
+            with patch("scripts.backup_data.sync_data_repo", return_value="synced → origin/main"):
+                res = m.sync_data(event_count=7, now=1000.0)
+            assert res == "synced → origin/main"
+            # Within the interval → not due.
+            assert m.should_sync(now=1000.0 + 1800.0) is False
+            # After the interval → due again.
+            assert m.should_sync(now=1000.0 + 3600.0) is True
 
     def test_zero_interval_disables_interval_sync(self):
         m = DailyMaintenance(auto_sync_data_repo=True, sync_interval_hours=0)
@@ -443,36 +449,46 @@ class TestCleanStart:
 
     def test_startup_runner_is_context_free(self):
         with patch(
-            "platforms.clean_start.sync_clean_state_from_remote",
-            return_value="synced remote state (main)",
+            "platforms.clean_start.sync_clean_state_from_remote"
         ) as mock_sync, patch(
-            "platforms.clean_start.discard_corrupt_event_store",
+            "platforms.clean_start.inspect_event_store_integrity",
             return_value="event-store healthy",
-        ) as mock_discard, patch(
-            "platforms.clean_start.purge_stale_learned_data",
-            return_value="already clean",
+        ) as mock_inspect, patch(
+            "platforms.clean_start.purge_stale_learned_data"
         ) as mock_purge:
             result = run_startup_clean_start(
                 data_dir="data",
                 branch="main",
                 schema_version="2",
                 local_schema_version_file=".local_schema_version",
+                topology_ok=True,
+                purge_enabled=True,
             )
 
         assert result == (
-            "synced remote state (main)",
+            "skipped (automatic data-repository reset disabled)",
             "event-store healthy",
-            "already clean",
+            "skipped (automatic persistent-state purge disabled)",
         )
-        mock_sync.assert_called_once_with(
-            data_dir="data", branch="main", data_repo_url=None
-        )
-        mock_discard.assert_called_once_with(data_dir="data")
-        mock_purge.assert_called_once_with(
-            data_dir="data",
-            schema_version="2",
-            local_schema_version_file=".local_schema_version",
-        )
+        mock_sync.assert_not_called()
+        mock_inspect.assert_called_once_with(data_dir="data")
+        mock_purge.assert_not_called()
+
+    def test_startup_runner_does_nothing_without_verified_topology(self):
+        with patch(
+            "platforms.clean_start.sync_clean_state_from_remote"
+        ) as mock_sync, patch(
+            "platforms.clean_start.inspect_event_store_integrity"
+        ) as mock_inspect, patch(
+            "platforms.clean_start.purge_stale_learned_data"
+        ) as mock_purge:
+            result = run_startup_clean_start(data_dir="data")
+
+        skipped = "skipped (unsafe or unverified data repository topology)"
+        assert result == (skipped, skipped, skipped)
+        mock_sync.assert_not_called()
+        mock_inspect.assert_not_called()
+        mock_purge.assert_not_called()
 
 
 class TestStartupPurgeToggle:
@@ -521,24 +537,24 @@ def _make_corrupt_db(path: Path) -> None:
 
 
 class TestDiscardCorruptEventStore:
-    """The event store is operational, machine-local state. A corrupt copy
-    restored by the data-junction reset must be dropped before the store opens
-    so it starts fresh — without the endless restore/rotate loop."""
+    """Integrity inspection must preserve corrupt databases and forensic history."""
 
-    def test_corrupt_db_and_sidecars_removed(self):
+    def test_corrupt_db_and_sidecars_are_preserved_for_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             db = d / "apex_events.db"
             _make_corrupt_db(db)
             (d / "apex_events.db-wal").write_bytes(b"wal")
             (d / "apex_events.db-shm").write_bytes(b"shm")
+            before = {
+                name: (d / name).read_bytes()
+                for name in ("apex_events.db", "apex_events.db-wal", "apex_events.db-shm")
+            }
 
             res = discard_corrupt_event_store(str(d))
 
-            assert not db.exists()
-            assert not (d / "apex_events.db-wal").exists()
-            assert not (d / "apex_events.db-shm").exists()
-            assert "discarded corrupt event-store" in res
+            assert {name: (d / name).read_bytes() for name in before} == before
+            assert "preserved for manual recovery" in res
 
     def test_healthy_db_left_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -567,25 +583,19 @@ class TestDiscardCorruptEventStore:
             discard_corrupt_event_store("/nope/missing/dir") == "no data directory"
         )
 
-    def test_old_corrupt_rotations_pruned_keeping_newest(self):
+    def test_corrupt_rotations_are_never_auto_pruned(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            # Five forensic rotations with increasing mtimes; newest 3 kept.
             rotations = []
             for i in range(5):
                 p = d / f"apex_events.db.corrupt.2026010{i}"
-                p.write_bytes(b"x")
+                p.write_bytes(f"forensic-{i}".encode())
                 import os
 
                 os.utime(p, (1_700_000_000 + i, 1_700_000_000 + i))
-                rotations.append(p)
+                rotations.append((p, p.read_bytes()))
 
             res = discard_corrupt_event_store(str(d))
 
-            survivors = sorted(d.glob("apex_events.db.corrupt.*"))
-            assert len(survivors) == 3
-            # The three highest-numbered (newest mtime) survive.
-            assert rotations[0] not in survivors
-            assert rotations[1] not in survivors
-            assert rotations[4] in survivors
-            assert "pruned 2 rotation(s)" in res
+            assert all(path.exists() and path.read_bytes() == data for path, data in rotations)
+            assert "preserved 5 corrupt rotation(s)" in res

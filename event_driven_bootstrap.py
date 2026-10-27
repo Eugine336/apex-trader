@@ -4168,27 +4168,13 @@ class EventDrivenSystem:
                                 ctx.reversal_manager.reset_session()
                             except Exception as exc:
                                 logger.debug("[event-driven] reversal-manager session reset failed: {}", exc)
-                        try:
-                            es = get_event_store()
-                            es.prune()
-                        except Exception:
-                            pass
-                        # Bound shadow-store growth: discard PENDING shadow
-                        # contracts older than 48h that will never resolve.
-                        try:
-                            ss = getattr(ctx, "shadow_store", None)
-                            if ss is not None:
-                                cutoff_ms = int(
-                                    (_time.time() - 48 * 3600) * 1000
-                                )
-                                discarded = ss.discard_stale_pending(cutoff_ms)
-                                if discarded:
-                                    logger.info(
-                                        "[event-driven] discarded {} stale shadow contract(s)",
-                                        discarded,
-                                    )
-                        except Exception:
-                            pass
+                        # Persistent event and shadow history are audit state.
+                        # Do not prune, discard, or rewrite it automatically; keep
+                        # it intact for explicit operator-reviewed retention.
+                        logger.info(
+                            "[event-driven] automatic event/shadow-state pruning "
+                            "disabled; persistent history preserved"
+                        )
                 except Exception as exc:
                     logger.debug("[watchdog] daily maintenance check failed: {}", exc)
 

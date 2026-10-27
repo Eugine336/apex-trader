@@ -119,52 +119,47 @@ def main() -> None:
     try:
         db_cfg = getattr(config, "data_backup", None)
         if db_cfg is None or getattr(db_cfg, "clean_start_on_first_boot", True):
-            from platforms.clean_start import (
-                discard_corrupt_event_store,
-                purge_stale_learned_data,
-                sync_clean_state_from_remote,
-            )
+            from platforms.clean_start import run_startup_clean_start
 
             branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
             data_repo_url = (
                 getattr(db_cfg, "data_repo_url", None) if db_cfg else None
             )
 
-            # Print an unambiguous repository-topology banner at boot. If the
-            # data dir is not a correctly-provisioned dedicated data repo (or
-            # resolves into the source repo), the banner is CRITICAL and states
-            # that auto-sync is disabled and no git mutation is permitted.
+            # Default to unsafe. A failed or skipped topology check must never
+            # fall through into Git reset, DB recovery/deletion, or learned-state
+            # purge operations.
+            topo_ok = False
+            data_path = None
             try:
                 from runtime_paths import data_dir as _data_dir
                 from runtime_paths import repo_root
                 from scripts.git_identity import render_topology_banner
 
+                data_path = _data_dir()
                 topo_ok, banner = render_topology_banner(
-                    repo_root(), _data_dir(), data_repo_url=data_repo_url
+                    repo_root(), data_path, data_repo_url=data_repo_url
                 )
                 for _line in banner.splitlines():
                     (logger.info if topo_ok else logger.critical)(
                         "[clean-start] {}", _line
                     )
             except Exception as exc:  # noqa: BLE001
-                logger.debug("[clean-start] topology banner skipped: {}", exc)
+                logger.critical(
+                    "[clean-start] topology check failed; all clean-start "
+                    "mutations are skipped: {}", exc
+                )
 
-            pull_res = sync_clean_state_from_remote(
-                branch=branch, data_repo_url=data_repo_url
+            pull_res, event_store_res, purge_res = run_startup_clean_start(
+                data_dir=str(data_path) if data_path is not None else "data",
+                branch=branch,
+                data_repo_url=data_repo_url,
+                topology_ok=topo_ok,
+                purge_enabled=bool(
+                    db_cfg is not None
+                    and getattr(db_cfg, "startup_purge_enabled", False)
+                ),
             )
-            # The data-junction reset above restores whatever apex_events.db is
-            # committed in the data repo. The event store is operational,
-            # machine-local state — a corrupt committed copy would be restored
-            # every boot, fail its integrity check, and rotate endlessly. Drop
-            # a corrupt restored DB now, before the store opens, so it starts
-            # fresh cleanly. A healthy DB is always left untouched.
-            event_store_res = discard_corrupt_event_store()
-            # The learned-data purge is opt-in (default OFF) so a normal restart
-            # never wipes adaptive state — only the data-junction sync runs.
-            if db_cfg is not None and getattr(db_cfg, "startup_purge_enabled", False):
-                purge_res = purge_stale_learned_data()
-            else:
-                purge_res = "skipped (disabled)"
             logger.info(
                 "[event-driven] clean-start — pull: {} | event-store: {} | purge: {}",
                 pull_res,
@@ -180,6 +175,32 @@ def main() -> None:
     from core.system_context import SystemContext
     platform_manager = PlatformManager(config)
     sys_ctx = SystemContext.create(config, platform_manager)
+
+    # An unsafe data junction means durable state may be written into the source
+    # checkout and automatic Git sync cannot be trusted. Keep the application
+    # available for observation and position management, but fail closed for
+    # new exposure until the operator provisions the dedicated data repository.
+    try:
+        from runtime_paths import data_dir as _runtime_data_dir
+        from runtime_paths import data_dir_is_safe
+
+        _data_safe, _data_reason = data_dir_is_safe(_runtime_data_dir())
+    except Exception as exc:  # noqa: BLE001
+        _data_safe, _data_reason = False, f"topology check failed: {exc}"
+
+    if not _data_safe:
+        logger.critical(
+            "[startup] unsafe data repository topology — {}. "
+            "Existing-position management remains available; new exposure is blocked.",
+            _data_reason,
+        )
+        try:
+            sys_ctx._mark_safety_degraded("UnsafeDataRepositoryTopology")
+        except Exception:
+            pass
+        _cog_loop = getattr(sys_ctx, "cognition_loop", None)
+        if _cog_loop is not None:
+            _cog_loop.broker_book_verified = False
 
     def _connect_and_bootstrap() -> dict:
         """Connect brokers + bootstrap spreads + log the LIVE banner.
