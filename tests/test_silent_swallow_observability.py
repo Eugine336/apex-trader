@@ -1,15 +1,16 @@
-"""Regression test: assert zero silent exception handlers remain in the source tree.
+"""Audit silent exception handlers and require explicit classification.
 
-A "silent handler" is an except clause whose body contains only
-pass / continue / return <sentinel> with NO logging and NO re-raise.
-
-This test prevents regression after M3 Phase A added observability
-logging to all 57 formerly-silent handlers.
+A handler that only returns a sentinel can be a valid fail-closed boundary, but
+an unexplained ``pass``/``return None`` can also hide a dangerous failure. This
+test therefore accepts only handlers that log/re-raise or carry an explicit,
+local safe-fallback rationale. Unclassified handlers remain a CI failure; this
+avoids blanket re-raises or meaningless logging on every exception path.
 """
 
 import ast
 import os
 import pathlib
+import re
 
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -71,9 +72,34 @@ def _is_silent_handler(handler: ast.ExceptHandler) -> bool:
     return True
 
 
+_SAFE_FALLBACK_RATIONALE = re.compile(
+    r"(?:safe[- ]fallback|fail[- ]safe|fail[- ]closed|never break|must never|"
+    r"must not authorize|must not allow|best[- ]effort|non[- ]fatal|"
+    r"optional .*?(?:probe|reader|adapter|integration|sink)|diagnostic only)",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_fallback_rationale(source_lines: list[str], lineno: int) -> bool:
+    """Require a nearby comment that explains why a sentinel fallback is safe."""
+    # Inspect the except line and the immediately preceding comment line only;
+    # distant file-level comments must not blanket-classify unrelated handlers.
+    candidates = source_lines[max(0, lineno - 2):lineno]
+    for line in candidates:
+        comment = line.partition("#")[2].strip()
+        if not comment:
+            continue
+        if "safe-fallback:" in comment.lower():
+            return True
+        if "noqa: BLE001" in comment.upper() and _SAFE_FALLBACK_RATIONALE.search(comment):
+            return True
+        if line.lstrip().startswith("#") and _SAFE_FALLBACK_RATIONALE.search(comment):
+            return True
+    return False
+
+
 def _collect_silent_handlers():
-    """Walk the non-test source tree and yield (filepath, lineno) for each
-    silent exception handler found."""
+    """Yield unclassified silent handlers as (filepath, lineno)."""
     for root, dirs, files in os.walk(_REPO_ROOT):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for fname in files:
@@ -81,19 +107,24 @@ def _collect_silent_handlers():
                 continue
             fpath = os.path.join(root, fname)
             try:
-                with open(fpath) as fh:
-                    tree = ast.parse(fh.read())
-            except SyntaxError:
+                with open(fpath, encoding="utf-8") as fh:
+                    source = fh.read()
+                source_lines = source.splitlines()
+                tree = ast.parse(source, filename=fpath)
+            except (OSError, UnicodeDecodeError, SyntaxError):
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.ExceptHandler) and _is_silent_handler(node):
+                if (
+                    isinstance(node, ast.ExceptHandler)
+                    and _is_silent_handler(node)
+                    and not _has_explicit_fallback_rationale(source_lines, node.lineno)
+                ):
                     rel = os.path.relpath(fpath, _REPO_ROOT)
                     yield rel, node.lineno
 
 
 def test_no_silent_exception_handlers():
-    """Every except handler in the source tree must contain either a log call
-    or a re-raise.  Silent swallowing of exceptions is a regression."""
+    """Every silent handler must be logged, re-raised, or explicitly classified."""
     silent = list(_collect_silent_handlers())
     if silent:
         detail = "\n".join(f"  {f}:{ln}" for f, ln in silent)
