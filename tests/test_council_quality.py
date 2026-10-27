@@ -67,6 +67,34 @@ def _decide(opinion, uncertainty=0.1):
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    # Qualification also needs fresh completed-bar structure to derive the
+    # opportunity's own stop/target geometry; this test is about quality weighting,
+    # not bypassing the market-structure gate.
+    state.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE, symbol="BTCUSD",
+        observation="completed-bar structural range", confidence=0.9,
+        uncertainty=uncertainty,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "current_close": 1.100,
+            "prior_range_high": 1.105, "prior_range_low": 1.095,
+            "range_position": 0.5, "breakout_direction": "up",
+            "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    state.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM, symbol="BTCUSD",
+        observation="completed-bar momentum", confidence=0.9,
+        uncertainty=uncertainty,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "close_change": 0.001,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
     # The helper supplies exactly three independent market domains above;
     # pass that derived coverage metadata as the production consolidator does.
     return _brain()._from_opinion(
