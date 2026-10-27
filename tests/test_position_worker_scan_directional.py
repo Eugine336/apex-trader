@@ -105,7 +105,7 @@ def test_structure_loss_stall_defers_when_disabled():
     scan = ScanContext(direction="SHORT", score=10)
     base = dict(stall_requires_structure_loss=True, stall_min_hold_minutes=5.0,
                 discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True)
-    on = PositionWorker(WorkerConfig(**base)).evaluate(snap, NOW, scan=scan)
+    on = PositionWorker(WorkerConfig(scan_directional_exits_enabled=True, **base)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "stall_exit")
     off = PositionWorker(WorkerConfig(
         scan_directional_exits_enabled=False, **base,
@@ -120,7 +120,7 @@ def test_time_based_stall_fallback_unaffected_when_disabled():
     off = PositionWorker(WorkerConfig(
         stall_requires_structure_loss=False, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=ScanContext(direction="LONG", score=90))
-    assert "stall_exit" in _sources(off)
+    assert _has_original_source(off, "stall_exit")
 
 
 # ── the hard-SL safety floor is never gated by the flag ───────────────────────
