@@ -449,14 +449,12 @@ class TestCleanStart:
 
     def test_startup_runner_is_context_free(self):
         with patch(
-            "platforms.clean_start.sync_clean_state_from_remote",
-            return_value="synced remote state (main)",
+            "platforms.clean_start.sync_clean_state_from_remote"
         ) as mock_sync, patch(
             "platforms.clean_start.inspect_event_store_integrity",
             return_value="event-store healthy",
         ) as mock_inspect, patch(
-            "platforms.clean_start.purge_stale_learned_data",
-            return_value="already clean",
+            "platforms.clean_start.purge_stale_learned_data"
         ) as mock_purge:
             result = run_startup_clean_start(
                 data_dir="data",
@@ -468,13 +466,11 @@ class TestCleanStart:
             )
 
         assert result == (
-            "synced remote state (main)",
+            "skipped (automatic data-repository reset disabled)",
             "event-store healthy",
             "skipped (automatic persistent-state purge disabled)",
         )
-        mock_sync.assert_called_once_with(
-            data_dir="data", branch="main", data_repo_url=None
-        )
+        mock_sync.assert_not_called()
         mock_inspect.assert_called_once_with(data_dir="data")
         mock_purge.assert_not_called()
 
