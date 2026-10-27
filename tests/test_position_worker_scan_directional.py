@@ -55,7 +55,7 @@ def _sources(intents):
 
 # ── invalidation (low score / opposing) ──────────────────────────────────────
 
-def test_invalidation_low_score_fires_by_default_and_defers_when_disabled():
+def test_invalidation_low_score_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=30)
     on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
@@ -66,7 +66,7 @@ def test_invalidation_low_score_fires_by_default_and_defers_when_disabled():
     assert "invalidation_low_score" not in _sources(off)
 
 
-def test_invalidation_opposing_fires_by_default_and_defers_when_disabled():
+def test_invalidation_opposing_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(direction="BUY", pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=80)
     on = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
@@ -84,7 +84,7 @@ def test_conviction_collapse_fires_by_default_and_defers_when_disabled():
     scan = ScanContext(direction="LONG", score=78)
     base = dict(conviction_decline_cycles=4, conviction_decline_min_drop=3,
                 conviction_profit_hold_pips=20.0, discretionary_exits_enabled=True,
-                legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)
+                legacy_mechanical_exit_fallback_enabled=True)
     on = PositionWorker(WorkerConfig(**base)).evaluate(snap, NOW, scan=scan)
     assert "conviction_collapse" in _sources(on)
     off = PositionWorker(WorkerConfig(
@@ -100,8 +100,7 @@ def test_structure_loss_stall_defers_when_disabled():
     snap = _snap(direction="BUY", pnl_pips=0.5, current_price=1.10000)
     scan = ScanContext(direction="SHORT", score=10)
     base = dict(stall_requires_structure_loss=True, stall_min_hold_minutes=5.0,
-                discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True,
-                scan_directional_exits_enabled=True)
+                discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True)
     on = PositionWorker(WorkerConfig(**base)).evaluate(snap, NOW, scan=scan)
     assert "stall_exit" in _sources(on)
     off = PositionWorker(WorkerConfig(
