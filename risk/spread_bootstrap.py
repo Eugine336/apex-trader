@@ -9,6 +9,8 @@ Results are cached in-process — no file I/O needed.
 """
 
 from dataclasses import replace
+from typing import Iterable, Optional
+
 from loguru import logger
 
 import config as _cfg
@@ -17,10 +19,12 @@ import config as _cfg
 def bootstrap_spreads(
     platform_manager=None,
     sample_retries: int = 3,
+    symbols: Optional[Iterable[str]] = None,
 ) -> None:
     """
-    Query live bid/ask for every registered symbol and update
-    INSTRUMENT_REGISTRY with the observed spread as typical_spread_pips.
+    Query live bid/ask for the supplied active symbols (or the full registry
+    when symbols is omitted) and update INSTRUMENT_REGISTRY with the observed
+    spread as typical_spread_pips.
 
     All broker access goes through the Execution Division gateway
     (PlatformManager), which routes each symbol to the correct connector
@@ -37,8 +41,29 @@ def bootstrap_spreads(
 
     updated = 0
     failed = 0
+    registry = _cfg.INSTRUMENT_REGISTRY
+    if symbols is None:
+        symbol_names = list(registry)
+    else:
+        # Respect the runtime's effective instrument universe. Do not query
+        # every registered-but-disabled market during Gold specialist startup.
+        symbol_names = []
+        seen: set[str] = set()
+        for raw_symbol in symbols:
+            symbol = str(raw_symbol or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            if symbol not in registry:
+                logger.warning(
+                    "Spread bootstrap skipped unknown/unregistered symbol {}",
+                    symbol,
+                )
+                continue
+            symbol_names.append(symbol)
 
-    for symbol, info in list(_cfg.INSTRUMENT_REGISTRY.items()):
+    for symbol in symbol_names:
+        info = registry[symbol]
         spread = _sample_spread(platform_manager, symbol, sample_retries)
 
         if spread is None:
