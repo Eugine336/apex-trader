@@ -176,6 +176,32 @@ def main() -> None:
     platform_manager = PlatformManager(config)
     sys_ctx = SystemContext.create(config, platform_manager)
 
+    # An unsafe data junction means durable state may be written into the source
+    # checkout and automatic Git sync cannot be trusted. Keep the application
+    # available for observation and position management, but fail closed for
+    # new exposure until the operator provisions the dedicated data repository.
+    try:
+        from runtime_paths import data_dir as _runtime_data_dir
+        from runtime_paths import data_dir_is_safe
+
+        _data_safe, _data_reason = data_dir_is_safe(_runtime_data_dir())
+    except Exception as exc:  # noqa: BLE001
+        _data_safe, _data_reason = False, f"topology check failed: {exc}"
+
+    if not _data_safe:
+        logger.critical(
+            "[startup] unsafe data repository topology — {}. "
+            "Existing-position management remains available; new exposure is blocked.",
+            _data_reason,
+        )
+        try:
+            sys_ctx._mark_safety_degraded("UnsafeDataRepositoryTopology")
+        except Exception:
+            pass
+        _cog_loop = getattr(sys_ctx, "cognition_loop", None)
+        if _cog_loop is not None:
+            _cog_loop.broker_book_verified = False
+
     def _connect_and_bootstrap() -> dict:
         """Connect brokers + bootstrap spreads + log the LIVE banner.
 
