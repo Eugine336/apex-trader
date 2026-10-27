@@ -208,7 +208,7 @@ class TestMaintenanceAutoSync:
             # Other maintenance steps still ran.
             assert "db_backup" in result
 
-    def test_orphan_branch_sync_called(self):
+    def test_orphan_branch_sync_is_not_run_automatically(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
@@ -224,8 +224,8 @@ class TestMaintenanceAutoSync:
                 "scripts.backup_data.run_backup", return_value="backed up 3 files",
             ) as mock_orphan:
                 result = m.run()
-            assert result["orphan_sync"] == "backed up 3 files"
-            mock_orphan.assert_called_once()
+            assert result["orphan_sync"] == "skipped (automatic branch rewriting disabled)"
+            mock_orphan.assert_not_called()
 
 
 # ── DailyMaintenance interval-gated sync ───────────────────────────────────
