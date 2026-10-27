@@ -2,8 +2,7 @@
 
 import types
 
-from dashboard.state_controls import *  # noqa: F401,F403  (module under test)
-import dashboard.state_controls as sc
+from dashboard.state_controls import ControlsMixin
 
 
 def _controls(mode="NORMAL"):
@@ -11,10 +10,7 @@ def _controls(mode="NORMAL"):
 
     guard = types.SimpleNamespace(mode=DrawdownMode(mode))
     ed = types.SimpleNamespace(_ctx=types.SimpleNamespace(drawdown_guard=guard))
-    cls = next(
-        v for v in vars(sc).values()
-        if isinstance(v, type) and hasattr(v, "set_risk_mode")
-    )
+    cls = ControlsMixin
     obj = cls.__new__(cls)
     obj._event_driven_system = ed
     return obj, guard
