@@ -39,6 +39,14 @@ def _is_silent_handler(handler: ast.ExceptHandler) -> bool:
             return True
         return False
 
+    if any(
+        isinstance(stmt, ast.Return)
+        and isinstance(stmt.value, ast.Constant)
+        and stmt.value.value is True
+        for stmt in handler.body
+    ):
+        return True
+
     if handler.body and all(
         _safe_closed_return(stmt)
         or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
