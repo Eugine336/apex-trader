@@ -118,35 +118,6 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
     return mt5_mock, sent
 
 
-def _setup_mt5_mock_pending(volume_min: float = 0.01):
-    """Configure the MT5 mock for a pending-order path."""
-    mt5_mock = sys.modules["MetaTrader5"]
-    mt5_mock.TRADE_ACTION_PENDING = 5
-    mt5_mock.ORDER_TYPE_SELL_LIMIT = 3
-    mt5_mock.ORDER_TIME_GTC = 0
-    mt5_mock.ORDER_FILLING_IOC = 1
-    mt5_mock.TRADE_RETCODE_DONE = 10009
-
-    mt5_mock.symbol_select = MagicMock()
-    mt5_mock.symbol_info = MagicMock(return_value=SimpleNamespace(
-        volume_min=volume_min, volume_max=100.0, volume_step=0.01,
-        digits=5,
-    ))
-
-    sent = {}
-    def fake_order_send(req):
-        sent.update(req)
-        return SimpleNamespace(
-            retcode=10009, order=2001, price=98.245, comment="",
-        )
-    mt5_mock.order_send = fake_order_send
-    return mt5_mock, sent
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Market order tests
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestMarketOrderMinlotInflation:
 
     def test_inflation_flag_off_proceeds_with_warning(self):
@@ -190,57 +161,6 @@ class TestMarketOrderMinlotInflation:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pending order tests
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestPendingOrderMinlotInflation:
-
-    def test_inflation_flag_off_proceeds_with_warning(self):
-        """Flag OFF + inflation → warning logged, pending placed at vol_min."""
-        _setup_mt5_mock_pending(volume_min=0.5)
-        c = _make_connector(reject_on_minlot_inflation=False)
-        result = c.place_pending_order(
-            "XTIUSD", "SELL_LIMIT", 98.245, 0.01, 99.0, 97.0,
-        )
-        assert result.success is True
-        assert result.lots == 0.5
-        logger = _captured_logger
-        logger.warning.assert_called()
-        warning_args = logger.warning.call_args_list[-1]
-        assert "[MINLOT_INFLATION]" in str(warning_args)
-
-    def test_inflation_flag_on_rejects(self):
-        """Flag ON + inflation → pending rejected, no order_send."""
-        _setup_mt5_mock_pending(volume_min=0.5)
-        c = _make_connector(reject_on_minlot_inflation=True)
-        result = c.place_pending_order(
-            "XTIUSD", "SELL_LIMIT", 98.245, 0.01, 99.0, 97.0,
-        )
-        assert result.success is False
-        assert "min-lot inflation" in result.error
-
-    def test_no_inflation_flag_off_unchanged(self):
-        """No inflation + flag OFF → normal pending execution."""
-        _setup_mt5_mock_pending(volume_min=0.01)
-        c = _make_connector(reject_on_minlot_inflation=False)
-        result = c.place_pending_order(
-            "EURUSD", "SELL_LIMIT", 1.095, 0.05, 1.10, 1.08,
-        )
-        assert result.success is True
-        assert result.lots == 0.05
-
-    def test_no_inflation_flag_on_unchanged(self):
-        """No inflation + flag ON → normal pending (guard doesn't fire)."""
-        _setup_mt5_mock_pending(volume_min=0.01)
-        c = _make_connector(reject_on_minlot_inflation=True)
-        result = c.place_pending_order(
-            "EURUSD", "SELL_LIMIT", 1.095, 0.05, 1.10, 1.08,
-        )
-        assert result.success is True
-        assert result.lots == 0.05
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Config flag default
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestConfigDefault:

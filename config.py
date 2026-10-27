@@ -611,7 +611,6 @@ class RiskConfig:
     ml_should_trade_mode: str = "veto"       # "veto" | "penalty"
     ml_should_trade_size_mult: float = 0.5
     tp_adjust_enabled: bool = True
-    pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
     # Portfolio Division soft exposure budgets. 0 == disabled (no-op) so default
