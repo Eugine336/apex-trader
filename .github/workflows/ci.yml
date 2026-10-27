@@ -75,6 +75,7 @@ jobs:
           raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','-v','--tb=short']))"
 
       - name: Audit canonical identity and safety boundaries
+        if: always()
         run: python scripts/identity_audit.py
 
       - name: Check imports
