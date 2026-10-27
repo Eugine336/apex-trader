@@ -85,7 +85,7 @@ def test_conviction_collapse_fires_by_default_and_defers_when_disabled():
     base = dict(conviction_decline_cycles=4, conviction_decline_min_drop=3,
                 conviction_profit_hold_pips=20.0, discretionary_exits_enabled=True,
                 legacy_mechanical_exit_fallback_enabled=True)
-    on = PositionWorker(WorkerConfig(**base)).evaluate(snap, NOW, scan=scan)
+    on = PositionWorker(WorkerConfig(scan_directional_exits_enabled=True, **base)).evaluate(snap, NOW, scan=scan)
     assert "conviction_collapse" in _sources(on)
     off = PositionWorker(WorkerConfig(
         scan_directional_exits_enabled=False, **base,
