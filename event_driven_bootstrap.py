@@ -5297,6 +5297,20 @@ class EventDrivenSystem:
             return None
 
     def _safe_pip_size(self, symbol: str) -> float:
+        """Pip size, broker symbol spec first (broker truth), static table second.
+
+        Mirrors PositionEvaluator so entry sizing and position evaluation agree.
+        The 0.0001 last resort is recorded via ``_note_pip_size_fallback``.
+        """
+        try:
+            spec_fn = getattr(self._pm, "get_symbol_spec", None)
+            spec = spec_fn(symbol) if callable(spec_fn) else None
+            if isinstance(spec, dict):
+                value = float(spec.get("pip_size", 0) or 0)
+                if value > 0:
+                    return value
+        except Exception:  # noqa: BLE001 — fall back to the static table below
+            pass
         try:
             return get_pip_size(resolve_to_internal(symbol))
         except Exception as exc:

@@ -235,3 +235,21 @@ def test_broker_available_requires_positive_connection_report():
     assert _bind_entry(_Down())._is_broker_available("EURUSD") is False
     assert _bind_entry(_NoProbe())._is_broker_available("EURUSD") is False
     assert _bind_entry(_Raises())._is_broker_available("EURUSD") is False
+
+
+def test_event_driven_pip_size_prefers_broker_spec_then_static_table():
+    def _pip(pm):
+        ns = types.SimpleNamespace(_pm=pm, _note_pip_size_fallback=lambda *a, **k: None)
+        return types.MethodType(edb.EventDrivenSystem._safe_pip_size, ns)("EURUSD")
+
+    # Broker spec wins when it reports a positive pip size.
+    assert _pip(types.SimpleNamespace(get_symbol_spec=lambda s: {"pip_size": 0.5})) == 0.5
+    # Empty/invalid spec or a raising manager falls back to the static table.
+    static = _pip(types.SimpleNamespace())
+    assert _pip(types.SimpleNamespace(get_symbol_spec=lambda s: {})) == static
+    assert _pip(types.SimpleNamespace(get_symbol_spec=lambda s: {"pip_size": 0})) == static
+
+    def _boom(_s):
+        raise RuntimeError("down")
+
+    assert _pip(types.SimpleNamespace(get_symbol_spec=_boom)) == static
