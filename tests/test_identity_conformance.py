@@ -77,9 +77,13 @@ def test_provider_status_is_independent_of_market_verdict():
             "reasoning_mode": "native_only",
             "external_advisor_status": "unavailable",
         },
+        to_dict=lambda: {},
     )
     output = BrainOutput(decision=decision, direction="LONG")
     assert output.decision_type == DecisionType.OPEN_CAMPAIGN.value
     assert output.provider_status == "unavailable"
     assert output.native_verdict == DecisionType.OPEN_CAMPAIGN.value
     assert output.provider_unavailable is True
+    payload = output.to_dict()
+    assert payload["provider_status"] == "unavailable"
+    assert payload["native_verdict"] == DecisionType.OPEN_CAMPAIGN.value
