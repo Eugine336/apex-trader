@@ -129,6 +129,6 @@ def test_no_silent_exception_handlers():
     if silent:
         detail = "\n".join(f"  {f}:{ln}" for f, ln in silent)
         raise AssertionError(
-            f"{len(silent)} silent exception handler(s) found — "
-            f"add logging or re-raise:\n{detail}"
+            f"{len(silent)} unclassified silent exception handler(s) found — "
+            f"add logging, re-raise, or document the safe fallback locally:\n{detail}"
         )
