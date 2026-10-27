@@ -521,48 +521,32 @@ class TestRecalibrateForEquity:
             reference_balance=10000.0,
         )
 
-    def test_micro_equity_scales_thresholds_up(self):
+    def test_micro_equity_does_not_relax_heat_thresholds(self):
         sm = self._sm()
-        assert sm.heat_defensive_pct == 1.5
-        assert sm.heat_emergency_pct == 4.0
-
-        changed = sm.recalibrate_for_equity(208.0)
-        assert changed is True
-        # sqrt(10000/208) ≈ 6.93x, capped at _MAX_HEAT_SCALE (6.0): the ladder
-        # rises enough that a single ~8% min-lot trade does not trip DEFENSIVE,
-        # but the scale factor is bounded so it can never diverge.
-        assert sm.heat_defensive_pct > 8.0
-        # Emergency is clamped to a SANE ceiling (15%), not the old ~28% the
-        # unbounded sqrt produced — a micro account must be more conservative.
-        assert 8.0 < sm.heat_emergency_pct <= 15.0
-        # Ordering invariant preserved after scaling.
-        assert (
-            sm.heat_recovery_pct
-            < sm.heat_defensive_pct
-            < sm.heat_reduction_pct
-            < sm.heat_emergency_pct
+        before = (
+            sm.heat_defensive_pct, sm.heat_recovery_pct,
+            sm.heat_reduction_pct, sm.heat_emergency_pct,
         )
 
-    def test_collapsed_equity_stays_conservative(self):
-        # Regression for the reported pathology: equity=$136 vs $10k reference
-        # gave scale=8.57x and an emergency threshold of ~34% — the system got
-        # LESS conservative as capital collapsed. The scale cap + ceilings must
-        # keep emergency bounded to a sane value instead.
-        sm = self._sm()
-        sm.recalibrate_for_equity(136.0)
-        assert sm.heat_emergency_pct <= 15.0
-        assert sm.heat_reduction_pct <= 12.0
-        assert sm.heat_defensive_pct <= 10.0
-        # A tinier account is no more permissive than a small one (the factor is
-        # capped, so both converge to the same conservative ceiling ladder).
-        sm2 = self._sm()
-        sm2.recalibrate_for_equity(50.0)
-        assert sm2.heat_emergency_pct <= sm.heat_emergency_pct
+        assert sm.recalibrate_for_equity(208.0) is False
+        after = (
+            sm.heat_defensive_pct, sm.heat_recovery_pct,
+            sm.heat_reduction_pct, sm.heat_emergency_pct,
+        )
+        assert after == before == (1.5, 1.0, 2.5, 4.0)
 
-    def test_scaled_ladder_no_longer_force_closes_micro_trade(self):
+    def test_collapsed_equity_does_not_raise_heat_gates(self):
         sm = self._sm()
-        sm.recalibrate_for_equity(208.0)
-        # ~8% heat from one min-lot gold trade must NOT trip DEFENSIVE now.
+        for equity in (136.0, 50.0, 30.0):
+            assert sm.recalibrate_for_equity(equity) is False
+            assert sm.heat_defensive_pct == 1.5
+            assert sm.heat_recovery_pct == 1.0
+            assert sm.heat_reduction_pct == 2.5
+            assert sm.heat_emergency_pct == 4.0
+
+    def test_high_heat_on_micro_account_is_not_ignored(self):
+        sm = self._sm()
+        sm.recalibrate_for_equity(30.0)
         snap = PortfolioRiskSnapshot(
             live_heat_pct=8.07,
             position_risks=[],
@@ -570,16 +554,14 @@ class TestRecalibrateForEquity:
             max_currency_exposure=0.0,
         )
         sm.evaluate(snap)
-        assert sm.state == PortfolioRiskState.NORMAL
+        assert sm.state != PortfolioRiskState.NORMAL
 
     def test_idempotent_same_equity(self):
         sm = self._sm()
-        assert sm.recalibrate_for_equity(208.0) is True
-        # A repeated call with the same equity must be a no-op (no drift).
         assert sm.recalibrate_for_equity(208.0) is False
-        d1 = sm.heat_defensive_pct
-        sm.recalibrate_for_equity(208.0)
-        assert sm.heat_defensive_pct == d1
+        assert sm.recalibrate_for_equity(208.0) is False
+        assert sm.heat_defensive_pct == 1.5
+        assert sm.heat_emergency_pct == 4.0
 
     def test_large_equity_keeps_base_thresholds(self):
         sm = self._sm()
