@@ -1193,6 +1193,15 @@ class CognitionLoop:
             from cognition.memory import fingerprint_from_market_state  # local, fail-safe
             fp = fingerprint_from_market_state(market_state, now=now)
             spec = campaign.to_dict() if hasattr(campaign, "to_dict") else {}
+            # Keep infrastructure health separate from the market verdict in
+            # institutional memory so outcome review never mistakes provider
+            # outage for a market conclusion. These fields are observational and
+            # do not grant execution authority.
+            spec = dict(spec)
+            spec["reasoning_provenance"] = {
+                "provider_status": str(getattr(output, "provider_status", "unknown") or "unknown"),
+                "native_verdict": str(getattr(output, "native_verdict", "not_recorded") or "not_recorded"),
+            }
             # Part VIII/XXV — record which evidence sources informed the campaign
             # (provenance) so the influence ledger can credit/debit them once the
             # outcome lands. Evidence no longer carries a directional lean, so we
