@@ -109,6 +109,31 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
     ))
+    # Activated-opportunity tests need fresh, market-derived payoff geometry;
+    # generic domain coverage alone must not bypass the structural qualification gate.
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE, symbol=symbol,
+        observation="completed-bar structural range", confidence=conf, uncertainty=unc,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "current_close": 1.100,
+            "prior_range_high": 1.105, "prior_range_low": 1.095,
+            "range_position": 0.5, "breakout_direction": "up",
+            "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM, symbol=symbol,
+        observation="completed-bar momentum", confidence=conf, uncertainty=unc,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "close_change": 0.001,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
