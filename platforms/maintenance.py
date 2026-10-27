@@ -156,7 +156,7 @@ class DailyMaintenance:
                 self._last_sync_monotonic = _time.monotonic()
                 if self._sync_orphan_branch:
                     results["orphan_sync"] = self._sync_orphan_branch_backup()
-                results["repo_compaction"] = self._compact_repo_history()
+                results["repo_compaction"] = "skipped (automatic history rewriting disabled)"
             else:
                 results["data_sync"] = "skipped (unsafe data topology)"
                 if self._sync_orphan_branch:
@@ -256,21 +256,17 @@ class DailyMaintenance:
         return summary
 
     def _compact_repo_history(self) -> str:
+        """Explicit administrative compaction helper; never called automatically.
+
+        Compaction rewrites repository history. It must remain an operator-led
+        action and may not run as part of automatic trading maintenance.
+        """
         safe, reason = self._data_topology_status()
         if not safe:
             logger.critical(
                 "[maintenance] repository compaction refused — unsafe topology: {}", reason
             )
             return f"refused (unsafe data topology: {reason})"
-        """Squash the data-repo git history once it grows too large.
-
-        Every auto-sync commits full binary DB snapshots, so a year of hourly
-        commits accumulates thousands of binary diffs that make ``git clone``
-        slow and the on-disk repo huge. This delegates to
-        :func:`scripts.backup_data.compact_repo_history`, which squashes history
-        into a single commit + force-pushes once the pack exceeds the configured
-        size. Best-effort — never raises, returns a status string.
-        """
         try:
             from scripts.backup_data import compact_repo_history
         except Exception as exc:
@@ -413,17 +409,17 @@ class DailyMaintenance:
             return None
 
     def _sync_data_repo(self, event_count: Optional[int] = None) -> str:
+        """Commit + push the data junction only after a safe topology check.
+
+        Best-effort: any failure is logged as a warning and reported in the
+        summary string without raising, so the trading loop is never affected.
+        """
         safe, reason = self._data_topology_status()
         if not safe:
             logger.critical(
                 "[maintenance] data repo sync refused — unsafe topology: {}", reason
             )
             return f"refused (unsafe data topology: {reason})"
-        """Commit + push the data junction to its GitHub main branch.
-
-        Best-effort: any failure is logged as a warning and reported in the
-        summary string without raising, so the trading loop is never affected.
-        """
         try:
             from scripts.backup_data import sync_data_repo
         except Exception as exc:
@@ -453,17 +449,17 @@ class DailyMaintenance:
             return f"error: {exc}"
 
     def _sync_orphan_branch_backup(self) -> str:
+        """Refresh the backup branch only after explicit invocation and safety checks.
+
+        Best-effort, never raises. The scheduler skips this operation when data
+        topology is not verified.
+        """
         safe, reason = self._data_topology_status()
         if not safe:
             logger.critical(
                 "[maintenance] orphan snapshot refused — unsafe topology: {}", reason
             )
-            return f"refused (unsafe data topology: {reason})"
-        """Refresh the ``data-backup`` orphan branch with the current state.
-
-        Keeps ``scripts/restore_data.py`` pointed at clean, current data instead
-        of stale pre-migration snapshots. Best-effort, never raises.
-        """
+            return f"refused (unsafe data topology: {reason})
         try:
             from scripts.backup_data import run_backup
         except Exception as exc:
@@ -486,13 +482,13 @@ class DailyMaintenance:
         return self._cleanup_old_files(self._log_dir, "*.log", self._max_log_days)
 
     def _clean_stale_data(self) -> int:
+        """Clean non-state temp/cache files only when the data topology is safe."""
         safe, reason = self._data_topology_status()
         if not safe:
             logger.critical(
                 "[maintenance] stale-data cleanup skipped — unsafe topology: {}", reason
             )
             return 0
-        """Clean up temp/stale files. Return count."""
         count = 0
         for pattern in ("*.tmp", "*.pyc"):
             for f in self._data_dir.glob(pattern):
