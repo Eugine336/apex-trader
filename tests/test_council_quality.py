@@ -78,7 +78,7 @@ def _decide(opinion, uncertainty=0.1):
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
             "timeframe": "M5", "current_close": 1.100,
-            "prior_range_high": 1.105, "prior_range_low": 1.095,
+            "prior_range_high": 1.110, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
             "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
         },
