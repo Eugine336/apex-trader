@@ -149,6 +149,19 @@ class BrainOutput:
         return "unknown"
 
     @property
+    def native_verdict(self) -> str:
+        """Expose the native decision only when the recorded mode is native.
+
+        Do not fabricate a native verdict for advisor-assisted passes that do not
+        record one separately; those report ``not_recorded``.
+        """
+        questions = getattr(self.decision, "questions_answered", {}) or {}
+        mode = str(questions.get("reasoning_mode", "") or "").strip().lower()
+        if mode in {"native_only", "native_fallback"}:
+            return self.decision_type
+        return "not_recorded"
+
+    @property
     def provider_unavailable(self) -> bool:
         """True for an unavailable provider, independent of the market verdict."""
         return self.provider_status == "unavailable" or (
@@ -174,6 +187,7 @@ class BrainOutput:
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "decision_type": self.decision.decision_type.value,
             "provider_status": self.provider_status,
+            "native_verdict": self.native_verdict,
             "provider_unavailable": self.provider_unavailable,
             "decision_summary": self.decision_summary(),
             # Deprecated (V-026): retained for back-compat. Read the backing field
