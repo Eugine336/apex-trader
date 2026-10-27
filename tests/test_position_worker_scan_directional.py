@@ -53,28 +53,32 @@ def _sources(intents):
     return {i.source for i in intents}
 
 
+def _has_original_source(intents, source):
+    return any(i.source == source or f"[legacy_source={source}]" in i.reason for i in intents)
+
+
 # ── invalidation (low score / opposing) ──────────────────────────────────────
 
 def test_invalidation_low_score_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=30)
     on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
-    assert "invalidation_low_score" in _sources(on)
+    assert _has_original_source(on, "invalidation_low_score")
     off = PositionWorker(WorkerConfig(
         invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=scan)
-    assert "invalidation_low_score" not in _sources(off)
+    assert not _has_original_source(off, "invalidation_low_score")
 
 
 def test_invalidation_opposing_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(direction="BUY", pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=80)
     on = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
-    assert "invalidation_opposing" in _sources(on)
+    assert _has_original_source(on, "invalidation_opposing")
     off = PositionWorker(WorkerConfig(
         opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=scan)
-    assert "invalidation_opposing" not in _sources(off)
+    assert not _has_original_source(off, "invalidation_opposing")
 
 
 # ── conviction collapse (declining score trajectory) ──────────────────────────
@@ -86,11 +90,11 @@ def test_conviction_collapse_fires_by_default_and_defers_when_disabled():
                 conviction_profit_hold_pips=20.0, discretionary_exits_enabled=True,
                 legacy_mechanical_exit_fallback_enabled=True)
     on = PositionWorker(WorkerConfig(scan_directional_exits_enabled=True, **base)).evaluate(snap, NOW, scan=scan)
-    assert "conviction_collapse" in _sources(on)
+    assert _has_original_source(on, "conviction_collapse")
     off = PositionWorker(WorkerConfig(
         scan_directional_exits_enabled=False, **base,
     )).evaluate(snap, NOW, scan=scan)
-    assert "conviction_collapse" not in _sources(off)
+    assert not _has_original_source(off, "conviction_collapse")
 
 
 # ── structure-loss stall (reads scan direction/score) ─────────────────────────
@@ -102,11 +106,11 @@ def test_structure_loss_stall_defers_when_disabled():
     base = dict(stall_requires_structure_loss=True, stall_min_hold_minutes=5.0,
                 discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True)
     on = PositionWorker(WorkerConfig(**base)).evaluate(snap, NOW, scan=scan)
-    assert "stall_exit" in _sources(on)
+    assert _has_original_source(on, "stall_exit")
     off = PositionWorker(WorkerConfig(
         scan_directional_exits_enabled=False, **base,
     )).evaluate(snap, NOW, scan=scan)
-    assert "stall_exit" not in _sources(off)
+    assert not _has_original_source(off, "stall_exit")
 
 
 def test_time_based_stall_fallback_unaffected_when_disabled():
