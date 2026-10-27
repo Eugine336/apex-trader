@@ -450,7 +450,7 @@ class TestInvalidation:
         scan = ScanContext(direction="LONG", score=80)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any("invalidation" in i.source for i in intents)
+        assert not any("invalidation" in i.source or "[legacy_source=invalidation_" in i.reason for i in intents)
 
 
 class TestEntryGracePeriod:
