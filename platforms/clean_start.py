@@ -386,61 +386,53 @@ def _prune_corrupt_rotations(
     return removed
 
 
-def discard_corrupt_event_store(
+def inspect_event_store_integrity(
     data_dir: str = "data",
     *,
     db_name: str = _EVENT_STORE_DB_NAME,
 ) -> str:
-    """Remove a corrupt operational event-store DB before it is opened.
+    """Inspect the operational event store without deleting or rewriting it.
 
-    The ``data`` directory is a separate git repo (junction). ``clean-start``
-    hard-resets it to the remote, which restores whatever ``apex_events.db`` is
-    committed there. The event store is operational, machine-local state and
-    should never be version-controlled — if a corrupt copy is committed, every
-    restart restores it, the store logs a CRITICAL integrity failure, rotates
-    it to ``apex_events.db.corrupt.<ts>``, and starts fresh — an endless
-    restore/rotate loop that also bloats the disk with rotation files.
-
-    This best-effort step breaks that loop: run after the data-repo reset and
-    BEFORE the event store opens. If the restored DB is corrupt it is deleted
-    (with its ``-wal``/``-shm`` sidecars) so the store starts on a clean slate
-    with no CRITICAL spam and no new rotation file. A healthy DB is always left
-    untouched, so once the data repo stops tracking the file (the proper fix)
-    legitimate local event history is preserved. Accumulated rotation files are
-    pruned to a small forensic window regardless.
+    A corrupt database and its WAL/SHM sidecars are forensic state. This helper
+    only reports the condition; recovery must be a separate, reviewed operation
+    after the underlying files have been preserved.
     """
     d = Path(data_dir)
     if not d.is_dir():
         return "no data directory"
 
     db_path = d / db_name
-    removed: list[str] = []
     if _event_db_is_corrupt(db_path):
-        for suffix in ("", "-wal", "-shm"):
-            sidecar = d / f"{db_name}{suffix}"
-            try:
-                if sidecar.exists():
-                    sidecar.unlink()
-                    removed.append(sidecar.name)
-            except OSError as exc:
-                logger.warning("[clean-start] could not remove {}: {}", sidecar, exc)
-        if removed:
-            logger.warning(
-                "[clean-start] discarded corrupt event-store DB so a fresh one "
-                "is created cleanly (removed: {})",
-                ", ".join(removed),
-            )
+        rotations = list(d.glob(f"{db_name}.corrupt.*"))
+        logger.critical(
+            "[clean-start] corrupt event-store detected at {}; preserving DB, "
+            "sidecars and {} forensic rotation(s) for manual recovery",
+            db_path,
+            len(rotations),
+        )
+        return (
+            "corrupt event-store detected; preserved for manual recovery "
+            f"(rotations={len(rotations)})"
+        )
 
-    pruned = _prune_corrupt_rotations(d)
-
-    if removed and pruned:
-        return f"discarded corrupt event-store ({len(removed)}); pruned {pruned} rotation(s)"
-    if removed:
-        return f"discarded corrupt event-store ({len(removed)})"
-    if pruned:
-        return f"pruned {pruned} rotation(s)"
+    rotations = list(d.glob(f"{db_name}.corrupt.*"))
+    if rotations:
+        return f"event-store healthy; preserved {len(rotations)} corrupt rotation(s)"
     return "event-store healthy"
 
+
+def discard_corrupt_event_store(
+    data_dir: str = "data",
+    *,
+    db_name: str = _EVENT_STORE_DB_NAME,
+) -> str:
+    """Backward-compatible name for a read-only integrity inspection.
+
+    This function intentionally no longer deletes corrupt DBs, WAL/SHM files,
+    or old forensic rotations automatically. Runtime state must be preserved
+    until an operator has reviewed a recovery plan.
+    """
+    return inspect_event_store_integrity(data_dir=data_dir, db_name=db_name)
 
 def run_startup_clean_start(
     *,
@@ -449,16 +441,32 @@ def run_startup_clean_start(
     schema_version: str = SCHEMA_VERSION,
     local_schema_version_file: str | Path | None = None,
     data_repo_url: str | None = None,
+    topology_ok: bool = False,
+    purge_enabled: bool = False,
 ) -> tuple[str, str, str]:
-    """Convenience wrapper: sync remote state, discard a corrupt event-store DB
-    restored by that sync, then run the schema-gated purge."""
+    """Run clean-start only after repository topology has been verified safe.
+
+    Topology defaults to unsafe. On an unsafe/unknown path no Git reset, DB
+    inspection/deletion, or learned-state purge is attempted.
+    """
+    if not topology_ok:
+        skipped = "skipped (unsafe or unverified data repository topology)"
+        logger.critical(
+            "[clean-start] refusing state mutation because data repository topology "
+            "is unsafe or unverified"
+        )
+        return skipped, skipped, skipped
+
     pull_res = sync_clean_state_from_remote(
         data_dir=data_dir, branch=branch, data_repo_url=data_repo_url
     )
-    event_store_res = discard_corrupt_event_store(data_dir=data_dir)
-    purge_res = purge_stale_learned_data(
-        data_dir=data_dir,
-        schema_version=schema_version,
-        local_schema_version_file=local_schema_version_file,
-    )
+    event_store_res = inspect_event_store_integrity(data_dir=data_dir)
+    if purge_enabled:
+        purge_res = purge_stale_learned_data(
+            data_dir=data_dir,
+            schema_version=schema_version,
+            local_schema_version_file=local_schema_version_file,
+        )
+    else:
+        purge_res = "skipped (disabled)"
     return pull_res, event_store_res, purge_res
