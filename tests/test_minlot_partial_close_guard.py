@@ -195,7 +195,7 @@ class TestWorkerTp1MinLotGuard:
         worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_minlot_close"]
+        close = [i for i in out if i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 
@@ -204,16 +204,16 @@ class TestWorkerTp1MinLotGuard:
         snap = _snap(remaining_lots=0.01, volume_min=0.01, at_breakeven=True)
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
-        assert any(i.source == "tp1_minlot_close" for i in out)
+        assert any(i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason for i in out)
 
     def test_normal_lot_still_emits_partial(self):
         snap = _snap(remaining_lots=0.10, volume_min=0.01)
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
-        partials = [i for i in out if i.source == "tp1_partial"]
+        partials = [i for i in out if i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason]
         assert len(partials) == 1
         assert partials[0].intent_type == IntentType.PARTIAL_CLOSE
-        assert not any(i.source == "tp1_minlot_be" for i in out)
+        assert not any(i.source == "tp1_minlot_be" or "[legacy_source=tp1_minlot_be]" in i.reason for i in out)
 
     def test_higher_broker_minimum_triggers_guard(self):
         # A 0.10-lot position on an instrument whose minimum is 0.10 cannot be
@@ -232,7 +232,7 @@ class TestWorkerTp1MinLotGuard:
         worker = PositionWorker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_deriv_close"]
+        close = [i for i in out if i.source == "tp1_deriv_close" or "[legacy_source=tp1_deriv_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 
