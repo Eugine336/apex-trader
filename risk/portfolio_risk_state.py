@@ -52,25 +52,27 @@ _HEAT_CEIL_REDUCTION = 12.0
 _HEAT_CEIL_EMERGENCY = 15.0
 
 
-def _scaled_heat_thresholds(
+def _heat_thresholds_for_equity(
     reference_balance: float, account_equity: float,
     base_defensive: float, base_recovery: float,
     base_reduction: float, base_emergency: float,
 ) -> "tuple[float, float, float, float, float]":
-    """Return ``(scale, defensive, recovery, reduction, emergency)`` for a micro
-    account, capping the scale factor and clamping each threshold to its sane
-    ceiling. Shared by the constructor and :meth:`recalibrate_for_equity` so the
-    two paths can never diverge. Assumes ``account_equity < reference_balance``.
-    """
-    scale = max(1.0, min(_MAX_HEAT_SCALE, math.sqrt(reference_balance / account_equity)))
-    return (
-        scale,
-        min(base_defensive * scale, _HEAT_CEIL_DEFENSIVE),
-        min(base_recovery * scale, _HEAT_CEIL_RECOVERY),
-        min(base_reduction * scale, _HEAT_CEIL_REDUCTION),
-        min(base_emergency * scale, _HEAT_CEIL_EMERGENCY),
-    )
+    """Return the configured percentage thresholds unchanged.
 
+    Heat is already measured as a percentage of current equity. Raising the
+    percentage gates as equity falls makes a small account less protected and
+    can permit very large losses. Minimum-lot feasibility must be enforced by
+    sizing/admission; it must never be solved by relaxing portfolio safety gates.
+    The first tuple item is retained as a scale for compatibility with existing
+    callers and is always 1.0.
+    """
+    return (
+        1.0,
+        base_defensive,
+        base_recovery,
+        base_reduction,
+        base_emergency,
+    )
 
 # ── States ──────────────────────────────────────────────────────────────────
 
@@ -512,14 +514,10 @@ class PortfolioRiskStateMachine:
     Threshold ordering (validated in constructor):
       heat_emergency_pct > heat_reduction_pct > heat_defensive_pct > heat_recovery_pct
 
-    Adaptive scaling:
-      When ``account_equity`` is provided and below ``reference_balance``, all
-      four thresholds are sqrt-scaled up so micro accounts do not trip
-      DEFENSIVE/EMERGENCY on a single min-lot trade. The scale factor is CAPPED
-      (``_MAX_HEAT_SCALE``) and each threshold is clamped to a sane ceiling, so
-      an equity collapse converges to a fixed conservative ladder instead of
-      diverging (a near-empty account never gets a permissive ~34% emergency
-      threshold). Ordering is validated AFTER scaling.
+    Equity normalization:
+      The heat inputs are percentages of current equity. Thresholds remain
+      unchanged at every account size; minimum-lot feasibility is a sizing and
+      admission concern and cannot weaken portfolio risk limits.
     """
 
     def __init__(
@@ -533,12 +531,10 @@ class PortfolioRiskStateMachine:
         reference_balance: float = 10000.0,
         account_equity: Optional[float] = None,
     ):
-        # Base thresholds are tuned for ~$10k accounts. On a micro account a
-        # single min-lot trade can be several percent of equity, which would
-        # instantly trip DEFENSIVE/EMERGENCY and force-close winners. When live
-        # equity is below the reference, sqrt-scale all four thresholds up and
-        # clamp each to a ceiling so the ladder stays useful without becoming
-        # meaningless on tiny balances.
+        # Heat gates are expressed as percentages of live equity, so they must
+        # not be relaxed merely because an account is small. If a minimum lot
+        # cannot fit the configured risk budget, sizing/admission must reject it;
+        # changing the portfolio heat thresholds would weaken capital protection.
         base_defensive = heat_defensive_pct
         base_recovery = heat_recovery_pct
         base_reduction = heat_reduction_pct
@@ -550,7 +546,7 @@ class PortfolioRiskStateMachine:
             and account_equity < reference_balance
         ):
             (scale, heat_defensive_pct, heat_recovery_pct,
-             heat_reduction_pct, heat_emergency_pct) = _scaled_heat_thresholds(
+             heat_reduction_pct, heat_emergency_pct) = _heat_thresholds_for_equity(
                 reference_balance, account_equity,
                 base_defensive, base_recovery, base_reduction, base_emergency,
             )
@@ -642,7 +638,7 @@ class PortfolioRiskStateMachine:
             new_red = min(self._base_reduction, _HEAT_CEIL_REDUCTION)
             new_eme = min(self._base_emergency, _HEAT_CEIL_EMERGENCY)
         else:
-            (scale, new_def, new_rec, new_red, new_eme) = _scaled_heat_thresholds(
+            (scale, new_def, new_rec, new_red, new_eme) = _heat_thresholds_for_equity(
                 ref, eq, self._base_defensive, self._base_recovery,
                 self._base_reduction, self._base_emergency,
             )
