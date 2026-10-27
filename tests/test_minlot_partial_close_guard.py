@@ -195,20 +195,20 @@ class TestWorkerTp1MinLotGuard:
         worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason]
+        close = [i for i in out if (i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason) or "[legacy_source=tp1_minlot_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 
     def test_minlot_at_breakeven_still_banks_tp1(self):
         # A TP1 hit is a realized exit, even if the stop has already moved.
         snap = _snap(remaining_lots=0.01, volume_min=0.01, at_breakeven=True)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert any(i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason for i in out)
 
     def test_normal_lot_still_emits_partial(self):
         snap = _snap(remaining_lots=0.10, volume_min=0.01)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         partials = [i for i in out if i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason]
         assert len(partials) == 1
@@ -219,7 +219,7 @@ class TestWorkerTp1MinLotGuard:
         # A 0.10-lot position on an instrument whose minimum is 0.10 cannot be
         # split — guard fires even though 0.10 > the FX default 0.01.
         snap = _snap(remaining_lots=0.10, volume_min=0.10)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
         close = [i for i in out if i.source == "tp1_minlot_close"]
@@ -229,7 +229,7 @@ class TestWorkerTp1MinLotGuard:
     def test_deriv_path_banks_tp1_with_full_close(self):
         # Deriv contracts are atomic; do not create a partial-close intent.
         snap = _snap(remaining_lots=0.10, volume_min=0.01, platform="deriv")
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
         close = [i for i in out if i.source == "tp1_deriv_close" or "[legacy_source=tp1_deriv_close]" in i.reason]
