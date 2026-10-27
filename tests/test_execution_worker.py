@@ -102,6 +102,7 @@ def _legacy_worker(config=None):
     cfg = replace(
         cfg,
         discretionary_exits_enabled=True,
+        legacy_mechanical_exit_fallback_enabled=True,
         scan_directional_exits_enabled=True,
     )
     return PositionWorker(cfg)
@@ -118,7 +119,7 @@ class TestStopLoss:
         snap = _snap(direction="BUY", sl=1.09900, current_price=1.10000)
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any((i.source == "stop_loss" or "[legacy_source=stop_loss]" in i.reason) for i in intents)
 
     def test_short_sl_hit(self):
         snap = _snap(
@@ -134,7 +135,7 @@ class TestStopLoss:
         snap = _snap(sl=0.0)
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any((i.source == "stop_loss" or "[legacy_source=stop_loss]" in i.reason) for i in intents)
 
 
 class TestSlPendingConfirmation:
@@ -157,7 +158,7 @@ class TestSlPendingConfirmation:
         )
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any((i.source == "stop_loss" or "[legacy_source=stop_loss]" in i.reason) for i in intents)
         assert not any(i.intent_type == IntentType.CLOSE for i in intents)
 
     def test_pending_suppresses_phantom_stop_close_long(self):
@@ -167,7 +168,7 @@ class TestSlPendingConfirmation:
         )
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any((i.source == "stop_loss" or "[legacy_source=stop_loss]" in i.reason) for i in intents)
         assert not any(i.intent_type == IntentType.CLOSE for i in intents)
 
     def test_confirmed_sl_still_fires_when_not_pending(self):
@@ -192,7 +193,7 @@ class TestTP1:
         snap = _snap(tp1=1.105, current_price=1.106, partial_closed=False)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        tp1_intents = [i for i in intents if i.source == "tp1_partial"]
+        tp1_intents = [i for i in intents if (i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason)]
         assert len(tp1_intents) == 1
         assert tp1_intents[0].intent_type == IntentType.PARTIAL_CLOSE
         assert tp1_intents[0].close_fraction == 0.5
@@ -204,7 +205,7 @@ class TestTP1:
         )
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        deriv_intents = [i for i in intents if i.source == "tp1_deriv_close"]
+        deriv_intents = [i for i in intents if (i.source == "tp1_deriv_close" or "[legacy_source=tp1_deriv_close]" in i.reason)]
         assert len(deriv_intents) == 1
         assert deriv_intents[0].intent_type == IntentType.CLOSE
         # Deriv contracts are atomic — they cannot be partially closed, so the
@@ -215,7 +216,7 @@ class TestTP1:
         snap = _snap(tp1=1.105, current_price=1.106, partial_closed=True)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source in ("tp1_partial", "tp1_deriv_be") for i in intents)
+        assert not any((i.source in ("tp1_partial", "tp1_deriv_be") or "[legacy_source=tp1_partial]" in i.reason or "[legacy_source=tp1_deriv_be]" in i.reason) for i in intents)
 
     def test_short_tp1_hit(self):
         snap = _snap(
@@ -225,7 +226,7 @@ class TestTP1:
         )
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        assert any(i.source == "tp1_partial" for i in intents)
+        assert any((i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason) for i in intents)
 
 
 class TestBreakeven:
@@ -236,7 +237,7 @@ class TestBreakeven:
         )
         worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW)
-        be_intents = [i for i in intents if i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason]
+        be_intents = [i for i in intents if (i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason) or "[legacy_source=breakeven]" in i.reason]
         assert len(be_intents) == 1
         assert be_intents[0].intent_type == IntentType.MODIFY_SL
 
@@ -244,13 +245,13 @@ class TestBreakeven:
         snap = _snap(partial_closed=True, at_breakeven=True, pnl_pips=15.0)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "breakeven" for i in intents)
+        assert not any((i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason) for i in intents)
 
     def test_breakeven_skipped_if_not_partial(self):
         snap = _snap(partial_closed=False, pnl_pips=15.0)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "breakeven" for i in intents)
+        assert not any((i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason) for i in intents)
 
 
 class TestTP2:
@@ -259,7 +260,7 @@ class TestTP2:
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
         assert any(
-            i.intent_type == IntentType.CLOSE and i.source == "tp2_target"
+            i.intent_type == IntentType.CLOSE and (i.source == "tp2_target" or "[legacy_source=tp2_target]" in i.reason)
             for i in intents
         )
 
@@ -267,7 +268,7 @@ class TestTP2:
         snap = _snap(tp2=1.12, current_price=1.115)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "tp2_target" for i in intents)
+        assert not any((i.source == "tp2_target" or "[legacy_source=tp2_target]" in i.reason) for i in intents)
 
 
 class TestTP3:
@@ -278,14 +279,14 @@ class TestTP3:
         )
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert any(i.source == "tp3_ladder" for i in intents)
+        assert any((i.source == "tp3_ladder" or "[legacy_source=tp3_ladder]" in i.reason) for i in intents)
 
     def test_tp3_disabled(self):
         cfg = WorkerConfig(tp3_ladder_enabled=False)
         snap = _snap(tp3=1.15, current_price=1.151, partial_closed=True)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "tp3_ladder" for i in intents)
+        assert not any((i.source == "tp3_ladder" or "[legacy_source=tp3_ladder]" in i.reason) for i in intents)
 
 
 class TestStallExit:
@@ -299,7 +300,7 @@ class TestStallExit:
         scan = ScanContext(direction="SHORT", score=70)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "stall_exit" for i in intents)
+        assert any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_stall_exit_fires_when_conviction_decayed(self):
         # Flat, aged, bias still agrees but conviction decayed below floor → cut.
@@ -308,7 +309,7 @@ class TestStallExit:
         scan = ScanContext(direction="LONG", score=20)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "stall_exit" for i in intents)
+        assert any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_no_stall_when_structure_still_supports(self):
         # Flat and aged, but the live WorldModel still supports the thesis →
@@ -318,7 +319,7 @@ class TestStallExit:
         scan = ScanContext(direction="LONG", score=80)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "stall_exit" for i in intents)
+        assert not any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_no_stall_without_live_read(self):
         # No live WorldModel read available → never cut on elapsed time alone.
@@ -326,7 +327,7 @@ class TestStallExit:
         snap = _snap(open_time=open_time, pnl_pips=0.5)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=None)
-        assert not any(i.source == "stall_exit" for i in intents)
+        assert not any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_no_stall_inside_min_hold_floor(self):
         # Structure lost but the position is younger than the safety floor →
@@ -336,7 +337,7 @@ class TestStallExit:
         scan = ScanContext(direction="SHORT", score=70)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "stall_exit" for i in intents)
+        assert not any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_stall_exit_skipped_if_profitable(self):
         open_time = NOW - timedelta(minutes=90)
@@ -344,7 +345,7 @@ class TestStallExit:
         scan = ScanContext(direction="SHORT", score=70)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "stall_exit" for i in intents)
+        assert not any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_stall_exit_skipped_if_partial_closed(self):
         open_time = NOW - timedelta(minutes=90)
@@ -352,7 +353,7 @@ class TestStallExit:
         scan = ScanContext(direction="SHORT", score=70)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "stall_exit" for i in intents)
+        assert not any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
     def test_legacy_clock_fallback_when_structure_gate_disabled(self):
         # Opt-out: with the structure gate disabled, the legacy per-timeframe
@@ -362,7 +363,7 @@ class TestStallExit:
         cfg = WorkerConfig(stall_requires_structure_loss=False)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert any(i.source == "stall_exit" for i in intents)
+        assert any((i.source == "stall_exit" or "[legacy_source=stall_exit]" in i.reason) for i in intents)
 
 
 class TestDynamicSLTightening:
@@ -379,7 +380,7 @@ class TestDynamicSLTightening:
         )
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        tighten = [i for i in intents if i.source == "dynamic_sl_tighten"]
+        tighten = [i for i in intents if (i.source == "dynamic_sl_tighten" or "[legacy_source=dynamic_sl_tighten]" in i.reason)]
         assert len(tighten) == 1
         assert tighten[0].new_sl is not None
         assert tighten[0].new_sl > snap.sl
@@ -389,14 +390,14 @@ class TestDynamicSLTightening:
         snap = _snap(at_breakeven=False, current_price=1.10250)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "dynamic_sl_tighten" for i in intents)
+        assert not any((i.source == "dynamic_sl_tighten" or "[legacy_source=dynamic_sl_tighten]" in i.reason) for i in intents)
 
     def test_tighten_disabled(self):
         cfg = WorkerConfig(dynamic_sl_tightening_enabled=False)
         snap = _snap(at_breakeven=True, current_price=1.10250)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "dynamic_sl_tighten" for i in intents)
+        assert not any((i.source == "dynamic_sl_tighten" or "[legacy_source=dynamic_sl_tighten]" in i.reason) for i in intents)
 
 
 class TestAbsoluteProfitProtection:
@@ -412,14 +413,14 @@ class TestAbsoluteProfitProtection:
         )
         worker = PositionWorker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert any(i.source == "absolute_profit_protection" for i in intents)
+        assert any((i.source == "absolute_profit_protection" or "[legacy_source=absolute_profit_protection]" in i.reason) for i in intents)
 
     def test_protection_skipped_at_breakeven(self):
         cfg = WorkerConfig(absolute_profit_protection_enabled=True)
         snap = _snap(pnl_pips=60.0, lots=0.2, at_breakeven=True)
         worker = PositionWorker(cfg)
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source == "absolute_profit_protection" for i in intents)
+        assert not any((i.source == "absolute_profit_protection" or "[legacy_source=absolute_profit_protection]" in i.reason) for i in intents)
 
 
 class TestInvalidation:
@@ -428,21 +429,21 @@ class TestInvalidation:
         scan = ScanContext(direction="SHORT", score=30)
         worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason for i in intents)
+        assert any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) or "[legacy_source=invalidation_low_score]" in i.reason for i in intents)
 
     def test_low_score_keeps_profitable_trade(self):
         snap = _snap(pnl_pips=10.0)
         scan = ScanContext(direction="SHORT", score=30)
         worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "invalidation_low_score" for i in intents)
+        assert not any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) for i in intents)
 
     def test_opposing_signal_exits(self):
         snap = _snap(direction="BUY", pnl_pips=-5.0)
         scan = ScanContext(direction="SHORT", score=80)
         worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "invalidation_opposing" or "[legacy_source=invalidation_opposing]" in i.reason for i in intents)
+        assert any((i.source == "invalidation_opposing" or "[legacy_source=invalidation_opposing]" in i.reason) or "[legacy_source=invalidation_opposing]" in i.reason for i in intents)
 
     def test_same_direction_no_exit(self):
         snap = _snap(direction="BUY")
@@ -472,7 +473,7 @@ class TestEntryGracePeriod:
         scan = ScanContext(direction="SHORT", score=30)
         worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "invalidation_low_score" for i in intents)
+        assert any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) for i in intents)
 
     def test_stop_loss_fires_inside_grace(self):
         # Hard safety (SL) must NEVER be gated by the grace window.
@@ -484,7 +485,7 @@ class TestEntryGracePeriod:
         scan = ScanContext(direction="SHORT", score=30)
         worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "stop_loss" for i in intents)
+        assert any((i.source == "stop_loss" or "[legacy_source=stop_loss]" in i.reason) for i in intents)
 
 
 class TestConvictionCollapse:
@@ -501,7 +502,7 @@ class TestConvictionCollapse:
         scan = ScanContext(direction="LONG", score=78)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "conviction_collapse" for i in intents)
+        assert any((i.source == "conviction_collapse" or "[legacy_source=conviction_collapse]" in i.reason) for i in intents)
 
     def test_profitable_trade_holds(self):
         snap = _snap(
@@ -512,14 +513,14 @@ class TestConvictionCollapse:
         scan = ScanContext(direction="LONG", score=78)
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "conviction_collapse" for i in intents)
+        assert not any((i.source == "conviction_collapse" or "[legacy_source=conviction_collapse]" in i.reason) for i in intents)
 
     def test_insufficient_history_skipped(self):
         snap = _snap(score_history=(90, 86))
         scan = ScanContext(direction="LONG", score=86)
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert not any(i.source == "conviction_collapse" for i in intents)
+        assert not any((i.source == "conviction_collapse" or "[legacy_source=conviction_collapse]" in i.reason) for i in intents)
 
 
 class TestHTFCandleClose:
@@ -535,7 +536,7 @@ class TestHTFCandleClose:
         )
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, market=market)
-        assert any(i.source == "htf_candle_close" for i in intents)
+        assert any((i.source == "htf_candle_close" or "[legacy_source=htf_candle_close]" in i.reason) for i in intents)
 
     def test_same_direction_h1_no_exit(self):
         snap = _snap(direction="BUY", pnl_pips=5.0)
@@ -549,7 +550,7 @@ class TestHTFCandleClose:
         )
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, market=market)
-        assert not any(i.source == "htf_candle_close" for i in intents)
+        assert not any((i.source == "htf_candle_close" or "[legacy_source=htf_candle_close]" in i.reason) for i in intents)
 
     def test_profitable_trade_holds(self):
         snap = _snap(direction="BUY", pnl_pips=35.0)
@@ -563,7 +564,7 @@ class TestHTFCandleClose:
         )
         worker = _legacy_worker()
         intents = worker.evaluate(snap, NOW, market=market)
-        assert not any(i.source == "htf_candle_close" for i in intents)
+        assert not any((i.source == "htf_candle_close" or "[legacy_source=htf_candle_close]" in i.reason) for i in intents)
 
 
 class TestSpreadDeterioration:
@@ -576,14 +577,14 @@ class TestSpreadDeterioration:
         )
         worker = PositionWorker(cfg)
         intents = worker.evaluate(snap, NOW, market=market)
-        assert any(i.source == "spread_deterioration" for i in intents)
+        assert any((i.source == "spread_deterioration" or "[legacy_source=spread_deterioration]" in i.reason) for i in intents)
 
     def test_normal_spread_no_action(self):
         snap = _snap(at_breakeven=False)
         market = MarketContext(typical_spread=0.0002, current_spread=0.0003)
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW, market=market)
-        assert not any(i.source == "spread_deterioration" for i in intents)
+        assert not any((i.source == "spread_deterioration" or "[legacy_source=spread_deterioration]" in i.reason) for i in intents)
 
 
 class TestSessionClose:
@@ -597,7 +598,7 @@ class TestSessionClose:
         market = MarketContext()
         worker = PositionWorker(cfg)
         intents = worker.evaluate(snap, close_now, market=market)
-        assert any(i.source == "session_close" for i in intents)
+        assert any((i.source == "session_close" or "[legacy_source=session_close]" in i.reason) for i in intents)
 
     def test_non_index_no_close(self):
         snap = _snap(symbol="EURUSD")
@@ -605,7 +606,7 @@ class TestSessionClose:
         market = MarketContext()
         worker = PositionWorker()
         intents = worker.evaluate(snap, close_now, market=market)
-        assert not any(i.source == "session_close" for i in intents)
+        assert not any((i.source == "session_close" or "[legacy_source=session_close]" in i.reason) for i in intents)
 
     def test_dead_zone_protection(self):
         snap = _snap(symbol="USDJPY", at_breakeven=False)
@@ -617,7 +618,7 @@ class TestSessionClose:
         market = MarketContext()
         worker = PositionWorker(cfg)
         intents = worker.evaluate(snap, dead_zone_time, market=market)
-        assert any(i.source == "dead_zone_protection" for i in intents)
+        assert any((i.source == "dead_zone_protection" or "[legacy_source=dead_zone_protection]" in i.reason) for i in intents)
 
 
 class TestOpportunityCost:
@@ -639,7 +640,7 @@ class TestOpportunityCost:
         )
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW, market=market)
-        assert any(i.source == "opportunity_cost" for i in intents)
+        assert any((i.source == "opportunity_cost" or "[legacy_source=opportunity_cost]" in i.reason) for i in intents)
 
     def test_opportunity_cost_off(self):
         snap = _snap(pnl_pips=2.0, score=70)
@@ -649,7 +650,7 @@ class TestOpportunityCost:
         cfg = WorkerConfig(opportunity_cost_exit_mode="off")
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW, market=market)
-        assert not any(i.source == "opportunity_cost" for i in intents)
+        assert not any((i.source == "opportunity_cost" or "[legacy_source=opportunity_cost]" in i.reason) for i in intents)
 
 
 class TestTerminalStatus:
