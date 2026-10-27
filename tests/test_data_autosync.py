@@ -464,17 +464,13 @@ class TestCleanStart:
         assert result == (
             "synced remote state (main)",
             "event-store healthy",
-            "already clean",
+            "skipped (automatic persistent-state purge disabled)",
         )
         mock_sync.assert_called_once_with(
             data_dir="data", branch="main", data_repo_url=None
         )
         mock_inspect.assert_called_once_with(data_dir="data")
-        mock_purge.assert_called_once_with(
-            data_dir="data",
-            schema_version="2",
-            local_schema_version_file=".local_schema_version",
-        )
+        mock_purge.assert_not_called()
 
     def test_startup_runner_does_nothing_without_verified_topology(self):
         with patch(
