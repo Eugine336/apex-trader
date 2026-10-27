@@ -31,40 +31,21 @@ from typing import Optional
 from loguru import logger
 
 
-# ── Adaptive heat-ladder scaling bounds ──────────────────────────────────────
-# The ladder sqrt-scales its thresholds UP on a micro account so a single
-# unavoidable min-lot trade (a large fraction of a tiny balance) does not
-# instantly trip DEFENSIVE/EMERGENCY. But raw sqrt-scaling is unbounded: at
-# equity=$136 vs a $10k reference the factor is sqrt(73.5)=8.57x, which pushed
-# the 4% emergency threshold to ~34% — i.e. the system became DRAMATICALLY LESS
-# conservative exactly as capital collapsed. That is backwards. Two guards keep
-# the scaled ladder sane:
-#   * ``_MAX_HEAT_SCALE`` caps the multiplier so a near-zero balance can never
-#     produce an absurd factor (it still permits enough head-room for a min-lot
-#     trade — ~8% heat on a ~$200 account — without tripping DEFENSIVE).
-#   * The per-threshold ceilings bound the ABSOLUTE result, so emergency can
-#     never sit at a self-defeating third of the account. As equity shrinks the
-#     ladder now converges to a fixed, conservative ceiling rather than diverging.
-_MAX_HEAT_SCALE = 6.0
-_HEAT_CEIL_DEFENSIVE = 10.0
-_HEAT_CEIL_RECOVERY = 9.0
-_HEAT_CEIL_REDUCTION = 12.0
-_HEAT_CEIL_EMERGENCY = 15.0
-
+# ── Percentage-based heat guard invariant ─────────────────────────────────────
+# Heat thresholds are percentages of current equity. They must not rise just
+# because account equity falls: minimum-lot feasibility belongs in sizing and
+# admission, while portfolio safety limits remain constant.
 
 def _heat_thresholds_for_equity(
     reference_balance: float, account_equity: float,
     base_defensive: float, base_recovery: float,
     base_reduction: float, base_emergency: float,
 ) -> "tuple[float, float, float, float, float]":
-    """Return the configured percentage thresholds unchanged.
+    """Return unchanged percentage-based portfolio heat gates.
 
-    Heat is already measured as a percentage of current equity. Raising the
-    percentage gates as equity falls makes a small account less protected and
-    can permit very large losses. Minimum-lot feasibility must be enforced by
-    sizing/admission; it must never be solved by relaxing portfolio safety gates.
-    The first tuple item is retained as a scale for compatibility with existing
-    callers and is always 1.0.
+    Retains the historical helper shape for constructor compatibility. Equity
+    changes affect the dollar value represented by a risk percentage; they do
+    not justify increasing the allowed percentage loss.
     """
     return (
         1.0,
@@ -551,15 +532,11 @@ class PortfolioRiskStateMachine:
                 base_defensive, base_recovery, base_reduction, base_emergency,
             )
             logger.info(
-                "[PortfolioRisk] Adaptive heat thresholds for equity=${:.2f} "
-                "(reference=${:.2f}, scale={:.2f}x): "
-                "defensive {:.2f}%→{:.2f}%, recovery {:.2f}%→{:.2f}%, "
-                "reduction {:.2f}%→{:.2f}%, emergency {:.2f}%→{:.2f}%",
-                account_equity, reference_balance, scale,
-                base_defensive, heat_defensive_pct,
-                base_recovery, heat_recovery_pct,
-                base_reduction, heat_reduction_pct,
-                base_emergency, heat_emergency_pct,
+                "[PortfolioRisk] Percentage heat gates remain unchanged for "
+                "equity=${:.2f} (reference=${:.2f}, thresholds: defensive "
+                "{:.2f}%, recovery {:.2f}%, reduction {:.2f}%, emergency {:.2f}%)",
+                account_equity, reference_balance, heat_defensive_pct,
+                heat_recovery_pct, heat_reduction_pct, heat_emergency_pct,
             )
 
         if heat_recovery_pct >= heat_defensive_pct:
@@ -585,12 +562,9 @@ class PortfolioRiskStateMachine:
         self.reduction_persist_seconds = reduction_persist_seconds
         self.heat_emergency_pct = heat_emergency_pct
 
-        # Retain the UNSCALED base thresholds + reference so the ladder can be
-        # re-scaled later once the live broker balance is known. At startup the
-        # balance is frequently still 0/None (broker connecting), so the base
-        # ~$10k thresholds get installed and a single min-lot trade on a micro
-        # account instantly trips DEFENSIVE/EMERGENCY. ``recalibrate_for_equity``
-        # self-heals that once equity is available. See its docstring.
+        # Retain the configured thresholds for compatibility and audit. The
+        # recalibration method intentionally never changes percentage risk gates;
+        # minimum-lot feasibility must be handled before an order is admitted.
         self._base_defensive = base_defensive
         self._base_recovery = base_recovery
         self._base_reduction = base_reduction
@@ -606,22 +580,15 @@ class PortfolioRiskStateMachine:
         return self._state
 
     def recalibrate_for_equity(self, account_equity: Optional[float]) -> bool:
-        """Re-scale the heat ladder to the live account equity.
+        """Keep percentage-based portfolio heat gates invariant by account size.
 
-        The constructor sqrt-scales thresholds for micro accounts, but at
-        startup the broker balance is often not yet known (0/None), so the
-        base ~$10k thresholds are installed and a single min-lot trade on a
-        small account trips DEFENSIVE/EMERGENCY — force-closing every position
-        seconds after entry before the Brain can manage it. Calling this each
-        cycle with the live equity self-heals the calibration once the balance
-        is known.
-
-        Scales from the retained UNSCALED base thresholds (so it is fully
-        idempotent — repeated calls with the same equity never drift), clamps
-        each threshold to its ceiling, and only applies when the result is a
-        meaningful change AND preserves the ordering invariant. Never makes a
-        large account (equity >= reference) less protected than its base
-        configuration. Fully self-contained; returns True if thresholds moved.
+        The account equity is accepted for lifecycle/API compatibility and to
+        validate that a real positive balance is present. The heat gates measure
+        risk as a percentage of current equity, so changing equity must not
+        silently raise those limits. Minimum-lot feasibility belongs in sizing
+        and admission, not in weaker portfolio-risk thresholds. Always returns
+        False because this method intentionally does not mutate the configured
+        gates.
         """
         try:
             eq = float(account_equity) if account_equity is not None else 0.0
