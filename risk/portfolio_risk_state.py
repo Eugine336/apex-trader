@@ -583,61 +583,22 @@ class PortfolioRiskStateMachine:
         """Keep percentage-based portfolio heat gates invariant by account size.
 
         The account equity is accepted for lifecycle/API compatibility and to
-        validate that a real positive balance is present. The heat gates measure
-        risk as a percentage of current equity, so changing equity must not
-        silently raise those limits. Minimum-lot feasibility belongs in sizing
-        and admission, not in weaker portfolio-risk thresholds. Always returns
-        False because this method intentionally does not mutate the configured
-        gates.
+        validate that a real positive balance is present. Heat gates are
+        percentages of current equity: changing the balance must not silently
+        raise the allowed percentage loss. Minimum-lot feasibility belongs in
+        sizing and admission, not weaker portfolio-risk thresholds.
+
+        Returns False because this method intentionally never mutates the
+        configured gates.
         """
         try:
-            eq = float(account_equity) if account_equity is not None else 0.0
-        except (TypeError, ValueError):
+            equity = float(account_equity) if account_equity is not None else 0.0
+        except (TypeError, ValueError, OverflowError):
             return False
-        if eq <= 0.0:
+        if not math.isfinite(equity) or equity <= 0.0:
             return False
+        return False
 
-        ref = self._reference_balance
-        if eq >= ref:
-            scale = 1.0
-            new_def = min(self._base_defensive, _HEAT_CEIL_DEFENSIVE)
-            new_rec = min(self._base_recovery, _HEAT_CEIL_RECOVERY)
-            new_red = min(self._base_reduction, _HEAT_CEIL_REDUCTION)
-            new_eme = min(self._base_emergency, _HEAT_CEIL_EMERGENCY)
-        else:
-            (scale, new_def, new_rec, new_red, new_eme) = _heat_thresholds_for_equity(
-                ref, eq, self._base_defensive, self._base_recovery,
-                self._base_reduction, self._base_emergency,
-            )
-
-        # Reject any scaling that would violate the ordering invariant (a
-        # pathological clamp collapse) — keep the current, valid ladder.
-        if not (new_rec < new_def < new_red < new_eme):
-            return False
-
-        # Skip no-op churn (and its log line) when nothing moved materially.
-        if (
-            abs(new_def - self.heat_defensive_pct) < 1e-6
-            and abs(new_rec - self.heat_recovery_pct) < 1e-6
-            and abs(new_red - self.heat_reduction_pct) < 1e-6
-            and abs(new_eme - self.heat_emergency_pct) < 1e-6
-        ):
-            return False
-
-        old_def = self.heat_defensive_pct
-        old_eme = self.heat_emergency_pct
-        self.heat_defensive_pct = new_def
-        self.heat_recovery_pct = new_rec
-        self.heat_reduction_pct = new_red
-        self.heat_emergency_pct = new_eme
-        logger.info(
-            "[PortfolioRisk] Recalibrated heat ladder to live equity=${:.2f} "
-            "(reference=${:.2f}, scale={:.2f}x): defensive {:.2f}%→{:.2f}%, "
-            "emergency {:.2f}%→{:.2f}% (recovery {:.2f}%, reduction {:.2f}%)",
-            eq, ref, scale, old_def, new_def, old_eme, new_eme,
-            new_rec, new_red,
-        )
-        return True
 
     def evaluate(self, snapshot: PortfolioRiskSnapshot) -> StateTransition:
         """
