@@ -1111,3 +1111,54 @@ def test_consolidator_influence_enabled_by_default():
     ev = Evidence(source_module="mod.a", confidence=0.8, polarity=0.0, symbol="EURUSD")
     ms = cons.build("EURUSD", injected=[ev])
     assert ms.influence_weights.get("mod.a") == 1.5
+
+class _AdvisorDownBrain(_ManageBrain):
+    """Advisor unavailable; manage() still returns the native verdict."""
+
+    available = False
+
+
+def _reallocation_book():
+    return [
+        _pos_r("EURUSD", "LONG", profit_r=2.0),
+        _pos_r("GBPUSD", "LONG", profit_r=1.0),
+        _pos_r("AUDUSD", "LONG", profit_r=-0.5),
+    ]
+
+
+def test_reallocation_review_runs_on_native_verdict_when_advisor_down():
+    """Provider outage is not a market conclusion: a native de-risking verdict
+    approves the concentration trim even with no external advisor."""
+    from brain.campaign import CampaignRegistry
+    calls = []
+    brain = _AdvisorDownBrain(DecisionType.SCALE_OUT)
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: [],
+        position_source=_reallocation_book, management_mode="live",
+        campaign_registry=CampaignRegistry(enabled=True),
+        reallocation_enabled=True, clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert brain.managed >= 1, "native review was never consulted"
+    # The reallocation-specific counter, not ordinary per-position management
+    # (which also emits partial_close), proves the concentration review ran.
+    assert loop.get_status()["reallocations"] >= 1
+    assert any(a.kind == "partial_close" and a.symbol == "AUDUSD" for a in calls)
+
+
+def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():
+    """Fail-safe is preserved: a native HOLD vetoes the mechanical trim."""
+    from brain.campaign import CampaignRegistry
+    calls = []
+    loop = CognitionLoop(
+        _AdvisorDownBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=_reallocation_book, management_mode="live",
+        campaign_registry=CampaignRegistry(enabled=True),
+        reallocation_enabled=True, clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert [a for a in calls if a.kind == "partial_close"] == []
+    assert loop.get_status()["reallocations"] == 0
+
