@@ -111,6 +111,33 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
         ))
     for e in extras:
         ms.add(e)
+    # EV/origination tests use activated long opportunities, so provide the
+    # fresh completed-bar structure required to derive and validate payoff geometry.
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE, symbol=symbol,
+        observation="completed-bar structural range", confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "current_close": 1.100,
+            "prior_range_high": 1.105, "prior_range_low": 1.095,
+            "range_position": 0.5, "breakout_direction": "up",
+            "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM, symbol=symbol,
+        observation="completed-bar momentum", confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "close_change": 0.001,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
