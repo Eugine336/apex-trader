@@ -3,6 +3,7 @@
 import time
 from types import SimpleNamespace
 
+from cognition.brain import BrainOutput
 from cognition.contracts import (
     CampaignSpecification, DecisionPackage, DecisionType, Evidence,
     MarketState, Opportunity,
@@ -559,6 +560,34 @@ def test_loop_records_open_snapshot_to_memory():
     assert st["memory_enabled"] is True
     assert st["memory_opens"] == 1
     assert store.count() == 1        # one open snapshot recorded
+    store.close()
+
+
+def test_memory_preserves_provider_status_separately_from_native_verdict():
+    store = CampaignMemoryStore(db_path=":memory:")
+    campaign = CampaignSpecification(
+        symbol="XAUUSD", direction="LONG", decision_id="decision-native",
+        opportunity_id="opportunity-native", opportunity_state="ACTIVE",
+    )
+    decision = DecisionPackage(
+        symbol="XAUUSD", decision_type=DecisionType.OPEN_CAMPAIGN,
+        questions_answered={
+            "reasoning_mode": "native_only",
+            "external_advisor_status": "unavailable",
+        },
+    )
+    output = BrainOutput(decision=decision, campaign=campaign, direction="LONG")
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: [],
+        origination_mode="off", memory=store,
+    )
+    loop._record_open_memory(output, MarketState(symbol="XAUUSD"))
+    saved = store.get_open_campaign(campaign.campaign_id)
+    assert saved is not None
+    assert saved["spec"]["reasoning_provenance"] == {
+        "provider_status": "unavailable",
+        "native_verdict": DecisionType.OPEN_CAMPAIGN.value,
+    }
     store.close()
 
 
