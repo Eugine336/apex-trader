@@ -133,9 +133,40 @@ class BrainOutput:
         return str(value or "unknown")
 
     @property
+    def provider_status(self) -> str:
+        """Report provider infrastructure independently from the market verdict.
+
+        A native-only Brain may legitimately open, reject, or observe an
+        opportunity while an external advisor is unavailable. Therefore provider
+        health must never be inferred from decision_type.
+        """
+        questions = getattr(self.decision, "questions_answered", {}) or {}
+        status = str(questions.get("external_advisor_status", "") or "").strip().lower()
+        if status in {"available", "unavailable", "not_configured"}:
+            return status
+        if self.decision_type == DecisionType.REASONER_UNAVAILABLE.value:
+            return "unavailable"
+        return "unknown"
+
+    @property
+    def native_verdict(self) -> str:
+        """Expose the native decision only when the recorded mode is native.
+
+        Do not fabricate a native verdict for advisor-assisted passes that do not
+        record one separately; those report ``not_recorded``.
+        """
+        questions = getattr(self.decision, "questions_answered", {}) or {}
+        mode = str(questions.get("reasoning_mode", "") or "").strip().lower()
+        if mode in {"native_only", "native_fallback"}:
+            return self.decision_type
+        return "not_recorded"
+
+    @property
     def provider_unavailable(self) -> bool:
-        """True only for an infrastructure-unavailable decision, never a flat market."""
-        return self.decision_type == DecisionType.REASONER_UNAVAILABLE.value
+        """True for an unavailable provider, independent of the market verdict."""
+        return self.provider_status == "unavailable" or (
+            self.decision_type == DecisionType.REASONER_UNAVAILABLE.value
+        )
 
     def decision_summary(self) -> str:
         """Human-readable decision framed in the constitutional vocabulary.
@@ -155,6 +186,8 @@ class BrainOutput:
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "decision_type": self.decision.decision_type.value,
+            "provider_status": self.provider_status,
+            "native_verdict": self.native_verdict,
             "provider_unavailable": self.provider_unavailable,
             "decision_summary": self.decision_summary(),
             # Deprecated (V-026): retained for back-compat. Read the backing field

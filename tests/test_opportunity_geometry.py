@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from cognition.contracts import Evidence, EvidenceDomain, MarketState, Opportunity
 from cognition.opportunity_geometry import derive_opportunity_geometry
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
@@ -73,9 +75,9 @@ def test_long_geometry_comes_from_observed_structure():
     assert geometry.entry_price == 1.100
     assert geometry.stop_price == 1.095
     assert geometry.target_price == 1.105
-    assert geometry.risk_distance == 0.005
-    assert geometry.reward_distance == 0.005
-    assert geometry.reward_r == 1.0
+    assert geometry.risk_distance == pytest.approx(0.005)
+    assert geometry.reward_distance == pytest.approx(0.005)
+    assert geometry.reward_r == pytest.approx(1.0)
     assert geometry.evidence_ids
     assert "completed-bar structural breakout up" in geometry.activation_reason
 
@@ -90,7 +92,7 @@ def test_short_geometry_is_directionally_symmetric():
     assert geometry.entry_price == 1.100
     assert geometry.stop_price == 1.105
     assert geometry.target_price == 1.095
-    assert geometry.reward_r == 1.0
+    assert geometry.reward_r == pytest.approx(1.0)
     assert "breakout down" in geometry.activation_reason
 
 

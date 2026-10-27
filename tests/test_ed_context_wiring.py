@@ -84,6 +84,17 @@ def _snap(
     )
 
 
+
+
+def _legacy_worker() -> PositionWorker:
+    """Explicitly enable the retired mechanical suite for contract tests only."""
+    return PositionWorker(WorkerConfig(
+        discretionary_exits_enabled=True,
+        legacy_mechanical_exit_fallback_enabled=True,
+        scan_directional_exits_enabled=True,
+    ))
+
+
 class TestConfigAlignment:
     def test_score_threshold_is_60(self):
         from entry.models import EntryConfig
@@ -109,19 +120,19 @@ class TestScanContextChecks:
     """Verify that ScanContext-dependent checks fire correctly."""
 
     def test_invalidation_fires_with_low_score_negative_pnl(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(pnl_pips=-5.0, pnl_dollars=-5.0, current_price=1.0995)
         scan = ScanContext(direction="LONG", score=30, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
-        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "invalidation" in i.source]
+        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "invalidation" in i.reason]
         assert len(close_intents) > 0
 
     def test_invalidation_opposing_signal(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", pnl_pips=5.0)
         scan = ScanContext(direction="SHORT", score=80, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
-        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "opposing" in i.source]
+        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "opposing" in i.reason]
         assert len(close_intents) > 0
 
     def test_no_invalidation_without_scan_context(self):
@@ -136,12 +147,15 @@ class TestScanContextChecks:
             conviction_decline_cycles=4,
             conviction_decline_min_drop=3,
             conviction_profit_hold_pips=20.0,
+            discretionary_exits_enabled=True,
+            legacy_mechanical_exit_fallback_enabled=True,
+            scan_directional_exits_enabled=True,
         ))
         scores = (80, 75, 70, 65)
         snap = _snap(score_history=scores, pnl_pips=5.0)
         scan = ScanContext(direction="LONG", score=65)
         intents = worker.evaluate(snap, scan=scan)
-        collapse = [i for i in intents if "conviction" in i.source]
+        collapse = [i for i in intents if "conviction" in i.reason]
         assert len(collapse) > 0
 
     def test_no_conviction_collapse_without_score_history(self):
@@ -157,7 +171,7 @@ class TestMarketContextChecks:
     """Verify MarketContext-dependent checks fire correctly."""
 
     def test_htf_candle_close_bearish_against_long(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", pnl_pips=5.0)
         market = MarketContext(
             h1_last_closed_open=1.1020,
@@ -168,7 +182,7 @@ class TestMarketContextChecks:
             last_seen_h1_close=datetime.now(timezone.utc) - timedelta(hours=2),
         )
         intents = worker.evaluate(snap, market=market)
-        htf = [i for i in intents if "htf_candle" in i.source]
+        htf = [i for i in intents if "htf_candle" in i.reason]
         assert len(htf) > 0
 
     def test_no_htf_without_market_context(self):
@@ -231,10 +245,10 @@ class TestBackwardCompat:
         assert len(sl_hit) > 0
 
     def test_tp2_hit_no_context(self):
-        worker = PositionWorker()
+        worker = _legacy_worker()
         snap = _snap(direction="LONG", tp2=1.1100, current_price=1.1105)
         intents = worker.evaluate(snap, scan=None, market=None)
-        tp2 = [i for i in intents if "tp2" in i.source]
+        tp2 = [i for i in intents if "tp2" in i.reason]
         assert len(tp2) > 0
 
     def test_stall_held_without_live_read(self):
@@ -247,12 +261,12 @@ class TestBackwardCompat:
             open_time=now - timedelta(minutes=45),
         )
         intents = worker.evaluate(snap, now=now, scan=None, market=None)
-        stall = [i for i in intents if "stall" in i.source]
+        stall = [i for i in intents if "stall" in i.reason]
         assert len(stall) == 0
 
     def test_stall_exit_fires_on_structure_loss(self):
         # Flat, aged, and the live bias opposes the position → stall fires.
-        worker = PositionWorker()
+        worker = _legacy_worker()
         now = datetime.now(timezone.utc)
         snap = _snap(
             direction="LONG",
@@ -261,7 +275,7 @@ class TestBackwardCompat:
         )
         scan = ScanContext(direction="SHORT", score=70)
         intents = worker.evaluate(snap, now=now, scan=scan, market=None)
-        stall = [i for i in intents if "stall" in i.source]
+        stall = [i for i in intents if "stall" in i.source or "[legacy_source=stall_exit]" in i.reason]
         assert len(stall) > 0
 
 

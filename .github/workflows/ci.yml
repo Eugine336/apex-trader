@@ -1,4 +1,5 @@
 name: APEX TRADER CI
+# Keep the repository-wide identity and execution-boundary audit in the required CI path.
 
 on:
   push:
@@ -68,10 +69,22 @@ jobs:
           python -c "import tick, pytest;
           raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','--collect-only','-q']))"
 
+      - name: Run required cognition regression suites
+        run: >-
+          python -c "import tick, pytest;
+          raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin',
+          'tests/test_cognition_loop.py','tests/test_campaign.py',
+          'tests/test_native_management.py','tests/test_identity_conformance.py',
+          '-q']))"
+
       - name: Run tests
         run: >-
           python -c "import tick, pytest;
           raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','-v','--tb=short']))"
+
+      - name: Audit canonical identity and safety boundaries
+        if: always()
+        run: python scripts/identity_audit.py
 
       - name: Check imports
         run: |

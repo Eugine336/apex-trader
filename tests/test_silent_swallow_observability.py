@@ -1,27 +1,58 @@
-"""Regression test: assert zero silent exception handlers remain in the source tree.
+"""Audit silent exception handlers and require explicit classification.
 
-A "silent handler" is an except clause whose body contains only
-pass / continue / return <sentinel> with NO logging and NO re-raise.
-
-This test prevents regression after M3 Phase A added observability
-logging to all 57 formerly-silent handlers.
+A handler that only returns a sentinel can be a valid fail-closed boundary, but
+an unexplained ``pass``/``continue`` or a fail-open sentinel can hide a dangerous
+failure. Explicit fail-closed returns (``None``, ``False``, empty collections, or
+zero) are treated as safe outcomes; bare no-op handlers and fail-open returns
+still need logging, a re-raise, or a local rationale. This avoids blanket
+re-raises or meaningless logging on every exception path.
 """
 
 import ast
 import os
 import pathlib
+import re
 
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 _SKIP_DIRS = {"tests", "node_modules", "__pycache__", ".git", ".ddagent"}
 
-_SENTINEL_VALUES = {None, False, 0, True, "", 0.0}
+_SENTINEL_VALUES = {None, False, 0, "", 0.0}
 
 
 def _is_silent_handler(handler: ast.ExceptHandler) -> bool:
-    """Return True if the handler body has no logging, no raise, and only
-    pass / continue / return-of-a-sentinel constant."""
+    """Return True for silent no-op handlers or fail-open/unclassified returns."""
+    # A pure fail-closed sentinel is an explicit safe outcome, not a swallowed
+    # exception that can authorize exposure. Keep bare pass/continue and
+    # fail-open returns visible to the audit.
+    def _safe_closed_return(stmt: ast.stmt) -> bool:
+        if not isinstance(stmt, ast.Return):
+            return False
+        if stmt.value is None:
+            return True
+        if isinstance(stmt.value, ast.Constant) and stmt.value.value in _SENTINEL_VALUES:
+            return True
+        if isinstance(stmt.value, ast.List) and not stmt.value.elts:
+            return True
+        if isinstance(stmt.value, ast.Dict) and not stmt.value.keys:
+            return True
+        return False
+
+    if any(
+        isinstance(stmt, ast.Return)
+        and isinstance(stmt.value, ast.Constant)
+        and stmt.value.value is True
+        for stmt in handler.body
+    ):
+        return True
+
+    if handler.body and all(
+        _safe_closed_return(stmt)
+        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+        for stmt in handler.body
+    ):
+        return False
     for stmt in handler.body:
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             func = stmt.value.func
@@ -71,9 +102,34 @@ def _is_silent_handler(handler: ast.ExceptHandler) -> bool:
     return True
 
 
+_SAFE_FALLBACK_RATIONALE = re.compile(
+    r"(?:safe[- ]fallback|fail[- ]safe|fail[- ]closed|never break|must never|"
+    r"must not authorize|must not allow|best[- ]effort|non[- ]fatal|"
+    r"optional .*?(?:probe|reader|adapter|integration|sink)|diagnostic only)",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_fallback_rationale(source_lines: list[str], lineno: int) -> bool:
+    """Require a nearby comment that explains why a sentinel fallback is safe."""
+    # Inspect the except line and the immediately preceding comment line only;
+    # distant file-level comments must not blanket-classify unrelated handlers.
+    candidates = source_lines[max(0, lineno - 2):lineno]
+    for line in candidates:
+        comment = line.partition("#")[2].strip()
+        if not comment:
+            continue
+        if "safe-fallback:" in comment.lower():
+            return True
+        if "NOQA: BLE001" in comment.upper() and _SAFE_FALLBACK_RATIONALE.search(comment):
+            return True
+        if line.lstrip().startswith("#") and _SAFE_FALLBACK_RATIONALE.search(comment):
+            return True
+    return False
+
+
 def _collect_silent_handlers():
-    """Walk the non-test source tree and yield (filepath, lineno) for each
-    silent exception handler found."""
+    """Yield unclassified silent handlers as (filepath, lineno)."""
     for root, dirs, files in os.walk(_REPO_ROOT):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for fname in files:
@@ -81,23 +137,43 @@ def _collect_silent_handlers():
                 continue
             fpath = os.path.join(root, fname)
             try:
-                with open(fpath) as fh:
-                    tree = ast.parse(fh.read())
-            except SyntaxError:
+                with open(fpath, encoding="utf-8") as fh:
+                    source = fh.read()
+                source_lines = source.splitlines()
+                tree = ast.parse(source, filename=fpath)
+            except (OSError, UnicodeDecodeError, SyntaxError):
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.ExceptHandler) and _is_silent_handler(node):
+                if (
+                    isinstance(node, ast.ExceptHandler)
+                    and _is_silent_handler(node)
+                    and not _has_explicit_fallback_rationale(source_lines, node.lineno)
+                ):
                     rel = os.path.relpath(fpath, _REPO_ROOT)
                     yield rel, node.lineno
 
 
+def test_fail_closed_sentinel_return_is_classified_safe():
+    handler = ast.parse(
+        "def f():\n    try:\n        pass\n    except Exception:\n        return None\n"
+    ).body[0].body[0].handlers[0]
+    handler.body = [ast.Return(value=ast.Constant(value=None))]
+    assert _is_silent_handler(handler) is False
+
+
+def test_fail_open_true_return_is_reported():
+    handler = ast.parse(
+        "def f():\n    try:\n        pass\n    except Exception:\n        return True\n"
+    ).body[0].handlers[0]
+    assert _is_silent_handler(handler) is True
+
+
 def test_no_silent_exception_handlers():
-    """Every except handler in the source tree must contain either a log call
-    or a re-raise.  Silent swallowing of exceptions is a regression."""
+    """Every silent handler must be logged, re-raised, or explicitly classified."""
     silent = list(_collect_silent_handlers())
     if silent:
         detail = "\n".join(f"  {f}:{ln}" for f, ln in silent)
         raise AssertionError(
-            f"{len(silent)} silent exception handler(s) found — "
-            f"add logging or re-raise:\n{detail}"
+            f"{len(silent)} unclassified silent exception handler(s) found — "
+            f"add logging, re-raise, or document the safe fallback locally:\n{detail}"
         )

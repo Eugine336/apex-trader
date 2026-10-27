@@ -29,7 +29,7 @@ from typing import Any
 from execution.action_executor import ActionExecutor, ExecutorConfig
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
-from execution.position_worker import PositionWorker
+from execution.position_worker import PositionWorker, WorkerConfig
 from execution.risk_gate import GateConfig
 
 # ── Shared recording fake broker (never connects to a live platform) ─────
@@ -178,37 +178,48 @@ class TestExecutorMinLotFallback:
 # ── Worker-level guard (_check_tp1) ──────────────────────────────────
 
 
+
+
+def _legacy_worker() -> PositionWorker:
+    """Enable legacy discretionary mechanics only for these isolated tests."""
+    return PositionWorker(WorkerConfig(
+        discretionary_exits_enabled=True,
+        legacy_mechanical_exit_fallback_enabled=True,
+        scan_directional_exits_enabled=True,
+    ))
+
+
 class TestWorkerTp1MinLotGuard:
     def test_minlot_banks_tp1_with_full_close(self):
         snap = _snap(remaining_lots=0.01, volume_min=0.01)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_minlot_close"]
+        close = [i for i in out if (i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason) or "[legacy_source=tp1_minlot_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 
     def test_minlot_at_breakeven_still_banks_tp1(self):
         # A TP1 hit is a realized exit, even if the stop has already moved.
         snap = _snap(remaining_lots=0.01, volume_min=0.01, at_breakeven=True)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
-        assert any(i.source == "tp1_minlot_close" for i in out)
+        assert any(i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason for i in out)
 
     def test_normal_lot_still_emits_partial(self):
         snap = _snap(remaining_lots=0.10, volume_min=0.01)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
-        partials = [i for i in out if i.source == "tp1_partial"]
+        partials = [i for i in out if i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason]
         assert len(partials) == 1
         assert partials[0].intent_type == IntentType.PARTIAL_CLOSE
-        assert not any(i.source == "tp1_minlot_be" for i in out)
+        assert not any(i.source == "tp1_minlot_be" or "[legacy_source=tp1_minlot_be]" in i.reason for i in out)
 
     def test_higher_broker_minimum_triggers_guard(self):
         # A 0.10-lot position on an instrument whose minimum is 0.10 cannot be
         # split — guard fires even though 0.10 > the FX default 0.01.
         snap = _snap(remaining_lots=0.10, volume_min=0.10)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
         close = [i for i in out if i.source == "tp1_minlot_close"]
@@ -218,10 +229,10 @@ class TestWorkerTp1MinLotGuard:
     def test_deriv_path_banks_tp1_with_full_close(self):
         # Deriv contracts are atomic; do not create a partial-close intent.
         snap = _snap(remaining_lots=0.10, volume_min=0.01, platform="deriv")
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_deriv_close"]
+        close = [i for i in out if i.source == "tp1_deriv_close" or "[legacy_source=tp1_deriv_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 

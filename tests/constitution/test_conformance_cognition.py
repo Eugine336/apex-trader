@@ -77,7 +77,7 @@ _DOMAINS = (
 )
 
 
-def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> MarketState:
+def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, target_high: float = 1.110) -> MarketState:
     """A well-covered, low-uncertainty MarketState (so the Brain can act)."""
     ms = MarketState(symbol=symbol)
     for i, dom in enumerate(_DOMAINS):
@@ -108,6 +108,31 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1) -> 
         uncertainty=unc,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         relevance_horizon_seconds=60.0,
+    ))
+    # Activated-opportunity tests need fresh, market-derived payoff geometry;
+    # generic domain coverage alone must not bypass the structural qualification gate.
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE, symbol=symbol,
+        observation="completed-bar structural range", confidence=conf, uncertainty=unc,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "current_close": 1.100,
+            "prior_range_high": target_high, "prior_range_low": 1.095,
+            "range_position": 0.5, "breakout_direction": "up",
+            "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM, symbol=symbol,
+        observation="completed-bar momentum", confidence=conf, uncertainty=unc,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "close_change": 0.001,
+        },
+        relevance_horizon_seconds=900.0,
     ))
     return ms
 
@@ -254,7 +279,7 @@ def test_negative_ev_opportunity_is_declined():
         reasoner=_Reasoner(_opinion("LONG", 0.6)),
         reward_r_default=0.5, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state())
+    out = brain.reason(_rich_state(target_high=1.1025))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
     assert out.decision.expected_value < 0.0

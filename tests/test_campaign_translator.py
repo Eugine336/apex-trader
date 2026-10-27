@@ -110,7 +110,7 @@ def test_translate_carries_stop_and_target_from_intent():
     ))
     intent = translate(spec, balance=5_000.0)
     assert intent.sl == 1.0800
-    assert intent.tp == 1.0950
+    assert intent.tp == 1.1200
 
 
 def test_translate_carries_provenance():

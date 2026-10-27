@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
+from cognition.brain import BrainOutput
+from cognition.contracts import DecisionType
 from cognition.identity import IDENTITY_STATEMENT
 
 
@@ -63,3 +66,24 @@ def test_repository_wide_identity_audit():
 
     violations = audit_repository()
     assert not violations, "Identity conformance violations:\n" + "\n".join(violations)
+
+
+
+def test_provider_status_is_independent_of_market_verdict():
+    """A native campaign can coexist with an unavailable external advisor."""
+    decision = SimpleNamespace(
+        decision_type=DecisionType.OPEN_CAMPAIGN,
+        questions_answered={
+            "reasoning_mode": "native_only",
+            "external_advisor_status": "unavailable",
+        },
+        to_dict=lambda: {},
+    )
+    output = BrainOutput(decision=decision, direction="LONG")
+    assert output.decision_type == DecisionType.OPEN_CAMPAIGN.value
+    assert output.provider_status == "unavailable"
+    assert output.native_verdict == DecisionType.OPEN_CAMPAIGN.value
+    assert output.provider_unavailable is True
+    payload = output.to_dict()
+    assert payload["provider_status"] == "unavailable"
+    assert payload["native_verdict"] == DecisionType.OPEN_CAMPAIGN.value

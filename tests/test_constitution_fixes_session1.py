@@ -74,7 +74,7 @@ class _Reasoner:
         return self._op
 
 
-def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
+def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110):
     ms = MarketState(symbol=symbol)
     domains = [EvidenceDomain.STRUCTURE, EvidenceDomain.LIQUIDITY,
                EvidenceDomain.MOMENTUM, EvidenceDomain.VOLUME,
@@ -111,6 +111,33 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
         ))
     for e in extras:
         ms.add(e)
+    # EV/origination tests use activated long opportunities, so provide the
+    # fresh completed-bar structure required to derive and validate payoff geometry.
+    ms.add(Evidence(
+        source_module="market_lenses.m5.structure",
+        domain=EvidenceDomain.STRUCTURE, symbol=symbol,
+        observation="completed-bar structural range", confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "current_close": 1.100,
+            "prior_range_high": target_high, "prior_range_low": 1.095,
+            "range_position": 0.5, "breakout_direction": "up",
+            "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="market_lenses.m5.momentum",
+        domain=EvidenceDomain.MOMENTUM, symbol=symbol,
+        observation="completed-bar momentum", confidence=conf,
+        uncertainty=1.0 - conf,
+        measurements={
+            "source_kind": "market_lens", "source_timestamp_known": True,
+            "timeframe": "M5", "close_change": 0.001,
+        },
+        relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
@@ -216,7 +243,7 @@ def test_v9_execution_cost_can_flip_ev_negative():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.5, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev])
+    ms = _evidence_state(extra=[cost_ev], target_high=1.1025)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.6)),
                          reward_r_default=0.6, min_expected_value=0.0).reason(ms)
     # EV = 0.6*0.6 - 0.4*1 - 0.5 = 0.36 - 0.4 - 0.5 = -0.54 < 0 ⇒ declined.

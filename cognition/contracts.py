@@ -618,6 +618,8 @@ class Opportunity:
     reward_distance: Optional[float] = None
     reward_r: Optional[float] = None
     geometry_evidence_ids: list[str] = field(default_factory=list)
+    # Append new metadata after existing fields to preserve positional callers.
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
         d = str(self.direction or "FLAT").upper()
@@ -711,6 +713,7 @@ class Opportunity:
     def to_dict(self) -> dict:
         return {
             "identity_version": self.identity_version,
+            "identity": self.identity,
             "id": self.opportunity_id,
             "direction": self.direction,
             "state": self.state.value,
