@@ -40,6 +40,13 @@ class ControlsMixin:
         return {"status": "no_engine_attached", "message": "No engine attached"}
 
     def set_risk_mode(self, mode: Optional[str]) -> dict:
+        """Manual risk-mode control: tightening only.
+
+        An operator may FREEZE new exposure. Loosening (NORMAL/CAUTION/RECOVERY)
+        is derived by the DrawdownGuard from realised loss state and cannot be
+        forced from the dashboard, because that would let a request waive the
+        daily loss limit.
+        """
         if mode is None:
             return {"status": "no_engine_attached", "message": "No engine attached"}
         ed = getattr(self, "_event_driven_system", None)
@@ -47,11 +54,17 @@ class ControlsMixin:
         dd = ctx.drawdown_guard if ctx is not None else None
         if dd is None:
             return {"status": "no_engine_attached", "message": "No engine attached"}
+        requested = str(mode).upper()
+        if requested != "FROZEN":
+            return {
+                "status": "rejected",
+                "message": "Only FROZEN can be set manually; other modes are derived by the DrawdownGuard",
+                "mode": requested,
+            }
         try:
-            from risk.risk_engine import DrawdownMode
-            dd_mode = DrawdownMode(mode.upper())
-            dd._mode = dd_mode
-            return {"status": "ok", "message": f"Risk mode set to {mode}", "mode": mode}
+            from brain.drawdown_guard import DrawdownMode
+            dd.mode = DrawdownMode.FROZEN
+            return {"status": "ok", "message": "Risk mode set to FROZEN", "mode": "FROZEN"}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
