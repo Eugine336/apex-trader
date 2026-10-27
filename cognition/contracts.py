@@ -609,6 +609,7 @@ class Opportunity:
     competing_opportunities: list[str] = field(default_factory=list)
     is_preferred: bool = False
     identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
     # Market-derived payoff geometry appended to preserve positional callers.
     # Only the native geometry resolver may authoritatively populate these.
     entry_price: Optional[float] = None
@@ -711,6 +712,7 @@ class Opportunity:
     def to_dict(self) -> dict:
         return {
             "identity_version": self.identity_version,
+            "identity": self.identity,
             "id": self.opportunity_id,
             "direction": self.direction,
             "state": self.state.value,
