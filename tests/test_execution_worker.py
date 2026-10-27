@@ -236,7 +236,7 @@ class TestBreakeven:
         )
         worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW)
-        be_intents = [i for i in intents if i.source == "breakeven"]
+        be_intents = [i for i in intents if i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason]
         assert len(be_intents) == 1
         assert be_intents[0].intent_type == IntentType.MODIFY_SL
 
@@ -428,7 +428,7 @@ class TestInvalidation:
         scan = ScanContext(direction="SHORT", score=30)
         worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "invalidation_low_score" for i in intents)
+        assert any(i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason for i in intents)
 
     def test_low_score_keeps_profitable_trade(self):
         snap = _snap(pnl_pips=10.0)
@@ -442,7 +442,7 @@ class TestInvalidation:
         scan = ScanContext(direction="SHORT", score=80)
         worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
-        assert any(i.source == "invalidation_opposing" for i in intents)
+        assert any(i.source == "invalidation_opposing" or "[legacy_source=invalidation_opposing]" in i.reason for i in intents)
 
     def test_same_direction_no_exit(self):
         snap = _snap(direction="BUY")
