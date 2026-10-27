@@ -234,7 +234,7 @@ class TestBreakeven:
             partial_closed=True, at_breakeven=False,
             pnl_pips=15.0, current_price=1.10150,
         )
-        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5))
+        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW)
         be_intents = [i for i in intents if i.source == "breakeven"]
         assert len(be_intents) == 1
@@ -426,7 +426,7 @@ class TestInvalidation:
     def test_low_score_exits_losing_trade(self):
         snap = _snap(pnl_pips=-5.0)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40))
+        worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any(i.source == "invalidation_low_score" for i in intents)
 
@@ -440,7 +440,7 @@ class TestInvalidation:
     def test_opposing_signal_exits(self):
         snap = _snap(direction="BUY", pnl_pips=-5.0)
         scan = ScanContext(direction="SHORT", score=80)
-        worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75))
+        worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any(i.source == "invalidation_opposing" for i in intents)
 
@@ -461,7 +461,7 @@ class TestEntryGracePeriod:
         open_t = NOW - timedelta(seconds=2)
         snap = _snap(pnl_pips=-1.0, open_time=open_t)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert not any("invalidation" in i.source for i in intents)
 
