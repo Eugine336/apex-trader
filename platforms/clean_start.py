@@ -461,12 +461,13 @@ def run_startup_clean_start(
         data_dir=data_dir, branch=branch, data_repo_url=data_repo_url
     )
     event_store_res = inspect_event_store_integrity(data_dir=data_dir)
+    # Startup cleanup is never allowed to delete learned/runtime state. Keep
+    # the parameter for backward compatibility, but require a separate reviewed
+    # offline migration if a schema cleanup is ever needed.
     if purge_enabled:
-        purge_res = purge_stale_learned_data(
-            data_dir=data_dir,
-            schema_version=schema_version,
-            local_schema_version_file=local_schema_version_file,
+        logger.critical(
+            "[clean-start] startup purge was requested but refused; persistent "
+            "state is preserved and requires an explicit offline recovery plan"
         )
-    else:
-        purge_res = "skipped (disabled)"
+    purge_res = "skipped (automatic persistent-state purge disabled)"
     return pull_res, event_store_res, purge_res
