@@ -162,6 +162,12 @@ class BrainOutput:
         return "not_recorded"
 
     @property
+    def internal_fault(self) -> bool:
+        """True when this non-action is an internal reasoning fault, not a market view."""
+        questions = getattr(self.decision, "questions_answered", {}) or {}
+        return bool(questions.get("internal_fault"))
+
+    @property
     def provider_unavailable(self) -> bool:
         """True for an unavailable provider, independent of the market verdict."""
         return self.provider_status == "unavailable" or (
@@ -189,6 +195,7 @@ class BrainOutput:
             "provider_status": self.provider_status,
             "native_verdict": self.native_verdict,
             "provider_unavailable": self.provider_unavailable,
+            "internal_fault": self.internal_fault,
             "decision_summary": self.decision_summary(),
             # Deprecated (V-026): retained for back-compat. Read the backing field
             # directly so serialisation does not self-trip the deprecation notice.
@@ -574,10 +581,16 @@ class CognitiveBrain:
                 analysis=analysis, brain_hypotheses=hypotheses,
             )
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
-            logger.debug("[brain] reason(%s) ignored a fault: %s", symbol, exc)
+            logger.warning(
+                "[brain] reason(%s) INTERNAL FAULT (no market conclusion reached): %s: %s",
+                symbol, type(exc).__name__, exc,
+            )
             with self._lock:
                 self._faults += 1
-            return self._observe(symbol, f"reasoning fault: {exc}", {})
+            return self._observe(
+                symbol, f"reasoning fault: {type(exc).__name__}: {exc}", {},
+                internal_fault=True,
+            )
 
     def _from_opinion(
         self, symbol: str, market_state: MarketState, consolidation: dict,
@@ -1638,7 +1651,10 @@ class CognitiveBrain:
             )
             return self._record_management(output)
         except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
-            logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
+            logger.warning(
+                "[brain] manage(%s) INTERNAL FAULT (holding; protective stops unchanged): %s: %s",
+                symbol, type(exc).__name__, exc,
+            )
             with self._lock:
                 self._faults += 1
             return self._record_management(self._manage_pkg(
@@ -2876,18 +2892,30 @@ class CognitiveBrain:
                 ))
         return hyps
 
-    def _observe(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
+    def _observe(
+        self, symbol: str, reason_txt: str, consolidation: dict,
+        *, internal_fault: bool = False,
+    ) -> BrainOutput:
         # Violation V7 — doing nothing is an actual evaluated candidate, not a
         # static "considered": record why observing is the correct action.
-        do_nothing_txt = f"evaluated: doing nothing is correct — {reason_txt}"
+        # An internal fault is NOT an evaluated market conclusion: it fails closed
+        # (no action) but is labelled as a fault so it is never read as a view.
+        if internal_fault:
+            do_nothing_txt = f"internal fault — no market conclusion was reached: {reason_txt}"
+        else:
+            do_nothing_txt = f"evaluated: doing nothing is correct — {reason_txt}"
+        questions = {q: (do_nothing_txt if q == "should_i_do_nothing" else "insufficient")
+                     for q in REQUIRED_QUESTIONS}
+        if internal_fault:
+            questions["internal_fault"] = reason_txt
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
-            thesis="no action", confidence=0.0,
+            thesis="internal fault — no market view" if internal_fault else "no action",
+            confidence=0.0,
             uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
             campaign_recommendation="observe", risk_rationale=reason_txt,
-            questions_answered={q: (do_nothing_txt if q == "should_i_do_nothing" else "insufficient")
-                                for q in REQUIRED_QUESTIONS},
-            do_nothing_considered=True, reasoner=self.reasoner_name,
+            questions_answered=questions,
+            do_nothing_considered=not internal_fault, reasoner=self.reasoner_name,
         )
         return self._record(BrainOutput(decision=decision, direction=FLAT))
 
