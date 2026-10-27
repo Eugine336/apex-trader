@@ -147,6 +147,9 @@ class TestScanContextChecks:
             conviction_decline_cycles=4,
             conviction_decline_min_drop=3,
             conviction_profit_hold_pips=20.0,
+            discretionary_exits_enabled=True,
+            legacy_mechanical_exit_fallback_enabled=True,
+            scan_directional_exits_enabled=True,
         ))
         scores = (80, 75, 70, 65)
         snap = _snap(score_history=scores, pnl_pips=5.0)
@@ -272,7 +275,7 @@ class TestBackwardCompat:
         )
         scan = ScanContext(direction="SHORT", score=70)
         intents = worker.evaluate(snap, now=now, scan=scan, market=None)
-        stall = [i for i in intents if "stall" in i.source]
+        stall = [i for i in intents if "stall" in i.source or "[legacy_source=stall_exit]" in i.reason]
         assert len(stall) > 0
 
 
