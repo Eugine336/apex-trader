@@ -124,7 +124,7 @@ class TestScanContextChecks:
         snap = _snap(pnl_pips=-5.0, pnl_dollars=-5.0, current_price=1.0995)
         scan = ScanContext(direction="LONG", score=30, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
-        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "invalidation" in i.source]
+        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "invalidation" in i.reason]
         assert len(close_intents) > 0
 
     def test_invalidation_opposing_signal(self):
@@ -132,7 +132,7 @@ class TestScanContextChecks:
         snap = _snap(direction="LONG", pnl_pips=5.0)
         scan = ScanContext(direction="SHORT", score=80, opposing_score_boost=0)
         intents = worker.evaluate(snap, scan=scan)
-        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "opposing" in i.source]
+        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE and "opposing" in i.reason]
         assert len(close_intents) > 0
 
     def test_no_invalidation_without_scan_context(self):
@@ -152,7 +152,7 @@ class TestScanContextChecks:
         snap = _snap(score_history=scores, pnl_pips=5.0)
         scan = ScanContext(direction="LONG", score=65)
         intents = worker.evaluate(snap, scan=scan)
-        collapse = [i for i in intents if "conviction" in i.source]
+        collapse = [i for i in intents if "conviction" in i.reason]
         assert len(collapse) > 0
 
     def test_no_conviction_collapse_without_score_history(self):
@@ -179,7 +179,7 @@ class TestMarketContextChecks:
             last_seen_h1_close=datetime.now(timezone.utc) - timedelta(hours=2),
         )
         intents = worker.evaluate(snap, market=market)
-        htf = [i for i in intents if "htf_candle" in i.source]
+        htf = [i for i in intents if "htf_candle" in i.reason]
         assert len(htf) > 0
 
     def test_no_htf_without_market_context(self):
@@ -245,7 +245,7 @@ class TestBackwardCompat:
         worker = _legacy_worker()
         snap = _snap(direction="LONG", tp2=1.1100, current_price=1.1105)
         intents = worker.evaluate(snap, scan=None, market=None)
-        tp2 = [i for i in intents if "tp2" in i.source]
+        tp2 = [i for i in intents if "tp2" in i.reason]
         assert len(tp2) > 0
 
     def test_stall_held_without_live_read(self):
@@ -258,7 +258,7 @@ class TestBackwardCompat:
             open_time=now - timedelta(minutes=45),
         )
         intents = worker.evaluate(snap, now=now, scan=None, market=None)
-        stall = [i for i in intents if "stall" in i.source]
+        stall = [i for i in intents if "stall" in i.reason]
         assert len(stall) == 0
 
     def test_stall_exit_fires_on_structure_loss(self):
