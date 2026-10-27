@@ -192,7 +192,10 @@ def main() -> None:
         try:
             from risk.spread_bootstrap import bootstrap_spreads
             if connection_status.get("mt5") or connection_status.get("deriv"):
-                bootstrap_spreads(platform_manager=platform_manager)
+                bootstrap_spreads(
+                    platform_manager=platform_manager,
+                    symbols=config.enabled_pairs,
+                )
         except Exception as exc:
             logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
 
