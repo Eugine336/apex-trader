@@ -444,30 +444,27 @@ def run_startup_clean_start(
     topology_ok: bool = False,
     purge_enabled: bool = False,
 ) -> tuple[str, str, str]:
-    """Run clean-start only after repository topology has been verified safe.
+    """Read-only startup verification; never reset or purge runtime state.
 
-    Topology defaults to unsafe. On an unsafe/unknown path no Git reset, DB
-    inspection/deletion, or learned-state purge is attempted.
+    The historical arguments remain for compatibility. Startup must not
+    hard-reset a data repository, delete corrupt databases/sidecars, prune
+    forensic rotations, or purge learned state. Any recovery must be separately
+    reviewed and run offline against preserved copies.
     """
     if not topology_ok:
         skipped = "skipped (unsafe or unverified data repository topology)"
         logger.critical(
-            "[clean-start] refusing state mutation because data repository topology "
-            "is unsafe or unverified"
+            "[clean-start] read-only inspection skipped because data repository "
+            "topology is unsafe or unverified"
         )
         return skipped, skipped, skipped
 
-    pull_res = sync_clean_state_from_remote(
-        data_dir=data_dir, branch=branch, data_repo_url=data_repo_url
-    )
+    pull_res = "skipped (automatic data-repository reset disabled)"
     event_store_res = inspect_event_store_integrity(data_dir=data_dir)
-    # Startup cleanup is never allowed to delete learned/runtime state. Keep
-    # the parameter for backward compatibility, but require a separate reviewed
-    # offline migration if a schema cleanup is ever needed.
     if purge_enabled:
         logger.critical(
-            "[clean-start] startup purge was requested but refused; persistent "
-            "state is preserved and requires an explicit offline recovery plan"
+            "[clean-start] startup purge requested but refused; persistent "
+            "state is preserved for an explicit offline recovery plan"
         )
     purge_res = "skipped (automatic persistent-state purge disabled)"
     return pull_res, event_store_res, purge_res
