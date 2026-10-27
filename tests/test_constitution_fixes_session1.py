@@ -74,7 +74,7 @@ class _Reasoner:
         return self._op
 
 
-def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
+def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110):
     ms = MarketState(symbol=symbol)
     domains = [EvidenceDomain.STRUCTURE, EvidenceDomain.LIQUIDITY,
                EvidenceDomain.MOMENTUM, EvidenceDomain.VOLUME,
@@ -121,7 +121,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None):
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
             "timeframe": "M5", "current_close": 1.100,
-            "prior_range_high": 1.105, "prior_range_low": 1.095,
+            "prior_range_high": target_high, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
             "trend_state": "uptrend", "range_rotation": False, "trend_strength": 0.4,
         },
