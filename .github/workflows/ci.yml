@@ -73,6 +73,9 @@ jobs:
           python -c "import tick, pytest;
           raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','-v','--tb=short']))"
 
+      - name: Audit canonical identity and safety boundaries
+        run: python scripts/identity_audit.py
+
       - name: Check imports
         run: |
           python -c "from config import AppConfig; print('Config OK')"
