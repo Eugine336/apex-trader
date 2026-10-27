@@ -29,7 +29,7 @@ from typing import Any
 from execution.action_executor import ActionExecutor, ExecutorConfig
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
-from execution.position_worker import PositionWorker
+from execution.position_worker import PositionWorker, WorkerConfig
 from execution.risk_gate import GateConfig
 
 # ── Shared recording fake broker (never connects to a live platform) ─────
@@ -178,10 +178,21 @@ class TestExecutorMinLotFallback:
 # ── Worker-level guard (_check_tp1) ──────────────────────────────────
 
 
+
+
+def _legacy_worker() -> PositionWorker:
+    """Enable legacy discretionary mechanics only for these isolated tests."""
+    return PositionWorker(WorkerConfig(
+        discretionary_exits_enabled=True,
+        legacy_mechanical_exit_fallback_enabled=True,
+        scan_directional_exits_enabled=True,
+    ))
+
+
 class TestWorkerTp1MinLotGuard:
     def test_minlot_banks_tp1_with_full_close(self):
         snap = _snap(remaining_lots=0.01, volume_min=0.01)
-        worker = PositionWorker()
+        worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
         close = [i for i in out if i.source == "tp1_minlot_close"]
