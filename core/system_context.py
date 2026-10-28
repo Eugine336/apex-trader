@@ -213,7 +213,6 @@ class SystemContext:
     signal_discovery: Optional[Any] = None
     virtual_module_registry: Optional[Any] = None
     virtual_signal_manager: Optional[Any] = None
-    param_evolver: Optional[Any] = None
 
     # ── Planning + shadow (Phase 6) ──────────────────────────────────
     trade_planner: Optional[Any] = None
@@ -2166,7 +2165,7 @@ class SystemContext:
         logger.info(
             "[SystemContext] evolution+planning initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
-            "sig_disc={} virt_reg={} virt_mgr={} param_evolver={} "
+            "sig_disc={} virt_reg={} virt_mgr={} "
             "planner={} outcome_log={} calibrator={} re_entry={}",
             ctx.capital_allocator is not None,
             ctx.execution_profiles is not None,
@@ -2175,7 +2174,6 @@ class SystemContext:
             ctx.signal_discovery is not None,
             ctx.virtual_module_registry is not None,
             ctx.virtual_signal_manager is not None,
-            ctx.param_evolver is not None,
             ctx.trade_planner is not None,
             ctx.outcome_logger is not None,
             ctx.calibrator is not None,

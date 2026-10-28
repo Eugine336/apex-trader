@@ -2063,74 +2063,6 @@ class InteractionConfig:
 
 
 @dataclass
-class ParameterEvolutionConfig:
-    """Settings for the Parameter Evolution engine (L5a).
-
-    The TunerAgent follows gradients on existing parameters; this engine
-    *explores* — it generates candidate values for the consensus / ranker
-    thresholds, replays them over recent closed-trade snapshots (the same
-    decision-replay the Counterfactual engine uses), walk-forward validates the
-    winners, then proves them over live closes (shadow validation) before
-    *recommending* a promotion. It never mutates live config directly — an
-    injected callback (gated by the wiring layer) applies an approved value, so
-    the TunerAgent stays the sole tuning authority.
-
-    Defaults OFF so it stays dormant until enabled. When on it gracefully waits
-    for ``min_replay_trades`` closed snapshots before doing anything.
-    """
-
-    # Master switch: explore + shadow-validate parameter candidates.
-    param_evolution_enabled: bool = True
-    # How many candidate values to generate per parameter each tournament.
-    candidates_per_param: int = 10
-    # How many recent closed trades each replay tournament analyses.
-    replay_lookback: int = 500
-    # Live closes a candidate must prove itself over before a promotion.
-    shadow_validation_trades: int = 50
-    # Minimum R improvement per trade for a candidate to qualify / promote.
-    significance_threshold: float = 0.05
-    # Train/test split for the walk-forward overfitting guard (0.5–0.95).
-    walk_forward_split: float = 0.7
-    # Minimum hours between successive promotions (rate limiting).
-    evolution_cooldown_hours: float = 48.0
-    # Maximum candidates in shadow validation at once.
-    max_concurrent_shadows: int = 3
-    # Trades to watch a promoted change before a rollback recommendation.
-    rollback_window: int = 100
-    # Minimum closed snapshots before any tournament runs.
-    min_replay_trades: int = 50
-    # SQLite path (under data/, gitignored).
-    param_evolution_db_path: str = "data/param_evolution.db"
-
-    def __post_init__(self) -> None:
-        if int(self.candidates_per_param) < 2:
-            raise ValueError(
-                "ParameterEvolutionConfig.candidates_per_param must be >= 2, "
-                f"got {self.candidates_per_param!r}"
-            )
-        if int(self.shadow_validation_trades) < 1:
-            raise ValueError(
-                "ParameterEvolutionConfig.shadow_validation_trades must be >= 1, "
-                f"got {self.shadow_validation_trades!r}"
-            )
-        if not (0.5 <= float(self.walk_forward_split) <= 0.95):
-            raise ValueError(
-                "ParameterEvolutionConfig.walk_forward_split must be in [0.5, 0.95], "
-                f"got {self.walk_forward_split!r}"
-            )
-        if float(self.significance_threshold) < 0:
-            raise ValueError(
-                "ParameterEvolutionConfig.significance_threshold must be >= 0, "
-                f"got {self.significance_threshold!r}"
-            )
-        if int(self.max_concurrent_shadows) < 1:
-            raise ValueError(
-                "ParameterEvolutionConfig.max_concurrent_shadows must be >= 1, "
-                f"got {self.max_concurrent_shadows!r}"
-            )
-
-
-@dataclass
 class SignalDiscoveryConfig:
     """Settings for the Synthetic Signal Discovery engine (L5c).
 
@@ -4418,7 +4350,6 @@ class AppConfig:
     )
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
-    param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
     learning_governance: LearningGovernanceConfig = field(
         default_factory=LearningGovernanceConfig
     )

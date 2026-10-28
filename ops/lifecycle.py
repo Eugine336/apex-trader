@@ -45,7 +45,6 @@ _ADAPTIVE_STORE_ATTRS: tuple[tuple[str, str], ...] = (
     ("regime_detector", "_regime_detector"),
     ("risk_manager", "_risk_manager"),
     ("behavior_discovery", "_behavior_discovery"),
-    ("param_evolver", "_param_evolver"),
     ("signal_discovery", "_signal_discovery"),
     ("module_governor", "_module_governor"),
     ("virtual_registry", "_virtual_registry"),
@@ -312,7 +311,6 @@ class HealthCheck:
             "regime_detection": ("regime_detection", "regime_detection_db_path"),
             "risk_management": ("risk_management", "risk_management_db_path"),
             "behavior_discovery": ("behavior_discovery", "behavior_discovery_db_path"),
-            "param_evolution": ("param_evolution", "param_evolution_db_path"),
             "signal_discovery": ("signal_discovery", "signal_discovery_db_path"),
             "interaction": ("interaction", "interaction_db_path"),
         }
