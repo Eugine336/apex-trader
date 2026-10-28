@@ -238,23 +238,8 @@ def test_adaptive_optimizer_runs_when_no_agent():
     assert report is not None
 
 
-def test_gate_tuner_calibrate_blocked(agent, tmp_path):
-    from adaptive.gate_tuner import GateTuner
-
-    gt = GateTuner(path=str(tmp_path / "gate.json"))
-    gt.set_tuner_agent(agent)
-    changes = gt.calibrate([{"rejecting_gate": "ev_gate", "outcome": "WIN", "cnt": 50, "avg_r": 1.0}])
-    assert changes == []
 
 
-def test_gate_tuner_calibrate_runs_when_disabled(disabled_agent, tmp_path):
-    from adaptive.gate_tuner import GateTuner
-
-    gt = GateTuner(path=str(tmp_path / "gate2.json"))
-    gt.set_tuner_agent(disabled_agent)
-    # Does not raise and is allowed to evaluate (may or may not change).
-    result = gt.calibrate([])
-    assert isinstance(result, list)
 
 
 def test_calibrator_calibrate_blocked(agent):

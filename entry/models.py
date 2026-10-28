@@ -114,9 +114,6 @@ class EntryConfig:
     # Block zones (score 70) and standalone FVG zones (score 80) now clear the
     # bar, not just FVG+OB overlaps (score 100). Only sub-60 (noise) is rejected.
     min_entry_score: int = 60
-    # Hard floor for the GateTuner-adjusted entry-score bar.  The tuner may
-    # LOWER min_entry_score within a bounded envelope when its rejected setups
-    # keep winning, but the live gate never drops the bar below this floor.
     watchlist_score: int = 70
     # Minimum signed HTF alignment for an entry. Alignment is +1 (HTF fully
     # supports the trade) → -1 (HTF fully opposes). A strongly counter-trend
@@ -124,13 +121,7 @@ class EntryConfig:
     # zone geometry — those entries are immediately closed by management's
     # structure read, so taking them only burns spread. None disables the gate.
     min_htf_alignment: float = -0.5
-    # Absolute permissive cap for the GateTuner-adjusted HTF-alignment floor.
-    # The tuner may LOWER min_htf_alignment within a bounded envelope when its
-    # rejected counter-HTF setups keep winning (the data proving HTF opposition
-    # was not predictive for that instrument), but the live gate never drops the
-    # floor below this cap, so a fully-opposed setup (alignment ≈ -1) is never
-    # blindly admitted. Loosening-only: the tuner can never make the floor
-    # STRICTER than the operator's configured min_htf_alignment.
+    # Absolute permissive cap for the HTF-alignment floor (legacy gate setting).
     min_htf_alignment_floor: float = -1.0
     # Conviction multiplier applied to a counter-trend zone (its direction
     # opposes the resolved HTF bias). Pure zone geometry (FVG+OB=100, FVG=80,

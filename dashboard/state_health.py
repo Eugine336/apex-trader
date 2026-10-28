@@ -33,7 +33,6 @@ _ED_ADAPTIVE_LAYERS: tuple[tuple[str, str], ...] = (
     ("virtual_registry", "virtual_module_registry"),
     ("tuner_agent", "tuner_agent"),
     ("vote_calibrator", "vote_calibrator"),
-    ("gate_tuner", "gate_tuner"),
     ("shadow_store", "shadow_store"),
     ("ml_adapter", "ml_adapter"),
 )

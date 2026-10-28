@@ -137,12 +137,6 @@ class RiskMixin(HelpersMixin):
             except Exception:
                 pass
 
-        if ctx is not None and ctx.gate_tuner is not None:
-            try:
-                result["gate_offsets"] = ctx.gate_tuner.all_offsets()
-            except Exception:
-                pass
-
         rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
         if rl is not None and hasattr(rl, "status"):
             try:

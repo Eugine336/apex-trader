@@ -6,7 +6,7 @@ Thin wrappers that make the existing learners / tuners satisfy the
 schedule, order, validate, audit, and roll them back. The adapters add NO new
 tuning logic — each ``tune`` call delegates to the exact method the live system
 already calls (``ScoreOptimizer.optimize``, ``RegimeLearner.learn``,
-``GateTuner.calibrate``, ``Calibrator.calibrate``, ``SignalLedger.run_grading_cycle``
+``Calibrator.calibrate``, ``SignalLedger.run_grading_cycle``
 …). They only centralise *when* it runs and *whether the result is sane*.
 
 Each component's training data is supplied by an injected provider callable so
@@ -533,66 +533,6 @@ class EVEstimatorTunable(_BaseTunable):
             tunable_name=self._name, success=True, changed=changed,
             params_before=before, params_after=self._read_params(),
             reason=f"history refreshed (n={n})",
-        )
-
-
-class GateTunerTunable(_BaseTunable):
-    """Wraps ``GateTuner.calibrate`` — bounded quality-gate threshold offsets."""
-
-    def __init__(
-        self,
-        tuner,
-        outcomes_provider: OutcomesProvider,
-        *,
-        min_trades: int = 30,
-        min_interval: float = 6 * 3600,
-    ) -> None:
-        super().__init__(
-            name="gate_tuner",
-            frequency=TuneFrequency.PERIODIC,
-            dependencies=["ev_estimator"],
-            min_trades=min_trades,
-            min_interval=min_interval,
-        )
-        self._tuner = tuner
-        self._outcomes_provider = outcomes_provider
-
-    def _read_params(self) -> dict:
-        return dict(self._tuner.all_offsets())
-
-    def _apply_params(self, params: dict) -> None:
-        tunable_families = getattr(type(self._tuner), "TUNABLE", {})
-        offsets = {k: float(v) for k, v in (params or {}).items() if k in tunable_families}
-        self._tuner._offsets = offsets
-        save = getattr(self._tuner, "_save", None)
-        if callable(save):
-            save()
-
-    def validate_params(self, params: dict) -> tuple[bool, str]:
-        tunable_families = getattr(type(self._tuner), "TUNABLE", {})
-        for family, off in (params or {}).items():
-            spec = tunable_families.get(family)
-            if spec is None:
-                return False, f"non-tunable family '{family}' in offsets"
-            lo, hi = spec[0], spec[1]
-            if not (lo <= float(off) <= hi):
-                return False, f"{family} offset {off} outside [{lo},{hi}]"
-        return True, "ok"
-
-    def tune(self, ctx: TuneContext) -> TuneResult:
-        before = self._begin()
-        outcomes = list(self._outcomes_provider() or [])
-        changes = self._tuner.calibrate(outcomes)
-        after = self._read_params()
-        changed = bool(changes)
-        self._mark_tuned(ctx)
-        return TuneResult(
-            tunable_name=self._name, success=True, changed=changed,
-            params_before=before, params_after=after,
-            reason=(
-                f"{len(changes)} gate(s) adjusted" if changed
-                else f"no change ({len(outcomes)} outcome rows)"
-            ),
         )
 
 
@@ -1614,7 +1554,6 @@ __all__ = [
     "PairLearnerTunable",
     "SessionLearnerTunable",
     "EVEstimatorTunable",
-    "GateTunerTunable",
     "PlannerCalibratorTunable",
     "SignalLedgerTunable",
     "PostCloseTrackerTunable",

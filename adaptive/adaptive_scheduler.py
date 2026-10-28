@@ -3,7 +3,7 @@
 A background daemon thread that drives the time-based learning cadences that
 previously never fired in production:
 
-* ``TunerAgent.on_periodic_tick`` — wakes the PERIODIC tunables (GateTuner EV
+* ``TunerAgent.on_periodic_tick`` — wakes the PERIODIC tunables (EV
   threshold, planner calibrator, etc.) whose writers were dormant because only
   ``on_trade_close`` was wired live.
 * ``TunerAgent.on_scan_cycle`` — wakes PER_SCAN_CYCLE tunables.

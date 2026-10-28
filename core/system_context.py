@@ -10,9 +10,9 @@ Phase 2: decision intelligence (DecisionEngine, SituationEngine,
 RiskGovernor, DecisionJournal, SessionEngine, NewsGuard).
 Phase 3: scan pipeline + sizing (OpportunityExecutor,
 Orchestrator, SystemVolatilityMonitor, OpportunityDensityTracker,
-EntryEngine, ExecutionMonitor).
+ExecutionMonitor).
 Phase 4: learning + feedback (OutcomeFeedback, SignalLedger,
-EmitterFeedbackService, PostCloseTracker, GateTuner, ShadowStore,
+EmitterFeedbackService, PostCloseTracker, ShadowStore,
 TunerAgent, AdaptiveOptimizer).
 
 Usage::
@@ -48,10 +48,8 @@ if TYPE_CHECKING:
     from risk.portfolio_risk_state import PortfolioRiskStateMachine
     from risk.risk_engine import RiskEngine
     from risk.risk_reporter import RiskReporter
-    from trigger.entry_engine import EntryEngine
 
     from adaptive.emitter_feedback import EmitterFeedbackService
-    from adaptive.gate_tuner import GateTuner
     from adaptive.optimizer import AdaptiveOptimizer
     from adaptive.post_close_tracker import PostCloseTracker
     from adaptive.recommendations import RecommendationGateway
@@ -96,9 +94,6 @@ class SystemContext:
     governance: Optional["GovernanceDivision"] = None
     # Aggregate-health thermostat read by Governance to pause/resume learning.
     health_assessor: Optional[Any] = None
-    # Per-gate parameter attribution — which learned gate adjustment opened a
-    # trade (DECISIVE) vs merely supported one that would have passed anyway.
-    gate_attributor: Optional[Any] = None
     # Persistent competing Long/Short/Flat theses per symbol (Gap 1a). Runs
     # observationally alongside the consensus pipeline; surfaced via Governance.
     thesis_engine: Optional[Any] = None
@@ -173,7 +168,6 @@ class SystemContext:
     orchestrator: Optional[Any] = None  # RETIRED legacy decider — always None
     system_volatility_monitor: Optional[SystemVolatilityMonitor] = None
     opportunity_density_tracker: Optional[OpportunityDensityTracker] = None
-    entry_engine: Optional[EntryEngine] = None
     execution_monitor: Optional[ExecutionMonitor] = None
 
     # ── Learning + feedback (Phase 4) ────────────────────────────────
@@ -181,7 +175,6 @@ class SystemContext:
     signal_ledger: Optional[SignalLedger] = None
     emitter_feedback: Optional[EmitterFeedbackService] = None
     post_close_tracker: Optional[PostCloseTracker] = None
-    gate_tuner: Optional[GateTuner] = None
     shadow_store: Optional[ShadowStore] = None
     tuner_agent: Optional[TunerAgent] = None
     recommendation_gateway: Optional[RecommendationGateway] = None
@@ -494,27 +487,6 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] OpportunityDensityTracker init failed: {}", exc)
 
-        # ── EntryEngine ─────────────────────────────────────────────
-        try:
-            from trigger.entry_engine import EntryEngine as _EntryEngine
-            ctx.entry_engine = _EntryEngine(
-                config=config,
-                volatility_stop_mode=risk_cfg.volatility_stop_mode,
-                atr_stop_period=risk_cfg.atr_stop_period,
-                atr_stop_mult=risk_cfg.atr_stop_mult,
-                atr_stop_ratio_min=getattr(risk_cfg, "atr_stop_ratio_min", None),
-                atr_stop_ratio_max=getattr(risk_cfg, "atr_stop_ratio_max", None),
-                atr_stop_max_risk_mult=getattr(risk_cfg, "atr_stop_max_risk_mult", None),
-            )
-            if ctx.drawdown_guard is not None:
-                ctx.entry_engine.drawdown = ctx.drawdown_guard
-        except Exception as exc:
-            logger.critical(
-                "[SystemContext] EntryEngine init failed — SAFETY DEGRADED "
-                "(SL/TP refinement + sizing gate unavailable): {}", exc,
-            )
-            ctx._mark_safety_degraded("EntryEngine")
-
         # ── ExecutionMonitor ────────────────────────────────────────
         try:
             from brain.execution_monitor import ExecutionMonitor as _ExecMon
@@ -525,12 +497,11 @@ class SystemContext:
         logger.info(
             "[SystemContext] scan/sizing layer initialized — "
             "opp_exec={} orchestrator={} vol_mon={} density={} "
-            "entry_engine={} exec_mon={}",
+            "exec_mon={}",
             ctx.opportunity_executor is not None,
             ctx.orchestrator is not None,
             ctx.system_volatility_monitor is not None,
             ctx.opportunity_density_tracker is not None,
-            ctx.entry_engine is not None,
             ctx.execution_monitor is not None,
         )
 
@@ -619,21 +590,6 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] PostCloseTracker init failed: {}", exc)
 
-        # ── GateTuner ───────────────────────────────────────────────
-        try:
-            from adaptive.gate_tuner import GateTuner as _GateTuner
-            ctx.gate_tuner = _GateTuner()
-            # Wire tuned gate offsets into the live entry engine — without this
-            # the EntryEngine's gate_tuner stays None and the learned offsets
-            # never reach live entry-gate thresholds.
-            if ctx.entry_engine is not None:
-                try:
-                    ctx.entry_engine.gate_tuner = ctx.gate_tuner
-                except Exception as exc:
-                    logger.warning("[SystemContext] GateTuner→EntryEngine wire failed: {}", exc)
-        except Exception as exc:
-            logger.warning("[SystemContext] GateTuner init failed: {}", exc)
-
         # Module-interaction analyzer RETIRED - severed from the live path.
 
         # ── ShadowStore ─────────────────────────────────────────────
@@ -664,17 +620,6 @@ class SystemContext:
                     ctx.ml_adapter.pair_learner.set_post_close_tracker(ctx.post_close_tracker)
                 except Exception:
                     pass
-            # Wire the PairLearner into the live entry engine so it can RAISE the
-            # entry-score bar for cold-start (unproven) symbols. Without this the
-            # EntryEngine's pair_learner stays None and the cold-start boost never
-            # reaches the live entry gate.
-            if ctx.entry_engine is not None:
-                try:
-                    ctx.entry_engine.pair_learner = ctx.ml_adapter.pair_learner
-                except Exception as exc:
-                    logger.warning(
-                        "[SystemContext] PairLearner→EntryEngine wire failed: {}", exc
-                    )
         except Exception as exc:
             logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
 
@@ -788,25 +733,6 @@ class SystemContext:
                     )
             except Exception as exc:
                 logger.warning("[SystemContext] HealthAssessor init failed: {}", exc)
-
-            # ── GateAttributor (per-gate parameter attribution) ─────
-            # Snapshots the GateTuner offsets at entry and replays the gate
-            # decision on the operator's default thresholds at close, so
-            # Governance can attribute which learned loosening *opened* a trade
-            # (DECISIVE) vs which merely supported one that would have passed
-            # anyway. Observational — it never freezes or blocks. Reads the
-            # entry-config defaults (min_entry_ev / min_entry_score /
-            # min_htf_alignment) the live EntryGate also defaults to.
-            try:
-                from adaptive.gate_attribution import GateAttributor as _GateAttributor
-                from entry.models import EntryConfig as _EntryConfig
-
-                ctx.gate_attributor = _GateAttributor(
-                    gate_tuner=ctx.gate_tuner,
-                    config=_EntryConfig(),
-                )
-            except Exception as exc:
-                logger.warning("[SystemContext] GateAttributor init failed: {}", exc)
 
             # ── ThesisEngine — RETIRED (Single Reasoner cutover, Part III.2) ──
             # The legacy competing-thesis decider (`brain/thesis_engine.py`) was
@@ -1732,7 +1658,6 @@ class SystemContext:
                     getattr(getattr(lg_cfg, "health_assessor", None), "auto_release_on_healthy", True)
                     if lg_cfg else True
                 ),
-                gate_attributor=ctx.gate_attributor,
                 thesis_engine=ctx.thesis_engine,
                 campaign_registry=ctx.campaign_registry,
                 llm_reasoner=ctx.llm_reasoner,
@@ -1783,13 +1708,12 @@ class SystemContext:
 
         logger.info(
             "[SystemContext] learning layer initialized - outcome_fb={} "
-            "ledger={} emitter_fb={} post_close={} gate_tuner={} shadow={} "
+            "ledger={} emitter_fb={} post_close={} shadow={} "
             "tuner={} ml={}",
             ctx.outcome_feedback is not None,
             ctx.signal_ledger is not None,
             ctx.emitter_feedback is not None,
             ctx.post_close_tracker is not None,
-            ctx.gate_tuner is not None,
             ctx.shadow_store is not None,
             ctx.tuner_agent is not None,
             ctx.ml_adapter is not None,

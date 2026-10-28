@@ -297,7 +297,7 @@ _SYNTHETIC_PROFILE = InstrumentProfile(
     # Entry: SL must be meaningful relative to instrument price.
     # Synthetics trade at 100–100,000+ points. A fixed pip minimum is useless.
     # min_risk_pips here acts as a MINIMUM percentage floor:
-    # the entry_engine multiplies this by pip_size to get minimum SL distance.
+    # the stop-geometry code multiplies this by pip_size to get minimum SL distance.
     # For V100 (price ~857, pip=0.01): min_risk_pips=50 → min SL = 0.5 pts (0.06%)
     # This is intentionally wide — synthetics at 400x multiplier need room to breathe.
     # Rule of thumb: SL distance should be >= 0.3% of instrument price.

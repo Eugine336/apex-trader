@@ -7,7 +7,7 @@ and checks for structural confirmation:
     2. BOS (Break of Structure) on M1 in the trade direction.
     3. Momentum confirmation: ≥2/5 candles aligned + volume filter.
 
-Logic extracted from ``trigger/entry_engine.py`` _detect_m1_choch()
+Logic extracted from the retired ``trigger/entry_engine.py`` _detect_m1_choch()
 and _detect_momentum_confirmation().  Uses the same StructureEngine
 with M1_SWING_LOOKBACK = 3 (7-bar window) for M1 micro-structure.
 """
@@ -135,7 +135,7 @@ class M1CandleConfirmer:
         direction: str,
         pip_size: float,
     ) -> ConfirmationResult:
-        """CHoCH / BOS detection on M1, matching entry_engine logic."""
+        """CHoCH / BOS detection on M1, matching the retired entry-engine logic."""
         try:
             bars = min(len(m1_df), M1_DEFAULT_BARS)
             df_slice = m1_df.iloc[-bars:]
@@ -184,7 +184,7 @@ class M1CandleConfirmer:
         pip_size: float,
         min_aligned: int = 2,
     ) -> ConfirmationResult:
-        """Momentum confirmation matching entry_engine logic.
+        """Momentum confirmation matching the retired entry-engine logic.
 
         Three gates + three pattern checks:
         1. Minimum 5 bars.

@@ -1919,7 +1919,7 @@ class TunerAgentConfig:
     """Central coordinator for ALL auto-tuning (the "Tuner Agent").
 
     Every tunable component (ScoreOptimizer, RegimeLearner, PairLearner,
-    SessionLearner, EVEstimator, GateTuner, planner Calibrator, SignalLedger
+    SessionLearner, EVEstimator, planner Calibrator, SignalLedger
     grading) registers with one agent. The agent resolves dependency order,
     decides who is due, executes them in order, validates each result against
     the component's own safety bounds, rolls back on failure, and writes every
@@ -4129,7 +4129,7 @@ class AdaptiveTunerConfig:
     A background scheduler periodically drives the central :class:`TunerAgent`'s
     time-based (``on_periodic_tick``) and per-scan (``on_scan_cycle``) tune
     cadences — previously only ``on_trade_close`` fired in production, so the
-    GateTuner / VoteCalibrator / ModuleGovernor writers stayed dormant and their
+    VoteCalibrator / ModuleGovernor writers stayed dormant and their
     live readers never saw fresh values. The same scheduler recomputes the
     :class:`AdaptiveWeightProvider`, which nudges the probabilistic-bias evidence
     weights toward the timeframes that actually predict outcomes — within hard,

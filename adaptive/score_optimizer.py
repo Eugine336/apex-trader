@@ -711,7 +711,7 @@ def _migrate_old_weights(data: dict) -> dict:
 
     Handles:
     - order_block_weight → split evenly into ob_h1_weight + ob_m5_weight
-    - m1_trigger_weight → dropped (deferred to EntryEngine phase)
+    - m1_trigger_weight → dropped (retired with the legacy entry engine)
     - Missing new fields → filled from ScoringWeights defaults
     """
     out = dict(data)

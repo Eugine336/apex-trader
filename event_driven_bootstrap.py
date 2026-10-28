@@ -1733,7 +1733,6 @@ class EventDrivenSystem:
                 PairLearnerTunable,
                 SessionLearnerTunable,
                 EVEstimatorTunable,
-                GateTunerTunable,
                 PlannerCalibratorTunable,
                 SignalLedgerTunable,
                 PostCloseTrackerTunable,
@@ -1812,18 +1811,6 @@ class EventDrivenSystem:
                 registered += 1
         except Exception as exc:
             logger.debug("[tuner] EVEstimator registration failed: {}", exc)
-
-        # GateTuner
-        if ctx.gate_tuner is not None:
-            try:
-                outcomes_provider = (
-                    (lambda: ctx.shadow_store.get_outcomes_by_gate())
-                    if ctx.shadow_store is not None else (lambda: [])
-                )
-                agent.register(GateTunerTunable(ctx.gate_tuner, outcomes_provider))
-                registered += 1
-            except Exception as exc:
-                logger.debug("[tuner] GateTuner registration failed: {}", exc)
 
         # PlannerCalibrator
         if ctx.calibrator is not None:
@@ -1931,7 +1918,7 @@ class EventDrivenSystem:
                 )
 
         # Wire set_tuner_agent on components that support it
-        for comp in (ctx.ml_adapter, ctx.gate_tuner, ctx.calibrator,
+        for comp in (ctx.ml_adapter, ctx.calibrator,
                      ctx.signal_ledger, ctx.capital_allocator,
                      ctx.execution_profiles, ctx.regime_detector):
             if comp is not None and hasattr(comp, "set_tuner_agent"):
@@ -3831,7 +3818,7 @@ class EventDrivenSystem:
             for name in ("signal_ledger", "counterfactual_engine",
                          "interaction_analyzer", "module_governor",
                          "shadow_store", "post_close_tracker",
-                         "gate_tuner", "capital_allocator",
+                         "capital_allocator",
                          "execution_profiles", "regime_detector",
                          "behavior_discovery", "signal_discovery",
                          "virtual_module_registry"):
@@ -5795,128 +5782,6 @@ class EventDrivenSystem:
             logger.warning("[broker-health] {} is_connected check failed: {} (entry blocked)", symbol, exc)
             return False
 
-    def _on_gate_trace(
-        self,
-        symbol: str,
-        direction: str,
-        results: Any,
-        passed: bool,
-        meta: Optional[dict[str, Any]] = None,
-    ) -> None:
-        """Persist a DECISION_TRACE for the entry-gate verdict chain.
-
-        Mirrors the legacy TradingLoop trace recorder, but scoped to the
-        event-driven entry plane.  A fresh recorder per call keeps this
-        thread-safe across concurrently-confirming symbols; best-effort so a
-        tracing failure never blocks an entry.
-        """
-        try:
-            from brain.decision_trace import (
-                DecisionTraceRecorder,
-                STAGE_RANKER,
-                STAGE_RISK_STACK,
-            )
-            recorder = DecisionTraceRecorder(getattr(self._config, "decision_trace", None))
-            if not recorder.enabled:
-                return
-            recorder.begin(symbol)
-            evidence = dict(meta or {})
-            evidence["direction"] = direction
-            conviction = evidence.get("conviction", 0)
-            zone_type = evidence.get("zone_type", "zone")
-            timeframe = evidence.get("timeframe", "")
-
-            # Stage 1 — ranker: the zone conviction is the entry plane's
-            # ranking signal (also satisfies trace completeness).
-            recorder.stamp(
-                stage=STAGE_RANKER,
-                owner="entry.zone_watcher",
-                verdict="PASS",
-                justification=f"entry zone {zone_type} conviction {conviction} ({timeframe})",
-                evidence=evidence,
-                confidence=1.0,
-            )
-
-            # Stage 2 — risk stack: the entry-gate validation result.
-            failed = [
-                str(getattr(g, "gate_name", "gate"))
-                for g in (results or []) if not getattr(g, "passed", False)
-            ]
-            gate_just = (
-                "all entry gates passed" if passed
-                else "entry gates failed: " + ", ".join(failed[:6])
-            )
-            recorder.stamp(
-                stage=STAGE_RISK_STACK,
-                owner="entry.gate",
-                verdict="PASS" if passed else "REJECT",
-                justification=gate_just,
-                evidence=evidence,
-                confidence=1.0,
-                blocking=not passed,
-            )
-
-            if passed:
-                recorder.finalize_success()
-            else:
-                recorder.finalize_rejection(reason=gate_just, stage=STAGE_RISK_STACK)
-        except Exception as exc:
-            logger.debug("[decision-trace] entry gate trace failed for {}: {}", symbol, exc)
-
-        # Feed the shadow store a counterfactual for each TUNABLE quality gate
-        # that blocked this setup, so the GateTuner can learn whether those
-        # gates are over-filtering profitable setups in the LIVE path (it
-        # previously only saw decision-engine / risk-governor rejections, never
-        # the entry gate's own score / HTF-alignment bars). Observational only —
-        # shadow contracts never affect a live decision. Best-effort.
-        if not passed:
-            try:
-                self._record_entry_gate_shadow_rejections(symbol, direction, results, meta)
-            except Exception as exc:
-                logger.debug(
-                    "[shadow] entry-gate rejection record failed for {}: {}", symbol, exc,
-                )
-
-    # Maps EntryGate quality-gate names → the GateTuner family they feed. Only
-    # whitelisted QUALITY gates appear here; safety / physical gates
-    # (market_open, spread, news, drawdown, zone_valid, risk_reward, …) are
-    # never auto-tuned and never recorded as tunable-gate counterfactuals.
-    _TUNABLE_GATE_FAMILY: dict[str, str] = {
-        "score_minimum": "entry_engine",
-        "alignment": "htf_alignment",
-    }
-
-    def _record_entry_gate_shadow_rejections(
-        self,
-        symbol: str,
-        direction: str,
-        results: Any,
-        meta: Optional[dict[str, Any]] = None,
-    ) -> None:
-        """Record one shadow rejection per TUNABLE quality gate that blocked.
-
-        A setup can fail several gates at once (e.g. score AND alignment); each
-        tunable quality gate gets its own contract so the counterfactual is
-        attributed to that gate independently. Safety gates are skipped.
-        """
-        m = dict(meta or {})
-        entry_price = float(m.get("entry_price", 0.0) or 0.0)
-        sl = float(m.get("stop_loss", 0.0) or 0.0)
-        tp1 = float(m.get("tp1", 0.0) or 0.0)
-        conviction = float(m.get("conviction", 0.0) or 0.0)
-        if entry_price <= 0.0 or sl <= 0.0 or tp1 <= 0.0:
-            return
-        for g in results or []:
-            if getattr(g, "passed", True):
-                continue
-            family = self._TUNABLE_GATE_FAMILY.get(str(getattr(g, "gate_name", "")))
-            if family is None:
-                continue
-            self._record_shadow_rejection(
-                symbol, direction, entry_price, sl, tp1,
-                f"{family}:{getattr(g, 'reason', '')}", conviction,
-            )
-
     def _on_world_model_update(self, event: Any) -> None:
         """Feed density tracker when WorldModel updates after a scan."""
         ctx = self._ctx
@@ -6315,54 +6180,6 @@ class EventDrivenSystem:
             logger.debug("[entry-tf-trends] capture failed: {}", exc)
             return {}
 
-    def _capture_gate_snapshot(self, order_id) -> dict:
-        """Snapshot gate parameters at entry for close-path attribution.
-
-        Records the learned GateTuner offsets together with the effective
-        (default + offset) and default thresholds so the close path can replay
-        the gate decision on the operator's defaults. Best-effort — any fault
-        (no context, no tuner, no attributor) yields an empty dict, which simply
-        means this trade contributes no gate attribution.
-        """
-        ctx = self._ctx
-        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
-            return {}
-        attributor = getattr(ctx, "gate_attributor", None)
-        if attributor is None:
-            return {}
-        try:
-            offsets = ctx.gate_tuner.all_offsets()
-            defaults = attributor.default_thresholds()
-            effective = {
-                fam: defaults.get(fam, 0.0) + float(offsets.get(fam, 0.0))
-                for fam in defaults
-            }
-            snap = attributor.record_entry(
-                order_id=str(order_id),
-                gate_offsets=offsets,
-                effective_thresholds=effective,
-                default_thresholds=defaults,
-            )
-            return snap.to_dict() if snap is not None else {}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[gate-attr] snapshot capture failed: {}", exc)
-            return {}
-
-    def _is_learner_enabled(self) -> bool:
-        """True when any GateTuner offset is non-zero (learning influenced entry).
-
-        Fixes the long-standing gap where ``learner_enabled`` was never
-        populated in the entry context, so the HealthAssessor's learner-enabled
-        loss rate was always computed over an empty set.
-        """
-        ctx = self._ctx
-        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
-            return False
-        try:
-            return any(abs(float(v)) > 1e-9 for v in ctx.gate_tuner.all_offsets().values())
-        except Exception:  # noqa: BLE001
-            return False
-
     # Major USD pairs used to rank USD strength for the DXY filter. Kept small
     # (the majors + gold) so the reading stays cheap; USD appears in every one,
     # so its ranking is well-determined from these alone.
@@ -6699,34 +6516,9 @@ class EventDrivenSystem:
                 ctx.governance.check_health_after_close(
                     realized_r=pnl_r,
                     entry_path=str(info.get("source", "") or ""),
-                    learner_enabled=bool(info.get("learner_enabled", False)),
                 )
             except Exception as exc:
                 logger.debug("[close-learn] health assessment failed: {}", exc)
-
-        # Gate attribution — replay the gate decision with the operator's
-        # default (no-learning) thresholds to determine whether a learned gate
-        # loosening was DECISIVE in opening this trade (it would have been
-        # rejected on the defaults) or merely SUPPORTING (it would have passed
-        # anyway). Best-effort: attribution must never break the close path.
-        gate_attributor = (
-            getattr(ctx, "gate_attributor", None) if ctx is not None else None
-        )
-        if gate_attributor is not None:
-            try:
-                snap = info.get("gate_snapshot", {}) or {}
-                eff = snap.get("effective_thresholds", {}) if isinstance(snap, dict) else {}
-                gate_attributor.record_close(
-                    order_id=str(ticket),
-                    realized_r=float(pnl_r or 0.0),
-                    # The trade's actual EV is not threaded out of the entry
-                    # gate; the effective EV threshold is the close-path proxy
-                    # (a loosened ev_gate then reads as DECISIVE — conservative).
-                    entry_ev=float(eff.get("ev_gate", 0.0) or 0.0),
-                    entry_score=float(info.get("score", 0) or 0),
-                )
-            except Exception as exc:
-                logger.debug("[close-learn] gate attribution failed: {}", exc)
 
         # TunerAgent — route trade-close tuning
         if ctx.tuner_agent is not None:

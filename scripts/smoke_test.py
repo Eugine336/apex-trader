@@ -15,10 +15,6 @@ def main():
     print("Phase 2 — Scanner (event-driven)…")
     print("  ✅ event-driven scanner loaded")
 
-    print("Phase 3 — Trigger…")
-    from trigger import EntryEngine
-    print("  ✅ 3 modules loaded")
-
     print("Phase 4 — Management…")
     print("  ✅ 4 modules loaded")
 
@@ -35,13 +31,14 @@ def main():
     print("Phase 8 — Dashboard…")
     print("  ✅ 2 modules loaded")
 
-    print("\nVerifying EntryEngine is reachable from the event-driven SystemContext…")
+    print("\nVerifying the retired entry stack is gone from the event-driven SystemContext…")
     from config import AppConfig
     from core.system_context import SystemContext
     ctx = SystemContext.create(AppConfig(), None)
-    assert isinstance(ctx.entry_engine, EntryEngine), "entry_engine is not EntryEngine"
+    assert not hasattr(ctx, "entry_engine"), "retired EntryEngine must not be wired"
+    assert not hasattr(ctx, "gate_tuner"), "retired GateTuner must not be wired"
     assert EventDrivenSystem is not None, "EventDrivenSystem unavailable"
-    print("  ✅ EntryEngine wired into the event-driven SystemContext")
+    print("  ✅ SystemContext builds without the retired entry stack")
 
     print("\n" + "=" * 50)
     print("  ALL SYSTEMS NOMINAL")
