@@ -1300,6 +1300,7 @@ class CognitiveBrain:
             initial_execution_intent={
                 "kind": "market",
                 "confidence": round(eff_conf, 4),
+                "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                 **({
                     "entry_price": geometry.entry_price,
                     "sl": geometry.stop_price,
@@ -2832,6 +2833,7 @@ class CognitiveBrain:
                     "kind": "market",
                     "confidence": round(lead_conf, 4),
                     "independent_origination": True,
+                    "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                     "entry_price": geometry.entry_price,
                     "sl": geometry.stop_price,
                     "tp": geometry.target_price,
@@ -2858,6 +2860,56 @@ class CognitiveBrain:
             logger.debug("[brain] independent origination(%s) ignored a fault: %s", symbol, exc)
             return None
 
+
+    @staticmethod
+    def _decision_feature_snapshot(
+        market_state: Optional[MarketState],
+        decision: DecisionPackage,
+    ) -> dict:
+        """Capture immutable-by-convention point-in-time features used by a decision.
+
+        This is an evidence ledger, not a reconstructed market snapshot. Each
+        feature retains its source timestamp and evidence ID. Empty or stale
+        evidence is not backfilled from current prices after the decision.
+        """
+        import copy
+        import time as _time
+
+        decision_epoch = _time.time()
+        rows: list[dict] = []
+        try:
+            if market_state is not None:
+                for evidence in market_state.fresh_evidence(now=decision_epoch):
+                    row = evidence.to_dict()
+                    row["source_timestamp_epoch"] = float(
+                        getattr(evidence, "timestamp_epoch", 0.0) or 0.0
+                    )
+                    rows.append(copy.deepcopy(row))
+        except Exception:
+            # An incomplete snapshot must remain visibly incomplete; do not
+            # reconstruct features from later data or silently claim validation.
+            rows = []
+        evidence_ids = [
+            str(row.get("evidence_id") or "") for row in rows
+            if str(row.get("evidence_id") or "")
+        ]
+        return {
+            "schema": "apex.decision_feature_snapshot.v1",
+            "snapshot_id": (
+                f"{getattr(decision, 'decision_id', '')}:"
+                f"{decision_epoch:.6f}"
+            ),
+            "decision_id": str(getattr(decision, "decision_id", "") or ""),
+            "symbol": str(getattr(decision, "symbol", "") or ""),
+            "decision_timestamp_epoch": decision_epoch,
+            "captured_at_decision": True,
+            "snapshot_complete": bool(rows) and bool(evidence_ids),
+            "evidence_count": len(rows),
+            "evidence_ids": evidence_ids,
+            "features": rows,
+            "validation_status": "unvalidated",
+            "predictive_ability_demonstrated": False,
+        }
 
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
