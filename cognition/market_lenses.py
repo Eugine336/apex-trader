@@ -42,6 +42,10 @@ def _timestamp_epoch(value: Any) -> float | None:
     stamp = getattr(value, "timestamp", None)
     if callable(stamp):
         try:
+            tzinfo = getattr(value, "tzinfo", None)
+            # datetime-like values with no timezone cannot be treated as UTC.
+            if hasattr(value, "tzinfo") and tzinfo is None:
+                return None
             parsed = float(stamp())
             return parsed if isfinite(parsed) and parsed > 0 else None
         except (TypeError, ValueError, OverflowError, OSError):
