@@ -10,8 +10,8 @@ price-action evidence.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import time
+from datetime import datetime, timezone
 from math import isfinite, sqrt
 from typing import Any
 
@@ -209,7 +209,6 @@ def analyze_market_frames(
     output: list[Evidence] = []
     timeframe_signs: list[int] = []
     timeframe_scores: list[float] = []
-    timeframe_source_epochs: list[float | None] = []
     timeframe_observations: list[dict[str, Any]] = []
     snapshot_cutoff_epoch = time.time()
 
@@ -224,7 +223,6 @@ def analyze_market_frames(
 
         current = bars[-1]
         source_epoch = _safe_float(current.get("timestamp_epoch"))
-        timeframe_source_epochs.append(source_epoch)
         timeframe_observations.append({
             "timeframe": timeframe,
             "bar_open_epoch": source_epoch,
