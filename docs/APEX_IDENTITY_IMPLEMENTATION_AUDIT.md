@@ -317,3 +317,5 @@ System 2 is **in progress, not merge-ready**. Missing data remains unknown; no p
 - Added tests for synchronized cross-asset evidence, naive/misaligned timestamps, descriptive outcome evidence, and fail-closed cost estimation. These tests remain unexecuted in this environment.
 
 - Commission is now treated as unknown when the configured round-trip amount is zero and no positive realized-deal estimate exists, unless `COGNITION_COMMISSION_MODEL_VERIFIED=true` explicitly attests the zero-commission model. This setting was added to `CognitionConfig` and `.env.example`; the real `.env` was not read or changed. The net-EV gate fails closed when commission is unknown.
+
+- Cross-asset calculations are cached in-process for 60 seconds per symbol to avoid repeatedly fetching related H1 bars on every cognition cycle. Cached evidence retains its source timestamp and normal freshness horizon.
