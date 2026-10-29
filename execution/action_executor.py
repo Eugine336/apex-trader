@@ -291,6 +291,51 @@ class ActionExecutor:
         return None
 
     @staticmethod
+    def _decision_feature_snapshot_error(intent: Intent) -> Optional[str]:
+        """Require a complete point-in-time evidence ledger for every new OPEN."""
+        snapshot = getattr(intent, "decision_feature_snapshot", None)
+        if not isinstance(snapshot, dict):
+            return "decision_feature_snapshot_missing"
+        if (
+            snapshot.get("schema") != "apex.decision_feature_snapshot.v1"
+            or snapshot.get("captured_at_decision") is not True
+            or snapshot.get("snapshot_complete") is not True
+        ):
+            return "decision_feature_snapshot_incomplete"
+        decision_id = str(getattr(intent, "decision_id", "") or "")
+        if (
+            not decision_id
+            or str(snapshot.get("decision_id") or "") != decision_id
+            or not str(snapshot.get("snapshot_id") or "")
+        ):
+            return "decision_feature_snapshot_decision_mismatch"
+        ids = snapshot.get("evidence_ids")
+        features = snapshot.get("features")
+        if not isinstance(ids, list) or not ids or not isinstance(features, list) or not features:
+            return "decision_feature_snapshot_has_no_features"
+        if not set(str(value) for value in ids if str(value)) <= {
+            str(row.get("evidence_id") or "") for row in features if isinstance(row, dict)
+        }:
+            return "decision_feature_snapshot_evidence_lineage_mismatch"
+        try:
+            decision_epoch = float(snapshot.get("decision_timestamp_epoch"))
+            if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+                return "decision_feature_snapshot_timestamp_invalid"
+            for row in features:
+                if not isinstance(row, dict):
+                    return "decision_feature_snapshot_feature_invalid"
+                source_epoch = float(row.get("source_timestamp_epoch"))
+                if (
+                    not math.isfinite(source_epoch)
+                    or source_epoch <= 0.0
+                    or source_epoch > decision_epoch
+                ):
+                    return "decision_feature_snapshot_contains_future_or_invalid_feature"
+        except (TypeError, ValueError, OverflowError):
+            return "decision_feature_snapshot_timestamp_invalid"
+        return None
+
+    @staticmethod
     def _is_risk_reducing_without_provenance(
         intent: Intent,
         open_positions: dict[str, dict],
@@ -515,6 +560,18 @@ class ActionExecutor:
                     "requires source=ai_brain plus decision_id, campaign_id, "
                     "and activated opportunity_id; "
                     f"source={provenance['source']!r}, missing={missing}"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
+            snapshot_error = self._decision_feature_snapshot_error(intent)
+            if snapshot_error:
+                reason = (
+                    "brain_decision_feature_snapshot_required: refusing OPEN without "
+                    f"a complete point-in-time evidence snapshot ({snapshot_error})"
                 )
                 self._inc("intents_rejected")
                 logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
