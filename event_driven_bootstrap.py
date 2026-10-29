@@ -5226,6 +5226,101 @@ class EventDrivenSystem:
 
         self._known_open = {**current, **still_pending}
 
+    def _handle_open_result(self, intent: Intent, result: Any) -> None:
+        """Persist the Brain's decision-time evidence against the broker ticket.
+
+        The callback runs only after the shared executor reports a successful
+        OPEN. It never sends or retries an order. Missing ticket/snapshot data is
+        surfaced as an attribution gap rather than guessed from symbol/time.
+        """
+        try:
+            if not bool(getattr(result, "success", False)):
+                return
+            response = getattr(result, "broker_response", None)
+            ticket = ""
+            if isinstance(response, dict):
+                ticket = str(
+                    response.get("order_id") or response.get("ticket")
+                    or response.get("position_id") or ""
+                )
+            else:
+                ticket = str(
+                    getattr(response, "order_id", "")
+                    or getattr(response, "ticket", "")
+                    or getattr(response, "position_id", "")
+                    or ""
+                )
+            if not ticket:
+                logger.error(
+                    "[decision-provenance] successful OPEN for {} has no broker ticket; "
+                    "decision-to-trade attribution remains unresolved",
+                    getattr(intent, "symbol", ""),
+                )
+                return
+            snapshot = getattr(intent, "decision_feature_snapshot", None)
+            snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+            decision_id = str(getattr(intent, "decision_id", "") or "")
+            campaign_id = str(getattr(intent, "campaign_id", "") or "")
+            opportunity_id = str(getattr(intent, "opportunity_id", "") or "")
+            snapshot_id = str(snapshot.get("snapshot_id") or "")
+            complete = (
+                snapshot.get("schema") == "apex.decision_feature_snapshot.v1"
+                and snapshot.get("captured_at_decision") is True
+                and snapshot.get("snapshot_complete") is True
+                and bool(snapshot_id)
+                and bool(decision_id)
+                and str(snapshot.get("decision_id") or "") == decision_id
+                and bool(snapshot.get("evidence_ids"))
+            )
+            context = {
+                "ticket": ticket,
+                "symbol": str(getattr(intent, "symbol", "") or ""),
+                "direction": str(getattr(intent, "direction", "") or "").upper(),
+                "decision_id": decision_id,
+                "campaign_id": campaign_id,
+                "opportunity_id": opportunity_id,
+                "decision_feature_snapshot": snapshot,
+                "snapshot_id": snapshot_id,
+                "decision_snapshot_complete": bool(complete),
+                "entry_intent_timestamp": getattr(
+                    getattr(intent, "timestamp", None), "isoformat", lambda: ""
+                )(),
+            }
+            contexts = getattr(self, "_entry_context", None)
+            if isinstance(contexts, dict):
+                prior = contexts.get(ticket)
+                merged = dict(prior) if isinstance(prior, dict) else {}
+                merged.update(context)
+                contexts[ticket] = merged
+            from persistence import domain_events as DE
+            from persistence.event_store import get_event_store
+            store = get_event_store()
+            if store is not None:
+                store.emit(
+                    event_type=DE.DECISION_TRADE_ENTRY_SNAPSHOT,
+                    severity="INFO" if complete else "WARNING",
+                    symbol=context["symbol"],
+                    correlation_id=decision_id or None,
+                    parent_id=ticket,
+                    source_module="execution.decision_provenance",
+                    payload={
+                        **context,
+                        "feature_snapshot": snapshot,
+                        "identity_version": str(getattr(intent, "identity_version", "") or ""),
+                        "provenance_status": "captured" if complete else "incomplete",
+                        "validation_status": "unvalidated",
+                        "predictive_ability_demonstrated": False,
+                    },
+                )
+            if not complete:
+                logger.warning(
+                    "[decision-provenance] OPEN ticket {} lacks a complete decision-time snapshot; "
+                    "do not use it for predictive validation",
+                    ticket,
+                )
+        except Exception as exc:  # noqa: BLE001 — attribution must not interrupt order lifecycle
+            logger.warning("[decision-provenance] open attribution failed: {}", exc)
+
     def _handle_close_result(self, intent: Intent, result: Any) -> None:
         """Called by FlushLoop when a CLOSE intent succeeds.
 
