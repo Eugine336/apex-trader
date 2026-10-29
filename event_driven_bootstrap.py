@@ -2490,11 +2490,11 @@ class EventDrivenSystem:
     def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
         """Estimate round-trip cost in account currency (Part XIX Art 7).
 
-        Requires broker tick-value/tick-size conversion and a successful positive
-        spread observation. Missing or invalid spread data is UNKNOWN, not zero,
-        and returns 0.0 so the mandatory net-EV qualification gate fails closed.
-        The slippage buffer is an explicit conservative assumption; it is not a
-        claim that future slippage or financing costs are known exactly.
+        Requires broker tick-value/tick-size conversion, a successful positive
+        spread observation, commission-model verification, and a verified per-symbol
+        round-trip financing estimate for the expected holding horizon. Any missing
+        cost input is UNKNOWN, not zero, and returns 0.0 so the mandatory net-EV gate
+        fails closed. The slippage buffer remains an explicit conservative assumption.
         """
         try:
             lots = float(lots or 0.0)
