@@ -2485,6 +2485,15 @@ class EventDrivenSystem:
                 comm_per_lot = float(getattr(cog, "commission_per_lot_round_trip", 0.0) or 0.0)
             if not math.isfinite(comm_per_lot) or comm_per_lot < 0.0:
                 return 0.0
+            commission_verified = bool(
+                comm_per_lot > 0.0
+                or (cog is not None and getattr(cog, "commission_model_verified", False) is True)
+            )
+            if not commission_verified:
+                # Zero is not evidence of a zero-commission broker. Require an
+                # explicit operator attestation when no positive commission
+                # estimate/configuration is available; net-EV then fails closed.
+                return 0.0
             commission_ccy = comm_per_lot * lots
             total = spread_ccy + slippage_ccy + commission_ccy
             return total if math.isfinite(total) and total > 0.0 else 0.0
