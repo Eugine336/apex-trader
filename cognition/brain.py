@@ -488,11 +488,9 @@ class CognitiveBrain:
             # hypotheses BEFORE any advisor is consulted. This is the Brain's
             # native view; the advisor opinion later INFORMS it, never replaces it.
             analysis, hypotheses = self._native_reasoning(market_state, consolidation, symbol)
-            # Distinguish "no reasoner configured" (a benign build-time state —
-            # no obligation to trade) from "reasoner wired but its provider is
-            # unavailable" (an INFRASTRUCTURE failure). The latter must never be
-            # surfaced as a market view (Part XVIII Art 5 / Q78/Q80): it is a
-            # distinct REASONER_UNAVAILABLE state, not a FLAT/observe conclusion.
+            # Provider configuration/health is infrastructure metadata, never a
+            # market verdict. Native analysis is already complete; preserve its
+            # qualified campaign or native observe result in every advisor state.
             if self._reasoner is None:
                 # AI is an optional advisor, not the source of truth. The native
                 # Brain has already analysed the market and challenged its own
@@ -554,13 +552,10 @@ class CognitiveBrain:
                 symbol, advisor_payload, now=now,
             )
             if opinion is None:
-                # An AVAILABLE reasoner that yields no opinion did NOT form a
-                # market view. If its last call actually FAILED (provider down /
-                # timeout / unparsable reply) that is an INFRASTRUCTURE state —
-                # Part XVIII Art 5 / Q78/Q80/Q81/Q106: it must never be surfaced
-                # as a FLAT/observe read of the market. Only a benign no-op (e.g.
-                # a throttled cycle: provider healthy, simply no fresh call this
-                # cycle) may lawfully continue observing.
+                # A missing advisor opinion is not a market verdict. A degraded
+                # provider is recorded as unavailable; a healthy no-op/throttled
+                # cycle is recorded as available. In either case native qualification
+                # still runs and may originate a campaign if every gate passes.
                 if self._reasoner_degraded(symbol):
                     independent = self._originate_independent(
                         symbol, consolidation, analysis, hypotheses,
@@ -2589,10 +2584,11 @@ class CognitiveBrain:
         *, reason_txt: str, market_state: Optional[MarketState] = None,
         advisor_status: str = "unavailable",
     ) -> Optional[BrainOutput]:
-        """Discover an opportunity from native analysis when no advisor is available.
+        """Discover a native opportunity whenever the advisor supplies no usable opinion.
 
-        Native-only reasoning can discover and evaluate opportunities during
-        provider failure. Do not impose a universal named-pattern allowlist or
+        Native-only reasoning can qualify an opportunity when the advisor is
+        absent, unavailable, degraded, or returns no opinion this cycle. Do not
+        impose a universal named-pattern allowlist or
         fixed confidence/uncertainty cutoffs: the identity requires methods to be
         selected from the market context. Require fresh independent market
         evidence, corroboration across distinct domains, a testable activation
@@ -2995,12 +2991,12 @@ class CognitiveBrain:
         hypotheses: Optional[list[BrainHypothesis]] = None,
         advisor_status: str = "unavailable",
     ) -> BrainOutput:
-        """Preserve the native no-action verdict while reporting advisor outage separately.
+        """Preserve the native no-action verdict while reporting advisor state separately.
 
         Native reasoning has already run and failed to qualify a campaign.
-        Provider health is infrastructure metadata, not a substitute market
-        verdict. Return the native observe outcome and retain the outage in
-        advisor status / reasoner state for observability.
+        Provider health/configuration is infrastructure metadata, not a substitute
+        market verdict. Return the native observe outcome and retain advisor state
+        and native diagnostics for observability.
         """
         hypotheses = list(hypotheses or [])
         native_status, patterns, hypothesis_summary = self._native_fallback_diagnostic(
