@@ -2441,11 +2441,26 @@ class EventDrivenSystem:
         """Account currency per 1.0 unit of price move for ``lots`` (0 if unknown)."""
         try:
             spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
+            # Cost conversion is permitted only from an explicitly verified live
+            # broker specification. Config-derived or third-party guessed values
+            # are not safe inputs to a monetary expected-value gate.
+            if (
+                not isinstance(spec, dict)
+                or spec.get("source_verified") is not True
+                or spec.get("specification_verified") is not True
+            ):
+                return 0.0
             tv = float(spec.get("trade_tick_value") or 0.0)
             ts = float(spec.get("trade_tick_size") or 0.0)
-            if tv <= 0.0 or ts <= 0.0:
+            lot_count = float(lots or 0.0)
+            if (
+                not math.isfinite(tv) or not math.isfinite(ts)
+                or not math.isfinite(lot_count)
+                or tv <= 0.0 or ts <= 0.0 or lot_count <= 0.0
+            ):
                 return 0.0
-            return (tv / ts) * float(lots or 0.0)
+            value = (tv / ts) * lot_count
+            return value if math.isfinite(value) and value > 0.0 else 0.0
         except Exception:  # noqa: BLE001
             return 0.0
 
