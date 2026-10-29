@@ -2743,12 +2743,14 @@ class EventDrivenSystem:
             if not related or self._pm is None:
                 return []
 
-            def _closed_series(frame):
+            def _closed_series(frame, drop_forming: bool):
                 if frame is None or not hasattr(frame, "columns"):
                     return None
                 if "time" not in frame.columns or "close" not in frame.columns:
                     return None
-                data = frame.iloc[:-1].copy()  # exclude forming candle
+                # The primary snapshot includes a forming bar; related fetches
+                # explicitly request include_forming=False and are already closed.
+                data = frame.iloc[:-1].copy() if drop_forming else frame.copy()
                 if len(data) < 22:
                     return None
                 timestamps = []
@@ -2771,7 +2773,7 @@ class EventDrivenSystem:
                 return dict(zip(timestamps, closes))
 
             primary_frame = (primary_data or {}).get("H1")
-            primary = _closed_series(primary_frame)
+            primary = _closed_series(primary_frame, drop_forming=True)
             if not primary:
                 return []
             output = []
@@ -2784,7 +2786,7 @@ class EventDrivenSystem:
                     related_frame = related_data.get("H1")
                     if related_frame is None:
                         continue
-                    related_series = _closed_series(related_frame)
+                    related_series = _closed_series(related_frame, drop_forming=False)
                     if not related_series:
                         continue
                     common = sorted(set(primary) & set(related_series))
