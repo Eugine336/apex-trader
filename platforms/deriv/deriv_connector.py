@@ -2124,7 +2124,8 @@ class DerivConnector(BaseConnector):
             # A cached broker response is not indefinitely current. Preserve
             # the observation timestamp and withhold current verification once
             # the cache exceeds the explicit freshness window.
-            fresh = max(0.0, _time.time() - observed_at) <= 900.0
+            age_seconds = _time.time() - observed_at
+            fresh = 0.0 <= age_seconds <= 900.0
             return {
                 "symbol": symbol,
                 "broker_symbol": mapped,
