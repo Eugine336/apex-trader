@@ -2801,10 +2801,22 @@ class EventDrivenSystem:
                     common = sorted(set(primary) & set(related_series))
                     if len(common) < 22:
                         continue
-                    left = [primary[t] for t in common]
-                    right = [related_series[t] for t in common]
-                    left_returns = [left[i] / left[i - 1] - 1.0 for i in range(1, len(left))]
-                    right_returns = [right[i] / right[i - 1] - 1.0 for i in range(1, len(right))]
+                    # Pair returns only across adjacent hourly bars. A gap
+                    # (weekend, holiday, or missing candle) must not be mislabeled
+                    # as a one-hour return.
+                    left_returns = []
+                    right_returns = []
+                    return_timestamps = []
+                    for index in range(1, len(common)):
+                        if (common[index] - common[index - 1]).total_seconds() != 3600.0:
+                            continue
+                        left_prev = primary[common[index - 1]]
+                        left_now = primary[common[index]]
+                        right_prev = related_series[common[index - 1]]
+                        right_now = related_series[common[index]]
+                        left_returns.append(left_now / left_prev - 1.0)
+                        right_returns.append(right_now / right_prev - 1.0)
+                        return_timestamps.append(common[index])
                     if len(left_returns) < 20:
                         continue
                     mean_left = sum(left_returns) / len(left_returns)
@@ -2839,8 +2851,8 @@ class EventDrivenSystem:
                             "timeframe": "H1",
                             "synchronized_timestamps": True,
                             "source_verified": True,
-                            "first_common_timestamp": common[0].isoformat(),
-                            "last_common_timestamp": common[-1].isoformat(),
+                            "first_common_timestamp": return_timestamps[0].isoformat(),
+                            "last_common_timestamp": return_timestamps[-1].isoformat(),
                             "causation_established": False,
                         },
                         timestamp_epoch=_time.time(),
