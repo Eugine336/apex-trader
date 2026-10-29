@@ -5321,7 +5321,6 @@ class EventDrivenSystem:
                     source_module="execution.decision_provenance",
                     payload={
                         **context,
-                        "feature_snapshot": snapshot,
                         "identity_version": str(getattr(intent, "identity_version", "") or ""),
                         "provenance_status": "captured" if complete else "incomplete",
                         "validation_status": "unvalidated",
@@ -6689,12 +6688,13 @@ class EventDrivenSystem:
                     from persistence.event_store import get_event_store
                     store = get_event_store()
                     if store is not None:
-                        rows = store.query(
-                            event_type=DE.DECISION_TRADE_ENTRY_SNAPSHOT,
+                        rows = store.query_events(
+                            severity_min="DEBUG",
+                            event_types=[DE.DECISION_TRADE_ENTRY_SNAPSHOT],
                             symbol=str(symbol or ""),
                             limit=5000,
                         )
-                        for row in reversed(rows):
+                        for row in rows:
                             payload = json.loads(row.get("payload_json") or "{}")
                             if str(payload.get("ticket") or row.get("parent_id") or "") != str(ticket):
                                 continue
