@@ -237,6 +237,21 @@ class BrainReasoner:
         # Preserve explicit unknowns and epistemic limits. This context is
         # descriptive evidence, not a strategy selector or action authority.
         market_context = analyze_market_context(fresh, getattr(market_state, "symbol", ""))
+        # Surface these unknowns in the Brain's normal reasoning record too;
+        # a separate diagnostic blob that the reasoning chain ignores is not enough.
+        for item in market_context.get("missing_information", []):
+            if item not in missing:
+                missing.append(item)
+        if market_context.get("unclassified_observations"):
+            observations.append(
+                f"{len(market_context['unclassified_observations'])} unfamiliar measurement group(s) "
+                "preserved as unclassified evidence; semantics and predictive value are not established"
+            )
+        if market_context.get("historical_evidence", {}).get("records"):
+            observations.append(
+                "historical performance claims remain unverified unless point-in-time and "
+                "selection-bias controls pass; model confidence is not predictive validation"
+            )
 
         ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", None)) \
             if consolidation.get("aggregate_uncertainty", None) is not None \
