@@ -2,6 +2,7 @@
 from cognition.brain_reasoning import BrainReasoner
 from cognition.contracts import Evidence, MarketState
 from cognition.market_context import analyze_market_context
+from cognition.statistical_validation import validate_historical_rows
 
 
 def _evidence(domain, measurements, *, symbol="XAUUSD", source="test.source"):
@@ -57,6 +58,23 @@ def test_historical_confidence_or_sample_count_does_not_prove_predictive_skill()
     assert history["predictive_ability_demonstrated"] is False
 
 
+def _valid_historical_rows():
+    return [
+        {"sample_id": "tr-1", "split": "train", "decision_timestamp": 1,
+         "feature_timestamps": [0.5], "outcome_timestamp": 1.5},
+        {"sample_id": "tr-2", "split": "train", "decision_timestamp": 2,
+         "feature_timestamps": [1.5], "outcome_timestamp": 2.5},
+        {"sample_id": "va-1", "split": "validation", "decision_timestamp": 3,
+         "feature_timestamps": [2.5], "outcome_timestamp": 3.5},
+        {"sample_id": "va-2", "split": "validation", "decision_timestamp": 4,
+         "feature_timestamps": [3.5], "outcome_timestamp": 4.5},
+        {"sample_id": "te-1", "split": "test", "decision_timestamp": 5,
+         "feature_timestamps": [4.5], "outcome_timestamp": 5.5},
+        {"sample_id": "te-2", "split": "test", "decision_timestamp": 6,
+         "feature_timestamps": [5.5], "outcome_timestamp": 6.5},
+    ]
+
+
 def test_historical_validation_requires_multiple_independent_controls():
     controls = {
         "historical_sample_count": 500,
@@ -66,6 +84,7 @@ def test_historical_validation_requires_multiple_independent_controls():
         "data_leakage_checked": True,
         "selection_bias_checked": True,
         "overfitting_checked": True,
+        "validation_rows": _valid_historical_rows(),
     }
     result = analyze_market_context([
         _evidence("historical_analogue", controls)
@@ -92,3 +111,24 @@ def test_native_analysis_exposes_market_context_and_unknowns():
     assert encoded["market_context"]["symbol"] == "XAUUSD"
     assert encoded["market_context"]["epistemic_policy"]["model_confidence_is_not_predictive_validation"]
     assert "historical outcome evidence with leakage, selection-bias and overfitting controls" in encoded["market_context"]["missing_information"]
+
+
+def test_point_in_time_validator_rejects_future_feature_leakage():
+    rows = _valid_historical_rows()
+    rows[0]["feature_timestamps"] = [1.1]  # later than its decision timestamp (1.0)
+    report = validate_historical_rows(
+        rows, untouched_holdout=True, multiple_testing_mitigated=True
+    )
+    assert report["passed"] is False
+    assert any("future feature timestamp" in error for error in report["errors"])
+    assert report["predictive_ability_demonstrated"] is False
+
+
+def test_point_in_time_validator_requires_chronological_disjoint_splits():
+    rows = _valid_historical_rows()
+    rows[-1]["decision_timestamp"] = 3.5
+    report = validate_historical_rows(
+        rows, untouched_holdout=True, multiple_testing_mitigated=True
+    )
+    assert report["passed"] is False
+    assert any("not strictly chronological" in error for error in report["errors"])
