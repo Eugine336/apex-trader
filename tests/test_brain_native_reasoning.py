@@ -527,14 +527,17 @@ def test_brain_originates_independently_when_advisor_unavailable():
 
 def test_weak_native_view_stands_down_when_advisor_unavailable():
     # Thin, non-directional evidence ⇒ no strong native hypothesis ⇒ the Brain
-    # stands down (REASONER_UNAVAILABLE), it does NOT invent an opportunity.
+    # preserves its native observe verdict and records provider outage separately.
     ms = MarketState(symbol="EURUSD")
     ms.add(_ev("momentum", {}, conf=0.5))
     ms.add(_ev("structure", {}, conf=0.5))
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.9), available=False))
     out = brain.reason(ms)
-    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
+    assert out.direction == FLAT
+    assert out.provider_status == "unavailable"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     questions = out.decision.questions_answered
     assert questions["reasoning_mode"] == "native_fallback"
     assert questions["external_advisor_status"] == "unavailable"
