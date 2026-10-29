@@ -82,7 +82,7 @@ class _FakeAggregator:
 
 def _system(monkeypatch, *, approved=True, approved_size=0.03,
             sizing_mode="lots", halted=False, flatten=False,
-            book=None, book_error=None):
+            book=None, book_error=None, compliance_approved=True):
     symbol = "EURUSD"
     internal = edb.resolve_to_internal(symbol)
     # Isolate the instrument lookup; no broker config or live context is read.
@@ -99,9 +99,13 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
     )
     risk = _FakeAccountRisk(halted=halted, flatten=flatten)
     pm = _FakePlatformManager(book=book, book_error=book_error)
+    compliance = SimpleNamespace(
+        permit=lambda *_a: SimpleNamespace(approved=compliance_approved),
+    )
     ctx = SimpleNamespace(
         portfolio=portfolio,
         account_risk=risk,
+        compliance=compliance,
         account_key=lambda _symbol, _pm: "offline-demo:123",
     )
     system = edb.EventDrivenSystem.__new__(edb.EventDrivenSystem)
@@ -282,3 +286,19 @@ def test_approved_stake_is_forwarded_as_stake_not_lots(monkeypatch):
     assert intent.lots == 0.0
     assert intent.stake_usd == 2.5
     assert intent.entry_price == 1.1002
+
+
+def test_compliance_rejection_blocks_origination_before_sizing(monkeypatch):
+    system, portfolio, _risk, _pm = _system(monkeypatch, compliance_approved=False)
+
+    assert system._make_origination_sink()(_origination()) is False
+    assert system._aggregator.batches == []
+    assert portfolio.calls == [] if hasattr(portfolio, "calls") else True
+
+
+def test_missing_compliance_division_blocks_origination(monkeypatch):
+    system, _portfolio, _risk, _pm = _system(monkeypatch)
+    system._ctx.compliance = None
+
+    assert system._make_origination_sink()(_origination()) is False
+    assert system._aggregator.batches == []

@@ -32,10 +32,10 @@ Design rules:
     + unrealised).  The PortfolioGovernor no longer competes as a second
     daily-loss authority in the live permit path (it keeps its tally for the
     dashboard only).
-  * **Missing subsystem = disabled check (passes).**  A subsystem wired as
-    ``None`` disables its check rather than blocking everything — matching the
-    rest of the system's "optional subsystem" contract.  This is distinct from
-    an *exception inside an active check*, which fails closed.
+  * **Missing subsystem = unknown state = REJECT.**  A control source wired as
+    ``None`` (news guard, account-risk silo, drawdown guard, portfolio risk
+    state) cannot vouch for the trade, so its check rejects.  An *exception
+    inside an active check* also fails closed.
 """
 
 from __future__ import annotations

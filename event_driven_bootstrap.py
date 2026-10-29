@@ -2341,6 +2341,12 @@ class EventDrivenSystem:
                 )
                 if not ordered:
                     return False
+                # ComplianceDivision is the single permit layer for new exposure
+                # (market open, broker alive, news, spread, duplicate, daily loss,
+                # heat, drawdown freeze, position cap, portfolio risk state).
+                # Unknown state or any fault rejects.
+                if not self._compliance_permits(symbol, direction):
+                    return False
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
                 sized = self._size_brain_origination_with_portfolio(
                     origination, symbol, direction, float(sl),
@@ -2408,114 +2414,41 @@ class EventDrivenSystem:
 
         return _sink
 
-    def _derive_origination_levels(self, symbol: str, direction: str):
-        """Deterministic protective ``(sl, tp)`` for a Brain-originated entry.
+    def _compliance_permits(self, symbol: str, direction: str) -> bool:
+        """Ask the ComplianceDivision whether new exposure is permitted.
 
-        Reads the live price (tick) and the WorldModel's structural targets, then
-        defers the arithmetic to the pure
-        :func:`cognition.campaign_translator.derive_protective_levels`. Honors the
-        Part X safety floor: returns ``(None, None)`` when it cannot form a valid,
-        correctly-ordered stop/target (the sink then declines to submit). Never
-        raises.
+        Fails closed: a missing division, unresolved account/book, or any fault
+        rejects. The book comes from ``get_all_open_positions``, which raises when
+        any connected platform cannot confirm its positions.
         """
         try:
-            from cognition.campaign_translator import derive_protective_levels
+            from compliance.models import ComplianceAccount, ComplianceBook, ComplianceCandidate
 
-            tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
-            if tick is None:
-                return (None, None)
-            is_long = direction == "LONG"
-            entry = float(getattr(tick, "ask", 0.0) if is_long
-                          else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
-            if entry <= 0:
-                return (None, None)
-            cog = getattr(self._config, "cognition", None)
-            stop_fraction = float(getattr(cog, "origination_stop_fraction", 0.004)
-                                  if cog is not None else 0.004)
-            reward_multiple = float(getattr(cog, "origination_reward_multiple", 2.0)
-                                    if cog is not None else 2.0)
-            min_rr = float(getattr(cog, "origination_min_rr", 1.0)
-                           if cog is not None else 1.0)
-            targets = None
-            try:
-                wm = self._wm_store.get(symbol) if self._wm_store is not None else None
-                if wm is not None:
-                    targets = wm.get_structural_targets(
-                        direction, entry, min_distance=entry * stop_fraction * max(min_rr, 0.0),
-                    )
-            except Exception as exc:  # noqa: BLE001 — structure is best-effort
-                logger.debug("[origination-sink] structural targets failed for {}: {}", symbol, exc)
-                targets = None
-            return derive_protective_levels(
-                direction, entry,
-                stop_fraction=stop_fraction,
-                reward_multiple=reward_multiple,
-                min_rr=min_rr,
-                structural_targets=targets,
+            ctx = getattr(self, "_ctx", None)
+            compliance = getattr(ctx, "compliance", None)
+            platform_manager = getattr(self, "_pm", None)
+            if compliance is None or platform_manager is None:
+                logger.error(
+                    "[compliance] {} {} blocked — ComplianceDivision or PlatformManager unavailable",
+                    symbol, direction,
+                )
+                return False
+            account_key_fn = getattr(ctx, "account_key", None)
+            account_key = str(account_key_fn(symbol, platform_manager) or "") if callable(account_key_fn) else ""
+            if not account_key:
+                logger.error("[compliance] {} {} blocked — account risk silo unresolved", symbol, direction)
+                return False
+            balance = float(platform_manager.get_platform_balance(symbol) or 0.0)
+            book = list(platform_manager.get_all_open_positions())
+            verdict = compliance.permit(
+                ComplianceCandidate(symbol=symbol, direction=direction),
+                ComplianceBook(open_positions=book),
+                ComplianceAccount(account_key=account_key, balance=balance),
             )
-        except Exception as exc:  # noqa: BLE001 — never break the sink
-            logger.debug("[origination-sink] level derivation failed for {}: {}", symbol, exc)
-            return (None, None)
-
-    def _origination_lot_size(self, symbol, direction, sl, confidence, entry_price=None):
-        """Deterministic, broker-valid lot the Brain 'chooses' for an entry.
-
-        Like a human trader who names an exact lot aware of the broker minimum:
-        converts a conviction-scaled risk budget into lots via the instrument's
-        tick value, snaps to the broker's volume step/min/max, and applies the
-        optional operator cap. Returns ``0.0`` (caller skips) when no broker-valid
-        lot can be formed and the opportunity-harvest opt-in is off. Fail-safe —
-        never returns a sub-minimum or zero-through-to-broker value.
-        """
-        try:
-            from cognition.campaign_translator import compute_lot_size
-
-            is_long = str(direction or "").upper() == "LONG"
-            entry = entry_price
-            if entry is None:
-                tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
-                if tick is not None:
-                    entry = float(getattr(tick, "ask", 0.0) if is_long
-                                  else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
-            entry = float(entry or 0.0)
-            if entry <= 0 or sl is None:
-                return 0.0
-            spec = {}
-            try:
-                spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[origination-sink] symbol spec failed for {}: {}", symbol, exc)
-                spec = {}
-            vol_min = float(spec.get("volume_min") or 0.01)
-            vol_step = float(spec.get("volume_step") or 0.01)
-            vol_max = float(spec.get("volume_max") or 1e9)
-            tick_value = float(spec.get("trade_tick_value") or 0.0)
-            tick_size = float(spec.get("trade_tick_size") or 0.0)
-            try:
-                balance = float(self._pm.get_platform_balance(symbol) or 0.0) if self._pm is not None else 0.0
-            except Exception:  # noqa: BLE001
-                balance = 0.0
-            cog = getattr(self._config, "cognition", None)
-            risk_frac = float(getattr(cog, "origination_risk_fraction", 0.01) if cog is not None else 0.01)
-            max_lots = float(getattr(cog, "origination_max_lots", 0.0) if cog is not None else 0.0)
-            # Conviction scaling — higher confidence ⇒ larger size within a
-            # bounded 0.5×–1.5× band, so the Brain varies lot size with the read.
-            conf = max(0.0, min(1.0, float(confidence or 0.0)))
-            risk_usd = balance * risk_frac * (0.5 + conf)
-            risk_cfg = getattr(self._config, "risk", None)
-            floor_to_min = bool(
-                getattr(risk_cfg, "allow_min_lot_over_risk", False)
-                if risk_cfg is not None else False
-            )
-            return compute_lot_size(
-                risk_usd=risk_usd, stop_distance=abs(entry - float(sl)),
-                tick_value=tick_value, tick_size=tick_size,
-                vol_min=vol_min, vol_step=vol_step, vol_max=vol_max,
-                max_lots=max_lots, floor_to_min=floor_to_min,
-            )
-        except Exception as exc:  # noqa: BLE001 — sizing must never break the sink
-            logger.debug("[origination-sink] lot sizing failed for {}: {}", symbol, exc)
-            return 0.0
+            return bool(verdict.approved)
+        except Exception as exc:  # noqa: BLE001 — unknown state blocks new exposure
+            logger.warning("[compliance] {} {} blocked — permit check failed: {}", symbol, direction, exc)
+            return False
 
     def _money_per_price(self, symbol: str, lots: float) -> float:
         """Account currency per 1.0 unit of price move for ``lots`` (0 if unknown)."""

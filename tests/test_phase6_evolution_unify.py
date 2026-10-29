@@ -195,7 +195,7 @@ class TestBrainOriginationSizing:
         from pathlib import Path
         source = Path("event_driven_bootstrap.py").read_text()
         start = source.index("    def _make_origination_sink(")
-        end = source.index("    def _derive_origination_levels(", start)
+        end = source.index("    def _compliance_permits(", start)
         sink = source[start:end]
         assert "_size_brain_origination_with_portfolio(" in sink
         assert "self._origination_lot_size(" not in sink

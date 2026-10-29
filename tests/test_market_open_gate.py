@@ -253,3 +253,66 @@ def test_event_driven_pip_size_prefers_broker_spec_then_static_table():
         raise RuntimeError("down")
 
     assert _pip(types.SimpleNamespace(get_symbol_spec=_boom)) == static
+
+
+# ── Compliance is the live permit layer for Brain-originated exposure ─────────
+
+
+class _Verdict:
+    def __init__(self, approved):
+        self.approved = approved
+
+
+def _bind_permit(compliance, *, account_key="acct:1", positions=None, balance=1000.0, pm_ok=True):
+    ns = types.SimpleNamespace()
+    pm = types.SimpleNamespace(
+        get_platform_balance=lambda s: balance,
+        get_all_open_positions=(lambda: list(positions or [])) if pm_ok else (lambda: (_ for _ in ()).throw(RuntimeError("book unverified"))),
+    )
+    ns._pm = pm
+    ns._ctx = types.SimpleNamespace(compliance=compliance, account_key=lambda s, p: account_key)
+    return types.MethodType(edb.EventDrivenSystem._compliance_permits, ns)
+
+
+def test_compliance_permit_approves_only_on_an_approved_verdict():
+    seen = {}
+
+    class _Comp:
+        def permit(self, cand, book, acct):
+            seen.update(symbol=cand.symbol, direction=cand.direction, n=len(book.open_positions), key=acct.account_key)
+            return _Verdict(True)
+
+    assert _bind_permit(_Comp(), positions=[object()])("XAUUSD", "LONG") is True
+    assert seen == {"symbol": "XAUUSD", "direction": "LONG", "n": 1, "key": "acct:1"}
+
+    class _Deny:
+        def permit(self, *a):
+            return _Verdict(False)
+
+    assert _bind_permit(_Deny())("XAUUSD", "LONG") is False
+
+
+def test_compliance_permit_fails_closed_on_unknown_state():
+    class _Ok:
+        def permit(self, *a):
+            return _Verdict(True)
+
+    assert _bind_permit(None)("XAUUSD", "LONG") is False                 # division missing
+    assert _bind_permit(_Ok(), account_key="")("XAUUSD", "LONG") is False  # silo unresolved
+    assert _bind_permit(_Ok(), pm_ok=False)("XAUUSD", "LONG") is False     # book unverified
+
+    class _Boom:
+        def permit(self, *a):
+            raise RuntimeError("check bug")
+
+    assert _bind_permit(_Boom())("XAUUSD", "LONG") is False
+
+
+def test_origination_sink_consults_compliance_before_submitting():
+    from pathlib import Path
+
+    source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
+    start = source.index("    def _make_origination_sink(")
+    sink = source[start:source.index("    def _compliance_permits(", start)]
+    assert sink.index("self._compliance_permits(") < sink.index("self._size_brain_origination_with_portfolio(")
+    assert sink.index("self._compliance_permits(") < sink.index("self._aggregator.submit(")
