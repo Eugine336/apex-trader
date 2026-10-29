@@ -49,6 +49,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
     cross_timeframe_records = []
     historical_records = []
     execution_records = []
+    contract_constraint_records = []
     unclassified = []
     missing = []
 
@@ -143,6 +144,14 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "predictive_ability_demonstrated": False,
                 "note": "Reported controls require independent audit; sample size alone is not predictive skill.",
             })
+        if "available_multipliers" in m:
+            contract_constraint_records.append({
+                "source": source, "symbol": observed_symbol,
+                "broker_symbol": m.get("broker_symbol"),
+                "available_multipliers": m.get("available_multipliers"),
+                "verified": _verified(m, "contract_constraints_verified", "source_verified"),
+                "note": "Valid multiplier choices are contract constraints, not tick-value, contract-size, margin, or full instrument economics.",
+            })
         if domain == "execution_quality" or any(k in m for k in (
             "spread", "slippage", "commission", "swap", "estimated_total_cost_r",
             "minimum_stop_distance", "execution_constraint",
@@ -181,7 +190,8 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                                   "backtest_sample_count", "out_of_sample", "walk_forward",
                                   "untouched_holdout", "data_leakage_checked",
                                   "selection_bias_checked", "overfitting_checked", "validation_rows",
-                                  "multiple_testing_mitigated",
+                                  "multiple_testing_mitigated", "available_multipliers",
+                                  "contract_constraints_verified", "broker_symbol",
                                   "estimated_total_cost_r", "cost_verified",
                                   "execution_constraints_verified", "spread", "slippage",
                                   "commission", "swap", "execution_constraint",
@@ -219,6 +229,11 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "records": instrument_records,
             "status": "verified_source_present" if any(r["verified"] for r in instrument_records) else
                       ("unverified_records_present" if instrument_records else "missing"),
+        },
+        "instrument_contract_constraints": {
+            "records": contract_constraint_records,
+            "status": "verified_source_present" if any(r["verified"] for r in contract_constraint_records) else
+                      ("unverified_records_present" if contract_constraint_records else "missing"),
         },
         "sessions_and_execution_constraints": {
             "session_records": session_records,
