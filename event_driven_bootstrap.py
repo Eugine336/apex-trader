@@ -2833,11 +2833,15 @@ class EventDrivenSystem:
                         "swap_mode": spec.get("swap_mode"),
                         "trade_mode": spec.get("trade_mode"),
                         "broker_symbol": spec.get("broker_symbol"),
-                        "source_timestamp_known": True,
-                        "specification_verified": True,
-                        "source_verified": True,
                     }
                     measurements = {key: value for key, value in raw_fields.items() if value is not None}
+                    # Retrieval time is not the provider's observation time.
+                    # Provenance is trusted only when the connector explicitly
+                    # marks a live broker response as verified.
+                    if spec.get("specification_verified") is True:
+                        measurements["specification_verified"] = True
+                    if spec.get("source_verified") is True:
+                        measurements["source_verified"] = True
                     evidence.append(Evidence(
                         source_module="broker.instrument_spec",
                         domain=EvidenceDomain.OTHER,
