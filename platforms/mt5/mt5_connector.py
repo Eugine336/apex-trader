@@ -313,6 +313,8 @@ class MT5Connector(BaseConnector):
                 "trade_tick_size": getattr(si, "trade_tick_size", None),
                 "trade_contract_size": getattr(si, "trade_contract_size", None),
                 "trade_mode": getattr(si, "trade_mode", None),
+                "trade_stops_level": getattr(si, "trade_stops_level", None),
+                "trade_freeze_level": getattr(si, "trade_freeze_level", None),
                 "volume_min": getattr(si, "volume_min", None),
                 "volume_max": getattr(si, "volume_max", None),
                 "volume_step": getattr(si, "volume_step", None),
