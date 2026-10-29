@@ -45,6 +45,8 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
     instrument_records = []
     session_records = []
     relationship_records = []
+    cross_asset_records = []
+    cross_timeframe_records = []
     historical_records = []
     execution_records = []
     unclassified = []
@@ -84,18 +86,22 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             coefficient = _finite_number(
                 m.get("correlation_coefficient", m.get("correlation"))
             )
-            relationship_records.append({
+            relationship = {
                 "source": source, "symbol": observed_symbol,
                 "relationship_type": "cross_timeframe_observation" if domain == "multi_timeframe" else "cross_asset_association",
                 "related_symbol": m.get("related_symbol"),
                 "coefficient": coefficient,
                 "sample_count": m.get("sample_count"),
-                "synchronized": m.get("synchronized_timestamps") is True,
+                "synchronized": m.get("synchronized_timestamps") is True or (
+                    domain == "multi_timeframe" and m.get("source_timestamp_known") is True
+                ),
                 "measurement_window": m.get("measurement_window"),
-                "observed_relationship": m.get("cross_asset_relationship"),
+                "observed_relationship": m.get("cross_asset_relationship", m.get("alignment")),
                 "causation_established": False,
                 "source_verified": m.get("source_verified") is True,
-            })
+            }
+            relationship_records.append(relationship)
+            (cross_timeframe_records if domain == "multi_timeframe" else cross_asset_records).append(relationship)
         if domain == "historical_analogue" or any(k in m for k in (
             "out_of_sample", "walk_forward", "holdout", "data_leakage_checked",
             "historical_sample_count", "backtest_sample_count",
@@ -192,8 +198,10 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
         missing.append("instrument contract/economic specifications (tick value, contract size, lot constraints, margin and financing)")
     if not session_records:
         missing.append("verified market session calendar and instrument-specific trading hours/timezone")
-    if not relationship_records:
-        missing.append("synchronized cross-timeframe/cross-asset relationship measurements")
+    if not cross_timeframe_records:
+        missing.append("cross-timeframe relationships with explicit timeframe and timestamp provenance")
+    if not cross_asset_records:
+        missing.append("synchronized cross-asset relationship measurements with a defined window and source provenance")
     if not historical_records:
         missing.append("historical outcome evidence with leakage, selection-bias and overfitting controls")
     if not execution_records:
@@ -222,6 +230,10 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
         },
         "cross_market_relationships": {
             "records": relationship_records,
+            "cross_timeframe_records": cross_timeframe_records,
+            "cross_asset_records": cross_asset_records,
+            "cross_timeframe_status": "observations_present" if cross_timeframe_records else "missing",
+            "cross_asset_status": "observations_present" if cross_asset_records else "missing",
             "interpretation": "observed_association_only",
             "causation_established": False,
         },
