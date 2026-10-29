@@ -6,8 +6,9 @@ optional LLM/runtime dependencies. Executable assertions for:
 * V-013 — council degradation is ENFORCED, never a silent quorum pass: unknown
   council coverage is recorded/flagged as degraded (advisor_quorum UNCONFIRMED)
   and, when opted in, attenuates the effective confidence.
-* V-016 — provider unavailability is distinguishable from a FLAT market read
-  (``direction`` is ``None`` and ``provider_unavailable`` is True).
+* V-016 — provider unavailability is recorded separately from the native
+  market verdict; advisor failure must not replace native observe with an
+  infrastructure-shaped market decision.
 * V-017 — a non-authoritative CognitionGate never passes silently on absent
   cognition (it fails open but records the reason).
 """
@@ -113,23 +114,27 @@ def test_v013_unknown_council_penalised_when_enabled():
         "cognitive_degradation", "").startswith("OBSERVED")
 
 
-# ── V-016 — provider unavailability is not a FLAT market read ────────────────
+# ── V-016 — provider status is separate from the native market verdict ───────
 
-def test_v016_provider_unavailable_direction_is_none():
+def test_v016_provider_unavailable_preserves_native_observe_verdict():
     brain = CognitiveBrain(reasoner=_DownReasoner())
     out = brain.reason(_weak_state())
-    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.provider_status == "unavailable"
     assert out.provider_unavailable is True
-    assert out.direction is None            # NOT "FLAT"
-    assert out.decision_type == "reasoner_unavailable"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
+    assert out.direction == "FLAT"
     assert out.to_dict()["provider_unavailable"] is True
 
 
 def test_v016_flat_market_read_is_distinct_from_unavailable():
-    # A genuine no-edge market read keeps direction=FLAT and is NOT unavailable.
+    # With no advisor configured, a genuine no-edge read is the same native
+    # verdict but provider status is not_configured rather than unavailable.
     brain = CognitiveBrain(reasoner=None)   # no reasoner configured (benign)
     out = brain.reason(_weak_state())
     assert out.provider_unavailable is False
+    assert out.provider_status == "not_configured"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     assert out.direction == "FLAT"
 
 

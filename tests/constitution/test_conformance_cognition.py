@@ -5,7 +5,7 @@ assertions over the pure-standard-library ``cognition`` layer (importable with
 no third-party deps). Two kinds of test live here:
 
 * ``expect="pass"``  — a property the live code ALREADY satisfies and that the
-  redesign must NOT regress (e.g. provider failure never becomes a FLAT trade).
+  redesign must NOT regress (e.g. provider failure never replaces a native market verdict).
 * ``expect="xfail"`` — a TARGET property that the current code violates. It is
   registered as a strict-xfail under pytest, so the day the redesign makes it
   true, pytest reports XPASS→failure, forcing the marker's removal. This is the
@@ -137,6 +137,19 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
     return ms
 
 
+
+
+def _weak_state(symbol: str = "XAUUSD") -> MarketState:
+    """Thin evidence: native reasoning should observe rather than invent a trade."""
+    ms = MarketState(symbol=symbol)
+    for domain in (EvidenceDomain.STRUCTURE, EvidenceDomain.MOMENTUM):
+        ms.add(Evidence(
+            source_module=f"weak_{domain.value}", domain=domain, symbol=symbol,
+            observation="thin, non-directional measurement", confidence=0.5,
+            uncertainty=0.5, polarity=0.0, relevance_horizon_seconds=900.0,
+        ))
+    return ms
+
 def _opinion(direction: str = "LONG", confidence: float = 0.8, **overrides):
     base = dict(
         direction=direction, confidence=confidence, rationale="scripted",
@@ -193,16 +206,15 @@ def test_market_state_scrubs_directional_evidence():
     assert got.measurements.get("rsi") == 55, "non-directional measurements must survive"
 
 
-@conformance("§XVIII Q80/Q106: provider failure must NOT become a tradeable/FLAT market conclusion")
-def test_provider_unavailable_is_not_a_flat_trade():
-    out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
-    assert out.decision.decision_type != DecisionType.OPEN_CAMPAIGN
-    assert out.decision.authorises_action is False, "provider-down must not authorise action"
+@conformance("Part XXVI: advisor failure must not replace a native observe verdict")
+def test_provider_unavailable_preserves_native_observe_verdict():
+    out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_weak_state())
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.decision.authorises_action is False
     assert out.campaign is None
-    # V-016 — provider unavailability must be distinguishable from a FLAT market
-    # read: direction is None (not "FLAT") and provider_unavailable is set.
-    assert out.direction is None
+    assert out.provider_status == "unavailable"
     assert out.provider_unavailable is True
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
 
 
 @conformance("§XVIII Q81/Q104: a None/errored reasoner degrades to observe, never a trade")
@@ -255,18 +267,16 @@ def test_decision_preserves_competing_hypotheses():
 
 
 @conformance(
-    "§XVIII Q78/Q80: 'reasoner unavailable' is a state distinct from a market 'observe'",
+    "Part XXVI: provider infrastructure status is independent of native market verdict",
 )
-def test_reasoner_unavailable_is_a_distinct_state():
-    out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
-    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
-    assert out.decision.decision_type != DecisionType.CONTINUE_OBSERVING
-    # V-016 — provider unavailability is NOT a FLAT market read: direction is None
-    # (distinct from FLAT) and provider_unavailable flags the infrastructure state
-    # so no consumer/log can mistake it for "the market is flat".
-    assert out.campaign is None
-    assert out.direction is None
+def test_provider_status_is_independent_of_native_market_verdict():
+    out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_weak_state())
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.provider_status == "unavailable"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     assert out.provider_unavailable is True
+    assert out.decision.authorises_action is False
+    assert out.campaign is None
 
 
 @conformance(
