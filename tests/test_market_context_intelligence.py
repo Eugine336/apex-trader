@@ -239,4 +239,4 @@ def test_generic_session_engine_observation_does_not_claim_verified_calendar():
     session = result["sessions_and_execution_constraints"]
     assert session["session_status"] == "unverified_records_present"
     assert session["session_records"][0]["verified"] is False
-    assert "verified market session calendar and instrument-specific trading hours/timezone" not in result["missing_information"]
+    assert "verified market session calendar and instrument-specific trading hours/timezone" in result["missing_information"]
