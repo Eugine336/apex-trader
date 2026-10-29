@@ -286,3 +286,22 @@ Remaining identity-critical verification:
 - validate outcome lineage and cost-aware walk-forward learning with an untouched holdout.
 
 PR #758 remains draft/unmerged. No live orders have been sent, and `.env` was not accessed or modified.
+
+
+## System 2 implementation refresh — 2026-10-29
+
+PR #790 remains draft and unmerged. The branch now:
+- marks MT5 instrument specifications verified only after a successful live `symbol_info` response;
+- exposes Deriv multiplier limits only when broker-discovered, tracks the source observation epoch, and marks cached limits unverified after 15 minutes;
+- keeps Deriv multiplier constraints separate from full tick-value/contract-size economics;
+- requires explicit synchronization evidence rather than treating timestamp presence as synchronized cross-timeframe data;
+- rejects malformed historical rows, sample IDs reused across train/validation/test, and earlier outcome horizons that overlap the next split's decision window.
+
+Still incomplete / unverified:
+- authoritative instrument-specific session calendars, timezone/DST and holiday sources are not wired into cognition;
+- synchronized cross-asset observations are not produced by a verified live data source;
+- real historical outcomes are not yet supplied as point-in-time validation rows, and transaction-cost-aware walk-forward performance is not independently established;
+- broker constraints are represented as evidence but have not been proven enforced consistently across the shared qualification and execution path;
+- focused tests and `scripts/identity_audit.py` have not been executed on this branch. A local clone attempt could not resolve GitHub in the current execution environment; no test result is claimed.
+
+System 2 is **in progress, not merge-ready**. Missing data remains unknown; no prediction or profitability claim is made. No broker orders were sent. `.env`, runtime databases and broker settings were not accessed or modified during this work.
