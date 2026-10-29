@@ -2103,6 +2103,31 @@ class DerivConnector(BaseConnector):
             platform="deriv",
         )
 
+    def get_symbol_spec(self, symbol: str) -> dict:
+        """Expose only Deriv contract constraints discovered from broker responses.
+
+        This is deliberately not a synthetic CFD/MT5-style tick-value or
+        contract-size specification. The discovered multiplier list comes from
+        Deriv's contracts_for response or an explicit broker rejection payload.
+        An empty cache means the relevant contract constraints remain unknown.
+        """
+        try:
+            mapped = self.symbol_map(symbol)
+            multipliers = self._discovered_multipliers.get(mapped)
+            if not mapped or not multipliers:
+                return {}
+            return {
+                "symbol": symbol,
+                "broker_symbol": mapped,
+                "available_multipliers": list(multipliers),
+                "contract_constraints_verified": True,
+                "source_verified": True,
+                "source": "deriv.contracts_for_or_broker_rejection",
+            }
+        except Exception as exc:
+            logger.debug("Deriv symbol specification unavailable for {}: {}", symbol, exc)
+            return {}
+
     def get_deal_close_info(self, order_id: str) -> Optional[DealCloseInfo]:
         try:
             self._require_connection()
