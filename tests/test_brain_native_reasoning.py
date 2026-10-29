@@ -587,7 +587,7 @@ def test_weak_native_view_stands_down_when_advisor_unavailable():
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
-    assert out.direction == FLAT
+    assert out.direction == "FLAT"
     assert out.provider_status == "unavailable"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     questions = out.decision.questions_answered
