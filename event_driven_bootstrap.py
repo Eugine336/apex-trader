@@ -2810,6 +2810,47 @@ class EventDrivenSystem:
                     evidence.append(m1_evidence)
             except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
                 logger.debug("[cognition] M1 price-action evidence failed for {}: {}", symbol, exc)
+            # System 2 — ingest live broker-truth instrument economics as neutral
+            # evidence. Missing fields stay absent; registry/config fallbacks are
+            # not mislabeled as broker-verified specifications.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                spec_fn = getattr(self._pm, "get_symbol_spec", None)
+                spec = spec_fn(symbol) if callable(spec_fn) else {}
+                if isinstance(spec, dict) and spec:
+                    raw_fields = {
+                        "contract_size": spec.get("trade_contract_size", spec.get("contract_size")),
+                        "tick_size": spec.get("trade_tick_size", spec.get("tick_size")),
+                        "tick_value": spec.get("trade_tick_value", spec.get("tick_value")),
+                        "volume_min": spec.get("volume_min", spec.get("volume_minimum")),
+                        "volume_max": spec.get("volume_max", spec.get("volume_maximum")),
+                        "volume_step": spec.get("volume_step"),
+                        "minimum_stop_distance": spec.get("stops_level", spec.get("minimum_stop_distance")),
+                        "digits": spec.get("digits"),
+                        "point": spec.get("point"),
+                        "swap_long": spec.get("swap_long"),
+                        "swap_short": spec.get("swap_short"),
+                        "swap_mode": spec.get("swap_mode"),
+                        "trade_mode": spec.get("trade_mode"),
+                        "broker_symbol": spec.get("broker_symbol"),
+                        "source_timestamp_known": True,
+                        "specification_verified": True,
+                        "source_verified": True,
+                    }
+                    measurements = {key: value for key, value in raw_fields.items() if value is not None}
+                    evidence.append(Evidence(
+                        source_module="broker.instrument_spec",
+                        domain=EvidenceDomain.OTHER,
+                        symbol=symbol,
+                        observation="live broker symbol specification; only fields returned by the connector are present",
+                        confidence=1.0,
+                        uncertainty=0.0,
+                        measurements=measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=60.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — missing specs remain missing
+                logger.debug("[cognition] broker instrument-spec evidence unavailable for {}: {}", symbol, exc)
             return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
