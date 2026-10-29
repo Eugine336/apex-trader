@@ -11,6 +11,7 @@ price-action evidence.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 from math import isfinite, sqrt
 from typing import Any
 
@@ -56,9 +57,11 @@ def _timestamp_epoch(value: Any) -> float | None:
         if not text:
             return None
         parsed_dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        # Naive timestamps have no timezone provenance and cannot support
+        # synchronized multi-timeframe claims.
         if parsed_dt.tzinfo is None:
-            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-        parsed = parsed_dt.timestamp()
+            return None
+        parsed = parsed_dt.astimezone(timezone.utc).timestamp()
         return parsed if isfinite(parsed) and parsed > 0 else None
     except (TypeError, ValueError, OverflowError, OSError):
         return None
@@ -203,6 +206,8 @@ def analyze_market_frames(
     timeframe_signs: list[int] = []
     timeframe_scores: list[float] = []
     timeframe_source_epochs: list[float | None] = []
+    timeframe_observations: list[dict[str, Any]] = []
+    snapshot_cutoff_epoch = time.time()
 
     for raw_tf, frame in (frames or {}).items():
         timeframe = str(raw_tf or "").upper()
@@ -216,6 +221,15 @@ def analyze_market_frames(
         current = bars[-1]
         source_epoch = _safe_float(current.get("timestamp_epoch"))
         timeframe_source_epochs.append(source_epoch)
+        timeframe_observations.append({
+            "timeframe": timeframe,
+            "bar_open_epoch": source_epoch,
+            "bar_close_epoch": (
+                source_epoch + _TIMEFRAME_SECONDS[timeframe]
+                if source_epoch is not None else None
+            ),
+            "timeframe_seconds": _TIMEFRAME_SECONDS[timeframe],
+        })
         ranges = [max(0.0, bar["high"] - bar["low"]) for bar in bars]
         current_range = ranges[-1]
         baseline_ranges = ranges[-11:-1]
@@ -408,8 +422,11 @@ def analyze_market_frames(
                 source_epoch=source_epoch,
             ))
 
-    # Non-directional cross-timeframe alignment. Individual timeframe facts remain
-    # separate above; this summary does not emit a chosen LONG/SHORT/FLAT bias.
+    # Non-directional alignment is synchronized only when the latest completed
+    # bars are point-in-time eligible at one shared snapshot cutoff, have source
+    # timestamps, and intraday candle opens align to their declared epoch grids.
+    # D1 is excluded from this assertion because broker daily boundaries can
+    # depend on server timezone/DST. Unsynchronized alignment remains descriptive.
     active = [sign for sign in timeframe_signs if sign]
     if len(active) >= 2:
         bullish_n = sum(sign > 0 for sign in active)
@@ -417,10 +434,31 @@ def analyze_market_frames(
         agreement_n = max(bullish_n, bearish_n)
         conflict_score = 1.0 - (agreement_n / len(active))
         alignment_degree = agreement_n / len(active)
-        alignment_source_epoch = (
-            min(timeframe_source_epochs)
-            if timeframe_source_epochs and all(epoch is not None for epoch in timeframe_source_epochs)
-            else None
+        intraday = [
+            item for item in timeframe_observations
+            if item["timeframe"] in {"M1", "M5", "M15", "H1", "H4"}
+        ]
+        timestamped = [
+            item for item in intraday
+            if item["bar_open_epoch"] is not None
+            and item["bar_close_epoch"] is not None
+        ]
+        grid_aligned = bool(timestamped) and all(
+            abs(
+                (item["bar_open_epoch"] / item["timeframe_seconds"])
+                - round(item["bar_open_epoch"] / item["timeframe_seconds"])
+            ) < 1e-6
+            for item in timestamped
+        )
+        eligible = bool(timestamped) and all(
+            item["bar_close_epoch"] <= snapshot_cutoff_epoch
+            for item in timestamped
+        )
+        synchronized = (
+            len(timestamped) >= 2
+            and len(timestamped) == len(intraday)
+            and grid_aligned
+            and eligible
         )
         output.append(_record(
             symbol, "MULTI", EvidenceDomain.MULTI_TIMEFRAME, "alignment",
@@ -432,8 +470,19 @@ def analyze_market_frames(
                 "conflict_score": conflict_score,
                 "alignment": "aligned" if conflict_score <= 0.2 else ("conflict" if conflict_score >= 0.5 else "mixed"),
                 "trend_strength": min(1.0, _mean(timeframe_scores)),
+                "synchronized_timestamps": synchronized,
+                "source_verified": synchronized,
+                "synchronization_method": "common_snapshot_cutoff_and_intraday_epoch_boundaries",
+                "snapshot_cutoff_epoch": snapshot_cutoff_epoch,
+                "timeframe_observations": timeframe_observations,
+                "daily_boundary_included": False,
+                "synchronization_limitation": (
+                    None if synchronized else
+                    "source timestamps, intraday boundaries, or common-cutoff eligibility not fully verified"
+                ),
+                "causation_established": False,
             },
-            source_epoch=alignment_source_epoch,
+            source_epoch=snapshot_cutoff_epoch if synchronized else None,
         ))
 
     return output
