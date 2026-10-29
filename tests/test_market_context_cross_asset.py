@@ -115,3 +115,34 @@ def test_measured_cross_asset_evidence_is_classified_as_verified_association():
 def test_round_trip_cost_fails_closed_when_zero_commission_is_unverified():
     system = _cost_system(lambda symbol: 2.0, commission_verified=False)
     assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+
+
+def test_money_per_price_requires_explicit_verified_broker_spec():
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = SimpleNamespace(get_symbol_spec=lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_tick_value": 1.0,
+        "trade_tick_size": 0.01,
+    })
+    assert system._money_per_price("XAUUSD", 2.0) == 200.0
+
+
+def test_money_per_price_rejects_unverified_or_invalid_broker_spec():
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = SimpleNamespace(get_symbol_spec=lambda symbol: {
+        "source_verified": True,
+        "specification_verified": False,
+        "trade_tick_value": 1.0,
+        "trade_tick_size": 0.01,
+    })
+    assert system._money_per_price("XAUUSD", 2.0) == 0.0
+
+    system._pm = SimpleNamespace(get_symbol_spec=lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_tick_value": float("nan"),
+        "trade_tick_size": 0.01,
+    })
+    assert system._money_per_price("XAUUSD", 2.0) == 0.0
