@@ -94,7 +94,6 @@ class TestPlatformManagerRefreshCallback:
         assert expires_in == 3600.0
 
 
-
 class TestEnvironmentConfigurationParsing:
     def test_blank_deriv_ttl_uses_default(self, monkeypatch):
         monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "")
