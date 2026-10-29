@@ -838,3 +838,64 @@ def test_rejects_brain_entry_without_activated_opportunity_id():
     assert not result.success and result.rejected_by_gate
     assert "opportunity_id" in result.gate_reason
     assert broker.open_calls == []
+
+
+
+def test_open_rejects_unverified_broker_spec_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": False,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.00001,
+        "trade_stops_level": 0,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "broker_spec_unverified" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_volume_step_violation_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.03,
+        "point": 0.00001,
+        "trade_stops_level": 0,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD", lots=0.10), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "volume step" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_stops_inside_verified_broker_minimum_distance():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.0001,
+        "trade_stops_level": 2000,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "minimum distance" in result.gate_reason
+    assert broker.open_calls == []
