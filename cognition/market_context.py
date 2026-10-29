@@ -207,17 +207,17 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "note": "Preserved for reasoning; not automatically promoted to a validated pattern.",
             })
 
-    if not instrument_records:
-        missing.append("instrument contract/economic specifications (tick value, contract size, lot constraints, margin and financing)")
-    if not session_records:
+    if not any(record["verified"] for record in instrument_records):
+        missing.append("verified instrument contract/economic specifications (tick value, contract size, lot constraints, margin and financing)")
+    if not any(record["verified"] for record in session_records):
         missing.append("verified market session calendar and instrument-specific trading hours/timezone")
-    if not cross_timeframe_records:
-        missing.append("cross-timeframe relationships with explicit timeframe and timestamp provenance")
-    if not cross_asset_records:
+    if not any(record["synchronized"] and record["source_verified"] for record in cross_timeframe_records):
+        missing.append("synchronized cross-timeframe relationships with explicit timeframe and timestamp provenance")
+    if not any(record["synchronized"] and record["source_verified"] for record in cross_asset_records):
         missing.append("synchronized cross-asset relationship measurements with a defined window and source provenance")
-    if not historical_records:
+    if not any(record["validation_status"] == "validated_controls_reported" for record in historical_records):
         missing.append("historical outcome evidence with leakage, selection-bias and overfitting controls")
-    if not execution_records:
+    if not any(record["verified"] for record in execution_records):
         missing.append("verified instrument-specific execution costs and broker constraints")
 
     return {
@@ -250,8 +250,16 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "records": relationship_records,
             "cross_timeframe_records": cross_timeframe_records,
             "cross_asset_records": cross_asset_records,
-            "cross_timeframe_status": "observations_present" if cross_timeframe_records else "missing",
-            "cross_asset_status": "observations_present" if cross_asset_records else "missing",
+            "cross_timeframe_status": (
+                "verified_synchronized_observations_present"
+                if any(r["synchronized"] and r["source_verified"] for r in cross_timeframe_records)
+                else ("unverified_observations_present" if cross_timeframe_records else "missing")
+            ),
+            "cross_asset_status": (
+                "verified_synchronized_observations_present"
+                if any(r["synchronized"] and r["source_verified"] for r in cross_asset_records)
+                else ("unverified_observations_present" if cross_asset_records else "missing")
+            ),
             "interpretation": "observed_association_only",
             "causation_established": False,
         },
