@@ -9,7 +9,7 @@ APEX TRADER is a multi-platform trading system for MetaTrader 5 and Deriv. Its i
 
 This is binding. Apex must observe market state before choosing analytical methods. ICT/SMC, price action, M1 candlestick patterns, trend following, momentum, mean reversion, breakouts, Wyckoff, CRT, volume/auction, volatility, session/macro, intermarket and statistical methods are analytical tools—not permanent trading identities or independent order authorities.
 
-Read [the canonical identity](docs/APEX_IDENTITY.md) and [the system-wide implementation audit](docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md). Those documents distinguish implemented/wired/tested behaviour from shadow, legacy, data-limited and unverified capabilities.
+Read [the canonical identity](docs/APEX_IDENTITY.md), the [binding Constitution](docs/APEX_Constitution.md), and the [system-wide implementation audit](docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md). The machine-readable identity in `cognition/identity.py` remains the single exact identity source; the Constitution defines binding implementation rules, including native reasoning before optional external advice. The audit distinguishes implemented/wired/tested behaviour from shadow, legacy, data-limited and unverified capabilities.
 
 
 ---

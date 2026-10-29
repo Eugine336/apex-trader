@@ -38,6 +38,7 @@ Apex operates as an evidence-driven market intelligence system, not a convention
 15. [Part XV --- Future Evolution Constitution](#part-xv)
 16. [Part XVI --- Hardcoding & Architectural Abstraction Constitution](#part-xvi)
 17. [Part XVII --- Multi-Model Reasoning Constitution](#part-xvii)
+18. [Part XXVI --- Native Reasoning Primacy and Optional External Advisory](#part-xxvi)
 
 ------------------------------------------------------------------------
 
@@ -2422,3 +2423,178 @@ information, forces predefined directional thinking, converts observations into
 votes, prevents novel hypotheses, prevents independent advisor reasoning, or
 causes premature LONG/SHORT/FLAT compression — reject or redesign it. No
 compromise.
+
+
+------------------------------------------------------------------------
+
+# Part XXVI — Native Reasoning Primacy and Optional External Advisory
+
+> **Status: BINDING.** This Part supplements the canonical identity; it does not
+> replace, fork, or redefine it. If explanatory prose elsewhere conflicts with
+> `cognition/identity.py::IDENTITY_STATEMENT`, the exact machine-readable
+> identity remains authoritative. This Part defines the mandatory runtime order
+> and authority boundaries needed to uphold that identity.
+
+## Article 1 — Native reasoning begins first
+
+After market evidence is consolidated to the degree possible, Apex MUST begin
+its own native market reasoning before checking, waiting for, or calling an
+external AI provider. The native path must independently interpret the current
+market state, generate and challenge hypotheses, identify possible opportunities,
+and determine its provisional verdict.
+
+External-provider availability is not a prerequisite, permission check, trigger,
+or gate for native reasoning. No provider health check, timeout, API call, quorum,
+or response may delay or prevent the native reasoning cycle from starting.
+
+## Article 2 — The external advisor is optional, never foundational
+
+External AI is an optional advisor. It may add evidence-based interpretations,
+counterarguments, alternative hypotheses, or uncertainty checks. It is not
+Apex's brain, not the source of Apex's market understanding, and not a required
+dependency for deciding whether a qualified opportunity exists.
+
+The advisor may influence the Brain's final assessment only through an explicit,
+auditable synthesis of its reasoning. It cannot silently replace native analysis,
+become an indicator vote, dictate a trade, or acquire independent order authority.
+
+## Article 3 — Mandatory decision sequence
+
+The intended order is:
+
+1. Observe market, portfolio, execution and operational state.
+2. Consolidate evidence with source provenance, freshness, uncertainty and gaps.
+3. Run native reasoning immediately and independently.
+4. Record the native hypotheses, counter-hypotheses, uncertainties and provisional
+   verdict before optional advisory work.
+5. If an external advisor is available within configured resource limits, request
+   advice as a secondary enrichment step and assess it critically. If not, skip
+   this step without blocking the cycle.
+6. Synthesize any usable advice with native reasoning; preserve disagreements and
+   attribution rather than flattening them into votes or false consensus.
+7. Qualify the opportunity using the same activation, invalidation, net expected
+   value, execution-cost, portfolio and risk requirements in native-only and
+   advisor-assisted operation.
+8. Submit only a qualified Brain-authored opportunity through the shared
+   admission, risk and execution path.
+9. Continue monitoring and re-reasoning regardless of advisor status.
+
+Implementation may parallelize independent work only if it preserves the
+constitutional invariant that native reasoning starts without waiting for the
+advisor and its pre-advice result is recorded separately.
+
+## Article 4 — Provider status and market verdict are separate facts
+
+Provider status describes infrastructure. The native verdict describes Apex's
+market assessment. They MUST be stored, logged and surfaced as distinct fields.
+
+An unavailable, slow, malformed or failed advisor MUST NOT overwrite a native
+verdict, convert it to `reasoner_unavailable`, imply that no opportunity exists,
+or suppress a qualified native opportunity. A native conclusion of
+"no defensible opportunity" is valid only when produced by market reasoning,
+not inferred from provider failure.
+
+Recommended distinct telemetry includes `native_verdict`,
+`native_reasoning_status`, `external_advisor_status`,
+`advisor_influence`, and `decision_provenance`. Exact field names may vary;
+the semantic separation is mandatory.
+
+## Article 5 — Native-only operation has the same standards
+
+When no advisor is available, Apex must continue to:
+- observe and reason over current evidence;
+- generate plausible competing and counter-hypotheses;
+- state missing evidence and uncertainty honestly;
+- identify, track and reassess candidate opportunities;
+- evaluate activation, invalidation, net expectancy, costs and opportunity cost;
+- consider whole-book exposure and campaign context;
+- manage existing positions through the same native thesis-reasoning process; and
+- use the common admission, risk, execution and audit controls.
+
+Native-only operation does not mean forced trading. If no hypothesis survives
+challenge or no opportunity meets the required evidence and risk standards,
+Apex must continue observing. It must not fabricate certainty to compensate for
+missing advisory support.
+
+## Article 6 — Advisor-assisted operation preserves Brain authority
+
+When advice is available, the Brain must assess its evidence, assumptions,
+limitations, contradictions and relevance to the current market state. Advisor
+output is not automatically trusted because it exists, agrees with the native
+view, or is generated by a more capable model.
+
+The Brain may accept, partially incorporate, challenge or reject advice with
+recorded reasons. Disagreement must remain visible. No provider may bypass the
+Brain, portfolio admission, risk controls, identity validation, or the shared
+execution boundary.
+
+## Article 7 — Safety and data integrity remain hard constraints
+
+This rule does not weaken safety. Invalid or stale market data, broken broker
+state, invalid orders, failed reconciliation, breached account limits, or
+unavailable mandatory execution facts may prevent a trade under their own
+explicit controls. These conditions must be reported as data, execution or risk
+failures—not disguised as advisor unavailability or a market verdict.
+
+The same deterministic risk and execution requirements apply whether advice is
+available or not. Optional AI must never be used to bypass a hard safety control.
+
+## Article 8 — Forbidden architectures
+
+The following are constitutional violations:
+
+- Checking provider availability before allowing native reasoning to begin.
+- Waiting for an external model before constructing Apex's own hypotheses.
+- Making an external model, quorum or advisor timeout a prerequisite for native
+  market assessment or opportunity qualification.
+- Replacing a valid native verdict with a generic provider-unavailable result.
+- Treating an advisor's direction as a vote or automatic override.
+- Using provider failure as evidence that the market has no opportunity.
+- Applying weaker expectancy, provenance, portfolio or risk gates to native-only
+  decisions—or stronger arbitrary gates solely because the advisor is offline.
+- Claiming independence based only on a fallback label while the runtime still
+  blocks, suppresses or cannot route a qualified native opportunity.
+
+## Article 9 — Required conformance evidence
+
+This Part is not satisfied by documentation, comments, a configuration flag or a
+test that only mocks the final output. Conformance requires source-level call
+ordering and regression evidence demonstrating:
+
+1. Native reasoning is invoked before any provider availability check or call.
+2. A provider that is offline, times out, returns malformed data or raises an
+   exception does not prevent native reasoning from completing.
+3. A qualified native opportunity can reach the shared admission/risk/execution
+   path with the advisor unavailable, provided all ordinary requirements pass.
+4. A native "no opportunity" verdict remains distinguishable from provider
+   failure.
+5. Advisor advice can influence a decision without replacing native authority,
+   and its influence is attributable in the decision record.
+6. Native-only and advisor-assisted paths enforce equivalent opportunity,
+   provenance, portfolio and safety requirements.
+7. Open-position management continues native thesis reassessment during advisor
+   failure.
+8. Logs and serialized decision records retain separate native verdict and
+   advisor status.
+
+Run these tests against the actual runtime wiring and every relevant entry and
+management path. Report each criterion as implemented, wired, tested, or
+unverified; never claim full conformance without execution evidence.
+
+## Article 10 — Supremacy and change control
+
+This Constitution is binding engineering law alongside the canonical identity.
+The canonical identity's exact text and machine-readable definition in
+`cognition/identity.py` must remain the single identity source; do not create a
+competing Python constant or subtly rewritten identity. This Constitution
+specifies the implementation obligations derived from that identity. If a
+change conflicts with either the identity or this Part, reject or redesign the
+change rather than weakening the contract to fit the implementation.
+
+Any amendment to this Part must preserve native-first reasoning, optional
+advisory status, separate provider/market verdicts, common opportunity
+qualification, and hard execution safety. A change is not considered complete
+until the corresponding source, tests, audit and operational documentation agree.
+
+------------------------------------------------------------------------
+
