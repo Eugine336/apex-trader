@@ -223,3 +223,20 @@ For every system, record: branch/PR and merge SHA; changed files; acceptance cri
 
 Branch `redesign/system2-decision-time-provenance` implements decision-time feature capture in both Brain origination paths, propagates the snapshot through campaign translation and the shared OPEN intent, fails closed at the Brain origination sink when the snapshot is incomplete, and records a durable ticket-linked entry snapshot plus realized outcome event. Focused tests were added but have **not been executed**. These changes are not merged. System 2 remains **IN PROGRESS** until runtime tests, identity audit, exact-ticket recovery, broker-calendar/constraint coverage, financing-cost integrity and independent historical validation are demonstrated. Do not start System 3 before acceptance.
 
+## Roadmap progress register (updated 2026-10-30)
+
+| System | Status | Acceptance evidence |
+|---|---|---|
+| 1. Canonical identity and contracts | **Foundation present; audit required** | Canonical identity and contract code exist; current whole-repository conformance still requires a fresh executed audit. |
+| 2. Market intelligence and evidence integrity | **IN PROGRESS — BLOCKED** | PR #792 has point-in-time snapshot and trade-outcome linkage implementation plus financing fail-closed changes. Draft only; tests/audit not executed. Calendar, Deriv constraints, actual financing estimates and independent historical validation remain open. |
+| 3. Native market reasoning | **NOT STARTED — gated on System 2** | No acceptance evidence recorded. |
+| 4. Opportunity discovery and payoff geometry | **NOT STARTED — gated on System 3** | No acceptance evidence recorded. Existing code must be audited when reached. |
+| 5. Compliance and portfolio allocation | **NOT STARTED — gated on System 4** | No acceptance evidence recorded. Existing code must be audited when reached. |
+| 6. Execution integrity and broker adapters | **NOT STARTED — gated on System 5** | Some shared executor protections already exist; system-wide acceptance is not recorded. |
+| 7. Position operations and trade lifecycle | **NOT STARTED — gated on System 6** | No end-to-end lifecycle acceptance evidence recorded. |
+| 8. Learning and statistical validation | **NOT STARTED — gated on System 7** | Validation guards exist; no verified point-in-time dataset or independent performance evidence recorded. |
+| 9. Governance, observability and recovery | **NOT STARTED — gated on System 8** | No full fault-injection/recovery acceptance evidence recorded. |
+| 10. Integration and release readiness | **NOT STARTED — gated on Systems 1–9** | No final integrated acceptance decision. |
+
+A status can move to **COMPLETE** only when the acceptance evidence is linked in the table or accompanying audit, all critical tests have actually run, and unresolved limitations are either closed or explicitly accepted by the owner. A merge alone never changes the status to COMPLETE.
+
