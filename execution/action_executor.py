@@ -307,8 +307,10 @@ class ActionExecutor:
             not decision_id
             or str(snapshot.get("decision_id") or "") != decision_id
             or not str(snapshot.get("snapshot_id") or "")
+            or str(snapshot.get("symbol") or "").strip().upper()
+               != str(getattr(intent, "symbol", "") or "").strip().upper()
         ):
-            return "decision_feature_snapshot_decision_mismatch"
+            return "decision_feature_snapshot_decision_or_symbol_mismatch"
         ids = snapshot.get("evidence_ids")
         features = snapshot.get("features")
         if not isinstance(ids, list) or not ids or not isinstance(features, list) or not features:
@@ -319,8 +321,13 @@ class ActionExecutor:
             return "decision_feature_snapshot_evidence_lineage_mismatch"
         try:
             decision_epoch = float(snapshot.get("decision_timestamp_epoch"))
+            now_epoch = time.time()
             if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
                 return "decision_feature_snapshot_timestamp_invalid"
+            if decision_epoch > now_epoch + 30.0 or now_epoch - decision_epoch > 900.0:
+                return "decision_feature_snapshot_stale_or_future"
+            if int(snapshot.get("evidence_count", -1)) != len(features):
+                return "decision_feature_snapshot_evidence_count_mismatch"
             for row in features:
                 if not isinstance(row, dict):
                     return "decision_feature_snapshot_feature_invalid"
