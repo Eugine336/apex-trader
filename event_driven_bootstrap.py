@@ -2726,6 +2726,125 @@ class EventDrivenSystem:
             logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
             return {}
 
+    def _cognition_cross_asset_evidence(self, symbol: str, primary_data: dict) -> list:
+        """Calculate synchronized cross-asset return associations from broker bars.
+
+        This is descriptive context only. It does not assert causation or use
+        static inverse-correlation tables as measured coefficients. Both legs
+        must supply timezone-aware broker candle timestamps; only exact common
+        H1 timestamps are joined, and at least 20 paired closed-bar returns are
+        required. Unsupported/missing data stays missing.
+        """
+        try:
+            from cognition.contracts import Evidence, EvidenceDomain
+            ctx = getattr(self, "_ctx", None)
+            engine = getattr(ctx, "correlation_engine", None)
+            related = tuple(engine.inverse_correlates(symbol)) if engine is not None else ()
+            if not related or self._pm is None:
+                return []
+
+            def _closed_series(frame):
+                if frame is None or not hasattr(frame, "columns"):
+                    return None
+                if "time" not in frame.columns or "close" not in frame.columns:
+                    return None
+                data = frame.iloc[:-1].copy()  # exclude forming candle
+                if len(data) < 22:
+                    return None
+                timestamps = []
+                closes = []
+                for raw_time, raw_close in zip(data["time"].tolist(), data["close"].tolist()):
+                    try:
+                        stamp = pd.Timestamp(raw_time)
+                        if stamp.tzinfo is None:
+                            return None
+                        stamp = stamp.tz_convert("UTC")
+                        close = float(raw_close)
+                        if not math.isfinite(close) or close <= 0:
+                            continue
+                        timestamps.append(stamp)
+                        closes.append(close)
+                    except (TypeError, ValueError, OverflowError):
+                        return None
+                if len(timestamps) < 22 or len(set(timestamps)) != len(timestamps):
+                    return None
+                return dict(zip(timestamps, closes))
+
+            primary_frame = (primary_data or {}).get("H1")
+            primary = _closed_series(primary_frame)
+            if not primary:
+                return []
+            output = []
+            for related_symbol in related[:4]:
+                try:
+                    related_data = self._pm.fetch_market_data(
+                        related_symbol, ["H1"], count=64, include_forming=False,
+                    ) or {}
+                    # include_forming=False already excludes the active candle.
+                    related_frame = related_data.get("H1")
+                    if related_frame is None:
+                        continue
+                    related_series = _closed_series(related_frame)
+                    if not related_series:
+                        continue
+                    common = sorted(set(primary) & set(related_series))
+                    if len(common) < 22:
+                        continue
+                    left = [primary[t] for t in common]
+                    right = [related_series[t] for t in common]
+                    left_returns = [left[i] / left[i - 1] - 1.0 for i in range(1, len(left))]
+                    right_returns = [right[i] / right[i - 1] - 1.0 for i in range(1, len(right))]
+                    if len(left_returns) < 20:
+                        continue
+                    mean_left = sum(left_returns) / len(left_returns)
+                    mean_right = sum(right_returns) / len(right_returns)
+                    covariance = sum(
+                        (a - mean_left) * (b - mean_right)
+                        for a, b in zip(left_returns, right_returns)
+                    )
+                    variance_left = sum((a - mean_left) ** 2 for a in left_returns)
+                    variance_right = sum((b - mean_right) ** 2 for b in right_returns)
+                    denominator = math.sqrt(variance_left * variance_right)
+                    if not math.isfinite(denominator) or denominator <= 0:
+                        continue
+                    coefficient = covariance / denominator
+                    if not math.isfinite(coefficient):
+                        continue
+                    output.append(Evidence(
+                        source_module="broker.cross_asset_returns",
+                        domain=EvidenceDomain.CORRELATION,
+                        symbol=symbol,
+                        observation=(
+                            f"descriptive H1 close-to-close return association with "
+                            f"{related_symbol}; not causal evidence"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements={
+                            "related_symbol": related_symbol,
+                            "correlation_coefficient": max(-1.0, min(1.0, coefficient)),
+                            "sample_count": len(left_returns),
+                            "measurement_window": "H1 close-to-close returns; exact shared UTC candle timestamps",
+                            "timeframe": "H1",
+                            "synchronized_timestamps": True,
+                            "source_verified": True,
+                            "first_common_timestamp": common[0].isoformat(),
+                            "last_common_timestamp": common[-1].isoformat(),
+                            "causation_established": False,
+                        },
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=3600.0,
+                    ))
+                except Exception as exc:  # noqa: BLE001 — one missing leg stays missing
+                    logger.debug(
+                        "[cognition] cross-asset association unavailable for {} / {}: {}",
+                        symbol, related_symbol, exc,
+                    )
+            return output
+        except Exception as exc:  # noqa: BLE001 — relationships are optional context
+            logger.debug("[cognition] cross-asset association failed for {}: {}", symbol, exc)
+            return []
+
     def _cognition_price_snapshot(self, symbol: str) -> list:
         """Reconstruct the live chart for one symbol as Evidence (Part XIX Art 2).
 
@@ -2810,6 +2929,12 @@ class EventDrivenSystem:
                     evidence.append(m1_evidence)
             except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
                 logger.debug("[cognition] M1 price-action evidence failed for {}: {}", symbol, exc)
+            # System 2 — calculate measured cross-asset associations only
+            # from exact common UTC H1 bars; missing/unavailable legs stay absent.
+            try:
+                evidence.extend(self._cognition_cross_asset_evidence(symbol, data))
+            except Exception as exc:  # noqa: BLE001 — context cannot break cognition
+                logger.debug("[cognition] cross-asset evidence unavailable for {}: {}", symbol, exc)
             # System 2 — ingest live broker-truth instrument economics as neutral
             # evidence. Missing fields stay absent; registry/config fallbacks are
             # not mislabeled as broker-verified specifications.
