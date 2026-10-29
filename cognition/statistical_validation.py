@@ -99,13 +99,19 @@ def validate_historical_rows(
     # entire earlier outcome horizon to end before the next split begins, so a
     # long-horizon label cannot bleed into validation/test time.
     for earlier, later in (("train", "validation"), ("validation", "test")):
-        earlier_outcomes = [
-            r["outcome"] for r in parsed
-            if r["split"] == earlier and r["outcome"] is not None
+        earlier_decisions = [
+            r["decision"] for r in parsed
+            if r["split"] == earlier and r["decision"] is not None
         ]
         later_decisions = [
             r["decision"] for r in parsed
             if r["split"] == later and r["decision"] is not None
+        ]
+        if earlier_decisions and later_decisions and max(earlier_decisions) >= min(later_decisions):
+            errors.append(f"{earlier}/{later} split is not strictly chronological")
+        earlier_outcomes = [
+            r["outcome"] for r in parsed
+            if r["split"] == earlier and r["outcome"] is not None
         ]
         if earlier_outcomes and later_decisions and max(earlier_outcomes) >= min(later_decisions):
             errors.append(
