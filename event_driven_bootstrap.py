@@ -6664,9 +6664,87 @@ class EventDrivenSystem:
         info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            # Recover the immutable entry snapshot from the append-only event
+            # ledger after process restart. Match the exact broker ticket; never
+            # infer a trade link from symbol, direction, or approximate time.
+            if not isinstance(info.get("decision_feature_snapshot"), dict):
+                try:
+                    from persistence import domain_events as DE
+                    from persistence.event_store import get_event_store
+                    store = get_event_store()
+                    if store is not None:
+                        rows = store.query(
+                            event_type=DE.DECISION_TRADE_ENTRY_SNAPSHOT,
+                            symbol=str(symbol or ""),
+                            limit=5000,
+                        )
+                        for row in reversed(rows):
+                            payload = json.loads(row.get("payload_json") or "{}")
+                            if str(payload.get("ticket") or row.get("parent_id") or "") != str(ticket):
+                                continue
+                            recovered = payload.get("decision_feature_snapshot")
+                            if not isinstance(recovered, dict):
+                                recovered = payload.get("feature_snapshot")
+                            if isinstance(recovered, dict):
+                                info.update({
+                                    "decision_id": str(payload.get("decision_id") or ""),
+                                    "campaign_id": str(payload.get("campaign_id") or ""),
+                                    "opportunity_id": str(payload.get("opportunity_id") or ""),
+                                    "snapshot_id": str(payload.get("snapshot_id") or recovered.get("snapshot_id") or ""),
+                                    "decision_snapshot_complete": bool(payload.get("decision_snapshot_complete")),
+                                    "decision_feature_snapshot": recovered,
+                                })
+                                break
+                except Exception as exc:  # noqa: BLE001 — history may be unavailable
+                    logger.warning(
+                        "[decision-provenance] entry snapshot recovery failed for ticket {}: {}",
+                        ticket, exc,
+                    )
             # Release candidate provenance now the position has left the book.
             self._candidate_positions.pop(str(ticket), None)
-            # A flat-dollar close that still gained pips (e.g. commission ate
+            # Durable outcome link for System 2. The open snapshot is stored once
+        # against the broker ticket; this event references its exact snapshot ID
+        # and records realized costs/outcome without claiming predictive validity.
+        try:
+            from persistence import domain_events as DE
+            from persistence.event_store import get_event_store
+            store = get_event_store()
+            if store is not None:
+                snapshot = info.get("decision_feature_snapshot")
+                snapshot = snapshot if isinstance(snapshot, dict) else {}
+                store.emit(
+                    event_type=DE.DECISION_TRADE_OUTCOME,
+                    severity="INFO" if snapshot and info.get("decision_snapshot_complete") else "WARNING",
+                    symbol=str(symbol or ""),
+                    correlation_id=str(info.get("decision_id") or "") or None,
+                    parent_id=str(ticket or "") or None,
+                    source_module="learning.decision_provenance",
+                    payload={
+                        "ticket": str(ticket or ""),
+                        "symbol": str(symbol or ""),
+                        "direction": str(direction or "").upper(),
+                        "decision_id": str(info.get("decision_id") or ""),
+                        "campaign_id": str(info.get("campaign_id") or ""),
+                        "opportunity_id": str(info.get("opportunity_id") or ""),
+                        "snapshot_id": str(info.get("snapshot_id") or snapshot.get("snapshot_id") or ""),
+                        "decision_snapshot_complete": bool(info.get("decision_snapshot_complete")),
+                        "entry_snapshot_present": bool(snapshot),
+                        "entry_snapshot_schema": str(snapshot.get("schema") or ""),
+                        "closed_at_epoch": _time.time(),
+                        "pnl_dollars": float(pnl_dollars or 0.0),
+                        "pnl_pips": float(pnl_pips or 0.0),
+                        "commission": float(commission or 0.0),
+                        "swap": float(swap or 0.0),
+                        "fee": float(fee or 0.0),
+                        "exit_reason": str(exit_reason or ""),
+                        "validation_status": "unvalidated",
+                        "predictive_ability_demonstrated": False,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — outcome persistence must not interrupt close accounting
+            logger.warning("[decision-provenance] close outcome persistence failed for {}: {}", ticket, exc)
+
+        # A flat-dollar close that still gained pips (e.g. commission ate
             # the dollar P&L) counts as a win for edge attribution.
             won = (pnl_dollars or 0.0) > 0.0 or (
                 (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
