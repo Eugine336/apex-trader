@@ -869,7 +869,7 @@ def test_open_rejects_volume_step_violation_before_broker_call():
         "trade_mode": 4,
         "volume_min": 0.01,
         "volume_max": 100.0,
-        "volume_step": 0.03,
+        "volume_step": 0.04,
         "point": 0.00001,
         "trade_stops_level": 0,
     }
