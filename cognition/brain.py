@@ -812,8 +812,10 @@ class CognitiveBrain:
             else (key_uncertainty or "none reported"),
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
-            "expected_value": ev_txt or ("positive" if direction in (LONG, SHORT)
-            and eff_conf >= self.min_confidence_to_act else "not established"),
+            "expected_value": ev_txt or (
+                f"{expected_value:.4f}R (native: conviction {eff_conf:.2f} x market geometry)"
+                if direction in (LONG, SHORT) else "not established"
+            ),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
             # Violation V7 — populated with the ACTUAL do-nothing reasoning in the
