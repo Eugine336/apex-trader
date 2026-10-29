@@ -508,6 +508,8 @@ def test_native_fallback_stands_down_without_execution_cost_evidence():
     out = brain.reason(state)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
+    assert out.provider_status == "not_configured"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
 
 
 def test_brain_originates_independently_when_advisor_unavailable():
@@ -561,6 +563,18 @@ def test_native_reasoning_precedes_advisor_availability_check():
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.provider_status == "unavailable"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
+
+
+def test_qualified_native_campaign_survives_healthy_advisor_no_opinion():
+    # An advisor that is healthy but throttled/no-opinion must not become a
+    # hidden prerequisite. Native qualification still gets the opportunity to act.
+    brain = CognitiveBrain(reasoner=_Reasoner(None), reward_r_default=2.0)
+    out = brain.reason(_strong_long_state())
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.campaign is not None
+    assert out.campaign.initial_execution_intent.get("independent_origination") is True
+    assert out.provider_status == "available"
+    assert out.native_verdict == DecisionType.OPEN_CAMPAIGN.value
 
 
 def test_weak_native_view_stands_down_when_advisor_unavailable():
