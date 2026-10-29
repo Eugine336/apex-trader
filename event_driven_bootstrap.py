@@ -2858,6 +2858,47 @@ class EventDrivenSystem:
                     ))
             except Exception as exc:  # noqa: BLE001 — missing specs remain missing
                 logger.debug("[cognition] broker instrument-spec evidence unavailable for {}: {}", symbol, exc)
+            # The internal session engine can supply a current clock/session
+            # observation, but its generic schedule is not an authoritative,
+            # instrument-specific broker calendar. Expose it as unverified
+            # context and keep the DST/holiday/session-calendar limitation clear.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                ctx = getattr(self, "_ctx", None)
+                session_engine = getattr(ctx, "session_engine", None)
+                if session_engine is not None:
+                    status = session_engine.get_status()
+                    session_fields = {
+                        "session_name": getattr(status, "current_session", None),
+                        "session_open_minutes": getattr(status, "session_open_minutes", None),
+                        "minutes_to_next_session": getattr(status, "minutes_to_next_session", None),
+                        "liquidity": getattr(status, "liquidity", None),
+                        "is_tradeable": getattr(status, "is_tradeable", None),
+                        "best_pairs": getattr(status, "best_pairs", None),
+                        "clock_timezone": "UTC",
+                        "session_calendar_verified": False,
+                        "source_verified": False,
+                    }
+                    session_measurements = {
+                        key: value for key, value in session_fields.items()
+                        if value is not None
+                    }
+                    evidence.append(Evidence(
+                        source_module="session_engine.internal_schedule",
+                        domain=EvidenceDomain.SESSION,
+                        symbol=symbol,
+                        observation=(
+                            "current generic session-engine observation; not an "
+                            "authoritative instrument-specific calendar"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements=session_measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=60.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — session context is optional
+                logger.debug("[cognition] session evidence unavailable for {}: {}", symbol, exc)
             return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
