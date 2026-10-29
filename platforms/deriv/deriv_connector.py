@@ -225,6 +225,7 @@ class DerivConnector(BaseConnector):
         self._mapper = SymbolMapper("deriv")
 
         self._discovered_multipliers: dict[str, list[int]] = {}
+        self._discovered_multipliers_at: dict[str, float] = {}
         # Deriv's documented multiplier-contract flow is proposal→buy, where the
         # contract definition (including ``symbol``) lives in the ``proposal``
         # request and the ``buy`` only references the returned proposal id.  The
@@ -813,6 +814,7 @@ class DerivConnector(BaseConnector):
                 if mults:
                     sorted_mults = sorted(mults)
                     self._discovered_multipliers[sym] = sorted_mults
+                    self._discovered_multipliers_at[sym] = _time.time()
                     logger.info("Deriv multipliers discovered — {}: {}", sym, sorted_mults)
             except Exception as exc:
                 logger.debug("Multiplier discovery failed for {}: {}", sym, exc)
@@ -1628,6 +1630,7 @@ class DerivConnector(BaseConnector):
                 valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
                 if valid:
                     self._discovered_multipliers[mapped] = valid
+                    self._discovered_multipliers_at[mapped] = _time.time()
                     nearest = min(valid, key=lambda x: abs(x - multiplier))
                     # Re-fit against the now-known valid list so the SL still
                     # fits within the stake (uses the existing fitting math).
@@ -2114,13 +2117,19 @@ class DerivConnector(BaseConnector):
         try:
             mapped = self.symbol_map(symbol)
             multipliers = self._discovered_multipliers.get(mapped)
-            if not mapped or not multipliers:
+            observed_at = self._discovered_multipliers_at.get(mapped)
+            if not mapped or not multipliers or not observed_at:
                 return {}
+            # A cached broker response is not indefinitely current. Preserve
+            # the observation timestamp and withhold current verification once
+            # the cache exceeds the explicit freshness window.
+            fresh = max(0.0, _time.time() - observed_at) <= 900.0
             return {
                 "symbol": symbol,
                 "broker_symbol": mapped,
                 "available_multipliers": list(multipliers),
-                "contract_constraints_verified": True,
+                "constraints_observed_epoch": observed_at,
+                "contract_constraints_verified": fresh,
                 "source_verified": True,
                 "source": "deriv.contracts_for_or_broker_rejection",
             }
