@@ -3006,7 +3006,11 @@ class EventDrivenSystem:
                         "volume_min": spec.get("volume_min", spec.get("volume_minimum")),
                         "volume_max": spec.get("volume_max", spec.get("volume_maximum")),
                         "volume_step": spec.get("volume_step"),
-                        "minimum_stop_distance": spec.get("stops_level", spec.get("minimum_stop_distance")),
+                        "minimum_stop_distance": spec.get(
+                            "trade_stops_level",
+                            spec.get("stops_level", spec.get("minimum_stop_distance")),
+                        ),
+                        "freeze_level": spec.get("trade_freeze_level"),
                         "digits": spec.get("digits"),
                         "point": spec.get("point"),
                         "swap_long": spec.get("swap_long"),
