@@ -1,13 +1,9 @@
-"""Provider-failure vs genuine-observe distinction.
+"""Provider-failure status and native market verdict remain separate.
 
-Constitution Part XVIII Art 5; forensic viva Q78/Q80/Q81/Q106.
-
-A reasoner that is CONFIGURED (``available``) but whose underlying provider FAILS
-at runtime (HTTP 0 / 503 / timeout) or returns an unparsable reply must NOT be
-read as a FLAT/observe *market view*. The reasoner now exposes that as a liveness
-signal (:meth:`LLMReasoner.last_reason_degraded`) and the Brain maps it to
-``REASONER_UNAVAILABLE`` (stand down), keeping a real infrastructure outage
-distinct from a genuine "nothing to do this cycle".
+A configured advisor may fail at runtime or return an unparsable reply. Native
+reasoning must still determine the market verdict; provider outage is reported
+as independent infrastructure metadata and must not replace a native observe
+decision or suppress a qualified native opportunity.
 """
 
 import json
@@ -99,7 +95,7 @@ def test_per_symbol_degraded_is_isolated():
     assert r.last_reason_degraded("GBPUSD") is True
 
 
-# ── Brain maps a degraded reasoner to REASONER_UNAVAILABLE ────────────────────
+# ── Brain preserves native verdict while recording advisor failure ────────────
 
 class _DegradableReasoner:
     """Available reasoner whose reason() returns None; degraded flag scripted."""
@@ -116,9 +112,12 @@ class _DegradableReasoner:
         return self._degraded
 
 
-def test_brain_degraded_none_is_reasoner_unavailable():
+def test_brain_degraded_none_preserves_native_observe_verdict():
     out = CognitiveBrain(reasoner=_DegradableReasoner(degraded=True)).reason(_rich_state())
-    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.provider_status == "unavailable"
+    assert out.provider_unavailable is True
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     assert out.decision.authorises_action is False
 
 
@@ -140,8 +139,11 @@ def test_brain_legacy_reasoner_without_signal_still_observes():
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
 
 
-def test_brain_end_to_end_provider_outage_not_a_market_view():
+def test_brain_end_to_end_provider_outage_preserves_native_verdict():
     # Full path: a real LLMReasoner whose provider is down (complete() -> None).
     r = LLMReasoner(client=_StubClient(None), enabled=True, min_interval_seconds=0)
     out = CognitiveBrain(reasoner=r).reason(_rich_state())
-    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.provider_status == "unavailable"
+    assert out.provider_unavailable is True
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
