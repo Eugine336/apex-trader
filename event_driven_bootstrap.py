@@ -2833,6 +2833,8 @@ class EventDrivenSystem:
                         "swap_mode": spec.get("swap_mode"),
                         "trade_mode": spec.get("trade_mode"),
                         "broker_symbol": spec.get("broker_symbol"),
+                        "available_multipliers": spec.get("available_multipliers"),
+                        "contract_constraints_verified": spec.get("contract_constraints_verified"),
                     }
                     measurements = {key: value for key, value in raw_fields.items() if value is not None}
                     # Retrieval time is not the provider's observation time.
