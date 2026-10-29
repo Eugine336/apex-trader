@@ -71,11 +71,14 @@ def test_cross_asset_evidence_rejects_insufficient_common_timestamps():
     assert _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau}) == []
 
 
-def _cost_system(spread_getter):
+def _cost_system(spread_getter, *, commission_verified=False):
     system = EventDrivenSystem.__new__(EventDrivenSystem)
     system._pm = SimpleNamespace(get_spread=spread_getter)
     system._config = SimpleNamespace(
-        cognition=SimpleNamespace(commission_per_lot_round_trip=0.0)
+        cognition=SimpleNamespace(
+            commission_per_lot_round_trip=0.0,
+            commission_model_verified=commission_verified,
+        )
     )
     system._money_per_price = lambda symbol, lots: 100.0
     system._safe_pip_size = lambda symbol: 0.01
@@ -84,7 +87,7 @@ def _cost_system(spread_getter):
 
 
 def test_round_trip_cost_requires_positive_observed_spread():
-    system = _cost_system(lambda symbol: 2.0)
+    system = _cost_system(lambda symbol: 2.0, commission_verified=True)
     assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 3.0
 
 
@@ -107,3 +110,8 @@ def test_measured_cross_asset_evidence_is_classified_as_verified_association():
     assert relationships["cross_asset_status"] == "verified_synchronized_observations_present"
     assert relationships["cross_asset_records"][0]["causation_established"] is False
     assert "synchronized cross-asset relationship measurements with a defined window and source provenance" not in result["missing_information"]
+
+
+def test_round_trip_cost_fails_closed_when_zero_commission_is_unverified():
+    system = _cost_system(lambda symbol: 2.0, commission_verified=False)
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
