@@ -68,3 +68,29 @@ def test_cross_asset_evidence_rejects_insufficient_common_timestamps():
     xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)])
     usd_jpy = _frame(start + timedelta(hours=15), [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)])
     assert _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau}) == []
+
+
+def _cost_system(spread_getter):
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = SimpleNamespace(get_spread=spread_getter)
+    system._config = SimpleNamespace(
+        cognition=SimpleNamespace(commission_per_lot_round_trip=0.0)
+    )
+    system._money_per_price = lambda symbol, lots: 100.0
+    system._safe_pip_size = lambda symbol: 0.01
+    system._commission_per_lot_est = 0.0
+    return system
+
+
+def test_round_trip_cost_requires_positive_observed_spread():
+    system = _cost_system(lambda symbol: 2.0)
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 3.0
+
+
+def test_round_trip_cost_fails_closed_when_spread_is_zero_or_unknown():
+    assert _cost_system(lambda symbol: 0.0)._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+    def unavailable(symbol):
+        raise RuntimeError("quote unavailable")
+
+    assert _cost_system(unavailable)._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
