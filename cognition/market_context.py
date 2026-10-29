@@ -60,7 +60,8 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "contract_size", "tick_size", "tick_value", "lot_size",
             "point_value", "quote_currency", "base_currency", "margin_rate",
             "trading_hours", "instrument_type", "minimum_volume",
-            "volume_step", "minimum_stop_distance", "swap_long", "swap_short",
+            "volume_min", "volume_max", "volume_step", "minimum_stop_distance", "swap_long", "swap_short",
+            "trade_mode", "swap_mode", "digits", "point",
         )):
             instrument_records.append({
                 "source": source, "symbol": observed_symbol,
@@ -76,7 +77,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "measurements": dict(m),
                 "verified": _verified(m, "source_verified", "session_calendar_verified"),
             })
-        if domain == "correlation" or any(k in m for k in (
+        if domain in {"correlation", "multi_timeframe"} or any(k in m for k in (
             "correlation", "correlation_coefficient", "cross_asset_relationship",
             "lead_lag", "relative_strength",
         )):
@@ -85,6 +86,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             )
             relationship_records.append({
                 "source": source, "symbol": observed_symbol,
+                "relationship_type": "cross_timeframe_observation" if domain == "multi_timeframe" else "cross_asset_association",
                 "related_symbol": m.get("related_symbol"),
                 "coefficient": coefficient,
                 "sample_count": m.get("sample_count"),
@@ -161,8 +163,8 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                                   "contract_size", "tick_size", "tick_value", "lot_size",
                                   "point_value", "quote_currency", "base_currency",
                                   "margin_rate", "trading_hours", "instrument_type",
-                                  "minimum_volume", "volume_step", "minimum_stop_distance",
-                                  "swap_long", "swap_short", "specification_verified",
+                                  "minimum_volume", "volume_min", "volume_max", "volume_step", "minimum_stop_distance",
+                                  "swap_long", "swap_short", "trade_mode", "swap_mode", "digits", "point", "specification_verified",
                                   "source_verified", "session_name", "market_session",
                                   "session_open", "session_close", "timezone",
                                   "session_timezone", "session_calendar_verified",
