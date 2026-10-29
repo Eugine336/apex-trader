@@ -192,3 +192,33 @@ def test_broker_spec_without_explicit_provenance_is_not_verified():
     ], "XAUUSD")
     assert result["instrument_economics_and_contracts"]["status"] == "unverified_records_present"
     assert result["instrument_economics_and_contracts"]["records"][0]["verified"] is False
+
+
+def test_historical_validator_rejects_sample_id_reused_across_splits():
+    rows = _valid_historical_rows()
+    rows[-1]["sample_id"] = rows[0]["sample_id"]
+    report = validate_historical_rows(
+        rows, untouched_holdout=True, multiple_testing_mitigated=True
+    )
+    assert report["passed"] is False
+    assert any("appears in both" in error for error in report["errors"])
+
+
+def test_historical_validator_rejects_outcome_horizon_crossing_split_boundary():
+    rows = _valid_historical_rows()
+    rows[1]["outcome_timestamp"] = 3.0
+    report = validate_historical_rows(
+        rows, untouched_holdout=True, multiple_testing_mitigated=True
+    )
+    assert report["passed"] is False
+    assert any("outcome horizon overlaps" in error for error in report["errors"])
+
+
+def test_historical_validator_does_not_silently_drop_malformed_rows():
+    rows = _valid_historical_rows()
+    rows.append(None)
+    report = validate_historical_rows(
+        rows, untouched_holdout=True, multiple_testing_mitigated=True
+    )
+    assert report["passed"] is False
+    assert any("row must be a mapping" in error for error in report["errors"])
