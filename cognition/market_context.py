@@ -149,6 +149,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "source": source, "symbol": observed_symbol,
                 "broker_symbol": m.get("broker_symbol"),
                 "available_multipliers": m.get("available_multipliers"),
+                "observed_epoch": m.get("constraints_observed_epoch"),
                 "verified": _verified(m, "contract_constraints_verified", "source_verified"),
                 "note": "Valid multiplier choices are contract constraints, not tick-value, contract-size, margin, or full instrument economics.",
             })
@@ -191,7 +192,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                                   "untouched_holdout", "data_leakage_checked",
                                   "selection_bias_checked", "overfitting_checked", "validation_rows",
                                   "multiple_testing_mitigated", "available_multipliers",
-                                  "contract_constraints_verified", "broker_symbol",
+                                  "contract_constraints_verified", "broker_symbol", "constraints_observed_epoch",
                                   "estimated_total_cost_r", "cost_verified",
                                   "execution_constraints_verified", "spread", "slippage",
                                   "commission", "swap", "execution_constraint",
