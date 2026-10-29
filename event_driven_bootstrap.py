@@ -2388,6 +2388,12 @@ class EventDrivenSystem:
                         if isinstance(getattr(origination, "payoff_geometry", None), dict)
                         else None
                     ),
+                    decision_feature_snapshot=(
+                        dict(getattr(origination, "meta", {}).get("decision_feature_snapshot", {}) or {})
+                        if isinstance(getattr(origination, "meta", None), dict)
+                        and isinstance(getattr(origination, "meta", {}).get("decision_feature_snapshot"), dict)
+                        else None
+                    ),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
