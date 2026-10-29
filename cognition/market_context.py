@@ -63,7 +63,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "contract_size", "tick_size", "tick_value", "lot_size",
             "point_value", "quote_currency", "base_currency", "margin_rate",
             "trading_hours", "instrument_type", "minimum_volume",
-            "volume_min", "volume_max", "volume_step", "minimum_stop_distance", "swap_long", "swap_short",
+            "volume_min", "volume_max", "volume_step", "minimum_stop_distance", "freeze_level", "trade_stops_level", "trade_freeze_level", "swap_long", "swap_short",
             "trade_mode", "swap_mode", "digits", "point",
         )):
             instrument_records.append({
