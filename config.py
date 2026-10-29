@@ -3839,9 +3839,11 @@ class CognitionConfig:
     opportunity_cost_multiple: float = 2.0
     opportunity_min_net_ev: float = 0.0
     # Round-trip commission per 1.0 lot in account currency, used by the net-EV
-    # gate. 0.0 ⇒ self-calibrate from realised closed-deal commissions (falls
-    # back to spread+slippage only until enough closes are observed).
+    # gate. A positive value is an explicit configured cost. A zero value is
+    # UNKNOWN unless commission_model_verified explicitly attests that the broker
+    # charges zero; unknown commission must not be silently treated as free.
     commission_per_lot_round_trip: float = 0.0
+    commission_model_verified: bool = False
     # Phase G — Brain-originated entries from its CampaignSpecification.
     # "off"    — never originate (management/observation only).
     # "shadow" — record intended orders, submit nothing.
@@ -3960,6 +3962,10 @@ class CognitionConfig:
         self.opportunity_qualification_enabled = _llm_env_bool(
             "COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED",
             self.opportunity_qualification_enabled,
+        )
+        self.commission_model_verified = _llm_env_bool(
+            "COGNITION_COMMISSION_MODEL_VERIFIED",
+            self.commission_model_verified,
         )
         for env_name, attr in (
             ("COGNITION_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle"),

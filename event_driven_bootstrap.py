@@ -2441,45 +2441,78 @@ class EventDrivenSystem:
         """Account currency per 1.0 unit of price move for ``lots`` (0 if unknown)."""
         try:
             spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
+            # Cost conversion is permitted only from an explicitly verified live
+            # broker specification. Config-derived or third-party guessed values
+            # are not safe inputs to a monetary expected-value gate.
+            if (
+                not isinstance(spec, dict)
+                or spec.get("source_verified") is not True
+                or spec.get("specification_verified") is not True
+            ):
+                return 0.0
             tv = float(spec.get("trade_tick_value") or 0.0)
             ts = float(spec.get("trade_tick_size") or 0.0)
-            if tv <= 0.0 or ts <= 0.0:
+            lot_count = float(lots or 0.0)
+            if (
+                not math.isfinite(tv) or not math.isfinite(ts)
+                or not math.isfinite(lot_count)
+                or tv <= 0.0 or ts <= 0.0 or lot_count <= 0.0
+            ):
                 return 0.0
-            return (tv / ts) * float(lots or 0.0)
+            value = (tv / ts) * lot_count
+            return value if math.isfinite(value) and value > 0.0 else 0.0
         except Exception:  # noqa: BLE001
             return 0.0
 
     def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
         """Estimate round-trip cost in account currency (Part XIX Art 7).
 
-        cost = spread + commission + slippage. Spread/slippage are converted from
-        price via money-per-price; commission is per-lot (self-calibrated from
-        realised closed deals, else the configured fallback). Returns 0.0 when it
-        cannot be estimated (the caller then fail-opens rather than block trading).
+        Requires broker tick-value/tick-size conversion and a successful positive
+        spread observation. Missing or invalid spread data is UNKNOWN, not zero,
+        and returns 0.0 so the mandatory net-EV qualification gate fails closed.
+        The slippage buffer is an explicit conservative assumption; it is not a
+        claim that future slippage or financing costs are known exactly.
         """
         try:
             lots = float(lots or 0.0)
             mpp = self._money_per_price(symbol, lots)
-            if mpp <= 0.0 or lots <= 0.0:
+            if not math.isfinite(mpp) or mpp <= 0.0 or not math.isfinite(lots) or lots <= 0.0:
                 return 0.0
-            pip = self._safe_pip_size(symbol)
-            spread_pips = 0.0
-            try:
-                spread_pips = float(self._get_spread_pips(symbol) or 0.0)
-            except Exception:  # noqa: BLE001
-                spread_pips = 0.0
+            pip = float(self._safe_pip_size(symbol))
+            if not math.isfinite(pip) or pip <= 0.0:
+                return 0.0
+            # Read the underlying provider value directly. _get_spread_pips()
+            # has a convenience fallback, which must not turn a failed quote
+            # into apparently observed transaction-cost evidence.
+            if self._pm is None or not callable(getattr(self._pm, "get_spread", None)):
+                return 0.0
+            spread_pips = float(self._pm.get_spread(symbol))
+            if not math.isfinite(spread_pips) or spread_pips <= 0.0:
+                return 0.0
             cog = getattr(self._config, "cognition", None)
-            slippage_pips = 1.0  # conservative default entry+exit slippage buffer
-            spread_ccy = max(0.0, spread_pips) * pip * mpp
+            slippage_pips = 1.0  # explicit conservative entry+exit buffer
+            spread_ccy = spread_pips * pip * mpp
             slippage_ccy = slippage_pips * pip * mpp
             comm_per_lot = float(
                 getattr(self, "_commission_per_lot_est", 0.0) or 0.0
             )
             if comm_per_lot <= 0.0 and cog is not None:
                 comm_per_lot = float(getattr(cog, "commission_per_lot_round_trip", 0.0) or 0.0)
-            commission_ccy = max(0.0, comm_per_lot) * lots
-            return spread_ccy + slippage_ccy + commission_ccy
-        except Exception:  # noqa: BLE001
+            if not math.isfinite(comm_per_lot) or comm_per_lot < 0.0:
+                return 0.0
+            commission_verified = bool(
+                comm_per_lot > 0.0
+                or (cog is not None and getattr(cog, "commission_model_verified", False) is True)
+            )
+            if not commission_verified:
+                # Zero is not evidence of a zero-commission broker. Require an
+                # explicit operator attestation when no positive commission
+                # estimate/configuration is available; net-EV then fails closed.
+                return 0.0
+            commission_ccy = comm_per_lot * lots
+            total = spread_ccy + slippage_ccy + commission_ccy
+            return total if math.isfinite(total) and total > 0.0 else 0.0
+        except Exception:  # noqa: BLE001 — unknown cost must not be fail-open
             return 0.0
 
     def _opportunity_qualifies(
@@ -2726,6 +2759,148 @@ class EventDrivenSystem:
             logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
             return {}
 
+    def _cognition_cross_asset_evidence(self, symbol: str, primary_data: dict) -> list:
+        """Calculate synchronized cross-asset return associations from broker bars.
+
+        This is descriptive context only. It does not assert causation or use
+        static inverse-correlation tables as measured coefficients. Both legs
+        must supply timezone-aware broker candle timestamps; only exact common
+        H1 timestamps are joined, and at least 20 paired closed-bar returns are
+        required. Unsupported/missing data stays missing.
+        """
+        try:
+            from cognition.contracts import Evidence, EvidenceDomain
+            cache = getattr(self, "_cognition_cross_asset_cache", None)
+            if cache is None:
+                cache = {}
+                self._cognition_cross_asset_cache = cache
+            now_mono = _time.monotonic()
+            cached = cache.get(str(symbol).upper())
+            if cached is not None and now_mono - cached[0] <= 60.0:
+                return list(cached[1])
+            ctx = getattr(self, "_ctx", None)
+            engine = getattr(ctx, "correlation_engine", None)
+            related = tuple(engine.inverse_correlates(symbol)) if engine is not None else ()
+            if not related or self._pm is None:
+                return []
+
+            def _closed_series(frame, drop_forming: bool):
+                if frame is None or not hasattr(frame, "columns"):
+                    return None
+                if "time" not in frame.columns or "close" not in frame.columns:
+                    return None
+                # The primary snapshot includes a forming bar; related fetches
+                # explicitly request include_forming=False and are already closed.
+                data = frame.iloc[:-1].copy() if drop_forming else frame.copy()
+                if len(data) < 22:
+                    return None
+                timestamps = []
+                closes = []
+                for raw_time, raw_close in zip(data["time"].tolist(), data["close"].tolist()):
+                    try:
+                        stamp = pd.Timestamp(raw_time)
+                        if stamp.tzinfo is None:
+                            return None
+                        stamp = stamp.tz_convert("UTC")
+                        close = float(raw_close)
+                        if not math.isfinite(close) or close <= 0:
+                            continue
+                        timestamps.append(stamp)
+                        closes.append(close)
+                    except (TypeError, ValueError, OverflowError):
+                        return None
+                if len(timestamps) < 22 or len(set(timestamps)) != len(timestamps):
+                    return None
+                return dict(zip(timestamps, closes))
+
+            primary_frame = (primary_data or {}).get("H1")
+            primary = _closed_series(primary_frame, drop_forming=True)
+            if not primary:
+                return []
+            output = []
+            for related_symbol in related[:4]:
+                try:
+                    related_data = self._pm.fetch_market_data(
+                        related_symbol, ["H1"], count=64, include_forming=False,
+                    ) or {}
+                    # include_forming=False already excludes the active candle.
+                    related_frame = related_data.get("H1")
+                    if related_frame is None:
+                        continue
+                    related_series = _closed_series(related_frame, drop_forming=False)
+                    if not related_series:
+                        continue
+                    common = sorted(set(primary) & set(related_series))
+                    if len(common) < 22:
+                        continue
+                    # Pair returns only across adjacent hourly bars. A gap
+                    # (weekend, holiday, or missing candle) must not be mislabeled
+                    # as a one-hour return.
+                    left_returns = []
+                    right_returns = []
+                    return_timestamps = []
+                    for index in range(1, len(common)):
+                        if (common[index] - common[index - 1]).total_seconds() != 3600.0:
+                            continue
+                        left_prev = primary[common[index - 1]]
+                        left_now = primary[common[index]]
+                        right_prev = related_series[common[index - 1]]
+                        right_now = related_series[common[index]]
+                        left_returns.append(left_now / left_prev - 1.0)
+                        right_returns.append(right_now / right_prev - 1.0)
+                        return_timestamps.append(common[index])
+                    if len(left_returns) < 20:
+                        continue
+                    mean_left = sum(left_returns) / len(left_returns)
+                    mean_right = sum(right_returns) / len(right_returns)
+                    covariance = sum(
+                        (a - mean_left) * (b - mean_right)
+                        for a, b in zip(left_returns, right_returns)
+                    )
+                    variance_left = sum((a - mean_left) ** 2 for a in left_returns)
+                    variance_right = sum((b - mean_right) ** 2 for b in right_returns)
+                    denominator = math.sqrt(variance_left * variance_right)
+                    if not math.isfinite(denominator) or denominator <= 0:
+                        continue
+                    coefficient = covariance / denominator
+                    if not math.isfinite(coefficient):
+                        continue
+                    output.append(Evidence(
+                        source_module="broker.cross_asset_returns",
+                        domain=EvidenceDomain.CORRELATION,
+                        symbol=symbol,
+                        observation=(
+                            f"descriptive H1 close-to-close return association with "
+                            f"{related_symbol}; not causal evidence"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements={
+                            "related_symbol": related_symbol,
+                            "correlation_coefficient": max(-1.0, min(1.0, coefficient)),
+                            "sample_count": len(left_returns),
+                            "measurement_window": "H1 close-to-close returns; exact shared UTC candle timestamps",
+                            "timeframe": "H1",
+                            "synchronized_timestamps": True,
+                            "source_verified": True,
+                            "first_common_timestamp": return_timestamps[0].isoformat(),
+                            "last_common_timestamp": return_timestamps[-1].isoformat(),
+                            "causation_established": False,
+                        },
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=3600.0,
+                    ))
+                except Exception as exc:  # noqa: BLE001 — one missing leg stays missing
+                    logger.debug(
+                        "[cognition] cross-asset association unavailable for {} / {}: {}",
+                        symbol, related_symbol, exc,
+                    )
+            cache[str(symbol).upper()] = (_time.monotonic(), list(output))
+            return output
+        except Exception as exc:  # noqa: BLE001 — relationships are optional context
+            logger.debug("[cognition] cross-asset association failed for {}: {}", symbol, exc)
+            return []
+
     def _cognition_price_snapshot(self, symbol: str) -> list:
         """Reconstruct the live chart for one symbol as Evidence (Part XIX Art 2).
 
@@ -2810,6 +2985,188 @@ class EventDrivenSystem:
                     evidence.append(m1_evidence)
             except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
                 logger.debug("[cognition] M1 price-action evidence failed for {}: {}", symbol, exc)
+            # System 2 — calculate measured cross-asset associations only
+            # from exact common UTC H1 bars; missing/unavailable legs stay absent.
+            try:
+                evidence.extend(self._cognition_cross_asset_evidence(symbol, data))
+            except Exception as exc:  # noqa: BLE001 — context cannot break cognition
+                logger.debug("[cognition] cross-asset evidence unavailable for {}: {}", symbol, exc)
+            # System 2 — ingest live broker-truth instrument economics as neutral
+            # evidence. Missing fields stay absent; registry/config fallbacks are
+            # not mislabeled as broker-verified specifications.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                spec_fn = getattr(self._pm, "get_symbol_spec", None)
+                spec = spec_fn(symbol) if callable(spec_fn) else {}
+                if isinstance(spec, dict) and spec:
+                    raw_fields = {
+                        "contract_size": spec.get("trade_contract_size", spec.get("contract_size")),
+                        "tick_size": spec.get("trade_tick_size", spec.get("tick_size")),
+                        "tick_value": spec.get("trade_tick_value", spec.get("tick_value")),
+                        "volume_min": spec.get("volume_min", spec.get("volume_minimum")),
+                        "volume_max": spec.get("volume_max", spec.get("volume_maximum")),
+                        "volume_step": spec.get("volume_step"),
+                        "minimum_stop_distance": spec.get(
+                            "trade_stops_level",
+                            spec.get("stops_level", spec.get("minimum_stop_distance")),
+                        ),
+                        "freeze_level": spec.get("trade_freeze_level"),
+                        "digits": spec.get("digits"),
+                        "point": spec.get("point"),
+                        "swap_long": spec.get("swap_long"),
+                        "swap_short": spec.get("swap_short"),
+                        "swap_mode": spec.get("swap_mode"),
+                        "trade_mode": spec.get("trade_mode"),
+                        "broker_symbol": spec.get("broker_symbol"),
+                        "available_multipliers": spec.get("available_multipliers"),
+                        "constraints_observed_epoch": spec.get("constraints_observed_epoch"),
+                        "contract_constraints_verified": spec.get("contract_constraints_verified"),
+                    }
+                    measurements = {key: value for key, value in raw_fields.items() if value is not None}
+                    # Retrieval time is not the provider's observation time.
+                    # Provenance is trusted only when the connector explicitly
+                    # marks a live broker response as verified.
+                    if spec.get("specification_verified") is True:
+                        measurements["specification_verified"] = True
+                    if spec.get("source_verified") is True:
+                        measurements["source_verified"] = True
+                    evidence.append(Evidence(
+                        source_module="broker.instrument_spec",
+                        domain=EvidenceDomain.OTHER,
+                        symbol=symbol,
+                        observation="live broker symbol specification; only fields returned by the connector are present",
+                        confidence=1.0,
+                        uncertainty=0.0,
+                        measurements=measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=60.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — missing specs remain missing
+                logger.debug("[cognition] broker instrument-spec evidence unavailable for {}: {}", symbol, exc)
+            # Broker-reported weekly trading windows are useful constraints,
+            # but MT5 does not reliably expose server timezone/DST rules or a
+            # complete holiday calendar. Preserve those limitations explicitly.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                spec_fn = getattr(self._pm, "get_symbol_spec", None)
+                spec = spec_fn(symbol) if callable(spec_fn) else {}
+                broker_sessions = spec.get("broker_trading_sessions") if isinstance(spec, dict) else None
+                if isinstance(broker_sessions, list) and broker_sessions:
+                    evidence.append(Evidence(
+                        source_module="broker.instrument_trading_sessions",
+                        domain=EvidenceDomain.SESSION,
+                        symbol=symbol,
+                        observation=(
+                            "broker-reported weekly symbol trading windows in broker-server time; "
+                            "timezone/DST and holiday completeness are not verified"
+                        ),
+                        confidence=0.9,
+                        uncertainty=0.1,
+                        measurements={
+                            "broker_trading_sessions": broker_sessions,
+                            "source": spec.get("source", "unknown"),
+                            "source_verified": spec.get("source_verified") is True,
+                            "session_calendar_verified": False,
+                            "broker_session_timezone_verified": (
+                                spec.get("broker_session_timezone_verified") is True
+                            ),
+                            "broker_holiday_calendar_verified": (
+                                spec.get("broker_holiday_calendar_verified") is True
+                            ),
+                            "clock_timezone": "broker_server_time",
+                        },
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=900.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — calendar evidence is optional context
+                logger.debug("[cognition] broker session schedule unavailable for {}: {}", symbol, exc)
+            # The internal session engine can supply a current clock/session
+            # observation, but its generic schedule is not an authoritative,
+            # instrument-specific broker calendar. Expose it as unverified
+            # context and keep the DST/holiday/session-calendar limitation clear.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                ctx = getattr(self, "_ctx", None)
+                session_engine = getattr(ctx, "session_engine", None)
+                if session_engine is not None:
+                    status = session_engine.get_status()
+                    session_fields = {
+                        "session_name": getattr(status, "current_session", None),
+                        "session_open_minutes": getattr(status, "session_open_minutes", None),
+                        "minutes_to_next_session": getattr(status, "minutes_to_next_session", None),
+                        "liquidity": getattr(status, "liquidity", None),
+                        "is_tradeable": getattr(status, "is_tradeable", None),
+                        "best_pairs": getattr(status, "best_pairs", None),
+                        "clock_timezone": "UTC",
+                        "session_calendar_verified": False,
+                        "source_verified": False,
+                    }
+                    session_measurements = {
+                        key: value for key, value in session_fields.items()
+                        if value is not None
+                    }
+                    evidence.append(Evidence(
+                        source_module="session_engine.internal_schedule",
+                        domain=EvidenceDomain.SESSION,
+                        symbol=symbol,
+                        observation=(
+                            "current generic session-engine observation; not an "
+                            "authoritative instrument-specific calendar"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements=session_measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=60.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — session context is optional
+                logger.debug("[cognition] session evidence unavailable for {}: {}", symbol, exc)
+            # Realized close outcomes are useful descriptive history, but without
+            # per-feature point-in-time timestamps they are never labeled validated.
+            try:
+                history_by_symbol = getattr(self, "_cognition_recent_outcomes", {})
+                outcomes = list(history_by_symbol.get(str(symbol).upper(), ()))
+                if outcomes:
+                    pnl_values = [
+                        float(item["pnl_pips"]) for item in outcomes
+                        if math.isfinite(float(item.get("pnl_pips", float("nan"))))
+                    ]
+                    wins = sum(1 for value in pnl_values if value > 0.0)
+                    losses = sum(1 for value in pnl_values if value < 0.0)
+                    measurements = {
+                        "sample_count": len(pnl_values),
+                        "realized_wins": wins,
+                        "realized_losses": losses,
+                        "realized_flat": max(0, len(pnl_values) - wins - losses),
+                        "mean_realized_pnl_pips": (
+                            sum(pnl_values) / len(pnl_values) if pnl_values else None
+                        ),
+                        "outcome_labels": [
+                            str(item.get("outcome", "UNKNOWN")) for item in outcomes[-50:]
+                        ],
+                        "last_outcome_observed_at": outcomes[-1].get("observed_at"),
+                        "feature_timestamps_missing": True,
+                        "source_verified": True,
+                    }
+                    measurements = {
+                        key: value for key, value in measurements.items() if value is not None
+                    }
+                    evidence.append(Evidence(
+                        source_module="runtime.realized_outcomes",
+                        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+                        symbol=symbol,
+                        observation=(
+                            f"{len(pnl_values)} observed closed outcomes in this process; "
+                            "descriptive history only, not validated predictive performance"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements=measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=86400.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — history is optional context
+                logger.debug("[cognition] realized-outcome evidence unavailable for {}: {}", symbol, exc)
             return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
@@ -6642,6 +6999,24 @@ class EventDrivenSystem:
                 ctx.behavior_discovery.record_trade(features, r_est, trade_id=str(ticket))
             except Exception as exc:
                 logger.debug("[close-evo] BehaviorDiscovery record failed: {}", exc)
+
+        # System 2 — retain a bounded in-process ledger of observed realized
+        # outcomes for cognition. This is descriptive history only: it does not
+        # contain point-in-time feature timestamps and cannot prove predictive skill.
+        try:
+            by_symbol = getattr(self, "_cognition_recent_outcomes", None)
+            if by_symbol is None:
+                by_symbol = {}
+                self._cognition_recent_outcomes = by_symbol
+            history = by_symbol.setdefault(str(symbol).upper(), deque(maxlen=200))
+            history.append({
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "pnl_pips": float(pnl_pips),
+                "outcome": str(outcome or "UNKNOWN"),
+                "exit_cause": str(cause_value or "UNKNOWN"),
+            })
+        except Exception as exc:  # noqa: BLE001 — learning context cannot break close processing
+            logger.debug("[close-evo] in-process cognition outcome record failed: {}", exc)
 
         # OutcomeLogger — link plan → outcome
         if ctx.outcome_logger is not None:
