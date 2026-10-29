@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
 from cognition.identity import IDENTITY_VERSION
+from cognition.market_context import analyze_market_context
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import assess_strategy_lenses
 
@@ -92,6 +93,9 @@ class EvidenceAnalysis:
 
     # Context-sensitive analytical lenses. These are not trade signals.
     strategy_lenses: list[dict] = field(default_factory=list)
+    # Instrument economics, sessions, cross-market associations, historical
+    # validation status, unfamiliar observations and epistemic limits.
+    market_context: dict = field(default_factory=dict)
     identity_version: str = IDENTITY_VERSION
 
     def summary(self) -> str:
@@ -125,6 +129,7 @@ class EvidenceAnalysis:
             "missing_information": list(self.missing_information),
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
             "strategy_lenses": [dict(item) for item in self.strategy_lenses],
+            "market_context": dict(self.market_context),
         }
 
 
@@ -229,6 +234,9 @@ class BrainReasoner:
         missing = self._missing(domain_coverage)
         agreement = self._agreement(names, contradictions, regime)
         strategy_lenses = assess_strategy_lenses(fresh, names, regime)
+        # Preserve explicit unknowns and epistemic limits. This context is
+        # descriptive evidence, not a strategy selector or action authority.
+        market_context = analyze_market_context(fresh, getattr(market_state, "symbol", ""))
 
         ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", None)) \
             if consolidation.get("aggregate_uncertainty", None) is not None \
@@ -246,6 +254,7 @@ class BrainReasoner:
             missing_information=missing,
             evidence_uncertainty=ev_unc,
             strategy_lenses=strategy_lenses,
+            market_context=market_context,
         )
 
     def _classify_regime(self, fresh: "list[Evidence]", names: "list[str]") -> dict:
