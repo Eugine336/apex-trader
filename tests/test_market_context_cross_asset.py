@@ -114,6 +114,16 @@ def test_measured_cross_asset_evidence_is_classified_as_verified_association():
     assert "synchronized cross-asset relationship measurements with a defined window and source provenance" not in result["missing_information"]
 
 
+def test_round_trip_cost_fails_closed_when_financing_model_is_unknown():
+    system = _cost_system(lambda symbol: 2.0, commission_verified=True)
+    system._config.cognition.financing_model_verified = False
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+    system = _cost_system(lambda symbol: 2.0, commission_verified=True)
+    system._config.cognition.financing_per_lot_round_trip = {}
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+
 def test_round_trip_cost_fails_closed_when_zero_commission_is_unverified():
     system = _cost_system(lambda symbol: 2.0, commission_verified=False)
     assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
