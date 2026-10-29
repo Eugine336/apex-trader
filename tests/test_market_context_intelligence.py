@@ -132,3 +132,36 @@ def test_point_in_time_validator_requires_chronological_disjoint_splits():
     )
     assert report["passed"] is False
     assert any("not strictly chronological" in error for error in report["errors"])
+
+
+def test_live_broker_spec_fields_are_recognized_as_instrument_context():
+    result = analyze_market_context([
+        _evidence("other", {
+            "contract_size": 100.0,
+            "tick_size": 0.01,
+            "tick_value": 1.0,
+            "volume_min": 0.01,
+            "volume_max": 100.0,
+            "volume_step": 0.01,
+            "minimum_stop_distance": 20,
+            "specification_verified": True,
+            "source_verified": True,
+        }, source="broker.instrument_spec")
+    ], "XAUUSD")
+    context = result["instrument_economics_and_contracts"]
+    assert context["status"] == "verified_source_present"
+    assert context["records"][0]["measurements"]["contract_size"] == 100.0
+
+
+def test_cross_timeframe_alignment_is_observation_not_causal_explanation():
+    result = analyze_market_context([
+        _evidence("multi_timeframe", {
+            "alignment": "aligned",
+            "conflict_score": 0.1,
+            "source_timestamp_known": True,
+            "timeframe": "M15",
+        })
+    ], "XAUUSD")
+    relation = result["cross_market_relationships"]["records"][0]
+    assert relation["relationship_type"] == "cross_timeframe_observation"
+    assert relation["causation_established"] is False
