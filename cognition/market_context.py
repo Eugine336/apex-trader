@@ -93,9 +93,9 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "related_symbol": m.get("related_symbol"),
                 "coefficient": coefficient,
                 "sample_count": m.get("sample_count"),
-                "synchronized": m.get("synchronized_timestamps") is True or (
-                    domain == "multi_timeframe" and m.get("source_timestamp_known") is True
-                ),
+                # Known timestamps establish provenance, not alignment.
+                # Synchronization requires an explicit, validated assertion.
+                "synchronized": m.get("synchronized_timestamps") is True,
                 "measurement_window": m.get("measurement_window"),
                 "observed_relationship": m.get("cross_asset_relationship", m.get("alignment")),
                 "causation_established": False,
