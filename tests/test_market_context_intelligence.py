@@ -165,3 +165,29 @@ def test_cross_timeframe_alignment_is_observation_not_causal_explanation():
     relation = result["cross_market_relationships"]["records"][0]
     assert relation["relationship_type"] == "cross_timeframe_observation"
     assert relation["causation_established"] is False
+
+
+def test_deriv_multiplier_constraints_are_not_misreported_as_full_economics():
+    result = analyze_market_context([
+        _evidence("other", {
+            "broker_symbol": "R_75",
+            "available_multipliers": [100, 200, 300],
+            "contract_constraints_verified": True,
+            "source_verified": True,
+        }, symbol="R_75", source="broker.instrument_spec")
+    ], "R_75")
+    constraints = result["instrument_contract_constraints"]
+    assert constraints["status"] == "verified_source_present"
+    assert constraints["records"][0]["available_multipliers"] == [100, 200, 300]
+    assert result["instrument_economics_and_contracts"]["status"] == "missing"
+
+
+def test_broker_spec_without_explicit_provenance_is_not_verified():
+    result = analyze_market_context([
+        _evidence("other", {
+            "contract_size": 100.0,
+            "tick_size": 0.01,
+        }, source="broker.instrument_spec")
+    ], "XAUUSD")
+    assert result["instrument_economics_and_contracts"]["status"] == "unverified_records_present"
+    assert result["instrument_economics_and_contracts"]["records"][0]["verified"] is False
