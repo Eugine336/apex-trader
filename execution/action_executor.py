@@ -401,8 +401,6 @@ class ActionExecutor:
         minimum = number("volume_min")
         maximum = number("volume_max")
         step = number("volume_step")
-        lots = number("lots") if hasattr(intent, "lots") else None
-        lots = number_from_intent = None
         try:
             raw_lots = getattr(intent, "lots", None)
             lots = float(raw_lots) if raw_lots is not None else None
@@ -441,11 +439,11 @@ class ActionExecutor:
         else:
             return "broker_stop_constraints_reject_entry: invalid direction"
         minimum_distance = point * stops_level
-        if entry - stop < minimum_distance or target - entry < minimum_distance:
-            if direction in {"LONG", "BUY"}:
+        if direction in {"LONG", "BUY"}:
+            if entry - stop < minimum_distance or target - entry < minimum_distance:
                 return "broker_stop_constraints_reject_entry: stop/target inside broker minimum distance"
-        if stop - entry < minimum_distance or entry - target < minimum_distance:
-            if direction in {"SHORT", "SELL"}:
+        else:
+            if stop - entry < minimum_distance or entry - target < minimum_distance:
                 return "broker_stop_constraints_reject_entry: stop/target inside broker minimum distance"
         return None
 
