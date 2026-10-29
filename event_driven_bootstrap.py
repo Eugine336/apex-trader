@@ -3024,6 +3024,43 @@ class EventDrivenSystem:
                     ))
             except Exception as exc:  # noqa: BLE001 — missing specs remain missing
                 logger.debug("[cognition] broker instrument-spec evidence unavailable for {}: {}", symbol, exc)
+            # Broker-reported weekly trading windows are useful constraints,
+            # but MT5 does not reliably expose server timezone/DST rules or a
+            # complete holiday calendar. Preserve those limitations explicitly.
+            try:
+                from cognition.contracts import Evidence, EvidenceDomain
+                spec_fn = getattr(self._pm, "get_symbol_spec", None)
+                spec = spec_fn(symbol) if callable(spec_fn) else {}
+                broker_sessions = spec.get("broker_trading_sessions") if isinstance(spec, dict) else None
+                if isinstance(broker_sessions, list) and broker_sessions:
+                    evidence.append(Evidence(
+                        source_module="broker.instrument_trading_sessions",
+                        domain=EvidenceDomain.SESSION,
+                        symbol=symbol,
+                        observation=(
+                            "broker-reported weekly symbol trading windows in broker-server time; "
+                            "timezone/DST and holiday completeness are not verified"
+                        ),
+                        confidence=0.9,
+                        uncertainty=0.1,
+                        measurements={
+                            "broker_trading_sessions": broker_sessions,
+                            "source": spec.get("source", "unknown"),
+                            "source_verified": spec.get("source_verified") is True,
+                            "session_calendar_verified": False,
+                            "broker_session_timezone_verified": (
+                                spec.get("broker_session_timezone_verified") is True
+                            ),
+                            "broker_holiday_calendar_verified": (
+                                spec.get("broker_holiday_calendar_verified") is True
+                            ),
+                            "clock_timezone": "broker_server_time",
+                        },
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=900.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — calendar evidence is optional context
+                logger.debug("[cognition] broker session schedule unavailable for {}: {}", symbol, exc)
             # The internal session engine can supply a current clock/session
             # observation, but its generic schedule is not an authoritative,
             # instrument-specific broker calendar. Expose it as unverified
