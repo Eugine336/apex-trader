@@ -507,10 +507,13 @@ class CognitiveBrain:
                 )
                 if independent is not None:
                     return independent
-                return self._observe(
+                return self._native_fallback_observe(
                     symbol,
-                    "native Brain-only analysis did not find an action-qualified opportunity",
+                    "no external advisor configured; native analysis did not find an action-qualified opportunity",
                     consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
+                    advisor_status="not_configured",
                 )
             if not getattr(self._reasoner, "available", False):
                 # Article X — the Brain can still DISCOVER an opportunity from its
@@ -572,9 +575,26 @@ class CognitiveBrain:
                         consolidation,
                         analysis=analysis,
                         hypotheses=hypotheses,
+                        advisor_status="unavailable",
                     )
-                return self._observe(
-                    symbol, "no reasoner opinion this cycle — do nothing", consolidation,
+                # A healthy advisor may return no opinion because this cycle was
+                # throttled or had no fresh response. The advisor is optional:
+                # native qualification still runs and may originate independently.
+                independent = self._originate_independent(
+                    symbol, consolidation, analysis, hypotheses,
+                    reason_txt="advisor available but returned no opinion this cycle; native-only assessment",
+                    market_state=market_state,
+                    advisor_status="available",
+                )
+                if independent is not None:
+                    return independent
+                return self._native_fallback_observe(
+                    symbol,
+                    "advisor available but no opinion was returned; native analysis found no action-qualified opportunity",
+                    consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
+                    advisor_status="available",
                 )
             return self._from_opinion(
                 symbol, market_state, consolidation, opinion, now,
@@ -2566,6 +2586,7 @@ class CognitiveBrain:
         self, symbol: str, consolidation: dict,
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
         *, reason_txt: str, market_state: Optional[MarketState] = None,
+        advisor_status: str = "unavailable",
     ) -> Optional[BrainOutput]:
         """Discover an opportunity from native analysis when no advisor is available.
 
@@ -2743,9 +2764,7 @@ class CognitiveBrain:
             questions = {
                 "what_is_happening": lead.statement,
                 "reasoning_mode": "native_only",
-                "external_advisor_status": (
-                    "not_configured" if "no external advisor configured" in reason_txt else "unavailable"
-                ),
+                "external_advisor_status": advisor_status,
                 "why_is_it_happening": "; ".join(analysis.observations) or lead.statement,
                 "evidence_supports": "; ".join(
                     p for p in lead.supporting_patterns) or "native structural patterns",
@@ -3015,11 +3034,11 @@ class CognitiveBrain:
             "opportunity": "none qualified by native-only gates",
             "should_i_do_nothing": (
                 "evaluated: continue observing because native-only qualification did not pass; "
-                "external-advisor outage is not evidence of a market opportunity"
+                "advisor status is infrastructure metadata, not evidence of a market opportunity"
             ),
             "reasoner_state": reason_txt,
-            "reasoning_mode": "native_fallback",
-            "external_advisor_status": "unavailable",
+            "reasoning_mode": "native_only" if advisor_status == "not_configured" else "native_fallback",
+            "external_advisor_status": advisor_status,
             "native_fallback_status": native_status,
             "native_analysis_summary": analysis_summary,
             "native_hypotheses": hypothesis_summary or "none",
