@@ -2834,6 +2834,7 @@ class EventDrivenSystem:
                         "trade_mode": spec.get("trade_mode"),
                         "broker_symbol": spec.get("broker_symbol"),
                         "available_multipliers": spec.get("available_multipliers"),
+                        "constraints_observed_epoch": spec.get("constraints_observed_epoch"),
                         "contract_constraints_verified": spec.get("contract_constraints_verified"),
                     }
                     measurements = {key: value for key, value in raw_fields.items() if value is not None}
