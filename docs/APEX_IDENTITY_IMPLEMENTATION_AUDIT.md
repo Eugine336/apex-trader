@@ -305,3 +305,5 @@ Still incomplete / unverified:
 - focused tests and `scripts/identity_audit.py` have not been executed on this branch. A local clone attempt could not resolve GitHub in the current execution environment; no test result is claimed.
 
 System 2 is **in progress, not merge-ready**. Missing data remains unknown; no prediction or profitability claim is made. No broker orders were sent. `.env`, runtime databases and broker settings were not accessed or modified during this work.
+
+- The generic `SessionEngine` status is now surfaced into cognition as an explicitly unverified observation. It does not satisfy the requirement for an authoritative instrument-specific calendar, timezone and holiday source.
