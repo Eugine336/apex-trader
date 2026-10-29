@@ -143,16 +143,6 @@ class ExecutorConfig:
     circuit_failure_threshold: int = 5
     circuit_cooldown_s: float = 60.0
     gate_config: GateConfig = field(default_factory=GateConfig)
-    # Hard final-boundary gate for Apex's Gold-specialist deployment. Defaults
-    # off for generic/research consumers; EventDrivenSystem explicitly enables it.
-    gold_only: bool = False
-    gold_symbol_aliases: tuple[str, ...] = (
-        "XAUUSD", "GOLD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
-    )
-    # Gold-specialist runtime can require current broker-backed OHLC/quote data.
-    # Generic executor consumers leave this off unless they supply a health callback.
-    require_gold_feed_health: bool = False
-    gold_feed_health_check: Optional[Callable[[str], bool]] = None
 
 
 class ActionExecutor:
@@ -172,14 +162,6 @@ class ActionExecutor:
         self._broker = broker
         self._cfg = config or ExecutorConfig()
         self._gate = RiskGate(self._cfg.gate_config)
-        # Exact alias allowlist, never prefix matching. Original broker symbol
-        # is preserved for routing; canonicalisation is used only for admission.
-        self._gold_aliases = {
-            str(symbol).strip().upper()
-            for symbol in self._cfg.gold_symbol_aliases
-            if str(symbol).strip()
-        }
-        self._gold_aliases.add("XAUUSD")
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
         self._metrics_lock = Lock()
@@ -515,45 +497,6 @@ class ActionExecutor:
         # exposure submitted through this execution plane. Risk-reducing actions
         # on existing positions remain possible, even if an old non-Gold position
         # exists from before the specialist cutover.
-        if self._cfg.gold_only and intent.intent_type == IntentType.OPEN:
-            symbol = str(intent.symbol or "").strip().upper()
-            if symbol not in self._gold_aliases:
-                reason = (
-                    f"gold_only_invariant: rejected new exposure for {intent.symbol!r}; "
-                    "only explicitly allowlisted XAUUSD aliases are accepted"
-                )
-                self._inc("intents_rejected")
-                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-                return ExecutionResult(
-                    intent=intent,
-                    success=False,
-                    rejected_by_gate=True,
-                    gate_reason=reason,
-                    error=reason,
-                )
-
-            if self._cfg.require_gold_feed_health:
-                health_check = self._cfg.gold_feed_health_check
-                try:
-                    feed_healthy = bool(health_check(intent.symbol)) if callable(health_check) else False
-                except Exception as exc:  # noqa: BLE001 — feed health must fail closed
-                    logger.warning("[gold-only] feed health check failed for {}: {}", intent.symbol, exc)
-                    feed_healthy = False
-                if not feed_healthy:
-                    reason = (
-                        f"gold_feed_unhealthy: rejected new exposure for {intent.symbol!r}; "
-                        "a fresh, valid broker quote and completed M5 bars are required"
-                    )
-                    self._inc("intents_rejected")
-                    logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
-                    return ExecutionResult(
-                        intent=intent,
-                        success=False,
-                        rejected_by_gate=True,
-                        gate_reason=reason,
-                        error=reason,
-                    )
-
         # PARTIAL_CLOSE idempotency guard: skip a repeat partial for the same
         # ticket within the dedup window so a re-submitted (or lost-ack) partial
         # cannot chip the position twice.

@@ -1478,19 +1478,6 @@ class EventDrivenSystem:
         self._aggregator = IntentAggregator(AggregatorConfig())
         self._executor = ActionExecutor(
             broker=self._pm,  # PlatformManager satisfies BrokerPort
-            # This deployment is a Gold specialist. Enforce the symbol allowlist
-            # at the last common broker-entry boundary as defense in depth.
-            config=ExecutorConfig(
-                gold_only=True,
-                require_gold_feed_health=True,
-                gold_feed_health_check=lambda symbol: bool(
-                    getattr(
-                        getattr(self, "_gold_desk_observer", None),
-                        "is_feed_healthy",
-                        lambda _symbol: False,
-                    )(symbol)
-                ),
-            ),
         )
         # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →

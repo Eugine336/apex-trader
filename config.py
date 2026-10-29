@@ -1451,12 +1451,10 @@ class OutcomeFeedbackConfig:
     journal_path: str = "data/outcome_feedback.jsonl"
     # Rolling window (most recent N completed trades) for accuracy aggregation.
     accuracy_lookback: int = 300
-    # Gold-specialist single-instrument mode. Defaults True because the system
-    # is locked to XAUUSD (config enabled_symbols_override=["XAUUSD"]); when
+    # Single-instrument mode. Defaults False (multi-instrument universe); when
     # truthy the feedback loop tightens its lookback to 100 and journal cap to
-    # 5000 so it stays responsive to regime shifts. Set False to revert to the
-    # multi-instrument defaults.
-    gold_specialist: bool = True
+    # 5000 so it stays responsive to regime shifts on one instrument.
+    gold_specialist: bool = False
 
 
 @dataclass
@@ -4293,27 +4291,18 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # ── GOLD SPECIALIST MODE ──────────────────────────────────────────────
-    # Apex Trader is currently a Gold specialist: only XAUUSD is active. Gold
-    # runs on its dedicated `_GOLD_PROFILE` (brain/instrument_profile.py),
-    # tuned to Gold's real dollar-scale behaviour. Every other instrument
-    # stays in INSTRUMENT_REGISTRY but is inactive — the opportunist behaviour
-    # (aggressive entry/exit) is unchanged, only the instrument universe and
-    # parameters are Gold-calibrated.
-    #
-    # To re-enable other instruments:
-    #   • Add their categories back to `enabled_categories`
-    #     (e.g. ["forex", "commodity", "index", "synthetic", "crypto"]).
-    #   • Clear `enabled_symbols_override` (set to []) to scan every symbol in
-    #     the enabled categories, or list specific symbols to restrict the set.
+    # ── INSTRUMENT UNIVERSE ───────────────────────────────────────────────
+    # Apex is not tied to one instrument. By default every registered forex,
+    # commodity, index and crypto instrument is in scope (synthetics need a
+    # separate broker setup and stay opt-in). Each instrument runs on its own
+    # profile (brain/instrument_profile.py). To narrow the universe:
+    #   • set TRADING_MODE=gold (commodity / XAUUSD only), or
+    #   • list specific symbols in `enabled_symbols_override`.
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["commodity"]  # Gold's category only
+        default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
-    # Restricted to Gold only. Clear this ([]) to scan all symbols in the
-    # enabled categories, or list specific symbols for a targeted subset.
-    enabled_symbols_override: list[str] = field(
-        default_factory=lambda: ["XAUUSD"]  # Gold specialist — XAUUSD only
-    )
+    # Empty = every symbol in the enabled categories; list symbols to restrict.
+    enabled_symbols_override: list[str] = field(default_factory=list)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
@@ -4375,20 +4364,19 @@ class AppConfig:
 
     def __post_init__(self) -> None:
         # TRADING_MODE toggles the instrument universe from .env without code
-        # changes. "gold" (default) keeps the Gold specialist universe
-        # (commodity / XAUUSD only); "full" scans every instrument across
-        # forex, commodity, index and crypto. Any other value falls back to
-        # "gold" with a warning. Synthetic is intentionally excluded from
-        # "full" — Deriv synthetics need a separate broker setup.
-        mode = os.getenv("TRADING_MODE", "gold").lower().strip()
+        # changes. "full" (default) scans every instrument across forex,
+        # commodity, index and crypto; "gold" narrows to commodity / XAUUSD.
+        # Any other value falls back to "full" with a warning. Synthetic is
+        # intentionally excluded — Deriv synthetics need a separate broker setup.
+        mode = os.getenv("TRADING_MODE", "full").lower().strip()
         if mode not in ("gold", "full"):
             logger.warning(
-                "[config] unknown TRADING_MODE '{}' — falling back to 'gold'", mode
+                "[config] unknown TRADING_MODE '{}' — falling back to 'full'", mode
             )
-            mode = "gold"
-        if mode == "full":
-            self.enabled_categories = ["forex", "commodity", "index", "crypto"]
-            self.enabled_symbols_override = []
+            mode = "full"
+        if mode == "gold":
+            self.enabled_categories = ["commodity"]
+            self.enabled_symbols_override = ["XAUUSD"]
         self.trading_mode = mode
 
     @property

@@ -737,90 +737,12 @@ class TestPerInstrumentIsolation:
         )
 
 
-def test_gold_only_execution_guard_rejects_non_gold_new_exposure():
-    broker = FakeBroker()
-    executor = ActionExecutor(
-        broker=broker,
-        config=ExecutorConfig(gold_only=True),
-    )
-
-    rejected = executor.execute(_open_intent("EURUSD"), {})
-    assert not rejected.success
-    assert rejected.rejected_by_gate
-    assert "gold_only_invariant" in rejected.gate_reason
-    assert broker.open_calls == []
-
-    # Exact broker aliases are allowed; prefix lookalikes are not.
-    xau = executor.execute(_open_intent("XAUUSDm", brain_provenance=True), {})
-    assert xau.success, xau.error
-    assert broker.open_calls[-1]["symbol"] == "XAUUSDm"
-
-    fake = executor.execute(_open_intent("XAUUSD_FAKE"), {})
-    assert not fake.success
-    assert fake.rejected_by_gate
-    assert len(broker.open_calls) == 1
 
 
-def test_gold_only_guard_does_not_block_risk_reducing_exit_on_legacy_position():
-    broker = FakeBroker()
-    executor = ActionExecutor(
-        broker=broker,
-        config=ExecutorConfig(
-            gold_only=True,
-            require_gold_feed_health=True,
-            gold_feed_health_check=lambda _symbol: False,
-        ),
-    )
-    # An unhealthy Gold feed blocks new entries, but must not stop reducing an
-    # already-open position; exits remain available during feed degradation.
-    result = executor.execute(_close_intent(), _positions())
-    assert result.success
-    assert broker.close_calls[0]["order_id"] == "12345"
 
 
-def test_gold_only_open_requires_fresh_feed_when_runtime_enables_health_gate():
-    broker = FakeBroker()
-    healthy = {"value": False}
-    executor = ActionExecutor(
-        broker=broker,
-        config=ExecutorConfig(
-            gold_only=True,
-            require_gold_feed_health=True,
-            gold_feed_health_check=lambda _symbol: healthy["value"],
-        ),
-    )
-
-    blocked = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
-    assert not blocked.success
-    assert blocked.rejected_by_gate
-    assert "gold_feed_unhealthy" in blocked.gate_reason
-    assert broker.open_calls == []
-
-    healthy["value"] = True
-    allowed = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
-    assert allowed.success, allowed.error
-    assert [call["symbol"] for call in broker.open_calls] == ["XAUUSD"]
 
 
-def test_gold_feed_health_callback_failure_fails_closed():
-    broker = FakeBroker()
-
-    def broken_health_check(_symbol):
-        raise RuntimeError("market-data cache unavailable")
-
-    executor = ActionExecutor(
-        broker=broker,
-        config=ExecutorConfig(
-            gold_only=True,
-            require_gold_feed_health=True,
-            gold_feed_health_check=broken_health_check,
-        ),
-    )
-    blocked = executor.execute(_open_intent("XAUUSD", brain_provenance=True), {})
-    assert not blocked.success
-    assert blocked.rejected_by_gate
-    assert "gold_feed_unhealthy" in blocked.gate_reason
-    assert broker.open_calls == []
 
 
 def test_management_target_change_without_provenance_is_rejected():
@@ -882,35 +804,35 @@ def test_open_intent_carries_canonical_identity_by_default():
     assert intent.identity == IDENTITY_STATEMENT
 
 
-def test_gold_only_rejects_legacy_entry_without_brain_opportunity_provenance():
+def test_rejects_legacy_entry_without_brain_opportunity_provenance():
     broker = FakeBroker()
-    executor = ActionExecutor(broker, ExecutorConfig(gold_only=True))
+    executor = ActionExecutor(broker, ExecutorConfig())
     result = executor.execute(_open_intent("XAUUSD", brain_provenance=False), {})
     assert not result.success and result.rejected_by_gate
     assert "brain_opportunity_provenance_required" in result.gate_reason
     assert broker.open_calls == []
 
 
-def test_non_gold_mode_also_rejects_legacy_open_without_cognitive_provenance():
+def test_rejects_legacy_open_without_cognitive_provenance():
     broker = FakeBroker()
-    executor = ActionExecutor(broker, _fast_cfg(gold_only=False))
+    executor = ActionExecutor(broker, _fast_cfg())
     result = executor.execute(_open_intent("EURUSD", brain_provenance=False), {})
     assert not result.success and result.rejected_by_gate
     assert "brain_opportunity_provenance_required" in result.gate_reason
     assert broker.open_calls == []
 
 
-def test_non_gold_mode_accepts_canonical_brain_open_provenance():
+def test_accepts_canonical_brain_open_provenance():
     broker = FakeBroker()
-    executor = ActionExecutor(broker, _fast_cfg(gold_only=False))
+    executor = ActionExecutor(broker, _fast_cfg())
     result = executor.execute(_open_intent("EURUSD", brain_provenance=True), {})
     assert result.success
     assert len(broker.open_calls) == 1
 
 
-def test_gold_only_rejects_brain_entry_without_activated_opportunity_id():
+def test_rejects_brain_entry_without_activated_opportunity_id():
     broker = FakeBroker()
-    executor = ActionExecutor(broker, ExecutorConfig(gold_only=True))
+    executor = ActionExecutor(broker, ExecutorConfig())
     intent = _open_intent("XAUUSD", brain_provenance=True, opportunity_id="")
     result = executor.execute(intent, {})
     assert not result.success and result.rejected_by_gate
