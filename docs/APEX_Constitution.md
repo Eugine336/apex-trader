@@ -2661,3 +2661,15 @@ empirically calibrated predictive performance.
 Market-context analysis and statistical diagnostics are evidence services. They
 do not emit trade instructions, bypass the CognitiveBrain, relax activation or
 expected-value requirements, or override portfolio, execution and risk controls.
+
+## Article 8 — Last-mile broker constraints
+
+Every new-exposure intent must be checked at the shared execution boundary
+against a fresh, explicitly verified broker specification for the routed
+instrument. Trading mode, permitted volume range and increment, price point,
+minimum stop distance, and directional stop/target geometry must be valid.
+Missing, stale, unsupported, or unverified constraints reject new exposure;
+they may not be replaced by registry guesses or context-only evidence. A
+connector without a complete validator must remain blocked for new exposure
+until its adapter-specific contract is implemented and tested. Protective
+risk-reducing actions must remain available under their own safety rules.
