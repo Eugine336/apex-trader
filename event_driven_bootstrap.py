@@ -6718,7 +6718,30 @@ class EventDrivenSystem:
                     )
             # Release candidate provenance now the position has left the book.
             self._candidate_positions.pop(str(ticket), None)
-            # Durable outcome link for System 2. The open snapshot is stored once
+            # A flat-dollar close that still gained pips (e.g. commission ate
+            # the dollar P&L) counts as a win for edge attribution.
+            won = (pnl_dollars or 0.0) > 0.0 or (
+                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+            )
+            self._zone_edge.record_trade(
+                symbol,
+                direction,
+                won,
+                zone_type=info.get("zone_type"),
+                regime=info.get("regime"),
+                concepts=info.get("concepts"),
+            )
+            # CalibrationEngine zone outcome — the trade reached its zone (touched)
+            # and "held" if it resolved profitably (≈ reached TP1). Feeds the
+            # learned zone_hold_rate. Single-writer; best-effort.
+            if self._calibration_engine is not None:
+                self._calibration_engine.record_zone_outcome(
+                    symbol, touched=True, held=bool(won),
+                )
+        except Exception as exc:
+            logger.debug("[close-learn] zone-edge record failed: {}", exc)
+
+        # Durable outcome link for System 2. The open snapshot is stored once
         # against the broker ticket; this event references its exact snapshot ID
         # and records realized costs/outcome without claiming predictive validity.
         try:
@@ -6759,29 +6782,6 @@ class EventDrivenSystem:
                 )
         except Exception as exc:  # noqa: BLE001 — outcome persistence must not interrupt close accounting
             logger.warning("[decision-provenance] close outcome persistence failed for {}: {}", ticket, exc)
-
-        # A flat-dollar close that still gained pips (e.g. commission ate
-            # the dollar P&L) counts as a win for edge attribution.
-            won = (pnl_dollars or 0.0) > 0.0 or (
-                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
-            )
-            self._zone_edge.record_trade(
-                symbol,
-                direction,
-                won,
-                zone_type=info.get("zone_type"),
-                regime=info.get("regime"),
-                concepts=info.get("concepts"),
-            )
-            # CalibrationEngine zone outcome — the trade reached its zone (touched)
-            # and "held" if it resolved profitably (≈ reached TP1). Feeds the
-            # learned zone_hold_rate. Single-writer; best-effort.
-            if self._calibration_engine is not None:
-                self._calibration_engine.record_zone_outcome(
-                    symbol, touched=True, held=bool(won),
-                )
-        except Exception as exc:
-            logger.debug("[close-learn] zone-edge record failed: {}", exc)
 
         ctx = self._ctx
         if ctx is None:
