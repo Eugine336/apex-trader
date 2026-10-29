@@ -2297,6 +2297,22 @@ class EventDrivenSystem:
                         symbol, direction,
                     )
                     return False
+                snapshot = getattr(origination, "meta", {}).get("decision_feature_snapshot") \
+                    if isinstance(getattr(origination, "meta", None), dict) else None
+                if (
+                    not isinstance(snapshot, dict)
+                    or snapshot.get("schema") != "apex.decision_feature_snapshot.v1"
+                    or snapshot.get("captured_at_decision") is not True
+                    or snapshot.get("snapshot_complete") is not True
+                    or str(snapshot.get("decision_id") or "")
+                       != str(getattr(origination, "decision_id", "") or "")
+                    or not snapshot.get("evidence_ids")
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — complete point-in-time decision snapshot missing",
+                        symbol, direction,
+                    )
+                    return False
                 try:
                     reference_entry = float(getattr(origination, "reference_entry_price", 0.0) or 0.0)
                     geometry_entry = float(geometry.get("entry_price", 0.0) or 0.0)
