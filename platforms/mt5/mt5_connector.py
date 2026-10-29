@@ -229,6 +229,56 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def _get_symbol_sessions(self, mapped_symbol: str) -> list[dict]:
+        """Read the broker's weekly per-symbol trade sessions when MT5 exposes them.
+
+        MT5 session times are broker-server clock times. They are not converted
+        to UTC because the server timezone/DST rules are not reliably exposed by
+        the terminal API; callers must not treat this as a complete holiday
+        calendar or a verified UTC schedule.
+        """
+        session_fn = getattr(mt5, "symbol_info_session_trade", None)
+        if not callable(session_fn):
+            return []
+        days = (
+            "sunday", "monday", "tuesday", "wednesday",
+            "thursday", "friday", "saturday",
+        )
+        sessions: list[dict] = []
+        for day_index, day_name in enumerate(days):
+            for session_index in range(16):
+                try:
+                    session = session_fn(mapped_symbol, day_index, session_index)
+                except Exception:
+                    break
+                if session is None:
+                    break
+                start = getattr(session, "from", None)
+                end = getattr(session, "to", None)
+                def _seconds(value: Any) -> int | None:
+                    if value is None:
+                        return None
+                    try:
+                        return (
+                            int(value.hour) * 3600
+                            + int(value.minute) * 60
+                            + int(value.second)
+                        )
+                    except (AttributeError, TypeError, ValueError, OverflowError):
+                        return None
+                start_seconds = _seconds(start)
+                end_seconds = _seconds(end)
+                if start_seconds is None or end_seconds is None:
+                    continue
+                sessions.append({
+                    "day": day_name,
+                    "day_index": day_index,
+                    "session_index": session_index,
+                    "start_seconds_server_time": start_seconds,
+                    "end_seconds_server_time": end_seconds,
+                })
+        return sessions
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Broker-truth symbol economics from MT5 ``symbol_info``.
 
@@ -268,6 +318,9 @@ class MT5Connector(BaseConnector):
                 "volume_step": getattr(si, "volume_step", None),
                 "digits": getattr(si, "digits", None),
                 "point": getattr(si, "point", None),
+                "broker_trading_sessions": self._get_symbol_sessions(mapped),
+                "broker_session_timezone_verified": False,
+                "broker_holiday_calendar_verified": False,
             }
         except Exception as exc:
             logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
