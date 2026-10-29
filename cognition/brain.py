@@ -504,6 +504,7 @@ class CognitiveBrain:
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="no external advisor configured — native Brain-only decision",
                     market_state=market_state,
+                    advisor_status="not_configured",
                 )
                 if independent is not None:
                     return independent
