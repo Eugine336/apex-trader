@@ -6868,6 +6868,24 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-evo] BehaviorDiscovery record failed: {}", exc)
 
+        # System 2 — retain a bounded in-process ledger of observed realized
+        # outcomes for cognition. This is descriptive history only: it does not
+        # contain point-in-time feature timestamps and cannot prove predictive skill.
+        try:
+            by_symbol = getattr(self, "_cognition_recent_outcomes", None)
+            if by_symbol is None:
+                by_symbol = {}
+                self._cognition_recent_outcomes = by_symbol
+            history = by_symbol.setdefault(str(symbol).upper(), deque(maxlen=200))
+            history.append({
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "pnl_pips": float(pnl_pips),
+                "outcome": str(outcome or "UNKNOWN"),
+                "exit_cause": str(cause_value or "UNKNOWN"),
+            })
+        except Exception as exc:  # noqa: BLE001 — learning context cannot break close processing
+            logger.debug("[close-evo] in-process cognition outcome record failed: {}", exc)
+
         # OutcomeLogger — link plan → outcome
         if ctx.outcome_logger is not None:
             try:
