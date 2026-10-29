@@ -78,6 +78,8 @@ def _cost_system(spread_getter, *, commission_verified=False):
         cognition=SimpleNamespace(
             commission_per_lot_round_trip=0.0,
             commission_model_verified=commission_verified,
+            financing_per_lot_round_trip={"XAUUSD": 0.0},
+            financing_model_verified=True,
         )
     )
     system._money_per_price = lambda symbol, lots: 100.0
