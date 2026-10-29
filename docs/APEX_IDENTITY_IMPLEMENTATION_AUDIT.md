@@ -319,3 +319,10 @@ System 2 is **in progress, not merge-ready**. Missing data remains unknown; no p
 - Commission is now treated as unknown when the configured round-trip amount is zero and no positive realized-deal estimate exists, unless `COGNITION_COMMISSION_MODEL_VERIFIED=true` explicitly attests the zero-commission model. This setting was added to `CognitionConfig` and `.env.example`; the real `.env` was not read or changed. The net-EV gate fails closed when commission is unknown.
 
 - Cross-asset calculations are cached in-process for 60 seconds per symbol to avoid repeatedly fetching related H1 bars on every cognition cycle. Cached evidence retains its source timestamp and normal freshness horizon.
+
+### Follow-up — broker-reported weekly trading windows (2026-10-29)
+
+- `MT5Connector.get_symbol_spec()` now queries `symbol_info_session_trade` when the installed MT5 API exposes it and returns per-symbol weekday/session start and end offsets in **broker-server time**.
+- `EventDrivenSystem._cognition_price_snapshot()` surfaces these as separate `SESSION` evidence with provider provenance.
+- This does **not** close the full calendar gate: broker-server timezone/DST rules and a complete holiday calendar are not reliably exposed or verified. These windows must not be interpreted as UTC, and the session evidence remains calendar-unverified.
+- Added `tests/test_mt5_symbol_sessions.py` for schedule extraction and unavailable-API behavior. These tests have not been executed here; no pass is claimed.
