@@ -9,7 +9,11 @@ import threading
 import time
 
 from platforms.deriv.deriv_connector import DerivConnector
-from platforms.platform_manager import PlatformManager
+from platforms.platform_manager import (
+    PlatformManager,
+    _deriv_token_ttl_from_env,
+    _load_mt5_configs,
+)
 
 
 def _make_connector(callback, token="old", ttl=100.0, elapsed_frac=0.9):
@@ -88,3 +92,38 @@ class TestPlatformManagerRefreshCallback:
         monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "not-a-number")
         _, expires_in = self._pm()._refresh_deriv_token()
         assert expires_in == 3600.0
+
+
+
+class TestEnvironmentConfigurationParsing:
+    def test_blank_deriv_ttl_uses_default(self, monkeypatch):
+        monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "")
+        assert _deriv_token_ttl_from_env() == 3600.0
+
+    def test_whitespace_deriv_ttl_uses_default(self, monkeypatch):
+        monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "   ")
+        assert _deriv_token_ttl_from_env() == 3600.0
+
+    def test_invalid_deriv_ttl_uses_default(self, monkeypatch):
+        monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "not-a-number")
+        assert _deriv_token_ttl_from_env() == 3600.0
+
+    def test_non_positive_deriv_ttl_uses_default(self, monkeypatch):
+        for value in ("0", "-30", "nan", "inf"):
+            monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", value)
+            assert _deriv_token_ttl_from_env() == 3600.0
+
+    def test_numeric_deriv_ttl_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("DERIV_TOKEN_EXPIRES_IN", "1800")
+        assert _deriv_token_ttl_from_env() == 1800.0
+
+    def test_empty_mt5_brokers_falls_back_to_legacy_fields(self, monkeypatch):
+        monkeypatch.setenv("MT5_BROKERS", "")
+        monkeypatch.setenv("MT5_LOGIN", "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "test-password")
+        monkeypatch.setenv("MT5_SERVER", "Example-Server")
+        assert _load_mt5_configs() == [{
+            "login": 12345,
+            "password": "test-password",
+            "server": "Example-Server",
+        }]
