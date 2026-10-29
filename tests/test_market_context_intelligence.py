@@ -240,3 +240,21 @@ def test_generic_session_engine_observation_does_not_claim_verified_calendar():
     assert session["session_status"] == "unverified_records_present"
     assert session["session_records"][0]["verified"] is False
     assert "verified market session calendar and instrument-specific trading hours/timezone" in result["missing_information"]
+
+
+def test_realized_outcomes_are_descriptive_not_predictive_validation():
+    result = analyze_market_context([
+        _evidence("historical_analogue", {
+            "sample_count": 12,
+            "realized_wins": 7,
+            "realized_losses": 5,
+            "mean_realized_pnl_pips": 2.1,
+            "feature_timestamps_missing": True,
+            "source_verified": True,
+        }, source="runtime.realized_outcomes")
+    ], "XAUUSD")
+    history = result["historical_evidence"]
+    assert history["records"][0]["sample_count"] == 12
+    assert history["records"][0]["validation_status"] == "unverified"
+    assert history["predictive_ability_demonstrated"] is False
+    assert "historical outcome evidence with leakage, selection-bias and overfitting controls" in result["missing_information"]
