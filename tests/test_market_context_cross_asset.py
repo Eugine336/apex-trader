@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from cognition.market_context import analyze_market_context
 from event_driven_bootstrap import EventDrivenSystem
 
 
@@ -94,3 +95,15 @@ def test_round_trip_cost_fails_closed_when_spread_is_zero_or_unknown():
         raise RuntimeError("quote unavailable")
 
     assert _cost_system(unavailable)._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+
+def test_measured_cross_asset_evidence_is_classified_as_verified_association():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)])
+    usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)])
+    evidence = _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau})
+    result = analyze_market_context(evidence, "XAUUSD")
+    relationships = result["cross_market_relationships"]
+    assert relationships["cross_asset_status"] == "verified_synchronized_observations_present"
+    assert relationships["cross_asset_records"][0]["causation_established"] is False
+    assert "synchronized cross-asset relationship measurements with a defined window and source provenance" not in result["missing_information"]
