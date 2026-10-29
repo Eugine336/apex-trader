@@ -2452,34 +2452,43 @@ class EventDrivenSystem:
     def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
         """Estimate round-trip cost in account currency (Part XIX Art 7).
 
-        cost = spread + commission + slippage. Spread/slippage are converted from
-        price via money-per-price; commission is per-lot (self-calibrated from
-        realised closed deals, else the configured fallback). Returns 0.0 when it
-        cannot be estimated (the caller then fail-opens rather than block trading).
+        Requires broker tick-value/tick-size conversion and a successful positive
+        spread observation. Missing or invalid spread data is UNKNOWN, not zero,
+        and returns 0.0 so the mandatory net-EV qualification gate fails closed.
+        The slippage buffer is an explicit conservative assumption; it is not a
+        claim that future slippage or financing costs are known exactly.
         """
         try:
             lots = float(lots or 0.0)
             mpp = self._money_per_price(symbol, lots)
-            if mpp <= 0.0 or lots <= 0.0:
+            if not math.isfinite(mpp) or mpp <= 0.0 or not math.isfinite(lots) or lots <= 0.0:
                 return 0.0
-            pip = self._safe_pip_size(symbol)
-            spread_pips = 0.0
-            try:
-                spread_pips = float(self._get_spread_pips(symbol) or 0.0)
-            except Exception:  # noqa: BLE001
-                spread_pips = 0.0
+            pip = float(self._safe_pip_size(symbol))
+            if not math.isfinite(pip) or pip <= 0.0:
+                return 0.0
+            # Read the underlying provider value directly. _get_spread_pips()
+            # has a convenience fallback, which must not turn a failed quote
+            # into apparently observed transaction-cost evidence.
+            if self._pm is None or not callable(getattr(self._pm, "get_spread", None)):
+                return 0.0
+            spread_pips = float(self._pm.get_spread(symbol))
+            if not math.isfinite(spread_pips) or spread_pips <= 0.0:
+                return 0.0
             cog = getattr(self._config, "cognition", None)
-            slippage_pips = 1.0  # conservative default entry+exit slippage buffer
-            spread_ccy = max(0.0, spread_pips) * pip * mpp
+            slippage_pips = 1.0  # explicit conservative entry+exit buffer
+            spread_ccy = spread_pips * pip * mpp
             slippage_ccy = slippage_pips * pip * mpp
             comm_per_lot = float(
                 getattr(self, "_commission_per_lot_est", 0.0) or 0.0
             )
             if comm_per_lot <= 0.0 and cog is not None:
                 comm_per_lot = float(getattr(cog, "commission_per_lot_round_trip", 0.0) or 0.0)
-            commission_ccy = max(0.0, comm_per_lot) * lots
-            return spread_ccy + slippage_ccy + commission_ccy
-        except Exception:  # noqa: BLE001
+            if not math.isfinite(comm_per_lot) or comm_per_lot < 0.0:
+                return 0.0
+            commission_ccy = comm_per_lot * lots
+            total = spread_ccy + slippage_ccy + commission_ccy
+            return total if math.isfinite(total) and total > 0.0 else 0.0
+        except Exception:  # noqa: BLE001 — unknown cost must not be fail-open
             return 0.0
 
     def _opportunity_qualifies(
