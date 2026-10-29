@@ -3028,7 +3028,7 @@ class CognitiveBrain:
         })
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
-            thesis="native analysis completed; no action-qualified opportunity was found",
+            thesis="native analysis completed; no qualified opportunity met action criteria",
             confidence=0.0, uncertainty=uncertainty,
             campaign_recommendation="observe",
             risk_rationale=(
