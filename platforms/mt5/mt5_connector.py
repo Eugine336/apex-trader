@@ -251,6 +251,11 @@ class MT5Connector(BaseConnector):
             return {
                 "symbol": symbol,
                 "broker_symbol": mapped,
+                # These provenance flags are set only after a live broker
+                # symbol_info response; config fallbacks never reach this path.
+                "source": "mt5.symbol_info",
+                "source_verified": True,
+                "specification_verified": True,
                 "swap_long": getattr(si, "swap_long", None),
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
