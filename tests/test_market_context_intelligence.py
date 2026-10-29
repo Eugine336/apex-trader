@@ -164,6 +164,7 @@ def test_cross_timeframe_alignment_is_observation_not_causal_explanation():
     ], "XAUUSD")
     relation = result["cross_market_relationships"]["records"][0]
     assert relation["relationship_type"] == "cross_timeframe_observation"
+    assert relation["synchronized"] is False  # timestamp presence alone is not synchronization
     assert relation["causation_established"] is False
 
 
