@@ -44,11 +44,15 @@ def validate_historical_rows(
     and outcome_timestamp. Timestamps must be epoch numbers or timezone-aware
     ISO-8601 strings. Missing timestamps fail validation rather than being filled.
     """
-    items = [row for row in rows if isinstance(row, dict)]
+    items = list(rows)
     errors: list[str] = []
     parsed: list[dict[str, Any]] = []
     seen: dict[str, set[str]] = {"train": set(), "validation": set(), "test": set()}
+    sample_split_by_id: dict[str, str] = {}
     for index, row in enumerate(items):
+        if not isinstance(row, dict):
+            errors.append(f"row {index}: row must be a mapping")
+            continue
         sample_id = str(row.get("sample_id", "") or "")
         split = str(row.get("split", "") or "").strip().lower()
         decision = _time(row.get("decision_timestamp"))
@@ -74,20 +78,39 @@ def validate_historical_rows(
         if sample_id and split in seen:
             if sample_id in seen[split]:
                 errors.append(f"row {index}: duplicate sample_id within {split} split")
+            prior_split = sample_split_by_id.get(sample_id)
+            if prior_split is not None and prior_split != split:
+                errors.append(
+                    f"row {index}: sample_id appears in both {prior_split} and {split} splits"
+                )
+            sample_split_by_id[sample_id] = split
             seen[split].add(sample_id)
         parsed.append({
             "sample_id": sample_id, "split": split,
             "decision": decision, "outcome": outcome,
         })
 
-    for earlier, later in (("train", "validation"), ("validation", "test")):
+    for earlier, later in (("train", "validation"), ("train", "test"), ("validation", "test")):
         overlap = seen[earlier] & seen[later]
         if overlap:
             errors.append(f"sample IDs overlap between {earlier} and {later} splits")
-        earlier_times = [r["decision"] for r in parsed if r["split"] == earlier and r["decision"] is not None]
-        later_times = [r["decision"] for r in parsed if r["split"] == later and r["decision"] is not None]
-        if earlier_times and later_times and max(earlier_times) >= min(later_times):
-            errors.append(f"{earlier}/{later} split is not strictly chronological")
+
+    # A training outcome may extend beyond its decision timestamp. Require the
+    # entire earlier outcome horizon to end before the next split begins, so a
+    # long-horizon label cannot bleed into validation/test time.
+    for earlier, later in (("train", "validation"), ("validation", "test")):
+        earlier_outcomes = [
+            r["outcome"] for r in parsed
+            if r["split"] == earlier and r["outcome"] is not None
+        ]
+        later_decisions = [
+            r["decision"] for r in parsed
+            if r["split"] == later and r["decision"] is not None
+        ]
+        if earlier_outcomes and later_decisions and max(earlier_outcomes) >= min(later_decisions):
+            errors.append(
+                f"{earlier}/{later} split outcome horizon overlaps later decision window"
+            )
 
     if not untouched_holdout:
         errors.append("untouched holdout is not attested")
