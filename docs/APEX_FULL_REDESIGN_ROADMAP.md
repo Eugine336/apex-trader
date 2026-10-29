@@ -218,3 +218,8 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 ## Per-system completion record
 
 For every system, record: branch/PR and merge SHA; changed files; acceptance criteria; commands/tests actually run; pass/fail counts; identity-audit result; manual review performed; known gaps; safety implications; and explicit acceptance decision. If execution could not be performed, state that directly and leave the gate open.
+
+## System 2 progress update — 2026-10-30
+
+Branch `redesign/system2-decision-time-provenance` implements decision-time feature capture in both Brain origination paths, propagates the snapshot through campaign translation and the shared OPEN intent, fails closed at the Brain origination sink when the snapshot is incomplete, and records a durable ticket-linked entry snapshot plus realized outcome event. Focused tests were added but have **not been executed**. These changes are not merged. System 2 remains **IN PROGRESS** until runtime tests, identity audit, exact-ticket recovery, broker-calendar/constraint coverage, financing-cost integrity and independent historical validation are demonstrated. Do not start System 3 before acceptance.
+
