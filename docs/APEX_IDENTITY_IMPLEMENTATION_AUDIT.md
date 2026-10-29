@@ -10,15 +10,17 @@ The identity is canonical in source and documentation in this branch. The shared
 
 ## Current work item — native verdict survives advisor failure (2026-10-29)
 
-The current implementation change makes an advisor outage remain infrastructure
-metadata while the already-completed native reasoning supplies the market
-verdict. When native qualification fails, the Brain now returns
-`CONTINUE_OBSERVING` with `reasoning_mode=native_fallback`,
-`external_advisor_status=unavailable`, and preserved native diagnostics rather
-than replacing that verdict with `REASONER_UNAVAILABLE`. A qualified native
-campaign remains eligible through the existing qualification and risk path.
-Regression assertions have been updated in the native reasoning, provider
-resilience, reasoner outage, and constitutional conformance suites. **These
+The current implementation change makes advisor configuration/health remain
+infrastructure metadata while the already-completed native reasoning supplies
+the market verdict. When no advisor is configured, a provider is unavailable,
+or a healthy advisor returns no opinion this cycle, native qualification still
+runs. If native qualification fails, the Brain returns `CONTINUE_OBSERVING`
+with separate `reasoning_mode`, `external_advisor_status`, and native diagnostics
+rather than replacing that verdict with `REASONER_UNAVAILABLE`. A qualified
+native campaign remains eligible through the existing qualification and risk path.
+Regression assertions cover native-before-availability call order, a qualified
+native campaign when a healthy advisor returns no opinion, native-only operation
+without a configured advisor, provider outage, and constitutional conformance. **These
 changes have not yet been executed in a test environment; status is implemented
 in the branch, integration/test status unverified until the focused suites and
 identity audit run.** This change does not close the separate native hypothesis
