@@ -2873,7 +2873,38 @@ class CognitiveBrain:
         evidence is not backfilled from current prices after the decision.
         """
         import copy
+        import math
         import time as _time
+
+        def json_safe(value):
+            if value is None or isinstance(value, (str, bool, int)):
+                return value
+            if isinstance(value, float):
+                return value if math.isfinite(value) else None
+            if isinstance(value, dict):
+                return {str(key): json_safe(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [json_safe(item) for item in value]
+            enum_value = getattr(value, "value", None)
+            if enum_value is not None:
+                return json_safe(enum_value)
+            iso = getattr(value, "isoformat", None)
+            if callable(iso):
+                try:
+                    return iso()
+                except Exception:
+                    pass
+            item = getattr(value, "item", None)
+            if callable(item):
+                try:
+                    return json_safe(item())
+                except Exception:
+                    pass
+            try:
+                numeric = float(value)
+                return numeric if math.isfinite(numeric) else None
+            except (TypeError, ValueError, OverflowError):
+                return str(value)[:500]
 
         decision_epoch = _time.time()
         rows: list[dict] = []
@@ -2884,7 +2915,7 @@ class CognitiveBrain:
                     row["source_timestamp_epoch"] = float(
                         getattr(evidence, "timestamp_epoch", 0.0) or 0.0
                     )
-                    rows.append(copy.deepcopy(row))
+                    rows.append(copy.deepcopy(json_safe(row)))
         except Exception:
             # An incomplete snapshot must remain visibly incomplete; do not
             # reconstruct features from later data or silently claim validation.
@@ -2893,6 +2924,12 @@ class CognitiveBrain:
             str(row.get("evidence_id") or "") for row in rows
             if str(row.get("evidence_id") or "")
         ]
+        valid_timestamps = all(
+            isinstance(row.get("source_timestamp_epoch"), (int, float))
+            and math.isfinite(float(row["source_timestamp_epoch"]))
+            and 0.0 < float(row["source_timestamp_epoch"]) <= decision_epoch
+            for row in rows
+        )
         return {
             "schema": "apex.decision_feature_snapshot.v1",
             "snapshot_id": (
@@ -2903,7 +2940,7 @@ class CognitiveBrain:
             "symbol": str(getattr(decision, "symbol", "") or ""),
             "decision_timestamp_epoch": decision_epoch,
             "captured_at_decision": True,
-            "snapshot_complete": bool(rows) and bool(evidence_ids),
+            "snapshot_complete": bool(rows) and bool(evidence_ids) and valid_timestamps,
             "evidence_count": len(rows),
             "evidence_ids": evidence_ids,
             "features": rows,
