@@ -222,3 +222,21 @@ def test_historical_validator_does_not_silently_drop_malformed_rows():
     )
     assert report["passed"] is False
     assert any("row must be a mapping" in error for error in report["errors"])
+
+
+def test_generic_session_engine_observation_does_not_claim_verified_calendar():
+    result = analyze_market_context([
+        _evidence("session", {
+            "session_name": "LONDON",
+            "session_open_minutes": 30,
+            "minutes_to_next_session": 300,
+            "liquidity": "HIGH",
+            "clock_timezone": "UTC",
+            "session_calendar_verified": False,
+            "source_verified": False,
+        }, source="session_engine.internal_schedule")
+    ], "XAUUSD")
+    session = result["sessions_and_execution_constraints"]
+    assert session["session_status"] == "unverified_records_present"
+    assert session["session_records"][0]["verified"] is False
+    assert "verified market session calendar and instrument-specific trading hours/timezone" not in result["missing_information"]
