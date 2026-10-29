@@ -81,7 +81,10 @@ def _account(key="mt5:123", balance=10_000.0):
 
 def _full_division(**overrides):
     """A division with every subsystem healthy/permissive by default."""
+    from risk.portfolio_risk_state import PortfolioRiskState
+
     base = dict(
+        portfolio_risk_sm=_RiskSM(PortfolioRiskState.NORMAL),
         drawdown_guard=_DrawdownGuard("NORMAL"),
         account_risk=_AccountRisk(),
         news_guard=_NewsGuard(clear=True),
@@ -117,6 +120,10 @@ class TestApproved:
         assert any("market_open" in r for r in verdict.reasons)
         assert any("broker_available" in r for r in verdict.reasons)
         assert any("spread_ok" in r for r in verdict.reasons)
+        # Unbound risk/news controls are unknown state, not "disabled".
+        for check in ("news_clear", "daily_loss", "heat_ok",
+                      "drawdown_not_frozen", "portfolio_risk_state"):
+            assert any(check in r for r in verdict.reasons), check
 
 
 # ── Individual vetoes ────────────────────────────────────────────────────

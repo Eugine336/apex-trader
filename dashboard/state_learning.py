@@ -96,12 +96,6 @@ class LearningMixin:
     def _interaction_obj(self) -> Any:
         return None  # interaction analyzer retired
 
-    def _param_evolution_obj(self) -> Any:
-        ctx = getattr(self, "_system_context", None)
-        if ctx is not None and getattr(ctx, "param_evolver", None) is not None:
-            return ctx.param_evolver
-        return getattr(self._loop(), "_param_evolver", None)
-
     def _signal_discovery_obj(self) -> Any:
         ctx = getattr(self, "_system_context", None)
         if ctx is not None and getattr(ctx, "signal_discovery", None) is not None:
@@ -163,7 +157,6 @@ class LearningMixin:
             "tuner_agent": self._safe(self._learning_tuner_agent),
             "counterfactual": self._safe(self._learning_counterfactual),
             "interactions": self._safe(self._learning_interactions),
-            "param_evolution": self._safe(self._learning_param_evolution),
             "signal_discovery": self._safe(self._learning_signal_discovery),
             "virtual_modules": self._safe(self._learning_virtual_modules),
             "capital_allocation": self._safe(self._learning_capital_allocation),
@@ -530,47 +523,6 @@ class LearningMixin:
             "toxic_pairs": toxic,
             "synergy_pairs": synergy,
             "optimal_subset": optimal,
-        }
-
-    # ── Parameter Evolution (L5a) ─────────────────────────────────────────────
-    def _learning_param_evolution(self) -> dict:
-        evolver = self._param_evolution_obj()
-        cfg = getattr(self._config(), "param_evolution", None)
-        meta = {
-            "replay_lookback": int(getattr(cfg, "replay_lookback", 0) or 0),
-            "shadow_validation_trades": int(getattr(cfg, "shadow_validation_trades", 0) or 0),
-            "significance_threshold": _round(getattr(cfg, "significance_threshold", 0.0), 4),
-        }
-        if evolver is None:
-            return _idle(meta)
-        state = evolver.get_state() or {}
-        shadows = []
-        for s in state.get("active_shadows", []) or []:
-            shadows.append({
-                "param_name": str(s.get("param_name", "")),
-                "current_value": _round(s.get("current_value", 0.0), 4),
-                "proposed_value": _round(s.get("proposed_value", 0.0), 4),
-                "state": str(s.get("state", "")),
-                "shadow_trades": int(s.get("shadow_trades", 0) or 0),
-                "improvement_per_trade": _round(s.get("improvement_per_trade", 0.0), 4),
-            })
-        promotions = []
-        for p in state.get("recent_promotions", []) or []:
-            promotions.append({
-                "param_name": str(p.get("param_name", "")),
-                "old_value": _round(p.get("old_value", 0.0), 4),
-                "new_value": _round(p.get("new_value", 0.0), 4),
-                "decision": str(p.get("decision", "")),
-                "decided_at": p.get("decided_at"),
-            })
-        return {
-            "enabled": bool(state.get("enabled", False)),
-            "source": "live",
-            "evolvable_params": list(state.get("evolvable_params", []) or []),
-            "active_shadow_count": int(state.get("active_shadow_count", 0) or 0),
-            "active_shadows": shadows,
-            "recent_promotions": promotions,
-            **meta,
         }
 
     # ── Synthetic Signal Discovery (L5c) ──────────────────────────────────────

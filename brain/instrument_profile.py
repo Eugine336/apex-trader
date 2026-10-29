@@ -156,25 +156,6 @@ class InstrumentProfile:
     dxy_opposition_penalty: float = 0.15
     dxy_lookback_bars: int = 20
 
-    # ── Phase 3 Feature A: News calendar pre-planning ─────────────────
-    # For scheduled high-impact events (CPI/NFP/FOMC) the news planner stages a
-    # BUY_STOP above the current range and a SELL_STOP below it, OCO-style (one
-    # fills → the opposite is cancelled). ``news_pre_planning_enabled`` is OFF by
-    # default — a profile opts in (Gold does). ``news_pre_stage_minutes`` is how
-    # many minutes before the event the breakout orders are staged;
-    # ``news_range_lookback_bars`` is how many recent candles define the range;
-    # ``news_breakout_buffer_pips`` offsets each stop beyond the range edge;
-    # ``news_risk_multiplier`` sizes news windows down (spreads widen) and
-    # ``news_post_event_cooldown_s`` is how long after the event unfilled pending
-    # orders are left resting before cancellation. The planner reads the profile
-    # first and falls back to the EntryConfig defaults when a field is absent.
-    news_pre_planning_enabled: bool = False
-    news_pre_stage_minutes: int = 5
-    news_range_lookback_bars: int = 10
-    news_breakout_buffer_pips: float = 5.0
-    news_risk_multiplier: float = 0.5
-    news_post_event_cooldown_s: float = 300.0
-
     # ── Hardened flip confirmation (entry/flip_confirmer.py) ──────────
     # Tuning for the 5-check flip confirmation that gates both the stop-out
     # flip and the A1 direction-flip / momentum-override paths. Every value is
@@ -316,7 +297,7 @@ _SYNTHETIC_PROFILE = InstrumentProfile(
     # Entry: SL must be meaningful relative to instrument price.
     # Synthetics trade at 100–100,000+ points. A fixed pip minimum is useless.
     # min_risk_pips here acts as a MINIMUM percentage floor:
-    # the entry_engine multiplies this by pip_size to get minimum SL distance.
+    # the stop-geometry code multiplies this by pip_size to get minimum SL distance.
     # For V100 (price ~857, pip=0.01): min_risk_pips=50 → min SL = 0.5 pts (0.06%)
     # This is intentionally wide — synthetics at 400x multiplier need room to breathe.
     # Rule of thumb: SL distance should be >= 0.3% of instrument price.
@@ -391,12 +372,6 @@ _GOLD_PROFILE = InstrumentProfile(
     pre_staging_enabled=True,
     staging_proximity_pips=300.0,       # = $3.00 — Gold-scaled staging proximity
     dxy_filter_enabled=True,            # Gold's inverse-USD correlation is core
-    # Phase 3: Gold opts in to news calendar pre-planning. FOMC/CPI/NFP move
-    # Gold $20-50 in seconds — staging breakout stops both sides catches the
-    # move instead of blocking around it. The buffer is scaled to Gold's dollar
-    # geometry ($2.00) — the generic 5-pip ($0.05) default is meaningless here.
-    news_pre_planning_enabled=True,
-    news_breakout_buffer_pips=200.0,    # = $2.00 — clears widened news spreads
     # Session 16: the tick-rule delta and fast-then-slow sequence gates are ON
     # for Gold — the M1/M5 tracker feed and tick store are warmed via bootstrap
     # wiring, so both checks gate real flips out of the box. Listed explicitly so

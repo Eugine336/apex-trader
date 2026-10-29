@@ -8,10 +8,9 @@ component's own safety bounds, rolls back on failure, and writes every action
 to a persistent audit log.
 
 Why this exists: tuning used to be scattered — AdaptiveOptimizer on its own
-50-trade / 7-day trigger, GateTuner on an independent 6h timer, the planner
+50-trade / 7-day trigger, the planner
 Calibrator on its own threshold, signal grading per scan cycle. Nothing
-ordered them (EVEstimator should read fresh PairLearner output; the gate tuner
-tunes the gate the EV estimate feeds), nothing validated them centrally, and
+ordered them (EVEstimator should read fresh PairLearner output), nothing validated them centrally, and
 nothing left an audit trail. The agent fixes all of that without changing any
 tuner's internal logic — it only owns the scheduling, validation, and audit.
 
@@ -55,7 +54,6 @@ EXPECTED_TUNABLES: tuple[str, ...] = (
     "session_learner",      # 5  — per-session aggression
     "trade_analyzer",       # 6  — losing-pattern block list
     "ev_estimator",         # 7  — EV gate history
-    "gate_tuner",           # 8  — quality-gate offsets
     "win_rate_provider",    # 9  — ranker win-probability source
     "signal_ledger",        # 10 — universal signal grading
     "emitter_feedback",     # 11 — per-emitter accuracy (read-side)

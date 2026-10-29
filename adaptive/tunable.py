@@ -6,7 +6,7 @@ The shared contract every auto-tuning component implements so the central
 its tuning — without knowing anything about the component's internals.
 
 Today the learners tune themselves on scattered, independent triggers
-(AdaptiveOptimizer on 50 trades / 7d, GateTuner on a 6h timer, the planner
+(AdaptiveOptimizer on 50 trades / 7d, the planner
 Calibrator on its own 50-trade threshold, signal grading per scan cycle).
 Nothing coordinates ordering (EVEstimator should see fresh PairLearner data;
 the gate tuner tunes the gate the EV estimate feeds) and nothing keeps a

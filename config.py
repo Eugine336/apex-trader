@@ -611,7 +611,6 @@ class RiskConfig:
     ml_should_trade_mode: str = "veto"       # "veto" | "penalty"
     ml_should_trade_size_mult: float = 0.5
     tp_adjust_enabled: bool = True
-    pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
     # Portfolio Division soft exposure budgets. 0 == disabled (no-op) so default
@@ -1452,12 +1451,10 @@ class OutcomeFeedbackConfig:
     journal_path: str = "data/outcome_feedback.jsonl"
     # Rolling window (most recent N completed trades) for accuracy aggregation.
     accuracy_lookback: int = 300
-    # Gold-specialist single-instrument mode. Defaults True because the system
-    # is locked to XAUUSD (config enabled_symbols_override=["XAUUSD"]); when
+    # Single-instrument mode. Defaults False (multi-instrument universe); when
     # truthy the feedback loop tightens its lookback to 100 and journal cap to
-    # 5000 so it stays responsive to regime shifts. Set False to revert to the
-    # multi-instrument defaults.
-    gold_specialist: bool = True
+    # 5000 so it stays responsive to regime shifts on one instrument.
+    gold_specialist: bool = False
 
 
 @dataclass
@@ -1920,7 +1917,7 @@ class TunerAgentConfig:
     """Central coordinator for ALL auto-tuning (the "Tuner Agent").
 
     Every tunable component (ScoreOptimizer, RegimeLearner, PairLearner,
-    SessionLearner, EVEstimator, GateTuner, planner Calibrator, SignalLedger
+    SessionLearner, EVEstimator, planner Calibrator, SignalLedger
     grading) registers with one agent. The agent resolves dependency order,
     decides who is due, executes them in order, validates each result against
     the component's own safety bounds, rolls back on failure, and writes every
@@ -2060,74 +2057,6 @@ class InteractionConfig:
             raise ValueError(
                 "InteractionConfig.toxic_threshold must be <= synergy_threshold, "
                 f"got toxic={self.toxic_threshold!r} synergy={self.synergy_threshold!r}"
-            )
-
-
-@dataclass
-class ParameterEvolutionConfig:
-    """Settings for the Parameter Evolution engine (L5a).
-
-    The TunerAgent follows gradients on existing parameters; this engine
-    *explores* — it generates candidate values for the consensus / ranker
-    thresholds, replays them over recent closed-trade snapshots (the same
-    decision-replay the Counterfactual engine uses), walk-forward validates the
-    winners, then proves them over live closes (shadow validation) before
-    *recommending* a promotion. It never mutates live config directly — an
-    injected callback (gated by the wiring layer) applies an approved value, so
-    the TunerAgent stays the sole tuning authority.
-
-    Defaults OFF so it stays dormant until enabled. When on it gracefully waits
-    for ``min_replay_trades`` closed snapshots before doing anything.
-    """
-
-    # Master switch: explore + shadow-validate parameter candidates.
-    param_evolution_enabled: bool = True
-    # How many candidate values to generate per parameter each tournament.
-    candidates_per_param: int = 10
-    # How many recent closed trades each replay tournament analyses.
-    replay_lookback: int = 500
-    # Live closes a candidate must prove itself over before a promotion.
-    shadow_validation_trades: int = 50
-    # Minimum R improvement per trade for a candidate to qualify / promote.
-    significance_threshold: float = 0.05
-    # Train/test split for the walk-forward overfitting guard (0.5–0.95).
-    walk_forward_split: float = 0.7
-    # Minimum hours between successive promotions (rate limiting).
-    evolution_cooldown_hours: float = 48.0
-    # Maximum candidates in shadow validation at once.
-    max_concurrent_shadows: int = 3
-    # Trades to watch a promoted change before a rollback recommendation.
-    rollback_window: int = 100
-    # Minimum closed snapshots before any tournament runs.
-    min_replay_trades: int = 50
-    # SQLite path (under data/, gitignored).
-    param_evolution_db_path: str = "data/param_evolution.db"
-
-    def __post_init__(self) -> None:
-        if int(self.candidates_per_param) < 2:
-            raise ValueError(
-                "ParameterEvolutionConfig.candidates_per_param must be >= 2, "
-                f"got {self.candidates_per_param!r}"
-            )
-        if int(self.shadow_validation_trades) < 1:
-            raise ValueError(
-                "ParameterEvolutionConfig.shadow_validation_trades must be >= 1, "
-                f"got {self.shadow_validation_trades!r}"
-            )
-        if not (0.5 <= float(self.walk_forward_split) <= 0.95):
-            raise ValueError(
-                "ParameterEvolutionConfig.walk_forward_split must be in [0.5, 0.95], "
-                f"got {self.walk_forward_split!r}"
-            )
-        if float(self.significance_threshold) < 0:
-            raise ValueError(
-                "ParameterEvolutionConfig.significance_threshold must be >= 0, "
-                f"got {self.significance_threshold!r}"
-            )
-        if int(self.max_concurrent_shadows) < 1:
-            raise ValueError(
-                "ParameterEvolutionConfig.max_concurrent_shadows must be >= 1, "
-                f"got {self.max_concurrent_shadows!r}"
             )
 
 
@@ -4198,7 +4127,7 @@ class AdaptiveTunerConfig:
     A background scheduler periodically drives the central :class:`TunerAgent`'s
     time-based (``on_periodic_tick``) and per-scan (``on_scan_cycle``) tune
     cadences — previously only ``on_trade_close`` fired in production, so the
-    GateTuner / VoteCalibrator / ModuleGovernor writers stayed dormant and their
+    VoteCalibrator / ModuleGovernor writers stayed dormant and their
     live readers never saw fresh values. The same scheduler recomputes the
     :class:`AdaptiveWeightProvider`, which nudges the probabilistic-bias evidence
     weights toward the timeframes that actually predict outcomes — within hard,
@@ -4362,27 +4291,18 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # ── GOLD SPECIALIST MODE ──────────────────────────────────────────────
-    # Apex Trader is currently a Gold specialist: only XAUUSD is active. Gold
-    # runs on its dedicated `_GOLD_PROFILE` (brain/instrument_profile.py),
-    # tuned to Gold's real dollar-scale behaviour. Every other instrument
-    # stays in INSTRUMENT_REGISTRY but is inactive — the opportunist behaviour
-    # (aggressive entry/exit) is unchanged, only the instrument universe and
-    # parameters are Gold-calibrated.
-    #
-    # To re-enable other instruments:
-    #   • Add their categories back to `enabled_categories`
-    #     (e.g. ["forex", "commodity", "index", "synthetic", "crypto"]).
-    #   • Clear `enabled_symbols_override` (set to []) to scan every symbol in
-    #     the enabled categories, or list specific symbols to restrict the set.
+    # ── INSTRUMENT UNIVERSE ───────────────────────────────────────────────
+    # Apex is not tied to one instrument. By default every registered forex,
+    # commodity, index and crypto instrument is in scope (synthetics need a
+    # separate broker setup and stay opt-in). Each instrument runs on its own
+    # profile (brain/instrument_profile.py). To narrow the universe:
+    #   • set TRADING_MODE=gold (commodity / XAUUSD only), or
+    #   • list specific symbols in `enabled_symbols_override`.
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["commodity"]  # Gold's category only
+        default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
-    # Restricted to Gold only. Clear this ([]) to scan all symbols in the
-    # enabled categories, or list specific symbols for a targeted subset.
-    enabled_symbols_override: list[str] = field(
-        default_factory=lambda: ["XAUUSD"]  # Gold specialist — XAUUSD only
-    )
+    # Empty = every symbol in the enabled categories; list symbols to restrict.
+    enabled_symbols_override: list[str] = field(default_factory=list)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
@@ -4419,7 +4339,6 @@ class AppConfig:
     )
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
-    param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
     learning_governance: LearningGovernanceConfig = field(
         default_factory=LearningGovernanceConfig
     )
@@ -4445,20 +4364,19 @@ class AppConfig:
 
     def __post_init__(self) -> None:
         # TRADING_MODE toggles the instrument universe from .env without code
-        # changes. "gold" (default) keeps the Gold specialist universe
-        # (commodity / XAUUSD only); "full" scans every instrument across
-        # forex, commodity, index and crypto. Any other value falls back to
-        # "gold" with a warning. Synthetic is intentionally excluded from
-        # "full" — Deriv synthetics need a separate broker setup.
-        mode = os.getenv("TRADING_MODE", "gold").lower().strip()
+        # changes. "full" (default) scans every instrument across forex,
+        # commodity, index and crypto; "gold" narrows to commodity / XAUUSD.
+        # Any other value falls back to "full" with a warning. Synthetic is
+        # intentionally excluded — Deriv synthetics need a separate broker setup.
+        mode = os.getenv("TRADING_MODE", "full").lower().strip()
         if mode not in ("gold", "full"):
             logger.warning(
-                "[config] unknown TRADING_MODE '{}' — falling back to 'gold'", mode
+                "[config] unknown TRADING_MODE '{}' — falling back to 'full'", mode
             )
-            mode = "gold"
-        if mode == "full":
-            self.enabled_categories = ["forex", "commodity", "index", "crypto"]
-            self.enabled_symbols_override = []
+            mode = "full"
+        if mode == "gold":
+            self.enabled_categories = ["commodity"]
+            self.enabled_symbols_override = ["XAUUSD"]
         self.trading_mode = mode
 
     @property

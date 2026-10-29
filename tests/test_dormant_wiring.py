@@ -3,7 +3,7 @@ Tests for dormant-component wiring + system-wide tuning visibility (Parts 2 & 3)
 
 Verifies that the components the audit flagged as dormant/dead-wired are now
 properly reachable through the TunerAgent, and that the agent can report the
-whole 19-component system and validate its registry at startup.
+whole 18-component system and validate its registry at startup.
 
 Covered:
   * PostCloseTrackerConfig defaults OFF; tracker honours the flag
@@ -11,7 +11,7 @@ Covered:
   * PostCloseTrackerTunable drives the tracker only when there is work
   * SignalLedger.attach_trade_outcome links a closed trade's result to its signals
   * ConsumerTunable reports config and is never auto-tuned
-  * get_system_tuning_status reports all 19 expected components + the missing set
+  * get_system_tuning_status reports all 18 expected components + the missing set
   * validate_registry warns about missing components and reports them
   * dormant components are reported with role=dormant
 """
@@ -176,24 +176,26 @@ def test_consumer_tunable_faulty_provider_safe():
 # ── System status + startup validation (Part 3) ─────────────────────────────
 
 
-def test_expected_tunables_is_nineteen():
-    assert len(EXPECTED_TUNABLES) == 19
+def test_expected_tunables_is_eighteen():
+    # GateTuner was removed with the legacy entry stack (19 -> 18).
+    assert len(EXPECTED_TUNABLES) == 18
+    assert "gate_tuner" not in EXPECTED_TUNABLES
 
 
 def test_system_status_reports_missing_components(agent):
     status = agent.get_system_tuning_status()
     assert status["agent_enabled"] is True
     assert status["is_sole_authority"] is True
-    assert status["expected_count"] == 19
-    # Nothing registered yet -> all 19 expected are missing.
-    assert len(status["unregistered_expected"]) == 19
+    assert status["expected_count"] == len(EXPECTED_TUNABLES)
+    # Nothing registered yet -> every expected component is missing.
+    assert len(status["unregistered_expected"]) == len(EXPECTED_TUNABLES)
 
 
 def test_system_status_full_registry_has_no_missing(agent):
     for name in EXPECTED_TUNABLES:
         agent.register(ConsumerTunable(name, lambda: {"ok": True}))
     status = agent.get_system_tuning_status()
-    assert status["registered_count"] == 19
+    assert status["registered_count"] == len(EXPECTED_TUNABLES)
     assert status["unregistered_expected"] == []
     # Every expected component shows up with its reported params.
     for name in EXPECTED_TUNABLES:
@@ -204,7 +206,7 @@ def test_validate_registry_reports_missing(agent):
     agent.register(ConsumerTunable("risk_engine", lambda: {}))
     summary = agent.validate_registry()
     assert "risk_engine" in summary["registered"]
-    assert len(summary["missing"]) == 18
+    assert len(summary["missing"]) == len(EXPECTED_TUNABLES) - 1
     assert "score_optimizer" in summary["missing"]
 
 

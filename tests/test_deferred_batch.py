@@ -9,7 +9,6 @@ import tempfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from adaptive.gate_tuner import GateTuner
 from persistence.position_store import PositionStore
 from risk.account_risk import AccountRiskManager
 
@@ -72,10 +71,3 @@ class TestAccountSnapshot:
         assert s["flatten_breached"] is False
 
 
-class TestGateOffsets:
-    def test_all_offsets_default_neutral(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gt = GateTuner(os.path.join(tmp, "gt.json"))
-            offs = gt.all_offsets()
-        # Every whitelisted tunable gate starts at a neutral (0.0) offset.
-        assert offs == {f: 0.0 for f in GateTuner.TUNABLE}

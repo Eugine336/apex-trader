@@ -164,21 +164,6 @@ class TestColdStartScoreBoost:
         learner = PairLearner(config=_cfg(cold_start_score_boost=0))
         assert learner.get_cold_start_score_boost("NEVER") == 0
 
-    def test_entry_engine_honors_boost(self):
-        # The EntryEngine exposes a pair_learner hook (set by the trading loop)
-        # and adds the cold-start boost to the entry-score floor. A fake learner
-        # confirms the value is read and applied.
-        from trigger.entry_engine import EntryEngine
-
-        engine = EntryEngine()
-        assert engine.pair_learner is None  # neutral by default
-
-        class _FakeLearner:
-            def get_cold_start_score_boost(self, pair):
-                return 7
-
-        engine.pair_learner = _FakeLearner()
-        assert engine.pair_learner.get_cold_start_score_boost("EURUSD") == 7
 
 
 # ── Mature pairs unaffected by cold-start changes ──────────────────────────

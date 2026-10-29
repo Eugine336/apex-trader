@@ -121,28 +121,6 @@ class TestStructureClosedBar:
         assert len(analysis_full.bullish_swing_points) + len(analysis_full.bearish_swing_points) > 0
 
 
-class TestEntryPatternsClosedBar:
-    """Entry patterns must operate on closed bars at the entry_engine boundary."""
-
-    def test_pattern_detector_is_pure(self):
-        """get_best_pattern operates on whatever data is passed (no internal
-        drop). The closed-bar logic lives in entry_engine which drops the
-        forming bar BEFORE calling get_best_pattern."""
-        from trigger.entry_patterns import EntryPatternDetector
-
-        detector = EntryPatternDetector()
-        df = _make_ohlcv(20, trend="up")
-        pattern_full, _ = detector.get_best_pattern(
-            df, "LONG", zone_top=1.11, zone_bottom=1.10, pip_size=0.0001,
-        )
-        closed_df = drop_forming_bar(df)
-        pattern_closed, _ = detector.get_best_pattern(
-            closed_df, "LONG", zone_top=1.11, zone_bottom=1.10, pip_size=0.0001,
-        )
-        # Results may differ — the detector sees different last bars.
-        # What matters: the entry_engine applies drop_forming_bar before calling.
-        assert isinstance(pattern_full, str)
-        assert isinstance(pattern_closed, str)
 
 
 # ── H3 idempotency ─────────────────────────────────────────────────────

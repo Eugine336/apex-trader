@@ -30,7 +30,6 @@ from adaptive.execution_profiles import (
 from adaptive.capital_allocator import compute_fingerprint
 from adaptive.tunable import Tunable, TuneContext, TuneFrequency
 from adaptive.tunable_adapters import ExecutionProfileTunable
-from trigger.entry_engine import EntryEngine
 
 
 # Several sibling test modules stub ``pandas``/``numpy`` into ``sys.modules`` at
@@ -337,27 +336,8 @@ def _flat_h1(base: float = 1.2700, n: int = 60) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@_needs_pandas
-def test_calculate_targets_default_matches_pre_profile():
-    """No override args ⇒ TP1 1.5R / TP2 3.0R — the pre-profile constants."""
-    eng = EntryEngine(config=AppConfig())
-    entry, sl = 1.2710, 1.2700  # risk = 0.0010
-    risk = abs(entry - sl)
-    tp1, tp2 = eng.calculate_targets("EURUSD", "LONG", entry, sl, _flat_h1(), 0.0001)
-    assert _close((tp1 - entry) / risk, 1.5, eps=1e-4)
-    assert _close((tp2 - entry) / risk, 3.0, eps=1e-4)
 
 
-@_needs_pandas
-def test_calculate_targets_profile_rr_override():
-    eng = EntryEngine(config=AppConfig())
-    entry, sl = 1.2710, 1.2700
-    risk = abs(entry - sl)
-    tp1, tp2 = eng.calculate_targets(
-        "EURUSD", "LONG", entry, sl, _flat_h1(), 0.0001, tp1_rr=2.0, tp2_rr=6.0,
-    )
-    assert _close((tp1 - entry) / risk, 2.0, eps=1e-4)
-    assert _close((tp2 - entry) / risk, 6.0, eps=1e-4)
 
 
 def _atr_m5(base: float = 1.2701, n: int = 40, half_range: float = 0.0015) -> pd.DataFrame:
@@ -371,41 +351,5 @@ def _atr_m5(base: float = 1.2701, n: int = 40, half_range: float = 0.0015) -> pd
     return pd.DataFrame(rows)
 
 
-@_needs_pandas
-def test_stop_loss_atr_mult_override_changes_distance():
-    cfg = AppConfig()
-    cfg.risk.volatility_stop_mode = "on"
-    cfg.risk.atr_stop_period = 14
-    cfg.risk.atr_stop_mult = 1.5
-    cfg.risk.atr_stop_ratio_min = 0.1
-    cfg.risk.atr_stop_ratio_max = 10.0
-    cfg.risk.atr_stop_max_risk_mult = 20.0
-    eng = EntryEngine(config=cfg)
-    zone = {"bottom": 1.27000, "top": 1.27020, "midpoint": 1.27010}
-    entry = 1.27010
-    # Small ATR so both multiples stay inside the [min, max] ratio band (and
-    # under the max-risk cap) — otherwise both clamp to the same ceiling.
-    base = eng.calculate_stop_loss("LONG", zone, 0.0001, entry_price=entry, pair="EURUSD", m5_df=_atr_m5(half_range=0.00015))
-    wide = eng.calculate_stop_loss(
-        "LONG", zone, 0.0001, entry_price=entry, pair="EURUSD", m5_df=_atr_m5(half_range=0.00015),
-        atr_mult_override=3.0,
-    )
-    base_dist = abs(entry - base)
-    wide_dist = abs(entry - wide)
-    assert wide_dist > base_dist  # a larger ATR multiple widens the stop
 
 
-@_needs_pandas
-def test_stop_loss_no_override_matches_instance_default():
-    cfg = AppConfig()
-    cfg.risk.volatility_stop_mode = "on"
-    cfg.risk.atr_stop_period = 14
-    eng = EntryEngine(config=cfg)
-    zone = {"bottom": 1.27000, "top": 1.27020, "midpoint": 1.27010}
-    entry = 1.27010
-    a = eng.calculate_stop_loss("LONG", zone, 0.0001, entry_price=entry, pair="EURUSD", m5_df=_atr_m5())
-    b = eng.calculate_stop_loss(
-        "LONG", zone, 0.0001, entry_price=entry, pair="EURUSD", m5_df=_atr_m5(),
-        atr_mult_override=None,
-    )
-    assert a == b  # None override ⇒ identical to the instance default

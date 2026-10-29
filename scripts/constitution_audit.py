@@ -216,10 +216,12 @@ CHECKS: list[Check] = [
             "decision/governor.py",
             "decision/journal.py",
             "decision/context.py",
+            "trigger/entry_engine.py",
+            "trigger/entry_patterns.py",
+            "adaptive/gate_tuner.py",
+            "adaptive/gate_attribution.py",
         ],
-        patterns=[
-            _p("trigger/entry_engine.py", r"def\s+calculate_entry\b"),
-        ],
+        patterns=[],
         banned_calls=[
             re.compile(r"\.decide_entry\("),
             re.compile(r"\.decide_management\("),
@@ -229,7 +231,6 @@ CHECKS: list[Check] = [
         ],
         scan_excludes=[
             "decision/",                  # (now only actions.py) — no deciders
-            "trigger/entry_engine.py",    # live zone/stop/target/sizing utilities
             "planning/trade_planner.py",  # retired plan_trade may cross-call assess_*
         ],
     ),

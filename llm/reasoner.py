@@ -468,7 +468,8 @@ def _normalize_opportunity_reply(
         if a is not None and 0.0 < a < 1.0:
             _fill("expected_favorable_excursion", str(round(a, 4)))
             _fill("expected_adverse_excursion", str(round(1.0 - a, 4)))
-        _fill("expected_value", "positive")
+        # expected_value is NOT back-filled: an advisor that did not state one has
+        # not asserted a positive EV, and the Brain computes its own numeric EV.
     else:
         # Untradeable, or no opportunity carried a LONG/SHORT direction ⇒ FLAT.
         _fill("direction", FLAT)

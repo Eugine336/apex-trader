@@ -1320,7 +1320,9 @@ class CognitionLoop:
                     symbol, direction, intent.stake_usd,
                 )
         except Exception as exc:  # noqa: BLE001 — origination must never break the loop
-            logger.debug("[cognition-loop] originate fault: %s", exc)
+            logger.warning(
+                "[cognition-loop] origination fault (%s): %s", type(exc).__name__, exc,
+            )
 
     def _manage_open_positions(self, *, now: Optional[float] = None) -> int:
         """Produce a Brain management decision for each open position. Fail-safe.

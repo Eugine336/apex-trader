@@ -114,9 +114,6 @@ class EntryConfig:
     # Block zones (score 70) and standalone FVG zones (score 80) now clear the
     # bar, not just FVG+OB overlaps (score 100). Only sub-60 (noise) is rejected.
     min_entry_score: int = 60
-    # Hard floor for the GateTuner-adjusted entry-score bar.  The tuner may
-    # LOWER min_entry_score within a bounded envelope when its rejected setups
-    # keep winning, but the live gate never drops the bar below this floor.
     watchlist_score: int = 70
     # Minimum signed HTF alignment for an entry. Alignment is +1 (HTF fully
     # supports the trade) → -1 (HTF fully opposes). A strongly counter-trend
@@ -124,13 +121,7 @@ class EntryConfig:
     # zone geometry — those entries are immediately closed by management's
     # structure read, so taking them only burns spread. None disables the gate.
     min_htf_alignment: float = -0.5
-    # Absolute permissive cap for the GateTuner-adjusted HTF-alignment floor.
-    # The tuner may LOWER min_htf_alignment within a bounded envelope when its
-    # rejected counter-HTF setups keep winning (the data proving HTF opposition
-    # was not predictive for that instrument), but the live gate never drops the
-    # floor below this cap, so a fully-opposed setup (alignment ≈ -1) is never
-    # blindly admitted. Loosening-only: the tuner can never make the floor
-    # STRICTER than the operator's configured min_htf_alignment.
+    # Absolute permissive cap for the HTF-alignment floor (legacy gate setting).
     min_htf_alignment_floor: float = -1.0
     # Conviction multiplier applied to a counter-trend zone (its direction
     # opposes the resolved HTF bias). Pure zone geometry (FVG+OB=100, FVG=80,
@@ -259,25 +250,6 @@ class EntryConfig:
     dxy_filter_enabled: bool = True
     dxy_opposition_penalty: float = 0.15
     dxy_lookback_bars: int = 20
-
-    # ── Phase 3 Feature A: News calendar pre-planning ─────────────────────
-    # Global fallbacks for the news calendar pre-planner (brain/news_planner.py).
-    # A per-instrument InstrumentProfile may override any of these; the planner
-    # reads the profile first and falls back to these EntryConfig defaults when a
-    # field is absent. news_pre_planning_enabled is OFF by default (opt-in per
-    # profile — Gold turns it on). news_pre_stage_minutes is how many minutes
-    # before a scheduled high-impact event the breakout stops are staged;
-    # news_range_lookback_bars is how many recent candles define the pre-event
-    # range; news_breakout_buffer_pips offsets each stop beyond the range edge;
-    # news_risk_multiplier sizes news-window orders down (spreads widen); and
-    # news_post_event_cooldown_s is how long after the event unfilled pending
-    # orders are left resting before cancellation.
-    news_pre_planning_enabled: bool = False
-    news_pre_stage_minutes: int = 5
-    news_range_lookback_bars: int = 10
-    news_breakout_buffer_pips: float = 5.0
-    news_risk_multiplier: float = 0.5
-    news_post_event_cooldown_s: float = 300.0
 
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:

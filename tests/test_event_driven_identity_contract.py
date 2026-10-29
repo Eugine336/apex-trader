@@ -101,30 +101,28 @@ def test_legacy_atomic_reversal_runtime_wiring_is_disabled():
     ), "the legacy reversal manager must not open the opposite side itself"
 
 
-def test_legacy_news_planner_cannot_stage_pending_orders_outside_brain_admission():
-    module = _parse("event_driven_bootstrap.py")
-    update = _function(module, "_run_news_planner_update")
-    # The old planner's callback calls connector.place_pending_order directly,
-    # without a first-class Brain opportunity or whole-book admission. The
-    # scheduled update entrypoint therefore must not invoke it under any config.
-    assert not _calls(update, attribute="update")
-    assert not _calls(update, attribute="place_pending_order")
-    assert _calls(update, attribute="warning")
+def test_pending_order_staging_routes_are_retired():
+    """No scheduler, planner or callback may place broker pending orders.
 
-
-def test_legacy_pending_order_callback_cannot_reach_broker_connector():
+    The NewsPlanner/zone-stager routes were deleted rather than left inert, so
+    their entry points must not reappear in the bootstrap, and nothing outside
+    the connector boundary may call ``place_pending_order``.
+    """
     module = _parse("event_driven_bootstrap.py")
-    stage = _function(module, "_stage_place_pending")
-    # Symbol allowlists are not a substitute for first-class opportunity and
-    # portfolio admission; this boundary must never place broker pending orders.
-    assert not _calls(stage, attribute="place_pending_order")
-    assert _calls(stage, attribute="warning")
-    returns = [node for node in ast.walk(stage) if isinstance(node, ast.Return)]
-    assert returns
-    assert all(
-        isinstance(node.value, ast.Constant) and node.value.value is None
-        for node in returns
-    )
+    defined = {n.name for n in ast.walk(module) if isinstance(n, ast.FunctionDef)}
+    for retired in (
+        "_run_news_planner_update", "_stage_place_pending", "_stage_cancel_pending",
+        "_stage_size", "_news_size", "_news_order_filled",
+    ):
+        assert retired not in defined, f"{retired} must stay deleted"
+    assert not (ROOT / "brain" / "news_planner.py").exists()
+    for path in ROOT.rglob("*.py"):
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] in {"tests", "node_modules", "backtest", "test_support"}:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assert not _calls(tree, attribute="place_pending_order"), f"{rel} places pending orders"
+        assert not _calls(tree, attribute="place_pending_entry"), f"{rel} places pending orders"
 
 
 def test_brain_identity_and_provenance_reach_execution_intent():

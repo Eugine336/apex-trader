@@ -169,33 +169,6 @@ class BaseConnector(ABC):
     ) -> OrderResult:
         """Place a market order. Returns fill details."""
 
-    def place_pending_order(
-        self,
-        symbol: str,
-        order_kind: str,
-        entry_price: float,
-        lots: float,
-        sl: float,
-        tp: float,
-        comment: str = "",
-        idempotency_key: str = "",
-    ) -> OrderResult:
-        """Place a pending (limit/stop) order. Override in subclass if supported."""
-        return OrderResult(
-            success=False,
-            order_id="",
-            fill_price=0.0,
-            requested_price=entry_price,
-            slippage_pips=0.0,
-            lots=lots,
-            symbol=symbol,
-            direction=order_kind.split("_")[0],
-            sl=sl,
-            tp=tp,
-            platform="unknown",
-            error="Pending orders not supported on this platform",
-        )
-
     def cancel_pending_order(self, order_id: str) -> bool:
         """Cancel/delete a resting pending (limit/stop) order by its id.
 

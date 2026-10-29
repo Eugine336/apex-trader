@@ -100,7 +100,7 @@ class ShadowEngine:
 
     # Minimum recent bars required before a structure-aware SL can be derived.
     # Below this the engine falls back to an ATR stop (mirrors the live
-    # EntryEngine, which falls back to its ATR stop when structure is absent).
+    # the retired EntryEngine, which fell back to its ATR stop when structure is absent).
     MIN_STRUCT_BARS      = 8
     # How many recent bars to retain per pair for swing-extreme detection.
     STRUCT_WINDOW        = 50
@@ -309,7 +309,7 @@ class ShadowEngine:
         per-instrument buffer, then floored to the InstrumentProfile minimum
         risk distance. When fewer than ``MIN_STRUCT_BARS`` recent bars exist the
         engine falls back to an ATR stop (logged), exactly like the live
-        EntryEngine falls back when structure is unavailable.
+        the retired EntryEngine fell back when structure is unavailable.
         """
         profile, category = self._profile(pair)
         buffer = (profile.sl_buffer_pips * pip_size) if profile is not None else (2.0 * pip_size)
@@ -371,7 +371,7 @@ class ShadowEngine:
 
     @staticmethod
     def _min_risk_distance(entry: float, pip_size: float, profile, category: str) -> float:
-        """Per-instrument minimum SL distance, matching EntryEngine's SL floor.
+        """Per-instrument minimum SL distance, matching the retired EntryEngine's SL floor.
 
         Synthetics/crypto floor to a price-relative percentage (their pip count
         is meaningless at high prices); everything else floors to

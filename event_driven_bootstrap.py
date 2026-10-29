@@ -32,7 +32,6 @@ from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
 from brain.compression_detector import CompressionDetector
 from brain.session_context import SessionContext
-from brain.news_planner import NewsPlanner
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
@@ -55,7 +54,6 @@ from entry.flip_sequence_tracker import FlipSequenceTracker
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from platforms.order_idempotency import build_order_comment, generate_idempotency_key
-from risk.position_sizer import PositionSizer
 from ops.lifecycle import ShutdownManager
 from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
@@ -1480,19 +1478,6 @@ class EventDrivenSystem:
         self._aggregator = IntentAggregator(AggregatorConfig())
         self._executor = ActionExecutor(
             broker=self._pm,  # PlatformManager satisfies BrokerPort
-            # This deployment is a Gold specialist. Enforce the symbol allowlist
-            # at the last common broker-entry boundary as defense in depth.
-            config=ExecutorConfig(
-                gold_only=True,
-                require_gold_feed_health=True,
-                gold_feed_health_check=lambda symbol: bool(
-                    getattr(
-                        getattr(self, "_gold_desk_observer", None),
-                        "is_feed_healthy",
-                        lambda _symbol: False,
-                    )(symbol)
-                ),
-            ),
         )
         # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
@@ -1555,43 +1540,6 @@ class EventDrivenSystem:
             pip_size_lookup=self._safe_pip_size,
         )
 
-        # ── Zone order stager (Phase 2 Feature B) ────────────────────
-        # Pre-stages pending LIMIT orders at zone boundaries as price approaches
-        # a zone, running the FULL gate pipeline (orchestrator gates + compliance
-        # + portfolio + correlation) BEFORE staging. OFF by default per
-        # EntryConfig; a profile (Gold) opts in via pre_staging_enabled. Fed by
-        # the tick bus and ZoneWatcher update callbacks (registered here).
-        # Best-effort — a construction fault degrades to no pre-staging.
-        # Zone order stager RETIRED with the legacy entry pipeline (Cognitive
-        # Reasoning Constitution). It only ever staged legacy-decision orders and
-        # self-gated off under single-path; left permanently disabled.
-        self._zone_stager = None
-        self._stage_sizer = PositionSizer()
-
-        # ── News calendar pre-planner (Phase 3 Feature A) ────────────
-        # For scheduled HIGH-impact events (CPI/NFP/FOMC) it stages an OCO pair
-        # of breakout STOP orders straddling the pre-event range instead of
-        # blocking around the event. OFF by default per EntryConfig; a profile
-        # (Gold) opts in via news_pre_planning_enabled. Fed every ~60s from the
-        # watchdog loop (_run_news_planner_update). Best-effort — a construction
-        # fault degrades to no pre-planning (the old news block still applies).
-        self._news_planner = None
-        try:
-            self._news_planner = NewsPlanner(
-                config=EntryConfig(),
-                get_symbols=lambda: list(self._config.enabled_pairs),
-                get_events=self._news_upcoming_events,
-                get_candles=self._news_range_candles,
-                place_pending_order=self._stage_place_pending,
-                cancel_pending_order=self._stage_cancel_pending,
-                is_filled=self._news_order_filled,
-                pip_size_lookup=self._safe_pip_size,
-                size_lookup=self._news_size,
-            )
-        except Exception as exc:
-            logger.warning("[event-driven] NewsPlanner init failed: {}", exc)
-            self._news_planner = None
-
         # ── Compliance Division runtime binding ──────────────────────
         # The ComplianceDivision is constructed in SystemContext.create()
         # with the subsystem references it owns; bind the broker/platform-
@@ -1601,7 +1549,7 @@ class EventDrivenSystem:
         if ctx is not None and ctx.compliance is not None:
             try:
                 ctx.compliance.bind_runtime(
-                    is_market_open=self._check_market_open,
+                    is_market_open=self._entry_market_open,
                     is_broker_available=self._is_broker_available,
                     get_spread_pips=self._get_spread_pips,
                     spread_monitor=getattr(ctx.risk_engine, "spread_monitor", None),
@@ -1668,10 +1616,6 @@ class EventDrivenSystem:
         # the management / execution / safety wiring below, are untouched — so the
         # Brain still gets full evidence and open positions are still managed and
         # protected.
-        # Zone-order stager is retired (self._zone_stager is None); the guard is
-        # kept null-safe should a profile ever re-enable pre-staging.
-        if self._zone_stager is not None:
-            self._event_bus.subscribe("tick", self._zone_stager.on_tick)
         if self._mgmt_scheduler is not None:
             # Event-reactive management: mark a symbol active on each tick so
             # the tick-eval loop evaluates it on the next cycle.  Cheap + thread
@@ -1776,7 +1720,6 @@ class EventDrivenSystem:
                 PairLearnerTunable,
                 SessionLearnerTunable,
                 EVEstimatorTunable,
-                GateTunerTunable,
                 PlannerCalibratorTunable,
                 SignalLedgerTunable,
                 PostCloseTrackerTunable,
@@ -1855,18 +1798,6 @@ class EventDrivenSystem:
                 registered += 1
         except Exception as exc:
             logger.debug("[tuner] EVEstimator registration failed: {}", exc)
-
-        # GateTuner
-        if ctx.gate_tuner is not None:
-            try:
-                outcomes_provider = (
-                    (lambda: ctx.shadow_store.get_outcomes_by_gate())
-                    if ctx.shadow_store is not None else (lambda: [])
-                )
-                agent.register(GateTunerTunable(ctx.gate_tuner, outcomes_provider))
-                registered += 1
-            except Exception as exc:
-                logger.debug("[tuner] GateTuner registration failed: {}", exc)
 
         # PlannerCalibrator
         if ctx.calibrator is not None:
@@ -1974,7 +1905,7 @@ class EventDrivenSystem:
                 )
 
         # Wire set_tuner_agent on components that support it
-        for comp in (ctx.ml_adapter, ctx.gate_tuner, ctx.calibrator,
+        for comp in (ctx.ml_adapter, ctx.calibrator,
                      ctx.signal_ledger, ctx.capital_allocator,
                      ctx.execution_profiles, ctx.regime_detector):
             if comp is not None and hasattr(comp, "set_tuner_agent"):
@@ -2397,6 +2328,12 @@ class EventDrivenSystem:
                 )
                 if not ordered:
                     return False
+                # ComplianceDivision is the single permit layer for new exposure
+                # (market open, broker alive, news, spread, duplicate, daily loss,
+                # heat, drawdown freeze, position cap, portfolio risk state).
+                # Unknown state or any fault rejects.
+                if not self._compliance_permits(symbol, direction):
+                    return False
                 confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
                 sized = self._size_brain_origination_with_portfolio(
                     origination, symbol, direction, float(sl),
@@ -2464,114 +2401,41 @@ class EventDrivenSystem:
 
         return _sink
 
-    def _derive_origination_levels(self, symbol: str, direction: str):
-        """Deterministic protective ``(sl, tp)`` for a Brain-originated entry.
+    def _compliance_permits(self, symbol: str, direction: str) -> bool:
+        """Ask the ComplianceDivision whether new exposure is permitted.
 
-        Reads the live price (tick) and the WorldModel's structural targets, then
-        defers the arithmetic to the pure
-        :func:`cognition.campaign_translator.derive_protective_levels`. Honors the
-        Part X safety floor: returns ``(None, None)`` when it cannot form a valid,
-        correctly-ordered stop/target (the sink then declines to submit). Never
-        raises.
+        Fails closed: a missing division, unresolved account/book, or any fault
+        rejects. The book comes from ``get_all_open_positions``, which raises when
+        any connected platform cannot confirm its positions.
         """
         try:
-            from cognition.campaign_translator import derive_protective_levels
+            from compliance.models import ComplianceAccount, ComplianceBook, ComplianceCandidate
 
-            tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
-            if tick is None:
-                return (None, None)
-            is_long = direction == "LONG"
-            entry = float(getattr(tick, "ask", 0.0) if is_long
-                          else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
-            if entry <= 0:
-                return (None, None)
-            cog = getattr(self._config, "cognition", None)
-            stop_fraction = float(getattr(cog, "origination_stop_fraction", 0.004)
-                                  if cog is not None else 0.004)
-            reward_multiple = float(getattr(cog, "origination_reward_multiple", 2.0)
-                                    if cog is not None else 2.0)
-            min_rr = float(getattr(cog, "origination_min_rr", 1.0)
-                           if cog is not None else 1.0)
-            targets = None
-            try:
-                wm = self._wm_store.get(symbol) if self._wm_store is not None else None
-                if wm is not None:
-                    targets = wm.get_structural_targets(
-                        direction, entry, min_distance=entry * stop_fraction * max(min_rr, 0.0),
-                    )
-            except Exception as exc:  # noqa: BLE001 — structure is best-effort
-                logger.debug("[origination-sink] structural targets failed for {}: {}", symbol, exc)
-                targets = None
-            return derive_protective_levels(
-                direction, entry,
-                stop_fraction=stop_fraction,
-                reward_multiple=reward_multiple,
-                min_rr=min_rr,
-                structural_targets=targets,
+            ctx = getattr(self, "_ctx", None)
+            compliance = getattr(ctx, "compliance", None)
+            platform_manager = getattr(self, "_pm", None)
+            if compliance is None or platform_manager is None:
+                logger.error(
+                    "[compliance] {} {} blocked — ComplianceDivision or PlatformManager unavailable",
+                    symbol, direction,
+                )
+                return False
+            account_key_fn = getattr(ctx, "account_key", None)
+            account_key = str(account_key_fn(symbol, platform_manager) or "") if callable(account_key_fn) else ""
+            if not account_key:
+                logger.error("[compliance] {} {} blocked — account risk silo unresolved", symbol, direction)
+                return False
+            balance = float(platform_manager.get_platform_balance(symbol) or 0.0)
+            book = list(platform_manager.get_all_open_positions())
+            verdict = compliance.permit(
+                ComplianceCandidate(symbol=symbol, direction=direction),
+                ComplianceBook(open_positions=book),
+                ComplianceAccount(account_key=account_key, balance=balance),
             )
-        except Exception as exc:  # noqa: BLE001 — never break the sink
-            logger.debug("[origination-sink] level derivation failed for {}: {}", symbol, exc)
-            return (None, None)
-
-    def _origination_lot_size(self, symbol, direction, sl, confidence, entry_price=None):
-        """Deterministic, broker-valid lot the Brain 'chooses' for an entry.
-
-        Like a human trader who names an exact lot aware of the broker minimum:
-        converts a conviction-scaled risk budget into lots via the instrument's
-        tick value, snaps to the broker's volume step/min/max, and applies the
-        optional operator cap. Returns ``0.0`` (caller skips) when no broker-valid
-        lot can be formed and the opportunity-harvest opt-in is off. Fail-safe —
-        never returns a sub-minimum or zero-through-to-broker value.
-        """
-        try:
-            from cognition.campaign_translator import compute_lot_size
-
-            is_long = str(direction or "").upper() == "LONG"
-            entry = entry_price
-            if entry is None:
-                tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
-                if tick is not None:
-                    entry = float(getattr(tick, "ask", 0.0) if is_long
-                                  else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
-            entry = float(entry or 0.0)
-            if entry <= 0 or sl is None:
-                return 0.0
-            spec = {}
-            try:
-                spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[origination-sink] symbol spec failed for {}: {}", symbol, exc)
-                spec = {}
-            vol_min = float(spec.get("volume_min") or 0.01)
-            vol_step = float(spec.get("volume_step") or 0.01)
-            vol_max = float(spec.get("volume_max") or 1e9)
-            tick_value = float(spec.get("trade_tick_value") or 0.0)
-            tick_size = float(spec.get("trade_tick_size") or 0.0)
-            try:
-                balance = float(self._pm.get_platform_balance(symbol) or 0.0) if self._pm is not None else 0.0
-            except Exception:  # noqa: BLE001
-                balance = 0.0
-            cog = getattr(self._config, "cognition", None)
-            risk_frac = float(getattr(cog, "origination_risk_fraction", 0.01) if cog is not None else 0.01)
-            max_lots = float(getattr(cog, "origination_max_lots", 0.0) if cog is not None else 0.0)
-            # Conviction scaling — higher confidence ⇒ larger size within a
-            # bounded 0.5×–1.5× band, so the Brain varies lot size with the read.
-            conf = max(0.0, min(1.0, float(confidence or 0.0)))
-            risk_usd = balance * risk_frac * (0.5 + conf)
-            risk_cfg = getattr(self._config, "risk", None)
-            floor_to_min = bool(
-                getattr(risk_cfg, "allow_min_lot_over_risk", False)
-                if risk_cfg is not None else False
-            )
-            return compute_lot_size(
-                risk_usd=risk_usd, stop_distance=abs(entry - float(sl)),
-                tick_value=tick_value, tick_size=tick_size,
-                vol_min=vol_min, vol_step=vol_step, vol_max=vol_max,
-                max_lots=max_lots, floor_to_min=floor_to_min,
-            )
-        except Exception as exc:  # noqa: BLE001 — sizing must never break the sink
-            logger.debug("[origination-sink] lot sizing failed for {}: {}", symbol, exc)
-            return 0.0
+            return bool(verdict.approved)
+        except Exception as exc:  # noqa: BLE001 — unknown state blocks new exposure
+            logger.warning("[compliance] {} {} blocked — permit check failed: {}", symbol, direction, exc)
+            return False
 
     def _money_per_price(self, symbol: str, lots: float) -> float:
         """Account currency per 1.0 unit of price move for ``lots`` (0 if unknown)."""
@@ -3857,13 +3721,6 @@ class EventDrivenSystem:
                 self._news_impact_tracker.save()
             except Exception as exc:
                 logger.warning("[event-driven] news-impact save failed: {}", exc)
-        # Cancel any resting news-breakout pending orders so a shutdown never
-        # leaves staged OCO stops unmanaged on the broker.
-        if getattr(self, "_news_planner", None) is not None:
-            try:
-                self._news_planner.cancel_all()
-            except Exception as exc:
-                logger.debug("[event-driven] news-planner cancel_all failed: {}", exc)
         try:
             self._entry_pool.shutdown(wait=False)
         except Exception:
@@ -3881,7 +3738,7 @@ class EventDrivenSystem:
             for name in ("signal_ledger", "counterfactual_engine",
                          "interaction_analyzer", "module_governor",
                          "shadow_store", "post_close_tracker",
-                         "gate_tuner", "capital_allocator",
+                         "capital_allocator",
                          "execution_profiles", "regime_detector",
                          "behavior_discovery", "signal_discovery",
                          "virtual_module_registry"):
@@ -4214,31 +4071,7 @@ class EventDrivenSystem:
             if ctx is not None:
                 self._run_system_volatility_update(ctx)
 
-            # ── News calendar pre-planning (Phase 3 Feature A) ────────
-            # Stage / monitor / reap the OCO breakout orders around scheduled
-            # high-impact events. Throttled to ~60s inside the helper.
-            self._run_news_planner_update()
-
             _time.sleep(10.0)
-
-    def _run_news_planner_update(self) -> None:
-        """Keep legacy news OCO staging disabled until it joins Brain admission.
-
-        NewsPlanner's staging callback calls the broker connector's pending-order
-        API directly. That is an exposure-increasing route which bypasses the
-        first-class Brain opportunity, whole-book comparison, and shared execution
-        admission. The configuration flag cannot waive Apex's canonical identity.
-        News context remains available to the Brain through the observation path;
-        staging stays blocked until pending orders use the common admission path.
-        """
-        planner = getattr(self, "_news_planner", None)
-        if planner is not None and not getattr(self, "_news_planner_bypass_warned", False):
-            self._news_planner_bypass_warned = True
-            logger.warning(
-                "[news-planner] pending-order staging disabled: legacy callback "
-                "bypasses the canonical Brain and whole-book admission path"
-            )
-        return
 
     def _run_system_volatility_update(self, ctx: SystemContext) -> None:
         """Feed the SystemVolatilityMonitor with per-symbol regime analyses."""
@@ -5371,6 +5204,20 @@ class EventDrivenSystem:
             return None
 
     def _safe_pip_size(self, symbol: str) -> float:
+        """Pip size, broker symbol spec first (broker truth), static table second.
+
+        Mirrors PositionEvaluator so entry sizing and position evaluation agree.
+        The 0.0001 last resort is recorded via ``_note_pip_size_fallback``.
+        """
+        try:
+            spec_fn = getattr(self._pm, "get_symbol_spec", None)
+            spec = spec_fn(symbol) if callable(spec_fn) else None
+            if isinstance(spec, dict):
+                value = float(spec.get("pip_size", 0) or 0)
+                if value > 0:
+                    return value
+        except Exception:  # noqa: BLE001 — fall back to the static table below
+            pass
         try:
             return get_pip_size(resolve_to_internal(symbol))
         except Exception as exc:
@@ -5753,9 +5600,25 @@ class EventDrivenSystem:
         self._log_market_transition(symbol, is_open, reason)
         return is_open
 
-    def _market_open_status(self, symbol: str) -> "tuple[bool, str]":
+    def _entry_market_open(self, symbol: str) -> bool:
+        """Entry-admission market-open check: unknown state blocks.
+
+        Observation may continue on an unknown market state, but new exposure
+        needs positive evidence the market is open (always-open instrument,
+        fresh tick, or a broker trade_mode that permits trading).
+        """
+        is_open, reason = self._market_open_status(symbol, strict=True)
+        if not is_open:
+            logger.debug("[market-open] entry blocked for {}: {}", symbol, reason)
+        return is_open
+
+    def _market_open_status(self, symbol: str, strict: bool = False) -> "tuple[bool, str]":
         """Pure (is_open, reason) market-open decision — no logging (that is
-        edge-triggered in :meth:`_log_market_transition`)."""
+        edge-triggered in :meth:`_log_market_transition`).
+
+        ``strict=True`` (entry admission) requires positive evidence of an open
+        market; unknown connector/spec/tick state returns closed instead of open.
+        """
         try:
             if is_always_open(symbol):
                 return True, "24/7"
@@ -5764,7 +5627,8 @@ class EventDrivenSystem:
         try:
             connector = self._pm.get_connector(symbol)
         except Exception:  # noqa: BLE001
-            return True, "no connector (fail-open)"
+            return (False, "no connector (unknown, entry blocked)") if strict else (True, "no connector (fail-open)")
+        positive_evidence = False
         # (1) Permission flag — explicit broker disable / close-only.
         spec_fn = getattr(connector, "get_symbol_spec", None)
         if callable(spec_fn):
@@ -5776,6 +5640,8 @@ class EventDrivenSystem:
                 mode = None
             if mode in (0, 3):
                 return False, f"broker trade_mode={mode}"
+            if mode is not None:
+                positive_evidence = True
         # (2) Session signal — no fresh tick ⇒ closed (weekend / holiday).
         # Non-raising; None ⇒ unknown ⇒ fail-open.
         fresh_fn = getattr(connector, "has_fresh_tick", None)
@@ -5787,6 +5653,10 @@ class EventDrivenSystem:
                 fresh = None
             if fresh is False:
                 return False, f"no fresh tick within {_MARKET_CLOSED_TICK_AGE_SECONDS:.0f}s (session closed)"
+            if fresh is True:
+                positive_evidence = True
+        if strict and not positive_evidence:
+            return False, "market state unknown (no fresh tick or trade_mode evidence)"
         return True, "open"
 
     def _log_market_transition(self, symbol: str, is_open: bool, reason: str) -> None:
@@ -5814,189 +5684,23 @@ class EventDrivenSystem:
     def _is_broker_available(self, symbol: str) -> bool:
         """Broker-health permit signal for the ComplianceDivision.
 
-        True when the connector routing ``symbol`` reports a live connection.
-        When the connector or its state can't be determined we return True
-        (the downstream ActionExecutor circuit breaker is the authoritative
-        execution guard — Compliance should not false-block on an unknown).
+        True only when the connector routing ``symbol`` positively reports a
+        live connection. A missing connector or an unreadable state is unknown
+        and blocks new exposure (risk-reducing actions do not use this check).
         """
         try:
             connector = self._pm.get_connector(symbol)
-        except Exception:
-            return True
+        except Exception as exc:
+            logger.warning("[broker-health] no connector for {}: {} (entry blocked)", symbol, exc)
+            return False
         is_conn = getattr(connector, "is_connected", None)
         if not callable(is_conn):
-            return True
+            return False
         try:
             return bool(is_conn())
         except Exception as exc:
-            logger.debug("[broker-health] {} is_connected check failed: {}", symbol, exc)
-            return True
-
-    def _check_news_clear(self, symbol: str) -> bool:
-        """NewsGuard callback for EntryOrchestrator gate.
-
-        Phase 3: when news pre-planning is enabled for the symbol, the planner
-        stages breakout orders around the event instead of blocking, so this
-        gate stops vetoing near news (return clear) and lets the staged OCO pair
-        capture the move. When pre-planning is disabled the legacy fail-closed
-        block is preserved unchanged.
-        """
-        ctx = self._ctx
-        if ctx is None or ctx.news_guard is None:
-            return True
-        try:
-            if self._news_pre_planning_enabled(symbol):
-                return True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[news-gate] pre-planning check failed for {}: {}", symbol, exc)
-        try:
-            news_status = ctx.news_guard.check([symbol])
-            return news_status.is_clear
-        except Exception as exc:
-            logger.debug("[news-gate] NewsGuard check failed: {}", exc)
-            return True
-
-    def _news_pre_planning_enabled(self, symbol: str) -> bool:
-        """Resolve news_pre_planning_enabled: profile first, then EntryConfig."""
-        try:
-            from brain.instrument_profile import get_profile as _get_profile
-            prof = _get_profile(symbol)
-            val = getattr(prof, "news_pre_planning_enabled", None)
-            if val is not None:
-                return bool(val)
-        except Exception:  # noqa: BLE001
-            pass
-        return bool(getattr(self._config_entry(), "news_pre_planning_enabled", False))
-
-    def _config_entry(self) -> EntryConfig:
-        """The active EntryConfig (cached), for news pre-planning resolution."""
-        cfg = getattr(self, "_entry_config_cache", None)
-        if cfg is None:
-            cfg = EntryConfig()
-            self._entry_config_cache = cfg
-        return cfg
-
-    def _on_gate_trace(
-        self,
-        symbol: str,
-        direction: str,
-        results: Any,
-        passed: bool,
-        meta: Optional[dict[str, Any]] = None,
-    ) -> None:
-        """Persist a DECISION_TRACE for the entry-gate verdict chain.
-
-        Mirrors the legacy TradingLoop trace recorder, but scoped to the
-        event-driven entry plane.  A fresh recorder per call keeps this
-        thread-safe across concurrently-confirming symbols; best-effort so a
-        tracing failure never blocks an entry.
-        """
-        try:
-            from brain.decision_trace import (
-                DecisionTraceRecorder,
-                STAGE_RANKER,
-                STAGE_RISK_STACK,
-            )
-            recorder = DecisionTraceRecorder(getattr(self._config, "decision_trace", None))
-            if not recorder.enabled:
-                return
-            recorder.begin(symbol)
-            evidence = dict(meta or {})
-            evidence["direction"] = direction
-            conviction = evidence.get("conviction", 0)
-            zone_type = evidence.get("zone_type", "zone")
-            timeframe = evidence.get("timeframe", "")
-
-            # Stage 1 — ranker: the zone conviction is the entry plane's
-            # ranking signal (also satisfies trace completeness).
-            recorder.stamp(
-                stage=STAGE_RANKER,
-                owner="entry.zone_watcher",
-                verdict="PASS",
-                justification=f"entry zone {zone_type} conviction {conviction} ({timeframe})",
-                evidence=evidence,
-                confidence=1.0,
-            )
-
-            # Stage 2 — risk stack: the entry-gate validation result.
-            failed = [
-                str(getattr(g, "gate_name", "gate"))
-                for g in (results or []) if not getattr(g, "passed", False)
-            ]
-            gate_just = (
-                "all entry gates passed" if passed
-                else "entry gates failed: " + ", ".join(failed[:6])
-            )
-            recorder.stamp(
-                stage=STAGE_RISK_STACK,
-                owner="entry.gate",
-                verdict="PASS" if passed else "REJECT",
-                justification=gate_just,
-                evidence=evidence,
-                confidence=1.0,
-                blocking=not passed,
-            )
-
-            if passed:
-                recorder.finalize_success()
-            else:
-                recorder.finalize_rejection(reason=gate_just, stage=STAGE_RISK_STACK)
-        except Exception as exc:
-            logger.debug("[decision-trace] entry gate trace failed for {}: {}", symbol, exc)
-
-        # Feed the shadow store a counterfactual for each TUNABLE quality gate
-        # that blocked this setup, so the GateTuner can learn whether those
-        # gates are over-filtering profitable setups in the LIVE path (it
-        # previously only saw decision-engine / risk-governor rejections, never
-        # the entry gate's own score / HTF-alignment bars). Observational only —
-        # shadow contracts never affect a live decision. Best-effort.
-        if not passed:
-            try:
-                self._record_entry_gate_shadow_rejections(symbol, direction, results, meta)
-            except Exception as exc:
-                logger.debug(
-                    "[shadow] entry-gate rejection record failed for {}: {}", symbol, exc,
-                )
-
-    # Maps EntryGate quality-gate names → the GateTuner family they feed. Only
-    # whitelisted QUALITY gates appear here; safety / physical gates
-    # (market_open, spread, news, drawdown, zone_valid, risk_reward, …) are
-    # never auto-tuned and never recorded as tunable-gate counterfactuals.
-    _TUNABLE_GATE_FAMILY: dict[str, str] = {
-        "score_minimum": "entry_engine",
-        "alignment": "htf_alignment",
-    }
-
-    def _record_entry_gate_shadow_rejections(
-        self,
-        symbol: str,
-        direction: str,
-        results: Any,
-        meta: Optional[dict[str, Any]] = None,
-    ) -> None:
-        """Record one shadow rejection per TUNABLE quality gate that blocked.
-
-        A setup can fail several gates at once (e.g. score AND alignment); each
-        tunable quality gate gets its own contract so the counterfactual is
-        attributed to that gate independently. Safety gates are skipped.
-        """
-        m = dict(meta or {})
-        entry_price = float(m.get("entry_price", 0.0) or 0.0)
-        sl = float(m.get("stop_loss", 0.0) or 0.0)
-        tp1 = float(m.get("tp1", 0.0) or 0.0)
-        conviction = float(m.get("conviction", 0.0) or 0.0)
-        if entry_price <= 0.0 or sl <= 0.0 or tp1 <= 0.0:
-            return
-        for g in results or []:
-            if getattr(g, "passed", True):
-                continue
-            family = self._TUNABLE_GATE_FAMILY.get(str(getattr(g, "gate_name", "")))
-            if family is None:
-                continue
-            self._record_shadow_rejection(
-                symbol, direction, entry_price, sl, tp1,
-                f"{family}:{getattr(g, 'reason', '')}", conviction,
-            )
+            logger.warning("[broker-health] {} is_connected check failed: {} (entry blocked)", symbol, exc)
+            return False
 
     def _on_world_model_update(self, event: Any) -> None:
         """Feed density tracker when WorldModel updates after a scan."""
@@ -6396,54 +6100,6 @@ class EventDrivenSystem:
             logger.debug("[entry-tf-trends] capture failed: {}", exc)
             return {}
 
-    def _capture_gate_snapshot(self, order_id) -> dict:
-        """Snapshot gate parameters at entry for close-path attribution.
-
-        Records the learned GateTuner offsets together with the effective
-        (default + offset) and default thresholds so the close path can replay
-        the gate decision on the operator's defaults. Best-effort — any fault
-        (no context, no tuner, no attributor) yields an empty dict, which simply
-        means this trade contributes no gate attribution.
-        """
-        ctx = self._ctx
-        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
-            return {}
-        attributor = getattr(ctx, "gate_attributor", None)
-        if attributor is None:
-            return {}
-        try:
-            offsets = ctx.gate_tuner.all_offsets()
-            defaults = attributor.default_thresholds()
-            effective = {
-                fam: defaults.get(fam, 0.0) + float(offsets.get(fam, 0.0))
-                for fam in defaults
-            }
-            snap = attributor.record_entry(
-                order_id=str(order_id),
-                gate_offsets=offsets,
-                effective_thresholds=effective,
-                default_thresholds=defaults,
-            )
-            return snap.to_dict() if snap is not None else {}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[gate-attr] snapshot capture failed: {}", exc)
-            return {}
-
-    def _is_learner_enabled(self) -> bool:
-        """True when any GateTuner offset is non-zero (learning influenced entry).
-
-        Fixes the long-standing gap where ``learner_enabled`` was never
-        populated in the entry context, so the HealthAssessor's learner-enabled
-        loss rate was always computed over an empty set.
-        """
-        ctx = self._ctx
-        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
-            return False
-        try:
-            return any(abs(float(v)) > 1e-9 for v in ctx.gate_tuner.all_offsets().values())
-        except Exception:  # noqa: BLE001
-            return False
-
     # Major USD pairs used to rank USD strength for the DXY filter. Kept small
     # (the majors + gold) so the reading stays cheap; USD appears in every one,
     # so its ranking is well-determined from these alone.
@@ -6451,100 +6107,6 @@ class EventDrivenSystem:
         "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
         "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD",
     )
-
-    # ── Phase 2 Feature B: zone-order stager wiring helpers ──────────
-    def _stage_place_pending(
-        self,
-        symbol: str,
-        order_kind: str,
-        entry_price: float,
-        lots: float,
-        sl: float,
-        tp: float,
-        comment: str = "",
-        idempotency_key: str = "",
-    ):
-        """Reject legacy pending-order staging until shared Brain admission exists.
-
-        Pending orders can become exposure without passing ActionExecutor, the
-        first-class CognitiveBrain opportunity contract, or whole-book review.
-        Neither the symbol allowlist nor configuration is an admission decision.
-        Keep this callback inert until pending orders can use the same governed
-        opportunity and risk path as every other exposure-increasing action.
-        """
-        logger.warning(
-            "[pending-order] rejected {} {}: legacy staging bypasses CognitiveBrain "
-            "and whole-book admission; use a first-class admitted opportunity",
-            symbol, order_kind,
-        )
-        return None
-
-    def _stage_cancel_pending(self, symbol: str, order_id: str) -> bool:
-        """Cancel a resting pending order via the per-symbol broker connector."""
-        connector = self._pm.get_connector(symbol)
-        if connector is None:
-            return False
-        try:
-            return bool(connector.cancel_pending_order(order_id))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[zone-stager] cancel failed for {} {}: {}", symbol, order_id, exc)
-            return False
-
-    def _stage_size(
-        self, symbol: str, direction: str, entry_price: float, sl: float,
-    ) -> float:
-        """Size a pre-staged order using the shared sizer + session multiplier.
-
-        Uses the configured per-trade risk scaled by the session multiplier
-        (Phase 2 Feature C parity), the live platform balance, and the shared
-        PositionSizer. Returns 0.0 (skip staging) when balance is unavailable or
-        sizing resolves to nothing. Never raises.
-        """
-        try:
-            balance = float(self._pm.get_platform_balance(symbol) or 0.0)
-            if balance <= 0:
-                return 0.0
-            risk_pct = self._config.risk.risk_per_trade_pct / 100.0
-            if self._session_context is not None:
-                try:
-                    session = self._session_context.get_session()
-                    mult = float(
-                        self._session_context.get_session_multiplier(symbol, session)
-                    )
-                    if mult > 0:
-                        risk_pct *= mult
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                context = build_context_for_symbol(symbol)
-            except Exception:  # noqa: BLE001
-                context = None
-            res = self._stage_sizer.calculate_for_instrument(
-                symbol=symbol,
-                account_balance=balance,
-                risk_pct=risk_pct,
-                entry_price=entry_price,
-                stop_loss=sl,
-                context=context,
-            )
-            return float(getattr(res, "lots", 0.0) or 0.0)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[zone-stager] sizing failed for {}: {}", symbol, exc)
-            return 0.0
-
-    # ── Phase 3 Feature A: news-planner wiring helpers ───────────────
-    def _news_upcoming_events(
-        self, symbol: str, within_minutes: float, now: datetime,
-    ) -> list:
-        """Upcoming HIGH-impact events for a symbol within the pre-stage window."""
-        ctx = self._ctx
-        if ctx is None or ctx.news_guard is None:
-            return []
-        try:
-            return ctx.news_guard.upcoming_high_impact([symbol], within_minutes, now)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[news-planner] upcoming events read failed for {}: {}", symbol, exc)
-            return []
 
     def _gold_event_window(self, symbol: str, observed_at: datetime, candles: dict) -> Optional[Any]:
         """Adapt NewsGuard's verified event data into Gold evidence context."""
@@ -6556,72 +6118,6 @@ class EventDrivenSystem:
         except Exception as exc:  # noqa: BLE001 — event context must not break observation
             logger.debug("[gold-desk] verified event-window lookup failed: {}", exc)
             return None
-
-    def _news_range_candles(self, symbol: str, bars: int):
-        """Last ``bars`` M5 candles for the pre-event breakout range."""
-        return self._fetch_candles(symbol, "M5", max(int(bars), 1))
-
-    def _news_order_filled(self, symbol: str, order_id: str) -> bool:
-        """True when a staged news order has filled into an open position."""
-        if not order_id:
-            return False
-        try:
-            for pos in self._pm.get_all_open_positions():
-                if str(getattr(pos, "order_id", "")) == str(order_id):
-                    return True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[news-planner] fill check failed for {} {}: {}", symbol, order_id, exc)
-        return False
-
-    def _news_size(
-        self,
-        symbol: str,
-        direction: str,
-        entry_price: float,
-        sl: float,
-        risk_multiplier: float,
-    ) -> float:
-        """Size a staged news order: per-trade risk × session × news multiplier.
-
-        Mirrors ``_stage_size`` but auto-sizes DOWN for the news window (news
-        spreads widen) by the configured ``news_risk_multiplier``. Returns 0.0
-        (skip staging) when balance is unavailable or sizing resolves to
-        nothing. Never raises.
-        """
-        try:
-            balance = float(self._pm.get_platform_balance(symbol) or 0.0)
-            if balance <= 0:
-                return 0.0
-            risk_pct = self._config.risk.risk_per_trade_pct / 100.0
-            mult = float(risk_multiplier)
-            if mult > 0:
-                risk_pct *= mult
-            if self._session_context is not None:
-                try:
-                    session = self._session_context.get_session()
-                    smult = float(
-                        self._session_context.get_session_multiplier(symbol, session)
-                    )
-                    if smult > 0:
-                        risk_pct *= smult
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                context = build_context_for_symbol(symbol)
-            except Exception:  # noqa: BLE001
-                context = None
-            res = self._stage_sizer.calculate_for_instrument(
-                symbol=symbol,
-                account_balance=balance,
-                risk_pct=risk_pct,
-                entry_price=entry_price,
-                stop_loss=sl,
-                context=context,
-            )
-            return float(getattr(res, "lots", 0.0) or 0.0)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[news-planner] sizing failed for {}: {}", symbol, exc)
-            return 0.0
 
     def _dxy_currency_strength(self, symbol: str, lookback_bars: int = 20):
         """Phase 2 Feature D provider — cached USD-strength analysis.
@@ -6940,34 +6436,9 @@ class EventDrivenSystem:
                 ctx.governance.check_health_after_close(
                     realized_r=pnl_r,
                     entry_path=str(info.get("source", "") or ""),
-                    learner_enabled=bool(info.get("learner_enabled", False)),
                 )
             except Exception as exc:
                 logger.debug("[close-learn] health assessment failed: {}", exc)
-
-        # Gate attribution — replay the gate decision with the operator's
-        # default (no-learning) thresholds to determine whether a learned gate
-        # loosening was DECISIVE in opening this trade (it would have been
-        # rejected on the defaults) or merely SUPPORTING (it would have passed
-        # anyway). Best-effort: attribution must never break the close path.
-        gate_attributor = (
-            getattr(ctx, "gate_attributor", None) if ctx is not None else None
-        )
-        if gate_attributor is not None:
-            try:
-                snap = info.get("gate_snapshot", {}) or {}
-                eff = snap.get("effective_thresholds", {}) if isinstance(snap, dict) else {}
-                gate_attributor.record_close(
-                    order_id=str(ticket),
-                    realized_r=float(pnl_r or 0.0),
-                    # The trade's actual EV is not threaded out of the entry
-                    # gate; the effective EV threshold is the close-path proxy
-                    # (a loosened ev_gate then reads as DECISIVE — conservative).
-                    entry_ev=float(eff.get("ev_gate", 0.0) or 0.0),
-                    entry_score=float(info.get("score", 0) or 0),
-                )
-            except Exception as exc:
-                logger.debug("[close-learn] gate attribution failed: {}", exc)
 
         # TunerAgent — route trade-close tuning
         if ctx.tuner_agent is not None:
@@ -7171,16 +6642,6 @@ class EventDrivenSystem:
                 ctx.behavior_discovery.record_trade(features, r_est, trade_id=str(ticket))
             except Exception as exc:
                 logger.debug("[close-evo] BehaviorDiscovery record failed: {}", exc)
-
-        # ParameterEvolver (L5a) — SHADOW ONLY: advance active shadows on the
-        # newly-closed trade and (cooldown permitting) seed a fresh tournament.
-        # Recommends promotions through the gateway; never mutates live config.
-        # Fully exception-safe — a fault here never affects trading.
-        if ctx.param_evolver is not None:
-            try:
-                ctx.param_evolver.run_cycle()
-            except Exception as exc:
-                logger.debug("[close-evo] ParameterEvolver run_cycle failed: {}", exc)
 
         # OutcomeLogger — link plan → outcome
         if ctx.outcome_logger is not None:

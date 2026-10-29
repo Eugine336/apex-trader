@@ -97,7 +97,6 @@ class TestLiveStateEDAwareness:
             ctx.execution_monitor = None
             ctx.risk_reporter = None
             ctx.account_risk = None
-            ctx.gate_tuner = None
             ctx.process_watchdog = None
 
         state.attach(None, pm, {"mt5": True, "deriv": True}, system_context=ctx)

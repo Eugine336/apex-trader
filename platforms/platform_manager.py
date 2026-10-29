@@ -579,41 +579,6 @@ class PlatformManager:
             )
         return result
 
-    def place_pending_entry(
-        self,
-        symbol: str,
-        order_kind: str,
-        entry_price: float,
-        lots: float,
-        sl: float,
-        tp: float,
-        comment: str = "",
-        idempotency_key: str = "",
-    ) -> OrderResult:
-        """Place a pending (limit/stop) entry. **Executor-only broker mutator.**
-
-        Intended to be driven by the Execution Division. Other departments
-        should emit an ``Intent`` rather than calling this directly.
-        """
-        connector = self.get_connector(symbol)
-        platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
-        with self._broker_write_lock:
-            result = connector.place_pending_order(
-                symbol, order_kind, entry_price, lots, sl, tp, comment,
-                idempotency_key=idempotency_key,
-            )
-        if result.success:
-            logger.info(
-                "[{}] PENDING {} {} {:.2f} lots @ {:.5f}",
-                platform.upper(), order_kind, symbol, lots, entry_price,
-            )
-        else:
-            logger.error(
-                "[{}] PENDING FAILED {} {} {:.2f} lots: {}",
-                platform.upper(), order_kind, symbol, lots, result.error,
-            )
-        return result
-
     def modify_trade(
         self,
         order_id: str,

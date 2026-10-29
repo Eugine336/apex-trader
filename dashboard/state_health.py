@@ -33,7 +33,6 @@ _ED_ADAPTIVE_LAYERS: tuple[tuple[str, str], ...] = (
     ("virtual_registry", "virtual_module_registry"),
     ("tuner_agent", "tuner_agent"),
     ("vote_calibrator", "vote_calibrator"),
-    ("gate_tuner", "gate_tuner"),
     ("shadow_store", "shadow_store"),
     ("ml_adapter", "ml_adapter"),
 )
@@ -90,7 +89,6 @@ _ED_STORE_PATHS: tuple[tuple[str, str, str], ...] = (
     ("regime_detection", "regime_detection", "regime_detection_db_path"),
     ("risk_management", "risk_management", "risk_management_db_path"),
     ("behavior_discovery", "behavior_discovery", "behavior_discovery_db_path"),
-    ("param_evolution", "param_evolution", "param_evolution_db_path"),
     ("signal_discovery", "signal_discovery", "signal_discovery_db_path"),
     ("interaction", "interaction", "interaction_db_path"),
 )

@@ -20,7 +20,6 @@ from adaptive.tunable_adapters import (
     PairLearnerTunable,
     SessionLearnerTunable,
     EVEstimatorTunable,
-    GateTunerTunable,
     PlannerCalibratorTunable,
     SignalLedgerTunable,
 )
@@ -234,40 +233,6 @@ class TestEVEstimatorTunable:
 # ── Gate tuner ──────────────────────────────────────────────────────────
 
 
-class TestGateTunerTunable:
-    @pytest.fixture
-    def tuner(self, tmp_path):
-        from adaptive.gate_tuner import GateTuner
-
-        return GateTuner(path=str(tmp_path / "g.json"))
-
-    def test_metadata_depends_on_ev(self, tuner):
-        t = GateTunerTunable(tuner, lambda: [])
-        assert t.tunable_name == "gate_tuner"
-        assert t.frequency == TuneFrequency.PERIODIC
-        assert t.dependencies == ["ev_estimator"]
-
-    def test_validate_rejects_non_tunable_family(self, tuner):
-        t = GateTunerTunable(tuner, lambda: [])
-        ok, why = t.validate_params({"governor": 0.5})
-        assert ok is False and "non-tunable" in why
-
-    def test_validate_rejects_out_of_bounds_offset(self, tuner):
-        t = GateTunerTunable(tuner, lambda: [])
-        ok, why = t.validate_params({"ev_gate": 5.0})  # bound is [-0.10, 0.0]
-        assert ok is False
-
-    def test_tune_loosens_on_winning_rejections(self, tuner):
-        # 40 resolved shadows for ev_gate, mostly WINs → loosen.
-        outcomes = [
-            {"rejecting_gate": "ev_gate", "outcome": "WIN", "cnt": 30, "avg_r": 1.0},
-            {"rejecting_gate": "ev_gate", "outcome": "LOSS", "cnt": 5, "avg_r": -1.0},
-        ]
-        t = GateTunerTunable(tuner, lambda: outcomes)
-        res = t.tune(_ctx())
-        assert res.success is True
-        assert res.changed is True
-        assert tuner.offset("ev_gate") < 0.0  # loosened (negative offset)
 
 
 # ── Planner calibrator ──────────────────────────────────────────────────
