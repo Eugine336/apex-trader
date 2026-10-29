@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from cognition.statistical_validation import validate_historical_rows
+
 
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool):
@@ -105,6 +107,20 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             leakage_checked = m.get("data_leakage_checked") is True
             selection_bias_checked = m.get("selection_bias_checked") is True
             overfit_checked = m.get("overfitting_checked") is True
+            rows = m.get("validation_rows")
+            validation_report = (
+                validate_historical_rows(
+                    rows,
+                    untouched_holdout=untouched_holdout,
+                    multiple_testing_mitigated=selection_bias_checked and overfit_checked,
+                )
+                if isinstance(rows, list) else None
+            )
+            controls_reported = (
+                out_of_sample and walk_forward and untouched_holdout
+                and leakage_checked and selection_bias_checked and overfit_checked
+                and validation_report is not None and validation_report.get("passed") is True
+            )
             historical_records.append({
                 "source": source, "symbol": observed_symbol,
                 "sample_count": int(n) if n is not None and n >= 0 else None,
@@ -114,12 +130,8 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
                 "data_leakage_checked": leakage_checked,
                 "selection_bias_checked": selection_bias_checked,
                 "overfitting_checked": overfit_checked,
-                "validation_status": (
-                    "validated_controls_reported"
-                    if out_of_sample and walk_forward and untouched_holdout
-                    and leakage_checked and selection_bias_checked and overfit_checked
-                    else "unverified"
-                ),
+                "row_validation": validation_report,
+                "validation_status": "validated_controls_reported" if controls_reported else "unverified",
                 "predictive_ability_demonstrated": False,
                 "note": "Reported controls require independent audit; sample size alone is not predictive skill.",
             })
