@@ -3035,6 +3035,52 @@ class EventDrivenSystem:
                     ))
             except Exception as exc:  # noqa: BLE001 — session context is optional
                 logger.debug("[cognition] session evidence unavailable for {}: {}", symbol, exc)
+            # Realized close outcomes are useful descriptive history, but without
+            # per-feature point-in-time timestamps they are never labeled validated.
+            try:
+                history_by_symbol = getattr(self, "_cognition_recent_outcomes", {})
+                outcomes = list(history_by_symbol.get(str(symbol).upper(), ()))
+                if outcomes:
+                    pnl_values = [
+                        float(item["pnl_pips"]) for item in outcomes
+                        if math.isfinite(float(item.get("pnl_pips", float("nan"))))
+                    ]
+                    wins = sum(1 for value in pnl_values if value > 0.0)
+                    losses = sum(1 for value in pnl_values if value < 0.0)
+                    measurements = {
+                        "sample_count": len(pnl_values),
+                        "realized_wins": wins,
+                        "realized_losses": losses,
+                        "realized_flat": max(0, len(pnl_values) - wins - losses),
+                        "mean_realized_pnl_pips": (
+                            sum(pnl_values) / len(pnl_values) if pnl_values else None
+                        ),
+                        "outcome_labels": [
+                            str(item.get("outcome", "UNKNOWN")) for item in outcomes[-50:]
+                        ],
+                        "last_outcome_observed_at": outcomes[-1].get("observed_at"),
+                        "feature_timestamps_missing": True,
+                        "source_verified": True,
+                    }
+                    measurements = {
+                        key: value for key, value in measurements.items() if value is not None
+                    }
+                    evidence.append(Evidence(
+                        source_module="runtime.realized_outcomes",
+                        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+                        symbol=symbol,
+                        observation=(
+                            f"{len(pnl_values)} observed closed outcomes in this process; "
+                            "descriptive history only, not validated predictive performance"
+                        ),
+                        confidence=0.5,
+                        uncertainty=0.5,
+                        measurements=measurements,
+                        timestamp_epoch=_time.time(),
+                        relevance_horizon_seconds=86400.0,
+                    ))
+            except Exception as exc:  # noqa: BLE001 — history is optional context
+                logger.debug("[cognition] realized-outcome evidence unavailable for {}: {}", symbol, exc)
             return evidence
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
