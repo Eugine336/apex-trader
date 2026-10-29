@@ -525,6 +525,44 @@ def test_brain_originates_independently_when_advisor_unavailable():
     assert brain.get_status()["independent_originations"] == 1
 
 
+def test_native_reasoning_precedes_advisor_availability_check():
+    class _OrderCheckingReasoner:
+        def __init__(self):
+            self.assert_runtime_order = False
+            self.native_started = False
+
+        @property
+        def available(self):
+            if self.assert_runtime_order:
+                assert self.native_started, (
+                    "native reasoning must start before advisor availability is checked"
+                )
+            return False
+
+        def reason(self, symbol, evidence, now=None):
+            raise AssertionError("unavailable advisor must not be called")
+
+    reasoner = _OrderCheckingReasoner()
+    brain = CognitiveBrain(reasoner=reasoner)
+    original_native_reasoning = brain._native_reasoning
+
+    def _record_native_start(market_state, consolidation, symbol):
+        reasoner.native_started = True
+        return original_native_reasoning(market_state, consolidation, symbol)
+
+    brain._native_reasoning = _record_native_start
+    reasoner.assert_runtime_order = True
+    ms = MarketState(symbol="EURUSD")
+    ms.add(_ev("momentum", {}, conf=0.5))
+    ms.add(_ev("structure", {}, conf=0.5))
+
+    out = brain.reason(ms)
+    assert reasoner.native_started is True
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.provider_status == "unavailable"
+    assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
+
+
 def test_weak_native_view_stands_down_when_advisor_unavailable():
     # Thin, non-directional evidence ⇒ no strong native hypothesis ⇒ the Brain
     # preserves its native observe verdict and records provider outage separately.
