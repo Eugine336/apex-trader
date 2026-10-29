@@ -307,3 +307,11 @@ Still incomplete / unverified:
 System 2 is **in progress, not merge-ready**. Missing data remains unknown; no prediction or profitability claim is made. No broker orders were sent. `.env`, runtime databases and broker settings were not accessed or modified during this work.
 
 - The generic `SessionEngine` status is now surfaced into cognition as an explicitly unverified observation. It does not satisfy the requirement for an authoritative instrument-specific calendar, timezone and holiday source.
+
+
+## System 2 continuation — additional live evidence paths
+
+- Added measured cross-asset return associations for instruments registered by the existing correlation engine. It fetches closed H1 broker candles, requires timezone-aware timestamps, joins exact shared UTC candle times, excludes the forming primary bar, rejects duplicate/naive timestamps and requires at least 20 paired returns. Returns spanning missing H1 bars are excluded. The result is association-only and never asserts causation. Unsupported legs remain absent.
+- Added a bounded per-symbol in-process ledger of actual close outcomes and surfaced it as descriptive historical evidence. It is deliberately marked unvalidated because the current close record does not carry per-feature point-in-time timestamps; it cannot be used as proof of a predictive edge.
+- Hardened round-trip cost estimation to return unknown/zero when broker spread is missing, invalid or zero. The mandatory net-EV gate then rejects the opportunity instead of treating missing spread as a free market.
+- Added tests for synchronized cross-asset evidence, naive/misaligned timestamps, descriptive outcome evidence, and fail-closed cost estimation. These tests remain unexecuted in this environment.
