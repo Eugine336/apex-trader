@@ -523,7 +523,7 @@ class CognitiveBrain:
                 )
                 if independent is not None:
                     return independent
-                return self._reasoner_unavailable(
+                return self._native_fallback_observe(
                     symbol,
                     "external advisor unavailable; native analysis completed but no independent campaign qualified",
                     consolidation,
@@ -566,7 +566,7 @@ class CognitiveBrain:
                     )
                     if independent is not None:
                         return independent
-                    return self._reasoner_unavailable(
+                    return self._native_fallback_observe(
                         symbol,
                         "external advisor returned no usable opinion; native analysis completed but no independent campaign qualified",
                         consolidation,
@@ -2965,7 +2965,7 @@ class CognitiveBrain:
             reasons.append("native-only expected-value or final qualification gate did not pass")
         return "; ".join(reasons), patterns, hypothesis_summary
 
-    def _reasoner_unavailable(
+    def _native_fallback_observe(
         self,
         symbol: str,
         reason_txt: str,
@@ -2974,12 +2974,12 @@ class CognitiveBrain:
         analysis: Optional[EvidenceAnalysis] = None,
         hypotheses: Optional[list[BrainHypothesis]] = None,
     ) -> BrainOutput:
-        """Report advisor outage while preserving the native analysis and its no-entry rationale.
+        """Preserve the native no-action verdict while reporting advisor outage separately.
 
-        This is an infrastructure state, not a claim that market analysis stopped.
-        Native reasoning has already run. If it qualified a campaign, the caller
-        returns that campaign; otherwise we stand down and surface the native
-        evidence, hypotheses and qualification blockers for diagnosis.
+        Native reasoning has already run and failed to qualify a campaign.
+        Provider health is infrastructure metadata, not a substitute market
+        verdict. Return the native observe outcome and retain the outage in
+        advisor status / reasoner state for observability.
         """
         hypotheses = list(hypotheses or [])
         native_status, patterns, hypothesis_summary = self._native_fallback_diagnostic(
@@ -3027,15 +3027,18 @@ class CognitiveBrain:
             "native_evidence_uncertainty": uncertainty,
         })
         decision = DecisionPackage(
-            symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
-            thesis="external advisor unavailable; native analysis ran but no qualified independent campaign was found",
+            symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
+            thesis="native analysis completed; no action-qualified opportunity was found",
             confidence=0.0, uncertainty=uncertainty,
-            campaign_recommendation="stand_down",
-            risk_rationale=reason_txt,
+            campaign_recommendation="observe",
+            risk_rationale=(
+                "Native-only opportunity qualification did not pass; no new exposure is authorised. "
+                "External advisor status is recorded separately and is not the market verdict."
+            ),
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
-        return self._record(BrainOutput(decision=decision, direction=None))
+        return self._record(BrainOutput(decision=decision, direction=FLAT))
 
     def _record(self, output: BrainOutput) -> BrainOutput:
         output.decided_at_epoch = time.time()
