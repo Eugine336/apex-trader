@@ -2533,7 +2533,28 @@ class EventDrivenSystem:
                 # estimate/configuration is available; net-EV then fails closed.
                 return 0.0
             commission_ccy = comm_per_lot * lots
-            total = spread_ccy + slippage_ccy + commission_ccy
+            # Financing is instrument- and holding-horizon-dependent. Require
+            # an explicit per-broker-symbol round-trip estimate (account currency
+            # per lot) and operator verification; broker swap fields alone are
+            # not interchangeable across swap calculation modes.
+            financing_model_verified = bool(
+                cog is not None
+                and getattr(cog, "financing_model_verified", False) is True
+            )
+            financing_map = (
+                getattr(cog, "financing_per_lot_round_trip", {})
+                if cog is not None else {}
+            )
+            if not financing_model_verified or not isinstance(financing_map, dict):
+                return 0.0
+            financing_per_lot = financing_map.get(str(symbol or "").strip().upper())
+            if isinstance(financing_per_lot, bool) or financing_per_lot is None:
+                return 0.0
+            financing_per_lot = float(financing_per_lot)
+            if not math.isfinite(financing_per_lot) or financing_per_lot < 0.0:
+                return 0.0
+            financing_ccy = financing_per_lot * lots
+            total = spread_ccy + slippage_ccy + commission_ccy + financing_ccy
             return total if math.isfinite(total) and total > 0.0 else 0.0
         except Exception:  # noqa: BLE001 — unknown cost must not be fail-open
             return 0.0
