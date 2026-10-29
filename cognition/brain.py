@@ -2993,6 +2993,7 @@ class CognitiveBrain:
         *,
         analysis: Optional[EvidenceAnalysis] = None,
         hypotheses: Optional[list[BrainHypothesis]] = None,
+        advisor_status: str = "unavailable",
     ) -> BrainOutput:
         """Preserve the native no-action verdict while reporting advisor outage separately.
 
