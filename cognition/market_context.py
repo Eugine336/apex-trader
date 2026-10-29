@@ -1,0 +1,238 @@
+"""Evidence-grounded market context and epistemic limits for Apex System 2.
+
+This module summarizes instrument/session/contract context, cross-market
+relationships, historical evidence quality, and unknowns. It never supplies
+missing values, asserts causation from correlation, or treats a model score as
+measured predictive skill. It emits context for the CognitiveBrain; it cannot
+authorize trades.
+"""
+from __future__ import annotations
+
+from typing import Any, Iterable
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def _measurements(item: Any) -> dict:
+    value = getattr(item, "measurements", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _verified(record: dict, *keys: str) -> bool:
+    return all(record.get(key) is True for key in keys)
+
+
+def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
+    """Build an auditable context snapshot using only explicitly supplied facts.
+
+    Unknown values stay None/unknown. A field is not considered verified merely
+    because a provider or model supplied a plausible-looking value.
+    """
+    records = list(evidence)
+    symbol = str(symbol or "")
+    instrument_records = []
+    session_records = []
+    relationship_records = []
+    historical_records = []
+    execution_records = []
+    unclassified = []
+    missing = []
+
+    for item in records:
+        m = _measurements(item)
+        domain = str(getattr(getattr(item, "domain", None), "value",
+                             getattr(item, "domain", "")) or "").lower()
+        source = str(getattr(item, "source_module", "") or "unknown")
+        observed_symbol = str(getattr(item, "symbol", "") or "")
+        if any(k in m for k in (
+            "contract_size", "tick_size", "tick_value", "lot_size",
+            "point_value", "quote_currency", "base_currency", "margin_rate",
+            "trading_hours", "instrument_type", "minimum_volume",
+            "volume_step", "minimum_stop_distance", "swap_long", "swap_short",
+        )):
+            instrument_records.append({
+                "source": source, "symbol": observed_symbol,
+                "measurements": dict(m),
+                "verified": _verified(m, "specification_verified", "source_verified"),
+            })
+        if domain == "session" or any(k in m for k in (
+            "session_name", "market_session", "session_open", "session_close",
+            "timezone", "session_timezone", "session_calendar_verified",
+        )):
+            session_records.append({
+                "source": source, "symbol": observed_symbol,
+                "measurements": dict(m),
+                "verified": _verified(m, "source_verified", "session_calendar_verified"),
+            })
+        if domain == "correlation" or any(k in m for k in (
+            "correlation", "correlation_coefficient", "cross_asset_relationship",
+            "lead_lag", "relative_strength",
+        )):
+            coefficient = _finite_number(
+                m.get("correlation_coefficient", m.get("correlation"))
+            )
+            relationship_records.append({
+                "source": source, "symbol": observed_symbol,
+                "related_symbol": m.get("related_symbol"),
+                "coefficient": coefficient,
+                "sample_count": m.get("sample_count"),
+                "synchronized": m.get("synchronized_timestamps") is True,
+                "measurement_window": m.get("measurement_window"),
+                "observed_relationship": m.get("cross_asset_relationship"),
+                "causation_established": False,
+                "source_verified": m.get("source_verified") is True,
+            })
+        if domain == "historical_analogue" or any(k in m for k in (
+            "out_of_sample", "walk_forward", "holdout", "data_leakage_checked",
+            "historical_sample_count", "backtest_sample_count",
+        )):
+            n = _finite_number(m.get("historical_sample_count",
+                                     m.get("backtest_sample_count",
+                                           m.get("sample_count"))))
+            out_of_sample = m.get("out_of_sample") is True
+            walk_forward = m.get("walk_forward") is True
+            untouched_holdout = m.get("untouched_holdout") is True
+            leakage_checked = m.get("data_leakage_checked") is True
+            selection_bias_checked = m.get("selection_bias_checked") is True
+            overfit_checked = m.get("overfitting_checked") is True
+            historical_records.append({
+                "source": source, "symbol": observed_symbol,
+                "sample_count": int(n) if n is not None and n >= 0 else None,
+                "out_of_sample": out_of_sample,
+                "walk_forward": walk_forward,
+                "untouched_holdout": untouched_holdout,
+                "data_leakage_checked": leakage_checked,
+                "selection_bias_checked": selection_bias_checked,
+                "overfitting_checked": overfit_checked,
+                "validation_status": (
+                    "validated_controls_reported"
+                    if out_of_sample and walk_forward and untouched_holdout
+                    and leakage_checked and selection_bias_checked and overfit_checked
+                    else "unverified"
+                ),
+                "predictive_ability_demonstrated": False,
+                "note": "Reported controls require independent audit; sample size alone is not predictive skill.",
+            })
+        if domain == "execution_quality" or any(k in m for k in (
+            "spread", "slippage", "commission", "swap", "estimated_total_cost_r",
+            "minimum_stop_distance", "execution_constraint",
+        )):
+            execution_records.append({
+                "source": source, "symbol": observed_symbol,
+                "measurements": dict(m),
+                "verified": m.get("cost_verified") is True
+                or _verified(m, "execution_constraints_verified", "source_verified"),
+            })
+        known_keys = {
+            "source_kind", "source_timestamp_known", "timeframe", "timestamp",
+            "timestamp_epoch", "completed", "provisional", "current_close",
+            "prior_range_high", "prior_range_low", "range_position",
+            "breakout_direction", "trend_state", "trend_strength", "close_change",
+            "displacement", "bos", "structural_integrity", "support",
+            "volume_z", "expansion", "delta", "imbalance", "alignment",
+            "conflict_score", "volatility_state", "momentum_state",
+            "rolling_zscore_30", "ema_spread_atr", "pattern_tags",
+            "bullish_patterns", "bearish_patterns", "near_range_boundary",
+        }
+        unknown_keys = sorted(str(k) for k in m if k not in known_keys and
+                              k not in {
+                                  "contract_size", "tick_size", "tick_value", "lot_size",
+                                  "point_value", "quote_currency", "base_currency",
+                                  "margin_rate", "trading_hours", "instrument_type",
+                                  "minimum_volume", "volume_step", "minimum_stop_distance",
+                                  "swap_long", "swap_short", "specification_verified",
+                                  "source_verified", "session_name", "market_session",
+                                  "session_open", "session_close", "timezone",
+                                  "session_timezone", "session_calendar_verified",
+                                  "correlation", "correlation_coefficient", "related_symbol",
+                                  "sample_count", "synchronized_timestamps",
+                                  "measurement_window", "cross_asset_relationship", "lead_lag",
+                                  "relative_strength", "historical_sample_count",
+                                  "backtest_sample_count", "out_of_sample", "walk_forward",
+                                  "untouched_holdout", "data_leakage_checked",
+                                  "selection_bias_checked", "overfitting_checked",
+                                  "estimated_total_cost_r", "cost_verified",
+                                  "execution_constraints_verified", "spread", "slippage",
+                                  "commission", "swap", "execution_constraint",
+                              })
+        if unknown_keys:
+            unclassified.append({
+                "source": source, "symbol": observed_symbol,
+                "measurement_keys": unknown_keys,
+                "status": "unclassified_observation",
+                "note": "Preserved for reasoning; not automatically promoted to a validated pattern.",
+            })
+
+    if not instrument_records:
+        missing.append("instrument contract/economic specifications (tick value, contract size, lot constraints, margin and financing)")
+    if not session_records:
+        missing.append("verified market session calendar and instrument-specific trading hours/timezone")
+    if not relationship_records:
+        missing.append("synchronized cross-timeframe/cross-asset relationship measurements")
+    if not historical_records:
+        missing.append("historical outcome evidence with leakage, selection-bias and overfitting controls")
+    if not execution_records:
+        missing.append("verified instrument-specific execution costs and broker constraints")
+
+    return {
+        "symbol": symbol,
+        "epistemic_policy": {
+            "missing_data_is_missing": True,
+            "unverified_assumptions_remain_assumptions": True,
+            "correlation_does_not_establish_causation": True,
+            "model_confidence_is_not_predictive_validation": True,
+        },
+        "instrument_economics_and_contracts": {
+            "records": instrument_records,
+            "status": "verified_source_present" if any(r["verified"] for r in instrument_records) else
+                      ("unverified_records_present" if instrument_records else "missing"),
+        },
+        "sessions_and_execution_constraints": {
+            "session_records": session_records,
+            "execution_records": execution_records,
+            "session_status": "verified_source_present" if any(r["verified"] for r in session_records) else
+                              ("unverified_records_present" if session_records else "missing"),
+            "execution_status": "verified_source_present" if any(r["verified"] for r in execution_records) else
+                                ("unverified_records_present" if execution_records else "missing"),
+        },
+        "cross_market_relationships": {
+            "records": relationship_records,
+            "interpretation": "observed_association_only",
+            "causation_established": False,
+        },
+        "historical_evidence": {
+            "records": historical_records,
+            "predictive_ability_demonstrated": False,
+            "controls_required": [
+                "chronological train/validation/test separation",
+                "walk-forward evaluation",
+                "untouched holdout",
+                "data-leakage audit",
+                "selection-bias and multiple-testing controls",
+                "overfitting assessment",
+                "realistic spread, slippage, commission and financing costs",
+            ],
+        },
+        "unclassified_observations": unclassified[:100],
+        "missing_information": missing,
+        "cannot_infer_from_current_snapshot": [
+            "causal effect from correlation or lead-lag association alone",
+            "predictive edge from model confidence or in-sample performance alone",
+            "contract/session facts not supplied by a verified instrument/broker source",
+            "the meaning of an unfamiliar measurement without its provenance and definition",
+            "market conditions beyond the freshness and coverage of supplied evidence",
+        ],
+    }
+
+
+__all__ = ["analyze_market_context"]
