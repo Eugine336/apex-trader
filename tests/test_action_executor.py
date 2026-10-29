@@ -57,6 +57,26 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **ove
         values.update(source="ai_brain", decision_id="decision-test",
                       campaign_id="campaign-test", opportunity_id="opportunity-test")
     values.update(overrides)
+    if brain_provenance and "decision_feature_snapshot" not in overrides:
+        now = time.time()
+        values["decision_feature_snapshot"] = {
+            "schema": "apex.decision_feature_snapshot.v1",
+            "snapshot_id": f"decision-test:{now:.6f}",
+            "decision_id": values["decision_id"],
+            "symbol": str(values["symbol"]),
+            "decision_timestamp_epoch": now,
+            "captured_at_decision": True,
+            "snapshot_complete": True,
+            "evidence_count": 1,
+            "evidence_ids": ["test-evidence-1"],
+            "features": [{
+                "evidence_id": "test-evidence-1",
+                "source_timestamp_epoch": now,
+                "measurements": {"synthetic_fixture": True},
+            }],
+            "validation_status": "unvalidated",
+            "predictive_ability_demonstrated": False,
+        }
     if "payoff_geometry" not in overrides:
         entry = float(values["entry_price"])
         stop = float(values["sl"])
@@ -839,6 +859,19 @@ def test_rejects_brain_entry_without_activated_opportunity_id():
     assert "opportunity_id" in result.gate_reason
     assert broker.open_calls == []
 
+
+
+def test_open_rejects_missing_decision_feature_snapshot():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    result = executor.execute(
+        _open_intent("XAUUSD", decision_feature_snapshot=None),
+        {},
+    )
+    assert not result.success
+    assert result.rejected_by_gate
+    assert "decision_feature_snapshot" in (result.error or "")
+    assert broker.open_calls == []
 
 
 def test_open_rejects_unverified_broker_spec_before_broker_call():
