@@ -26,6 +26,18 @@ in the branch, integration/test status unverified until the focused suites and
 identity audit run.** This change does not close the separate native hypothesis
 breadth, runtime route, all-instrument evidence, or demo-execution gaps below.
 
+## Current work item — System 2 market context and epistemic integrity (2026-10-29)
+
+Implementation added on branch `redesign/system2-market-intelligence-context`:
+- `cognition/market_context.py` summarizes only supplied evidence for instrument contract/economic specifications, session calendars, execution constraints, synchronized cross-market relationships, historical validation metadata, unfamiliar measurements and missing information.
+- `BrainReasoner.analyze_evidence()` includes this context in `EvidenceAnalysis.market_context`, which is serialized for the native reasoning record and advisor context.
+- Correlation/lead-lag evidence is explicitly labeled observed association; causation remains unestablished.
+- Historical validation metadata requires out-of-sample evaluation, walk-forward evaluation, untouched holdout, leakage checks, selection-bias checks and overfitting checks before being labeled `validated_controls_reported`. Even then, the module does not claim predictive ability is demonstrated; independent audit remains required.
+- Unfamiliar measurement keys are preserved as unclassified observations rather than being silently discarded or treated as validated patterns.
+- Missing instrument/session/execution/historical context is explicitly listed. This code does not infer missing contract specifications, sessions or predictive skill.
+
+**Validation status: unverified.** Focused tests were added in `tests/test_market_context_intelligence.py` but have not been executed in this environment. This is an initial System 2 implementation slice, not proof that broker adapters supply verified instrument specifications, session calendars, synchronized cross-asset data, or leakage-resistant historical outcomes. The new module is not yet wired to a proven source of authoritative contract metadata. No live orders were sent; `.env`, runtime database state and broker settings were not changed. Do not mark System 2 complete until source wiring, focused tests, identity audit, and route-level impact review are completed.
+
 ## Findings from actual source inspection
 
 **Freshness correction (PR #753; focused validation passed):** `Evidence.is_fresh()` rejects evidence whose source timestamp is later than the comparison time, including evidence with an otherwise non-expiring horizon. This closes a negative-age fail-open; it does not establish that each broker adapter normalizes timestamps correctly. The focused cognition workflow passed on Python 3.11 and 3.12 with compilation and scoped Ruff checks, and the regression test passed in the full Python 3.11 run. The full-suite run still reports 180 failed / 3,717 passed / 12 skipped on Python 3.11; the Python 3.12 matrix job was cancelled after that failure. The preceding main baseline reported 180 failed / 3,716 passed / 12 skipped. This is a narrowly scoped fail-closed correction, not a green full suite or runtime completion.
