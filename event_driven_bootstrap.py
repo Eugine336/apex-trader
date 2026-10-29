@@ -1591,6 +1591,7 @@ class EventDrivenSystem:
             evaluator=self._evaluator,
             on_close_callback=self._handle_close_result,
             on_manage_callback=self._handle_manage_result,
+            on_open_callback=self._handle_open_result,
         )
         self._tick_eval_loop = TickEvalLoop(
             self._evaluator, scheduler=self._mgmt_scheduler,
