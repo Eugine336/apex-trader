@@ -2755,6 +2755,14 @@ class EventDrivenSystem:
         """
         try:
             from cognition.contracts import Evidence, EvidenceDomain
+            cache = getattr(self, "_cognition_cross_asset_cache", None)
+            if cache is None:
+                cache = {}
+                self._cognition_cross_asset_cache = cache
+            now_mono = _time.monotonic()
+            cached = cache.get(str(symbol).upper())
+            if cached is not None and now_mono - cached[0] <= 60.0:
+                return list(cached[1])
             ctx = getattr(self, "_ctx", None)
             engine = getattr(ctx, "correlation_engine", None)
             related = tuple(engine.inverse_correlates(symbol)) if engine is not None else ()
@@ -2872,6 +2880,7 @@ class EventDrivenSystem:
                         "[cognition] cross-asset association unavailable for {} / {}: {}",
                         symbol, related_symbol, exc,
                     )
+            cache[str(symbol).upper()] = (_time.monotonic(), list(output))
             return output
         except Exception as exc:  # noqa: BLE001 — relationships are optional context
             logger.debug("[cognition] cross-asset association failed for {}: {}", symbol, exc)
