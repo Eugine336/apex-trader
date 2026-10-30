@@ -268,7 +268,7 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 
 ## System 3 implementation record — 2026-10-30
 
-**Status: IN PROGRESS — implementation branch `redesign/system3-native-reasoning`.** This is parallel downstream engineering requested by the repository owner; it does not retroactively accept System 2 or waive its outstanding gates.
+**Status: IMPLEMENTED AND MERGED — PR #796, commit `94a01c793d7418357f81adf7c8989f965c2c3e5b`, 2026-10-30.** System 3 implementation is on `main`. This does not retroactively accept System 2 or waive its separate broker-capability, financing and historical-validation gates.
 
 ### Native reasoning changes in this pass
 - Native analysis now records a point-in-time evidence index, original source IDs/timestamps/domains, raw observed measurements, pattern-to-source lineage, and separate observed-fact / inference / assumption / unknown collections.
@@ -294,11 +294,12 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 - Stale/future evidence exclusion at the exact decision-time cutoff.
 - Existing native advisor-outage and native-only origination tests remain part of the supported-runtime suite.
 
-### Acceptance still required
-- Run focused System 3, cognition, provider-resilience, constitutional and identity-audit suites on Python 3.11 and 3.12.
-- Run full repository CI; classify failures without suppressing assertions or weakening safety.
-- Review all native hypothesis families against adversarial and unfamiliar market-state scenarios.
-- Prove the advisor cannot bypass native validation and verify qualified opportunities continue through the common admission path.
-- Keep unknown time horizons, missing domains and unverified facts explicit; no strategy-family catalog is a guarantee of competence.
+### Validation result and remaining global blocker
+- Focused Gold desk tests passed on the final System 3 revision.
+- Full Python 3.11 and 3.12 suites each reported **3,963 passed, 1 failed**. The only failure is `tests/test_silent_swallow_observability.py::test_no_silent_exception_handlers`, which reports 180 unclassified handlers.
+- The pre-merge `main` baseline at `590db018c4ea414a3122be3948e90585558c27ee` reported **3,948 passed, 1 failed** on both runtimes, with the same 180-handler audit failure. System 3 added 15 passing tests and introduced no new failing test in that comparison.
+- Lint passed. The silent-exception audit was not suppressed, weakened or reclassified to obtain a green result.
+- The post-merge main workflow is queued; its result remains to be checked.
+- Unknown time horizons, missing domains and unverified facts remain explicit. No strategy-family catalog is a guarantee of competence.
 
 No live broker orders, runtime database changes, credential changes, `.env` access or destructive cleanup are part of this work.
