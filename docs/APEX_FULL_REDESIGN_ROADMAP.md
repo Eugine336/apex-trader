@@ -259,7 +259,46 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 - PR #795 (draft): `redesign/system2-provenance-hardening`. It adds a fail-stop gate for subsequent OPENs after EventStore degradation and corrects MT5 partial-close realized-cost attribution: all position deals contribute profit/commission/swap/fees, while the latest exit deal supplies final exit reason/price/time.
 - System 2 item 1 (inherited test failures): several concrete baseline defects have been corrected across PR #793 and #795; the latest full-suite result must be reviewed before declaring the inherited failure set closed. Do not weaken safety assertions or suppress the silent-handler audit.
 - System 2 item 2 (entry-to-close restart recovery): callback-level test now exercises a durable entry event, clears in-memory entry context, recovers by exact ticket after restart, and checks the durable outcome link. It still requires a passing supported-runtime CI run.
-- System 2 item 3 (calendar and connector constraints): shared execution now requires verified broker economics and refuses MT5 OPENs while broker session timezone/DST and holiday-calendar provenance are false. Deriv remains unsupported for new exposure until its adapter-specific specification and constraint validator are complete. This is intentionally fail-closed, not a claim that calendars are complete.
+- System 2 item 3 (calendar and connector constraints): the implementation requirement is broker-agnostic and capability-driven. Each connector must supply its own verified trading sessions, server timezone/DST rules, holiday schedule, instrument constraints and source/validity metadata through a common adapter contract. No broker is hardcoded or assumed; missing required capabilities fail closed for that instrument. Deriv remains blocked until its adapter-specific specification and constraint validator are complete.
 - System 2 item 4 (financing): unknown directional rates and invalid estimate inputs now return unavailable rather than modeled zero. MT5 realized swap is taken from broker deal history and summed across all position deals; partial-close exit attribution uses the latest closing deal. DealCloseInfo now represents missing commission/swap/fee values as `None`, including Deriv responses that do not report those costs, so the outcome ledger does not fabricate zero financing. The repository currently has no `data/swap_rates.json`, so no static financing estimate is available by default. Missing/invalid side-specific rates return unavailable rather than modeled zero. Static rate-table estimates remain estimates and are not broker-verified until the table carries current, authoritative broker rates and rollover rules.
 - System 2 item 5 (independent historical walk-forward and untouched holdout) is reserved for the repository owner and has not been performed here.
-- System 2 remains **IN PROGRESS — NOT ACCEPTED**. Do not start System 3 until full CI, the remaining inherited audit findings, provider-specific calendar/connector inputs, and all other acceptance evidence are reviewed.
+- System 2 remains **IN PROGRESS — NOT ACCEPTED**. System 3 engineering is proceeding in parallel as directed; this does not waive System 2 release gates. System 2 still requires full CI, resolution of inherited audit findings, the broker-agnostic connector capability contract, verified financing data and all other acceptance evidence.
+
+
+
+## System 3 implementation record — 2026-10-30
+
+**Status: IN PROGRESS — implementation branch `redesign/system3-native-reasoning`.** This is parallel downstream engineering requested by the repository owner; it does not retroactively accept System 2 or waive its outstanding gates.
+
+### Native reasoning changes in this pass
+- Native analysis now records a point-in-time evidence index, original source IDs/timestamps/domains, raw observed measurements, pattern-to-source lineage, and separate observed-fact / inference / assumption / unknown collections.
+- Every native hypothesis carries a stable ID, explicit hypothesis family, supporting and contradicting evidence IDs, assumptions, unresolved unknowns, distinguishing evidence, source-declared horizon, and decomposed reasoning-strength metadata. Pattern links explicitly disclose domain-level candidate-source granularity; unfamiliar measurement hypotheses retain exact source IDs.
+- Confidence is explicitly marked as uncalibrated reasoning strength, not a probability. No predictive or profitability claim is inferred from this score.
+- Counter-hypotheses now challenge up to the three strongest directional explanations, each linked to the primary hypothesis ID; when no directional explanation exists, the strongest market-state interpretation is still challenged. Self-criticism identifies counter-hypotheses by type, penalizes missing attributable support, and challenges hypotheses when independent sources conflict.
+- The leading-hypothesis selector compares non-directional and no-trade explanations against directional candidates; direction no longer receives automatic priority.
+- Counter-hypotheses are challenge records only and are excluded from primary direction selection; a weak primary cannot be replaced by its own generated counter merely because the counter score is larger.
+- Market coverage is measured from informative observations in the six core market domains. Empty high-confidence telemetry, advisor metadata, portfolio data and execution metadata cannot inflate market-evidence completeness.
+- Relevant analytical lenses from the complete strategy-lens registry now produce separate, non-directional hypothesis candidates with their required evidence, source lineage and limitations. Volatility-regime and unfamiliar-measurement hypotheses are also retained without inventing direction.
+- Conflicting displacement sources, order-flow signs, same-timeframe trend readings, momentum states, volatility states, statistical z-scores and M1 interpretations remain explicitly conflicted instead of being collapsed by input/arrival order.
+- Native evidence freshness uses the same decision-time cutoff as market-state consolidation. Native-only origination, verified execution-cost evidence and opportunity geometry now use that identical cutoff as well.
+- Native open and observe outcomes retain full hypothesis records, the selected hypothesis ID and the epistemic record; sparse or rejected decisions do not discard the reasoning that led to standing down.
+- External advisor integration remains downstream of native analysis. Provider outage does not disable native reasoning; advisor outputs remain subject to Brain synthesis, opportunity geometry, cost and admission checks.
+
+### New deterministic coverage
+- Evidence lineage and epistemic-category serialization.
+- Opposing structure/order-flow sources.
+- Conflicting same-timeframe trend readings.
+- Conflicting momentum and volatility states.
+- Uncalibrated confidence semantics and hypothesis IDs.
+- No-trade hypothesis comparison against directional hypotheses.
+- Stale/future evidence exclusion at the exact decision-time cutoff.
+- Existing native advisor-outage and native-only origination tests remain part of the supported-runtime suite.
+
+### Acceptance still required
+- Run focused System 3, cognition, provider-resilience, constitutional and identity-audit suites on Python 3.11 and 3.12.
+- Run full repository CI; classify failures without suppressing assertions or weakening safety.
+- Review all native hypothesis families against adversarial and unfamiliar market-state scenarios.
+- Prove the advisor cannot bypass native validation and verify qualified opportunities continue through the common admission path.
+- Keep unknown time horizons, missing domains and unverified facts explicit; no strategy-family catalog is a guarantee of competence.
+
+No live broker orders, runtime database changes, credential changes, `.env` access or destructive cleanup are part of this work.

@@ -418,7 +418,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
     )
-    brain._native_reasoning = lambda state, consolidation, symbol: (analysis, [hypothesis])
+    brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.direction == LONG
@@ -510,6 +510,9 @@ def test_native_fallback_stands_down_without_execution_cost_evidence():
     assert out.campaign is None
     assert out.provider_status == "not_configured"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
+    assert out.decision.questions_answered["native_hypothesis_records"]
+    assert "observed_facts" in out.decision.questions_answered["native_epistemic_record"]
+    assert out.decision.questions_answered["native_informative_domains"]
 
 
 def test_brain_originates_independently_when_advisor_unavailable():
@@ -524,6 +527,11 @@ def test_brain_originates_independently_when_advisor_unavailable():
     assert "without advisor" in note
     assert out.decision.questions_answered["reasoning_mode"] == "native_only"
     assert out.decision.questions_answered["external_advisor_status"] == "unavailable"
+    native_records = out.decision.questions_answered["brain_native_hypothesis_records"]
+    assert native_records
+    assert all(record["hypothesis_id"] for record in native_records)
+    assert "observed_facts" in out.decision.questions_answered["brain_epistemic_record"]
+    assert out.decision.questions_answered["brain_lead_hypothesis_id"]
     assert brain.get_status()["independent_originations"] == 1
 
 
@@ -548,9 +556,11 @@ def test_native_reasoning_precedes_advisor_availability_check():
     brain = CognitiveBrain(reasoner=reasoner)
     original_native_reasoning = brain._native_reasoning
 
-    def _record_native_start(market_state, consolidation, symbol):
+    def _record_native_start(market_state, consolidation, symbol, *, now=None):
         reasoner.native_started = True
-        return original_native_reasoning(market_state, consolidation, symbol)
+        return original_native_reasoning(
+            market_state, consolidation, symbol, now=now,
+        )
 
     brain._native_reasoning = _record_native_start
     reasoner.assert_runtime_order = True

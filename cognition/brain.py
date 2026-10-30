@@ -487,7 +487,9 @@ class CognitiveBrain:
             # own structured analysis and forms its own (self-criticised)
             # hypotheses BEFORE any advisor is consulted. This is the Brain's
             # native view; the advisor opinion later INFORMS it, never replaces it.
-            analysis, hypotheses = self._native_reasoning(market_state, consolidation, symbol)
+            analysis, hypotheses = self._native_reasoning(
+                market_state, consolidation, symbol, now=now,
+            )
             # Provider configuration/health is infrastructure metadata, never a
             # market verdict. Native analysis is already complete; preserve its
             # qualified campaign or native observe result in every advisor state.
@@ -503,6 +505,7 @@ class CognitiveBrain:
                     reason_txt="no external advisor configured — native Brain-only decision",
                     market_state=market_state,
                     advisor_status="not_configured",
+                    now=now,
                 )
                 if independent is not None:
                     return independent
@@ -522,6 +525,7 @@ class CognitiveBrain:
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="reasoner unavailable — provider down (not a market view)",
                     market_state=market_state,
+                    now=now,
                 )
                 if independent is not None:
                     return independent
@@ -562,6 +566,7 @@ class CognitiveBrain:
                         reason_txt=("reasoner returned no usable opinion — provider "
                                     "failure / unparsable output (not a market view)"),
                         market_state=market_state,
+                        now=now,
                     )
                     if independent is not None:
                         return independent
@@ -581,6 +586,7 @@ class CognitiveBrain:
                     reason_txt="advisor available but returned no opinion this cycle; native-only assessment",
                     market_state=market_state,
                     advisor_status="available",
+                    now=now,
                 )
                 if independent is not None:
                     return independent
@@ -796,7 +802,9 @@ class CognitiveBrain:
         # Net EV includes the best available cost estimate. The configured
         # default remains diagnostic only; it cannot substitute for verified,
         # fresh execution-cost evidence when the Brain authorizes a campaign.
-        cost_verified, cost_r, cost_source = self._execution_cost_estimate(market_state)
+        cost_verified, cost_r, cost_source = self._execution_cost_estimate(
+            market_state, now=now,
+        )
         expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
@@ -852,6 +860,15 @@ class CognitiveBrain:
                 f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
                 for h in brain_hypotheses
             )[:1000]
+            questions["brain_native_hypothesis_records"] = [
+                item.to_dict() for item in brain_hypotheses[:12]
+            ]
+        if analysis is not None:
+            questions["brain_epistemic_record"] = analysis.to_dict().get(
+                "epistemic_record", {},
+            )
+        if brain_lead is not None:
+            questions["brain_lead_hypothesis_id"] = brain_lead.hypothesis_id
         if brain_lead is not None and getattr(brain_lead, "criticism", ""):
             questions["brain_self_criticism"] = brain_lead.criticism
         if brain_adv_synthesis:
@@ -2277,7 +2294,7 @@ class CognitiveBrain:
         return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
     def _execution_cost_estimate(
-        self, market_state: MarketState,
+        self, market_state: MarketState, *, now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
         """Return (verified, round-trip cost R, source) from fresh broker-cost evidence.
 
@@ -2289,7 +2306,7 @@ class CognitiveBrain:
         """
         try:
             candidates: list[tuple[float, float, str]] = []
-            for item in market_state.fresh_evidence():
+            for item in market_state.fresh_evidence(now):
                 if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
                     continue
                 measurements = getattr(item, "measurements", None)
@@ -2329,13 +2346,17 @@ class CognitiveBrain:
             pass
         return False, max(0.0, float(self.default_cost_r)), "configured default (not verified)"
 
-    def _execution_cost_r(self, market_state: MarketState) -> float:
-        """Return the best current cost estimate, for diagnostics and EV only."""
-        return self._execution_cost_estimate(market_state)[1]
+    def _execution_cost_r(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> float:
+        """Return the best cost estimate at the decision-time cutoff."""
+        return self._execution_cost_estimate(market_state, now=now)[1]
 
-    def _has_current_execution_cost_evidence(self, market_state: MarketState) -> bool:
+    def _has_current_execution_cost_evidence(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> bool:
         """True only when a fresh, finite, non-negative cost measurement exists."""
-        return self._execution_cost_estimate(market_state)[0]
+        return self._execution_cost_estimate(market_state, now=now)[0]
 
     def _synthesize_from_evidence(
         self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
@@ -2416,6 +2437,7 @@ class CognitiveBrain:
 
     def _native_reasoning(
         self, market_state: MarketState, consolidation: dict, symbol: str,
+        *, now: Optional[float] = None,
     ) -> "tuple[EvidenceAnalysis, list[BrainHypothesis]]":
         """Run the full native reasoning pass: analyse → hypothesise → self-criticise.
 
@@ -2423,7 +2445,9 @@ class CognitiveBrain:
         hypotheses, so the LLM path is entirely unaffected.
         """
         try:
-            analysis = self._native.analyze_evidence(market_state, consolidation)
+            analysis = self._native.analyze_evidence(
+                market_state, consolidation, now=now,
+            )
             hypotheses = self._native.generate_hypotheses(analysis, symbol)
             hypotheses = self._native.self_criticize(hypotheses, analysis)
             return analysis, hypotheses
@@ -2584,6 +2608,7 @@ class CognitiveBrain:
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
         *, reason_txt: str, market_state: Optional[MarketState] = None,
         advisor_status: str = "unavailable",
+        now: Optional[float] = None,
     ) -> Optional[BrainOutput]:
         """Discover a native opportunity whenever the advisor supplies no usable opinion.
 
@@ -2609,11 +2634,15 @@ class CognitiveBrain:
             required_domains = max(3, int(self.min_evidence_domains))
             raw_market_domains = (consolidation or {}).get("market_domain_count")
             try:
-                available_market_domains = (
+                consolidated_market_domains = (
                     int(raw_market_domains) if raw_market_domains is not None else None
                 )
             except (TypeError, ValueError, OverflowError):
-                available_market_domains = None
+                consolidated_market_domains = None
+            available_market_domains = (
+                len(set(analysis.informative_domains))
+                if analysis.evidence_index else consolidated_market_domains
+            )
             if available_market_domains is None or available_market_domains < required_domains:
                 return None
 
@@ -2622,7 +2651,7 @@ class CognitiveBrain:
             # in a fixed catalogue of familiar pattern names. Require multiple
             # fresh, independent market domains and at least one concrete current
             # observation that can be named in the opportunity contract.
-            fresh = list(market_state.fresh_evidence())
+            fresh = list(market_state.fresh_evidence(now))
             market_evidence = [
                 item for item in fresh
                 if str(getattr(getattr(item, "domain", None), "value",
@@ -2631,17 +2660,31 @@ class CognitiveBrain:
                     "order_flow", "multi_timeframe", "correlation", "session", "macro",
                     "historical_analogue"}
             ]
-            directional_facts = [
-                item for item in market_evidence
-                if str(getattr(item, "observation", "") or "").strip()
-                and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
-            ]
+            if analysis.evidence_index:
+                informative_evidence_ids = {
+                    str(item.get("evidence_id", ""))
+                    for item in analysis.evidence_index
+                    if item.get("measurement_keys")
+                }
+                informative_facts = [
+                    item for item in market_evidence
+                    if str(getattr(item, "evidence_id", "") or "")
+                    in informative_evidence_ids
+                ]
+            else:
+                # Compatibility for manually constructed test/legacy analyses
+                # without a point-in-time evidence index.
+                informative_facts = [
+                    item for item in market_evidence
+                    if str(getattr(item, "observation", "") or "").strip()
+                    and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
+                ]
             independent_domains = {
                 str(getattr(getattr(item, "domain", None), "value",
                             getattr(item, "domain", ""))).lower()
-                for item in directional_facts
+                for item in informative_facts
             }
-            if len(independent_domains) < required_domains or not directional_facts:
+            if len(independent_domains) < required_domains or not informative_facts:
                 return None
 
             # A directional hypothesis may become actionable below 0.70 confidence
@@ -2656,7 +2699,9 @@ class CognitiveBrain:
             # Native fallback may not invent a cost estimate. A current execution
             # cost observation from the shared consolidator is mandatory; use its
             # actual net round-trip estimate for EV rather than a constant default.
-            cost_verified, _, _ = self._execution_cost_estimate(market_state)
+            cost_verified, _, _ = self._execution_cost_estimate(
+                market_state, now=now,
+            )
             if not cost_verified:
                 return None
 
@@ -2664,7 +2709,9 @@ class CognitiveBrain:
             # A native opportunity needs a real, activated market-structure
             # geometry. Missing stop/target levels or activation evidence means
             # observe; never manufacture the previous configured reward multiple.
-            geometry = derive_opportunity_geometry(market_state, direction)
+            geometry = derive_opportunity_geometry(
+                market_state, direction, now=now,
+            )
             if geometry is None or not geometry.activated:
                 return None
 
@@ -2681,7 +2728,7 @@ class CognitiveBrain:
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
-            cost_r = self._execution_cost_r(market_state)
+            cost_r = self._execution_cost_r(market_state, now=now)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
@@ -2696,17 +2743,23 @@ class CognitiveBrain:
             # Preserve the actual evidence provenance that informed the native
             # hypothesis. Do not infer evidence domains from a hard-coded pattern
             # catalogue or manufacture support when a method has no matching fact.
-            supporting_evidence_ids = [
-                str(getattr(item, "evidence_id", "") or "")
-                for item in directional_facts
-                if getattr(item, "evidence_id", "")
-            ]
+            supporting_evidence_ids = list(dict.fromkeys(
+                list(lead.supporting_evidence_ids)
+                + list(geometry.evidence_ids)
+            ))
             competing_statements = [
                 item.statement for item in hypotheses if item is not lead
             ]
+            market_coverage_domains = (
+                set(analysis.informative_domains)
+                if analysis.evidence_index else {
+                    key for key in analysis.domain_coverage
+                    if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+                }
+            )
             market_coverage = {
                 key: value for key, value in analysis.domain_coverage.items()
-                if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+                if key in market_coverage_domains
             }
             evidence_strength = (
                 sum(market_coverage.values()) / len(market_coverage)
@@ -2730,7 +2783,7 @@ class CognitiveBrain:
                         geometry.activation_reason,
                         f"Market-derived entry {geometry.entry_price:.10g}; stop {geometry.stop_price:.10g}; target {geometry.target_price:.10g}",
                         f"Current evidence supports this hypothesis across {len(independent_domains)} independent market domains",
-                        *[str(getattr(item, "observation", "") or "")[:180] for item in directional_facts[:4]],
+                        *[str(getattr(item, "observation", "") or "")[:180] for item in informative_facts[:4]],
                         "Fresh quote, broker feasibility, protective-risk checks and common admission must pass before submission",
                     ],
                     "confirmation_conditions": [
@@ -2781,6 +2834,13 @@ class CognitiveBrain:
                 "brain_hypotheses": " | ".join(
                     f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
                     for h in hypotheses)[:1000],
+                "brain_native_hypothesis_records": [
+                    item.to_dict() for item in hypotheses[:12]
+                ],
+                "brain_epistemic_record": analysis.to_dict().get(
+                    "epistemic_record", {},
+                ),
+                "brain_lead_hypothesis_id": lead.hypothesis_id,
                 "brain_self_criticism": lead.criticism or "no material criticism",
                 "brain_book_comparison": considered,
                 "brain_independent_opportunity_id": native_opportunity.opportunity_id,
@@ -3142,6 +3202,25 @@ class CognitiveBrain:
             "native_detected_patterns": patterns,
             "native_evidence_uncertainty": uncertainty,
         })
+        if analysis is not None:
+            native_analysis_record = analysis.to_dict()
+            questions["native_epistemic_record"] = native_analysis_record.get(
+                "epistemic_record", {},
+            )
+            questions["native_informative_domains"] = list(
+                getattr(analysis, "informative_domains", []) or []
+            )
+            questions["native_uninformative_domains"] = list(
+                getattr(analysis, "uninformative_domains", []) or []
+            )
+        if hypotheses:
+            questions["native_hypothesis_records"] = [
+                item.to_dict() for item in hypotheses[:12]
+            ]
+            lead = self._native.leading(hypotheses)
+            questions["native_lead_hypothesis_id"] = (
+                getattr(lead, "hypothesis_id", "") if lead is not None else ""
+            )
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="native analysis completed; no qualified opportunity met action criteria",
