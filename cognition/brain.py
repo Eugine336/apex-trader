@@ -809,7 +809,14 @@ class CognitiveBrain:
                 if direction in (LONG, SHORT) else None
             )
         )
-        geometry_qualified = direction not in (LONG, SHORT) or geometry is not None
+        geometry_qualified = (
+            direction not in (LONG, SHORT)
+            or (
+                geometry is not None
+                and geometry.direction == direction
+                and (driving_opp is None or driving_opp.direction == direction)
+            )
+        )
         # For a directional view, advisor-reported excursions cannot stand in for
         # market structure. If geometry is unavailable, set no favourable payoff
         # and keep the opportunity fail-closed at the shared EV/admission gates.
