@@ -1351,8 +1351,12 @@ class CognitiveBrain:
         # Article XIX — a shallow advisor reply is sized down: the effective
         # conviction is pulled toward the act threshold in proportion to how thin
         # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
+        # Reasoning quality may reduce exposure, never lift it above the
+        # effective confidence. In particular, weak execution confidence must
+        # not be floored back up to the global minimum action threshold.
         weighted_confidence = _clamp01(
-            eff_conf * quality_score + (1.0 - quality_score) * self.min_confidence_to_act)
+            eff_conf * (0.5 + 0.5 * quality_score)
+        )
         desired_exposure = round(min(weighted_confidence, ev_normalized), 4)
         questions["sizing_rationale"] = (
             f"exposure {desired_exposure:.4f} = min(quality-weighted confidence "
