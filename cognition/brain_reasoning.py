@@ -312,6 +312,7 @@ class BrainReasoner:
         names = [pattern_name(p) for p in detected]
 
         evidence_index: list[dict] = []
+        observed_facts: list[dict] = []
         domain_evidence_ids: dict[str, list[str]] = {}
         for item in fresh:
             evidence_id = str(getattr(item, "evidence_id", "") or "")
@@ -333,6 +334,12 @@ class BrainReasoner:
                 ),
             }
             evidence_index.append(record)
+            measurements = getattr(item, "measurements", {})
+            observed_facts.append({
+                **record,
+                "observation": str(getattr(item, "observation", "") or ""),
+                "measurements": dict(measurements) if isinstance(measurements, dict) else {},
+            })
             domain_evidence_ids.setdefault(domain, []).append(evidence_id)
         pattern_evidence_ids = {
             name: list(dict.fromkeys(
@@ -387,7 +394,7 @@ class BrainReasoner:
             market_context=market_context,
             evidence_index=evidence_index,
             pattern_evidence_ids=pattern_evidence_ids,
-            observed_facts=[dict(item) for item in evidence_index],
+            observed_facts=observed_facts,
             inferences=list(names) + list(contradictions),
             assumptions=[],
             unknowns=list(missing),
@@ -1111,7 +1118,7 @@ class BrainReasoner:
                     direction_implication=candidate["direction"],
                     invalidation=candidate["invalidation"],
                     opportunity_implication=candidate["opportunity"],
-                    hypothesis_kind=str(candidate["key"]).replace(" ", "_"),
+                    hypothesis_kind=str(candidate["key"]).replace(" ", "_").replace("-", "_"),
                     supporting_evidence_ids=list(dict.fromkeys(
                         evidence_id for name in candidate["support"]
                         for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
