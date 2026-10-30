@@ -399,7 +399,18 @@ class BrainReasoner:
             evidence_index=evidence_index,
             pattern_evidence_ids=pattern_evidence_ids,
             observed_facts=observed_facts,
-            inferences=list(names) + list(contradictions),
+            inferences=(
+                list(names)
+                + [
+                    f"{key}={regime[key]}"
+                    for key in (
+                        "structure", "order_flow", "volatility", "momentum",
+                        "trend_context", "liquidity_sweep_side",
+                    )
+                    if regime.get(key) not in (None, "", "unknown", "none")
+                ]
+                + list(contradictions)
+            ),
             assumptions=[],
             unknowns=list(missing),
         )
