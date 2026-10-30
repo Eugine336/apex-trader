@@ -30,6 +30,9 @@ def test_entry_snapshot_is_recovered_by_exact_ticket_and_linked_to_close(
     system._pm = SimpleNamespace(get_deal_close_info=lambda ticket, platform: None)
     system._ctx = None
     system._safe_pip_size = lambda symbol: 0.01
+    system._mark_booked = lambda ticket: True
+    system._mgmt_store = SimpleNamespace(remove=lambda ticket: None)
+    system._clear_inflight_manage_ticket = lambda ticket: None
 
     snapshot = {
         "schema": "apex.decision_feature_snapshot.v1",
