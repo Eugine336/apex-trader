@@ -194,3 +194,24 @@ def test_uncalibrated_directional_opinion_cannot_create_campaign_or_claim_positi
     assert "confidence is not probability" in out.decision.questions_answered[
         "win_probability_verification"
     ]
+
+
+
+def test_calibration_side_metadata_is_confined_to_historical_analogue_domain():
+    state = MarketState(symbol="SYNTHETIC")
+    ordinary = Evidence(
+        source_module="untrusted.market_adapter",
+        domain=EvidenceDomain.MOMENTUM,
+        symbol="SYNTHETIC",
+        observation="ordinary market evidence",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"calibration_side": "LONG", "momentum_state": "accelerating"},
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    )
+    state.add(ordinary)
+    assert "calibration_side" not in ordinary.measurements
+    historical = _calibration()
+    state.add(historical)
+    assert historical.measurements["calibration_side"] == "LONG"
