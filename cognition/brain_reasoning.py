@@ -29,6 +29,7 @@ advisor is available the Brain can still originate from this layer alone
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
@@ -96,6 +97,14 @@ class EvidenceAnalysis:
     # Instrument economics, sessions, cross-market associations, historical
     # validation status, unfamiliar observations and epistemic limits.
     market_context: dict = field(default_factory=dict)
+    # Point-in-time evidence lineage. Records contain metadata only; raw
+    # measurements remain in the original Evidence objects.
+    evidence_index: list[dict] = field(default_factory=list)
+    pattern_evidence_ids: dict = field(default_factory=dict)
+    observed_facts: list[dict] = field(default_factory=list)
+    inferences: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    unknowns: list[str] = field(default_factory=list)
     identity_version: str = IDENTITY_VERSION
 
     def summary(self) -> str:
@@ -130,6 +139,16 @@ class EvidenceAnalysis:
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
             "strategy_lenses": [dict(item) for item in self.strategy_lenses],
             "market_context": dict(self.market_context),
+            "evidence_index": [dict(item) for item in self.evidence_index],
+            "pattern_evidence_ids": {
+                str(key): list(value) for key, value in self.pattern_evidence_ids.items()
+            },
+            "epistemic_record": {
+                "observed_facts": [dict(item) for item in self.observed_facts],
+                "inferences": list(self.inferences),
+                "assumptions": list(self.assumptions),
+                "unknowns": list(self.unknowns),
+            },
         }
 
 
@@ -145,12 +164,36 @@ class BrainHypothesis:
     invalidation: str = ""
     opportunity_implication: str = ""
     criticism: str = ""  # self-criticism notes (Article IV)
+    hypothesis_id: str = ""
+    hypothesis_kind: str = "market_state"
+    supporting_evidence_ids: list[str] = field(default_factory=list)
+    contradicting_evidence_ids: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    unresolved_unknowns: list[str] = field(default_factory=list)
+    distinguishing_evidence: list[str] = field(default_factory=list)
+    horizon: str = "unspecified"
+    confidence_components: dict = field(default_factory=dict)
+    confidence_semantics: str = "uncalibrated_reasoning_strength"
     identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
         self.confidence = _clamp01(self.confidence)
         d = str(self.direction_implication or "").upper()
         self.direction_implication = d if d in (LONG, SHORT, FLAT) else ""
+        self.hypothesis_kind = str(self.hypothesis_kind or "market_state").strip().lower()
+        self.supporting_evidence_ids = list(dict.fromkeys(
+            str(value) for value in self.supporting_evidence_ids if value
+        ))
+        self.contradicting_evidence_ids = list(dict.fromkeys(
+            str(value) for value in self.contradicting_evidence_ids if value
+        ))
+        if not self.hypothesis_id:
+            identity = "|".join((
+                self.hypothesis_kind, self.statement, self.direction_implication,
+                ",".join(self.supporting_evidence_ids),
+                ",".join(self.contradicting_evidence_ids),
+            ))
+            self.hypothesis_id = sha256(identity.encode("utf-8")).hexdigest()[:20]
 
     @property
     def is_directional(self) -> bool:
@@ -167,6 +210,16 @@ class BrainHypothesis:
             "invalidation": self.invalidation,
             "opportunity_implication": self.opportunity_implication,
             "criticism": self.criticism,
+            "hypothesis_id": self.hypothesis_id,
+            "hypothesis_kind": self.hypothesis_kind,
+            "supporting_evidence_ids": list(self.supporting_evidence_ids),
+            "contradicting_evidence_ids": list(self.contradicting_evidence_ids),
+            "assumptions": list(self.assumptions),
+            "unresolved_unknowns": list(self.unresolved_unknowns),
+            "distinguishing_evidence": list(self.distinguishing_evidence),
+            "horizon": self.horizon,
+            "confidence_components": dict(self.confidence_components),
+            "confidence_semantics": self.confidence_semantics,
         }
 
 
@@ -187,6 +240,36 @@ _CONTINUATION_PATTERNS = frozenset({
     "order_flow_at_structure", "multi_tf_aligned", "fvg_liquidity_confluence",
     "order_flow_imbalance",
 })
+
+# Pattern-to-domain provenance. A rule may require more than one domain; all
+# contributing source IDs are retained rather than pretending the pattern itself
+# is an independent observation.
+_PATTERN_DOMAINS = {
+    "liquidity_sweep_absorbed": ("liquidity", "order_flow"),
+    "liquidity_sweep_with_momentum_exhaustion": ("liquidity", "momentum"),
+    "displacement_confirmed": ("structure", "volume"),
+    "momentum_divergence": ("momentum", "structure"),
+    "statistical_displacement": ("momentum",),
+    "multi_tf_aligned": ("multi_timeframe",),
+    "multi_tf_conflict": ("multi_timeframe",),
+    "volatility_compression": ("volatility",),
+    "volume_confirmed_breakout": ("volume", "volatility"),
+    "order_flow_at_structure": ("order_flow", "structure"),
+    "fvg_liquidity_confluence": ("structure", "liquidity"),
+    "structural_break": ("structure",),
+    "momentum_acceleration": ("momentum",),
+    "execution_degraded": ("execution_quality",),
+    "portfolio_concentrated": ("portfolio",),
+    "order_flow_imbalance": ("order_flow",),
+    "liquidity_sweep_reclaimed": ("liquidity", "structure"),
+    "failed_breakout": ("structure", "volume"),
+    "trend_following_context": ("structure", "multi_timeframe"),
+    "range_rotation": ("structure", "volatility"),
+    "volatility_expansion_breakout": ("structure", "volatility"),
+    "trend_exhaustion": ("momentum", "structure"),
+    "event_window_breakout": ("macro", "structure"),
+    "m1_price_action_at_boundary": ("structure",),
+}
 
 
 class BrainReasoner:
@@ -227,6 +310,32 @@ class BrainReasoner:
 
         detected = detect_patterns(fresh)
         names = [pattern_name(p) for p in detected]
+
+        evidence_index: list[dict] = []
+        domain_evidence_ids: dict[str, list[str]] = {}
+        for item in fresh:
+            evidence_id = str(getattr(item, "evidence_id", "") or "")
+            domain = str(getattr(getattr(item, "domain", None), "value", "other") or "other")
+            if not evidence_id:
+                continue
+            record = {
+                "evidence_id": evidence_id,
+                "domain": domain,
+                "source_module": str(getattr(item, "source_module", "") or ""),
+                "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
+                "confidence": _clamp01(getattr(item, "confidence", 0.0)),
+                "uncertainty": _clamp01(getattr(item, "uncertainty", 1.0), 1.0),
+            }
+            evidence_index.append(record)
+            domain_evidence_ids.setdefault(domain, []).append(evidence_id)
+        pattern_evidence_ids = {
+            name: list(dict.fromkeys(
+                evidence_id
+                for domain in _PATTERN_DOMAINS.get(name, ())
+                for evidence_id in domain_evidence_ids.get(domain, ())
+            ))
+            for name in names
+        }
 
         regime = self._classify_regime(fresh, names)
         observations = self._observations(fresh, detected, regime)
@@ -270,6 +379,12 @@ class BrainReasoner:
             evidence_uncertainty=ev_unc,
             strategy_lenses=strategy_lenses,
             market_context=market_context,
+            evidence_index=evidence_index,
+            pattern_evidence_ids=pattern_evidence_ids,
+            observed_facts=[dict(item) for item in evidence_index],
+            inferences=list(names) + list(contradictions),
+            assumptions=[],
+            unknowns=list(missing),
         )
 
     def _classify_regime(self, fresh: "list[Evidence]", names: "list[str]") -> dict:
@@ -345,21 +460,46 @@ class BrainReasoner:
         else:
             momentum = "unknown"
 
-        # Structural displacement sign (Brain forms direction from the raw sign).
-        disp = numeric(struct, "displacement")
-        if disp is not None and disp != 0.0:
-            structure_dir = LONG if disp > 0 else SHORT
+        # Preserve independent readings. Conflicting sources must not be
+        # collapsed by "first value wins" into a synthetic directional fact.
+        displacement_values = [
+            value for item in struct
+            if (value := _num(getattr(item, "measurements", {}).get("displacement"))) is not None
+            and value != 0.0
+        ]
+        displacement_signs = {1 if value > 0 else -1 for value in displacement_values}
+        disp = (
+            sum(displacement_values) / len(displacement_values)
+            if displacement_values else numeric(struct, "displacement")
+        )
+        if len(displacement_signs) > 1:
+            structure_dir = "conflicted"
+        elif displacement_signs:
+            structure_dir = LONG if next(iter(displacement_signs)) > 0 else SHORT
         elif has_flag(struct, "bos") or "structural_break" in names:
             structure_dir = "unknown"
         else:
             structure_dir = "none"
 
-        # Order-flow sign.
-        delta = numeric(flow, "delta")
-        if delta is None:
-            delta = numeric(flow, "imbalance")
-        if delta is not None and delta != 0.0:
-            order_flow = "buying" if delta > 0 else "selling"
+        # Order-flow sign. Each source contributes one signed reading; mixed
+        # signs remain conflicted instead of whichever item happened to arrive first.
+        flow_values: list[float] = []
+        for item in flow:
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict):
+                continue
+            value = _num(measurements.get("delta"))
+            if value is None:
+                value = _num(measurements.get("imbalance"))
+            if value is not None and value != 0.0:
+                flow_values.append(value)
+        flow_signs = {1 if value > 0 else -1 for value in flow_values}
+        if len(flow_signs) > 1:
+            order_flow = "conflicted"
+        elif flow_signs:
+            order_flow = "buying" if next(iter(flow_signs)) > 0 else "selling"
+        elif has_flag(flow, "buying") and has_flag(flow, "selling"):
+            order_flow = "conflicted"
         elif has_flag(flow, "buying") or obs_has(flow, "aggressive buying"):
             order_flow = "buying"
         elif has_flag(flow, "selling") or obs_has(flow, "aggressive selling"):
@@ -369,12 +509,12 @@ class BrainReasoner:
 
         # Liquidity sweep side — a sell-side sweep that is absorbed implies an
         # upward reversal (the Brain reads the reversal itself).
-        if state_is(liq, "sweep_side", "sell", "sell_side", "sellside") or obs_has(liq, "sell-side", "sell side"):
-            sweep_side = "sell"
-        elif state_is(liq, "sweep_side", "buy", "buy_side", "buyside") or obs_has(liq, "buy-side", "buy side"):
-            sweep_side = "buy"
-        else:
-            sweep_side = "none"
+        has_sell_sweep = state_is(liq, "sweep_side", "sell", "sell_side", "sellside") or obs_has(liq, "sell-side", "sell side")
+        has_buy_sweep = state_is(liq, "sweep_side", "buy", "buy_side", "buyside") or obs_has(liq, "buy-side", "buy side")
+        sweep_side = (
+            "conflicted" if has_sell_sweep and has_buy_sweep else
+            "sell" if has_sell_sweep else ("buy" if has_buy_sweep else "none")
+        )
 
         # The regime is a set of INDEPENDENT structured observations — a
         # displacement magnitude+direction, an order-flow reading, a sweep event,
@@ -387,7 +527,11 @@ class BrainReasoner:
             "momentum": momentum,
             "structure": structure_dir,
             "displacement": disp if disp is not None else 0.0,
+            "displacement_readings": list(displacement_values),
+            "displacement_conflicted": len(displacement_signs) > 1,
             "order_flow": order_flow,
+            "order_flow_readings": list(flow_values),
+            "order_flow_conflicted": len(flow_signs) > 1,
             "liquidity_sweep_side": sweep_side,
             # Statistical displacement remains a measurement. It is not collapsed
             # into a directional bias; the hypothesis generator below can form a
@@ -425,7 +569,31 @@ class BrainReasoner:
             out.append("displacement present but momentum decelerating")
         if "execution_degraded" in names:
             out.append("execution quality degraded relative to the thesis")
-        return out
+        structural_signs = {
+            1 if value > 0 else -1
+            for item in in_domain(fresh, EvidenceDomain.STRUCTURE)
+            if (value := _num(getattr(item, "measurements", {}).get("displacement"))) not in (None, 0.0)
+        }
+        flow_signs = set()
+        for item in in_domain(fresh, EvidenceDomain.ORDER_FLOW):
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict):
+                continue
+            value = _num(measurements.get("delta"))
+            if value is None:
+                value = _num(measurements.get("imbalance"))
+            if value not in (None, 0.0):
+                flow_signs.add(1 if value > 0 else -1)
+        if len(structural_signs) > 1:
+            out.append("independent structural sources disagree on displacement direction")
+        if len(flow_signs) > 1:
+            out.append("independent order-flow sources disagree on pressure direction")
+        if len(structural_signs) == 1 and len(flow_signs) == 1 and structural_signs != flow_signs:
+            out.append("structural displacement and order-flow pressure point in opposite directions")
+        m1 = regime.get("m1_price_action", {})
+        if m1.get("bullish_patterns") and m1.get("bearish_patterns"):
+            out.append("M1 price-action observations contain both bullish and bearish patterns")
+        return list(dict.fromkeys(out))
 
     @staticmethod
     def _missing(domain_coverage: dict) -> "list[str]":
@@ -895,14 +1063,63 @@ class BrainReasoner:
     def _make(
         self, *, statement: str, support: "list[str]", against: "list[str]",
         analysis: EvidenceAnalysis, direction: str, invalidation: str, opportunity: str,
+        hypothesis_kind: str = "market_state", horizon: str = "unspecified",
     ) -> BrainHypothesis:
         conf = self._hypothesis_confidence(support, against, analysis)
+        support_ids = list(dict.fromkeys(
+            evidence_id for name in support
+            for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+        ))
+        against_ids = list(dict.fromkeys(
+            evidence_id for name in against
+            for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+        ))
+        components = self._confidence_components(support, against, analysis)
         return BrainHypothesis(
             statement=statement[:300], supporting_patterns=list(support),
             contradicting_patterns=list(against), confidence=conf,
             direction_implication=direction, invalidation=invalidation,
             opportunity_implication=opportunity,
+            hypothesis_kind=hypothesis_kind,
+            supporting_evidence_ids=support_ids,
+            contradicting_evidence_ids=against_ids,
+            assumptions=list(analysis.assumptions),
+            unresolved_unknowns=list(analysis.unknowns or analysis.missing_information),
+            distinguishing_evidence=(
+                [f"support: {pattern_name(item)}" for item in support]
+                + [f"challenge: {pattern_name(item)}" for item in against]
+                + ([f"invalidation: {invalidation}"] if invalidation else [])
+            ),
+            horizon=horizon,
+            confidence_components=components,
         )
+
+    @staticmethod
+    def _confidence_components(
+        support: "list[str]", against: "list[str]", analysis: EvidenceAnalysis,
+    ) -> dict:
+        domain_values = list(analysis.domain_coverage.values())
+        mean_domain_quality = (
+            sum(_clamp01(value) for value in domain_values) / len(domain_values)
+            if domain_values else 0.0
+        )
+        support_ids = {
+            evidence_id for name in support
+            for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+        }
+        against_ids = {
+            evidence_id for name in against
+            for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+        }
+        return {
+            "mean_domain_quality": round(mean_domain_quality, 4),
+            "coverage_completeness": round(1.0 - _clamp01(analysis.coverage_gap), 4),
+            "evidence_agreement": round(_clamp01(analysis.agreement_score), 4),
+            "evidence_uncertainty": round(_clamp01(analysis.evidence_uncertainty, 1.0), 4),
+            "supporting_evidence_count": len(support_ids),
+            "contradicting_evidence_count": len(against_ids),
+            "calibrated_probability": False,
+        }
 
     @staticmethod
     def _hypothesis_confidence(
@@ -934,6 +1151,20 @@ class BrainReasoner:
             direction_implication=direction,
             invalidation="The primary thesis is confirmed by follow-through",
             opportunity_implication="counter-thesis / caution",
+            hypothesis_kind="counter_hypothesis",
+            supporting_evidence_ids=list(primary.contradicting_evidence_ids),
+            contradicting_evidence_ids=list(primary.supporting_evidence_ids),
+            assumptions=list(primary.assumptions),
+            unresolved_unknowns=list(primary.unresolved_unknowns),
+            distinguishing_evidence=[
+                "test the counter-thesis against fresh independent evidence",
+                f"primary invalidation: {primary.invalidation}" if primary.invalidation else "",
+            ],
+            confidence_components={
+                "counter_confidence": round(conf, 4),
+                "primary_hypothesis_id": primary.hypothesis_id,
+                "calibrated_probability": False,
+            },
         )
 
     @staticmethod
@@ -964,7 +1195,12 @@ class BrainReasoner:
         """Challenge each hypothesis and adjust confidence up/down (Article IV). Never raises."""
         try:
             names = [pattern_name(p) for p in analysis.detected_patterns]
-            counter = hypotheses[-1] if hypotheses else None
+            counters = [
+                item for item in hypotheses
+                if getattr(item, "hypothesis_kind", "") == "counter_hypothesis"
+                or "counter" in str(getattr(item, "opportunity_implication", "")).lower()
+            ]
+            counter = max(counters, key=lambda item: item.confidence) if counters else None
             refined: list[BrainHypothesis] = []
             for i, h in enumerate(hypotheses):
                 notes: list[str] = []
@@ -981,14 +1217,31 @@ class BrainReasoner:
                     if absent:
                         factor *= 0.85
                         notes.append(f"relies on absent evidence: {', '.join(absent)}")
+                    if not h.supporting_evidence_ids:
+                        factor *= 0.75
+                        notes.append("no directly attributable supporting evidence IDs")
+                    regime = analysis.regime_indicators
+                    if regime.get("structure") == "conflicted" or regime.get("order_flow") == "conflicted":
+                        factor *= 0.75
+                        notes.append("independent sources conflict on structure or order flow")
+                    structure = str(regime.get("structure", "")).upper()
+                    flow = str(regime.get("order_flow", "")).lower()
+                    opposite = self._opposite(h.direction_implication)
+                    if structure == opposite and flow == ("selling" if opposite == SHORT else "buying"):
+                        factor *= 0.7
+                        notes.append("both structure and order flow oppose this hypothesis")
                 # 3) The counter-hypothesis is actually stronger.
                 if counter is not None and h is not counter and counter.confidence > h.confidence:
                     factor *= 0.85
                     notes.append("counter-hypothesis is stronger")
                 # 4) Survives criticism ⇒ a modest reinforcement.
-                if not notes and h.is_directional and analysis.agreement_score >= 0.7:
-                    factor *= 1.08
-                    notes.append("survived criticism: no active contradictions, coverage adequate")
+                if (
+                    not notes and h.is_directional
+                    and analysis.agreement_score >= 0.7
+                    and h.supporting_evidence_ids
+                ):
+                    factor *= 1.04
+                    notes.append("survived criticism: attributable support and no active challenge")
                 h.confidence = _clamp01(h.confidence * factor)
                 h.criticism = "; ".join(notes) if notes else "no material criticism"
                 refined.append(h)
@@ -1023,9 +1276,16 @@ class BrainReasoner:
         else the highest-confidence hypothesis overall."""
         if not hypotheses:
             return None
-        directional = [h for h in hypotheses if h.is_directional]
-        pool = directional or list(hypotheses)
-        return max(pool, key=lambda h: h.confidence)
+        # Compare all explanations, including no-trade and unresolved market-state
+        # hypotheses. Directional candidates receive no automatic priority.
+        return max(
+            hypotheses,
+            key=lambda h: (
+                h.confidence,
+                not h.is_directional,
+                h.hypothesis_kind == "no_trade",
+            ),
+        )
 
     # ── Component 6 — book-wide opportunity comparison ────────────────────
 
