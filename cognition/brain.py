@@ -770,12 +770,45 @@ class CognitiveBrain:
         # Build the first-class opportunity set before qualifying payoff
         # geometry, so the selected object receives the market-derived levels.
         opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        # Resolve geometry independently for every directional candidate. A
+        # preferred opportunity cannot borrow another candidate's stop/target,
+        # and conditional alternatives retain their own market evidence lineage.
+        opportunity_geometries = {}
+        for candidate in opportunity_set:
+            if not candidate.is_directional:
+                continue
+            candidate_geometry = derive_opportunity_geometry(
+                market_state, candidate.direction, now=now,
+            )
+            if candidate_geometry is None:
+                continue
+            opportunity_geometries[candidate.opportunity_id] = candidate_geometry
+            candidate.entry_price = candidate_geometry.entry_price
+            candidate.stop_price = candidate_geometry.stop_price
+            candidate.target_price = candidate_geometry.target_price
+            candidate.risk_distance = candidate_geometry.risk_distance
+            candidate.reward_distance = candidate_geometry.reward_distance
+            candidate.reward_r = candidate_geometry.reward_r
+            candidate.geometry_evidence_ids = list(candidate_geometry.evidence_ids)
+            candidate.target_logic = (
+                f"Market-derived target {candidate_geometry.target_price:.10g}; "
+                f"entry {candidate_geometry.entry_price:.10g}; "
+                f"stop {candidate_geometry.stop_price:.10g}; "
+                f"payoff geometry {candidate_geometry.reward_r:.4f}R"
+            )
+            candidate.invalidation_conditions = list(dict.fromkeys(
+                list(candidate.invalidation_conditions)
+                + [candidate_geometry.invalidation_reason]
+            ))
         driving_opp = self._select_driving_opportunity(
             opportunity_set, preferred_opp_id, direction,
         )
         geometry = (
-            derive_opportunity_geometry(market_state, direction, now=now)
-            if direction in (LONG, SHORT) else None
+            opportunity_geometries.get(driving_opp.opportunity_id)
+            if driving_opp is not None else (
+                derive_opportunity_geometry(market_state, direction, now=now)
+                if direction in (LONG, SHORT) else None
+            )
         )
         geometry_qualified = direction not in (LONG, SHORT) or geometry is not None
         # For a directional view, advisor-reported excursions cannot stand in for
