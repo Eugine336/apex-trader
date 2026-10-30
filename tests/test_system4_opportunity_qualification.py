@@ -215,3 +215,28 @@ def test_calibration_side_metadata_is_confined_to_historical_analogue_domain():
     historical = _calibration()
     state.add(historical)
     assert historical.measurements["calibration_side"] == "LONG"
+
+
+
+def test_execution_cost_from_another_symbol_cannot_qualify_candidate():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(Evidence(
+        source_module="execution.other_symbol_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol="OTHER",
+        observation="verified quote for a different instrument",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "cost_verified": True,
+            "estimated_total_cost_r": 0.01,
+            "cost_source": "other-symbol quote",
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=60,
+    ))
+    verified, _, source = CognitiveBrain(
+        reasoner=None,
+    )._execution_cost_estimate(state)
+    assert verified is False
+    assert "not verified" in source
