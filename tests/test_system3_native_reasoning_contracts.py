@@ -171,6 +171,45 @@ def test_relevant_strategy_lenses_become_evidence_linked_non_directional_candida
     )
 
 
+def test_each_leading_directional_hypothesis_gets_its_own_counter():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_evidence(
+        "structure", {"displacement": 2.0, "bos": True, "timeframe": "M15"},
+        source="structure",
+    ))
+    state.add(_evidence(
+        "volume", {"volume_z": 2.0, "expansion": True},
+        source="volume",
+    ))
+    state.add(_evidence(
+        "order_flow", {"delta": 1.0},
+        source="order_flow",
+    ))
+    state.add(_evidence(
+        "momentum", {"momentum_state": "decelerating", "divergence": True},
+        source="momentum",
+    ))
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+    directional = sorted(
+        (item for item in hypotheses if item.is_directional
+         and item.hypothesis_kind != "counter_hypothesis"),
+        key=lambda item: item.confidence,
+        reverse=True,
+    )[:3]
+    counters = [
+        item for item in hypotheses
+        if item.hypothesis_kind == "counter_hypothesis"
+    ]
+    challenged_ids = {
+        item.confidence_components.get("primary_hypothesis_id")
+        for item in counters
+    }
+    assert directional
+    assert {item.hypothesis_id for item in directional}.issubset(challenged_ids)
+
+
 def test_unknown_measurements_and_volatility_create_non_directional_hypotheses():
     state = MarketState(symbol="SYNTHETIC")
     unfamiliar = _evidence(
