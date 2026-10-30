@@ -2,8 +2,8 @@
 
 These tests verify provenance capture only; they do not claim predictive ability.
 """
-from types import SimpleNamespace
 import time
+from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
 from cognition.contracts import CampaignSpecification, Evidence, EvidenceDomain, MarketState
