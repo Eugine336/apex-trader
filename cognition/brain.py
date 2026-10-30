@@ -2386,10 +2386,12 @@ class CognitiveBrain:
                 probability = self._cost_value(m.get("win_probability"))
                 sample_count = self._cost_value(m.get("sample_count"))
                 brier_score = self._cost_value(m.get("brier_score"))
+                reliability_gap = self._cost_value(m.get("reliability_gap"))
                 if (
                     probability is None or probability > 1.0
-                    or sample_count is None or sample_count < 1
+                    or sample_count is None or sample_count < 30
                     or brier_score is None or brier_score > 1.0
+                    or reliability_gap is None or reliability_gap > 0.25
                 ):
                     continue
                 stamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
