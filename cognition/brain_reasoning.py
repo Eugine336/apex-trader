@@ -610,6 +610,8 @@ class BrainReasoner:
 
     @staticmethod
     def _contradictions(fresh: "list[Evidence]", names: "list[str]", regime: dict) -> "list[str]":
+        from cognition.pattern_rules import in_domain
+
         out: list[str] = []
         if "multi_tf_conflict" in names:
             out.append("higher and lower timeframe structural readings disagree")
@@ -973,6 +975,11 @@ class BrainReasoner:
                 if analysis.domain_coverage else 0.0
             )
             coverage_completeness = min(1.0, len(analysis.domain_coverage) / 6.0)
+            coverage_gap = (
+                _clamp01(analysis.coverage_gap)
+                if analysis.coverage_gap != 1.0 or not analysis.domain_coverage
+                else 1.0 - coverage_completeness
+            )
             agreement = _clamp01(analysis.agreement_score)
             uncertainty = _clamp01(analysis.evidence_uncertainty, 1.0)
             evidence_quality = (
@@ -1098,7 +1105,7 @@ class BrainReasoner:
                     ),
                     "direction": FLAT,
                     "confidence": (
-                        _clamp01(analysis.coverage_gap)
+                        coverage_gap
                         + uncertainty
                         + (1.0 - agreement)
                     ) / 3.0,
@@ -1337,7 +1344,7 @@ class BrainReasoner:
                     if absent:
                         factor *= 0.85
                         notes.append(f"relies on absent evidence: {', '.join(absent)}")
-                    if not h.supporting_evidence_ids:
+                    if analysis.evidence_index and not h.supporting_evidence_ids:
                         factor *= 0.75
                         notes.append("no directly attributable supporting evidence IDs")
                     regime = analysis.regime_indicators
