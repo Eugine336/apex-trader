@@ -1020,9 +1020,9 @@ class BrainReasoner:
                         "or exhaust into a snapback, while compression can precede expansion "
                         "in either direction. The next structural acceptance remains unresolved."
                     ),
-                    confidence=min(0.5, _clamp01(
-                        sum(analysis.domain_coverage.get("volatility", 0.0) for _ in [0])
-                    )),
+                    confidence=min(
+                        0.5, _clamp01(analysis.domain_coverage.get("volatility", 0.0)),
+                    ),
                     direction_implication=FLAT,
                     invalidation="Completed-bar structural acceptance resolves the direction of the volatility transition",
                     opportunity_implication="volatility-regime hypothesis; monitor both continuation and rejection without assigning direction",
