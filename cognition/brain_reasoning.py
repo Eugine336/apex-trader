@@ -1539,6 +1539,18 @@ class BrainReasoner:
                     notes.append(f"contradicted by detected pattern(s): {', '.join(sorted(set(active_contra)))}")
                 # 2) Missing information critical to a directional hypothesis.
                 if h.is_directional:
+                    # Any independently recorded contradiction challenges the
+                    # thesis, including a single structural reading opposed by
+                    # order flow (neither domain needs to be internally conflicted).
+                    if analysis.contradictions:
+                        contradiction_factor = max(
+                            0.65, 1.0 - 0.05 * len(analysis.contradictions),
+                        )
+                        factor *= contradiction_factor
+                        notes.append(
+                            "challenged by independent contradiction(s): "
+                            + "; ".join(analysis.contradictions[:3])
+                        )
                     needs = self._required_domains(h)
                     absent = [d for d in needs if d not in analysis.domain_coverage]
                     if absent:
