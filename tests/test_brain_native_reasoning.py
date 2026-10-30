@@ -510,6 +510,9 @@ def test_native_fallback_stands_down_without_execution_cost_evidence():
     assert out.campaign is None
     assert out.provider_status == "not_configured"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
+    assert out.decision.questions_answered["native_hypothesis_records"]
+    assert "observed_facts" in out.decision.questions_answered["native_epistemic_record"]
+    assert out.decision.questions_answered["native_informative_domains"]
 
 
 def test_brain_originates_independently_when_advisor_unavailable():
