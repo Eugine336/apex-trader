@@ -89,6 +89,23 @@ class RecordingFakeBroker:
         })
         return self.close_return
 
+    def get_symbol_spec(self, symbol: str) -> dict[str, Any]:
+        """Verified synthetic constraints for unit tests only; never live broker data."""
+        return {
+            "symbol": symbol,
+            "source": "test_support.recording_broker",
+            "source_verified": True,
+            "specification_verified": True,
+            "trade_mode": 4,
+            "volume_min": 0.01,
+            "volume_max": 100.0,
+            "volume_step": 0.01,
+            "point": 0.00001,
+            "trade_stops_level": 0,
+            "trade_tick_value": 1.0,
+            "trade_tick_size": 0.00001,
+        }
+
     def execute_entry(
         self,
         symbol: str,

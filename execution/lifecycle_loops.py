@@ -43,6 +43,7 @@ class FlushLoop:
         evaluator: Optional[PositionEvaluator] = None,
         on_close_callback: Optional[Any] = None,
         on_manage_callback: Optional[Any] = None,
+        on_open_callback: Optional[Any] = None,
         interval: float = 0.1,
     ) -> None:
         self._aggregator = aggregator
@@ -51,6 +52,7 @@ class FlushLoop:
         self._evaluator = evaluator
         self._on_close = on_close_callback
         self._on_manage = on_manage_callback
+        self._on_open = on_open_callback
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -107,6 +109,12 @@ class FlushLoop:
                                         self._on_close(intent, r)
                                     except Exception as exc:
                                         logger.debug("[flush-loop] close callback error: {}", exc)
+                            elif intent is not None and intent.intent_type == IntentType.OPEN:
+                                if self._on_open is not None:
+                                    try:
+                                        self._on_open(intent, r)
+                                    except Exception as exc:
+                                        logger.warning("[flush-loop] open callback error: {}", exc)
                             elif intent is not None:
                                 # SL/TP modify or partial close — commit the
                                 # optimistic management state (callback) and

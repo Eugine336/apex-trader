@@ -291,6 +291,58 @@ class ActionExecutor:
         return None
 
     @staticmethod
+    def _decision_feature_snapshot_error(intent: Intent) -> Optional[str]:
+        """Require a complete point-in-time evidence ledger for every new OPEN."""
+        snapshot = getattr(intent, "decision_feature_snapshot", None)
+        if not isinstance(snapshot, dict):
+            return "decision_feature_snapshot_missing"
+        if (
+            snapshot.get("schema") != "apex.decision_feature_snapshot.v1"
+            or snapshot.get("captured_at_decision") is not True
+            or snapshot.get("snapshot_complete") is not True
+        ):
+            return "decision_feature_snapshot_incomplete"
+        decision_id = str(getattr(intent, "decision_id", "") or "")
+        if (
+            not decision_id
+            or str(snapshot.get("decision_id") or "") != decision_id
+            or not str(snapshot.get("snapshot_id") or "")
+            or str(snapshot.get("symbol") or "").strip().upper()
+               != str(getattr(intent, "symbol", "") or "").strip().upper()
+        ):
+            return "decision_feature_snapshot_decision_or_symbol_mismatch"
+        ids = snapshot.get("evidence_ids")
+        features = snapshot.get("features")
+        if not isinstance(ids, list) or not ids or not isinstance(features, list) or not features:
+            return "decision_feature_snapshot_has_no_features"
+        if not set(str(value) for value in ids if str(value)) <= {
+            str(row.get("evidence_id") or "") for row in features if isinstance(row, dict)
+        }:
+            return "decision_feature_snapshot_evidence_lineage_mismatch"
+        try:
+            decision_epoch = float(snapshot.get("decision_timestamp_epoch"))
+            now_epoch = time.time()
+            if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+                return "decision_feature_snapshot_timestamp_invalid"
+            if decision_epoch > now_epoch + 30.0 or now_epoch - decision_epoch > 900.0:
+                return "decision_feature_snapshot_stale_or_future"
+            if int(snapshot.get("evidence_count", -1)) != len(features):
+                return "decision_feature_snapshot_evidence_count_mismatch"
+            for row in features:
+                if not isinstance(row, dict):
+                    return "decision_feature_snapshot_feature_invalid"
+                source_epoch = float(row.get("source_timestamp_epoch"))
+                if (
+                    not math.isfinite(source_epoch)
+                    or source_epoch <= 0.0
+                    or source_epoch > decision_epoch
+                ):
+                    return "decision_feature_snapshot_contains_future_or_invalid_feature"
+        except (TypeError, ValueError, OverflowError):
+            return "decision_feature_snapshot_timestamp_invalid"
+        return None
+
+    @staticmethod
     def _is_risk_reducing_without_provenance(
         intent: Intent,
         open_positions: dict[str, dict],
@@ -358,6 +410,94 @@ class ActionExecutor:
             )
         op = "close" if intent.intent_type == IntentType.CLOSE else "modify"
         return self._manage_breaker(f"{symbol}:{op}" if symbol else op)
+
+    def _broker_entry_constraints_error(self, intent: Intent) -> str | None:
+        """Fail closed unless the broker exposes a verified, usable MT5-style spec.
+
+        This last-mile check complements (does not replace) connector validation.
+        Contract types without a verified lot/stop/trade-mode specification are
+        intentionally rejected here until they have an equivalent adapter-specific
+        constraint validator; market context alone is never execution authority.
+        """
+        spec_fn = getattr(self._broker, "get_symbol_spec", None)
+        if not callable(spec_fn):
+            return "broker_spec_unavailable: shared executor requires verified broker constraints"
+        try:
+            spec = spec_fn(intent.symbol)
+        except Exception as exc:
+            return f"broker_spec_unavailable: specification lookup failed ({type(exc).__name__})"
+        if not isinstance(spec, dict) or not spec:
+            return "broker_spec_unavailable: no live symbol specification"
+        if spec.get("source_verified") is not True or spec.get("specification_verified") is not True:
+            return "broker_spec_unverified: source/specification provenance is not verified"
+
+        def number(key: str) -> float | None:
+            value = spec.get(key)
+            if isinstance(value, bool):
+                return None
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return parsed if math.isfinite(parsed) else None
+
+        trade_mode = spec.get("trade_mode")
+        if isinstance(trade_mode, str):
+            if trade_mode.strip().upper() not in {"FULL", "FULL_ACCESS", "TRADE_MODE_FULL"}:
+                return f"broker_trade_mode_rejects_entry: {trade_mode!r}"
+        elif number("trade_mode") != 4:
+            # MT5 SYMBOL_TRADE_MODE_FULL is enum value 4. Other modes are
+            # disabled, long-only, short-only, or close-only.
+            return "broker_trade_mode_rejects_entry: full trading is not verified"
+
+        minimum = number("volume_min")
+        maximum = number("volume_max")
+        step = number("volume_step")
+        try:
+            raw_lots = getattr(intent, "lots", None)
+            lots = float(raw_lots) if raw_lots is not None else None
+        except (TypeError, ValueError, OverflowError):
+            lots = None
+        if (
+            minimum is None or maximum is None or step is None
+            or minimum <= 0.0 or maximum < minimum or step <= 0.0
+        ):
+            return "broker_volume_constraints_missing: min/max/step must be verified"
+        if lots is None or not math.isfinite(lots) or lots < minimum - 1e-9 or lots > maximum + 1e-9:
+            return "broker_volume_constraints_reject_entry: requested lots outside min/max"
+        steps = (lots - minimum) / step
+        if abs(steps - round(steps)) > 1e-6:
+            return "broker_volume_constraints_reject_entry: requested lots violate volume step"
+
+        point = number("point")
+        stops_level = number("trade_stops_level")
+        if point is None or point <= 0.0 or stops_level is None or stops_level < 0.0:
+            return "broker_stop_constraints_missing: point/stops level must be verified"
+        try:
+            entry = float(getattr(intent, "entry_price", 0.0) or 0.0)
+            stop = float(getattr(intent, "new_sl", 0.0) or 0.0)
+            target = float(getattr(intent, "new_tp", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return "broker_stop_constraints_reject_entry: malformed entry/stop/target"
+        if not all(math.isfinite(value) and value > 0.0 for value in (entry, stop, target)):
+            return "broker_stop_constraints_reject_entry: positive entry/stop/target required"
+        direction = str(getattr(intent, "direction", "") or "").upper()
+        if direction in {"LONG", "BUY"}:
+            if not stop < entry < target:
+                return "broker_stop_constraints_reject_entry: invalid LONG geometry"
+        elif direction in {"SHORT", "SELL"}:
+            if not target < entry < stop:
+                return "broker_stop_constraints_reject_entry: invalid SHORT geometry"
+        else:
+            return "broker_stop_constraints_reject_entry: invalid direction"
+        minimum_distance = point * stops_level
+        if direction in {"LONG", "BUY"}:
+            if entry - stop < minimum_distance or target - entry < minimum_distance:
+                return "broker_stop_constraints_reject_entry: stop/target inside broker minimum distance"
+        else:
+            if stop - entry < minimum_distance or entry - target < minimum_distance:
+                return "broker_stop_constraints_reject_entry: stop/target inside broker minimum distance"
+        return None
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -433,6 +573,29 @@ class ActionExecutor:
                 return ExecutionResult(
                     intent=intent, success=False, rejected_by_gate=True,
                     gate_reason=reason, error=reason,
+                )
+            snapshot_error = self._decision_feature_snapshot_error(intent)
+            if snapshot_error:
+                reason = (
+                    "brain_decision_feature_snapshot_required: refusing OPEN without "
+                    f"a complete point-in-time evidence snapshot ({snapshot_error})"
+                )
+                self._inc("intents_rejected")
+                logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=reason, error=reason,
+                )
+            broker_constraints_error = self._broker_entry_constraints_error(intent)
+            if broker_constraints_error:
+                self._inc("intents_rejected")
+                logger.warning(
+                    "EXECUTOR REJECTED | OPEN {} | {}",
+                    intent.symbol, broker_constraints_error,
+                )
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=broker_constraints_error, error=broker_constraints_error,
                 )
 
         # Provenance is required on modifications and closes as well as new

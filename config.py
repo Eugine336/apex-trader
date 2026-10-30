@@ -5,6 +5,7 @@ risk parameters, and the complete instrument registry covering Forex,
 commodities, indices, and Deriv synthetics.
 """
 
+import json
 import math
 import os
 from dataclasses import dataclass, field
@@ -3839,9 +3840,16 @@ class CognitionConfig:
     opportunity_cost_multiple: float = 2.0
     opportunity_min_net_ev: float = 0.0
     # Round-trip commission per 1.0 lot in account currency, used by the net-EV
-    # gate. 0.0 ⇒ self-calibrate from realised closed-deal commissions (falls
-    # back to spread+slippage only until enough closes are observed).
+    # gate. A positive value is an explicit configured cost. A zero value is
+    # UNKNOWN unless commission_model_verified explicitly attests that the broker
+    # charges zero; unknown commission must not be silently treated as free.
     commission_per_lot_round_trip: float = 0.0
+    commission_model_verified: bool = False
+    # Per-symbol round-trip financing estimate per 1.0 lot in account currency,
+    # for the operator-declared expected holding horizon. Missing entries are
+    # UNKNOWN; a global zero must never imply every instrument is financing-free.
+    financing_per_lot_round_trip: dict[str, float] = field(default_factory=dict)
+    financing_model_verified: bool = False
     # Phase G — Brain-originated entries from its CampaignSpecification.
     # "off"    — never originate (management/observation only).
     # "shadow" — record intended orders, submit nothing.
@@ -3961,6 +3969,29 @@ class CognitionConfig:
             "COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED",
             self.opportunity_qualification_enabled,
         )
+        self.commission_model_verified = _llm_env_bool(
+            "COGNITION_COMMISSION_MODEL_VERIFIED",
+            self.commission_model_verified,
+        )
+        self.financing_model_verified = _llm_env_bool(
+            "COGNITION_FINANCING_MODEL_VERIFIED",
+            self.financing_model_verified,
+        )
+        raw_financing = os.getenv("COGNITION_FINANCING_PER_LOT_ROUND_TRIP_JSON")
+        if raw_financing is not None:
+            try:
+                parsed_financing = json.loads(raw_financing)
+                if not isinstance(parsed_financing, dict):
+                    raise ValueError("expected JSON object keyed by broker symbol")
+                financing = {}
+                for key, value in parsed_financing.items():
+                    amount = float(value)
+                    if not math.isfinite(amount) or amount < 0.0:
+                        raise ValueError(f"invalid financing estimate for {key}")
+                    financing[str(key).strip().upper()] = amount
+                self.financing_per_lot_round_trip = financing
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning("[config] invalid COGNITION_FINANCING_PER_LOT_ROUND_TRIP_JSON: {}", exc)
         for env_name, attr in (
             ("COGNITION_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle"),
             ("COGNITION_MIN_ADVISORS_FOR_ACTION", "min_advisors_for_action"),

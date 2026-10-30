@@ -8,6 +8,36 @@
 
 The identity is canonical in source and documentation in this branch. The shared cognition snapshot now includes universal completed-bar OHLC observations and contextual M1 patterns when data is available. The latest completed focused workflow on the previous head passed on Python 3.11 and 3.12 (264 tests per version, compilation and scoped Ruff lint; 3 warnings). New route-level static guards and configuration changes have landed since that run and are awaiting a fresh focused run. A repository-wide Ruff run is green; the full suite now completes collection but still has numerous failures in legacy-contract, environment/dependency, and test-fixture areas. That does **not** mean the full identity is implemented. Existing code already has strong pieces (one CognitiveBrain, evidence consolidation, event-driven nudges, MTF chart/tick snapshots, competing native hypotheses, campaign memory, portfolio context and risk/execution gates), but these pieces do not yet prove a complete market-aware trader.
 
+## Current work item — native verdict survives advisor failure (2026-10-29)
+
+The current implementation change makes advisor configuration/health remain
+infrastructure metadata while the already-completed native reasoning supplies
+the market verdict. When no advisor is configured, a provider is unavailable,
+or a healthy advisor returns no opinion this cycle, native qualification still
+runs. If native qualification fails, the Brain returns `CONTINUE_OBSERVING`
+with separate `reasoning_mode`, `external_advisor_status`, and native diagnostics
+rather than replacing that verdict with `REASONER_UNAVAILABLE`. A qualified
+native campaign remains eligible through the existing qualification and risk path.
+Regression assertions cover native-before-availability call order, a qualified
+native campaign when a healthy advisor returns no opinion, native-only operation
+without a configured advisor, provider outage, and constitutional conformance. **These
+changes have not yet been executed in a test environment; status is implemented
+in the branch, integration/test status unverified until the focused suites and
+identity audit run.** This change does not close the separate native hypothesis
+breadth, runtime route, all-instrument evidence, or demo-execution gaps below.
+
+## Current work item — System 2 market context and epistemic integrity (2026-10-29)
+
+Implementation added on branch `redesign/system2-market-intelligence-context`:
+- `cognition/market_context.py` summarizes only supplied evidence for instrument contract/economic specifications, session calendars, execution constraints, synchronized cross-market relationships, historical validation metadata, unfamiliar measurements and missing information.
+- `BrainReasoner.analyze_evidence()` includes this context in `EvidenceAnalysis.market_context`, which is serialized for the native reasoning record and advisor context.
+- Correlation/lead-lag evidence is explicitly labeled observed association; causation remains unestablished.
+- Historical validation metadata requires out-of-sample evaluation, walk-forward evaluation, untouched holdout, leakage checks, selection-bias checks and overfitting checks before being labeled `validated_controls_reported`. Even then, the module does not claim predictive ability is demonstrated; independent audit remains required.
+- Unfamiliar measurement keys are preserved as unclassified observations rather than being silently discarded or treated as validated patterns.
+- Missing instrument/session/execution/historical context is explicitly listed. This code does not infer missing contract specifications, sessions or predictive skill.
+
+**Validation status: unverified.** Focused tests were added in `tests/test_market_context_intelligence.py` but have not been executed in this environment. This is an initial System 2 implementation slice, not proof that broker adapters supply verified instrument specifications, session calendars, synchronized cross-asset data, or leakage-resistant historical outcomes. The new module is not yet wired to a proven source of authoritative contract metadata. No live orders were sent; `.env`, runtime database state and broker settings were not changed. Do not mark System 2 complete until source wiring, focused tests, identity audit, and route-level impact review are completed.
+
 ## Findings from actual source inspection
 
 **Freshness correction (PR #753; focused validation passed):** `Evidence.is_fresh()` rejects evidence whose source timestamp is later than the comparison time, including evidence with an otherwise non-expiring horizon. This closes a negative-age fail-open; it does not establish that each broker adapter normalizes timestamps correctly. The focused cognition workflow passed on Python 3.11 and 3.12 with compilation and scoped Ruff checks, and the regression test passed in the full Python 3.11 run. The full-suite run still reports 180 failed / 3,717 passed / 12 skipped on Python 3.11; the Python 3.12 matrix job was cancelled after that failure. The preceding main baseline reported 180 failed / 3,716 passed / 12 skipped. This is a narrowly scoped fail-closed correction, not a green full suite or runtime completion.
@@ -19,7 +49,7 @@ The identity is canonical in source and documentation in this branch. The shared
 | Structural analysis | brain/decision_core.py: structure, FVG, order blocks, liquidity, volume, inducement, Wyckoff and trend/MR/regime concepts | Coverage/wiring differs by timeframe and module; a computed module may still be stored rather than influential | Runtime trace of every source into MarketState and attributable use in Brain decisions |
 | Trading-method breadth | cognition/pattern_rules.py, gold_desk/strategies.py, legacy trigger/entry_patterns.py, and advisor prompt | Native BrainReasoner.generate_hypotheses currently has a short set of explicit hypothesis branches. The legacy M1 detector is not confirmed as a live entry route; a method catalog is not the same as executable strategy competence | Shared all-symbol observation path, live route audit, structured specialist findings, scenario/backtest matrix per family |
 | Native inference | cognition/brain_reasoning.py: evidence coverage, regime indicators, 16 deterministic patterns, hypotheses, counter-hypotheses, criticism | No external advisor outage still leaves a constrained/limited hypothesis generator; it cannot credibly be called exhaustive trading knowledge | Broad native hypothesis generation evaluated on adversarial market scenarios without any provider |
-| Advisor integration | llm/reasoner.py opportunity-harvesting prompt; cognition keeps advisors subordinate to Brain | A single provider outage can still remove advisor-assisted breadth; verify native fallback qualifies and routes actual campaigns under deployed config | Fault-injection tests for timeout/503/malformed outputs plus demo end-to-end trace |
+| Advisor integration | Native reasoning runs before provider availability handling in cognition/brain.py; provider status and native verdict are serialized separately; native fallback can originate a campaign when qualification passes | This branch separates provider outage from the native observe verdict and updates outage regression tests, but tests have not run. Native hypothesis breadth remains constrained; deployed runtime routing and end-to-end qualification remain unverified | Run native reasoning/provider-resilience/constitutional suites and identity audit; fault-inject timeout/503/malformed outputs; verify a qualified native campaign reaches shared admission/risk/execution in demo mode |
 | Entry decision authority | cognition/loop.py → Brain → _maybe_originate → wired intent sink; docs say legacy pipeline is suppressed under COGNITION_SINGLE_PATH | Need prove effective runtime config, all direct/pending order paths and current environment match the documented single-path state | Static audit, call-site trace, runtime route assertions, pending-order reconciliation and demo tests |
 | M1 price action | cognition.price_action_patterns adds engulfing, pin-bar/rejection wick, inside-bar breakout, range reclaim and broker-volume-at-boundary observations to the shared snapshot for supported instruments. They remain neutral, provisional observations—not order authority | Must test broker bar conventions, source-time freshness and multi-timeframe context; the local range-boundary proxy is not equivalent to institutionally defined zones | Unit tests, adapter provenance and freshness tests, multi-timeframe confluence, ablation/backtest |
 | Execution / risk | Brain-originated entries use the shared aggregator/RiskGate/executor and fail-closed net-cost check. Management-only scale-in and reverse-open intents are suppressed pending first-class active opportunities and whole-book review; the legacy atomic reversal manager is disabled in runtime wiring. A legacy news-order staging route is being blocked independently. | ORG_REDESIGN_PLAN.md reports duplicated/incompletely wired risk controls; the full set of direct/pending order call sites, scale/reverse/re-entry/recovery paths and complete live risk-engine path still need fresh call-graph verification. The optional ChatGPT→Binance relay is a separate external-signal entry route; its LIVE mode is now blocked until it can submit a CognitiveBrain-authored opportunity through shared admission. | Focused route guards, runtime bypass tests, complete route audit, green full CI, broker-truth reconciliation and a demo cycle with observable reject reasons |
@@ -256,3 +286,64 @@ Remaining identity-critical verification:
 - validate outcome lineage and cost-aware walk-forward learning with an untouched holdout.
 
 PR #758 remains draft/unmerged. No live orders have been sent, and `.env` was not accessed or modified.
+
+
+## System 2 implementation refresh — 2026-10-29
+
+PR #790 remains draft and unmerged. The branch now:
+- marks MT5 instrument specifications verified only after a successful live `symbol_info` response;
+- exposes Deriv multiplier limits only when broker-discovered, tracks the source observation epoch, and marks cached limits unverified after 15 minutes;
+- keeps Deriv multiplier constraints separate from full tick-value/contract-size economics;
+- requires explicit synchronization evidence rather than treating timestamp presence as synchronized cross-timeframe data;
+- rejects malformed historical rows, sample IDs reused across train/validation/test, and earlier outcome horizons that overlap the next split's decision window.
+
+Still incomplete / unverified:
+- authoritative instrument-specific session calendars, timezone/DST and holiday sources are not wired into cognition;
+- synchronized cross-asset observations are not produced by a verified live data source;
+- real historical outcomes are not yet supplied as point-in-time validation rows, and transaction-cost-aware walk-forward performance is not independently established;
+- broker constraints are represented as evidence but have not been proven enforced consistently across the shared qualification and execution path;
+- focused tests and `scripts/identity_audit.py` have not been executed on this branch. A local clone attempt could not resolve GitHub in the current execution environment; no test result is claimed.
+
+System 2 is **in progress, not merge-ready**. Missing data remains unknown; no prediction or profitability claim is made. No broker orders were sent. `.env`, runtime databases and broker settings were not accessed or modified during this work.
+
+- The generic `SessionEngine` status is now surfaced into cognition as an explicitly unverified observation. It does not satisfy the requirement for an authoritative instrument-specific calendar, timezone and holiday source.
+
+
+## System 2 continuation — additional live evidence paths
+
+- Added measured cross-asset return associations for instruments registered by the existing correlation engine. It fetches closed H1 broker candles, requires timezone-aware timestamps, joins exact shared UTC candle times, excludes the forming primary bar, rejects duplicate/naive timestamps and requires at least 20 paired returns. Returns spanning missing H1 bars are excluded. The result is association-only and never asserts causation. Unsupported legs remain absent.
+- Added a bounded per-symbol in-process ledger of actual close outcomes and surfaced it as descriptive historical evidence. It is deliberately marked unvalidated because the current close record does not carry per-feature point-in-time timestamps; it cannot be used as proof of a predictive edge.
+- Hardened round-trip cost estimation to return unknown/zero when broker spread is missing, invalid or zero. The mandatory net-EV gate then rejects the opportunity instead of treating missing spread as a free market.
+- Added tests for synchronized cross-asset evidence, naive/misaligned timestamps, descriptive outcome evidence, and fail-closed cost estimation. These tests remain unexecuted in this environment.
+
+- Commission is now treated as unknown when the configured round-trip amount is zero and no positive realized-deal estimate exists, unless `COGNITION_COMMISSION_MODEL_VERIFIED=true` explicitly attests the zero-commission model. This setting was added to `CognitionConfig` and `.env.example`; the real `.env` was not read or changed. The net-EV gate fails closed when commission is unknown.
+
+- Cross-asset calculations are cached in-process for 60 seconds per symbol to avoid repeatedly fetching related H1 bars on every cognition cycle. Cached evidence retains its source timestamp and normal freshness horizon.
+
+### Follow-up — broker-reported weekly trading windows (2026-10-29)
+
+- `MT5Connector.get_symbol_spec()` now queries `symbol_info_session_trade` when the installed MT5 API exposes it and returns per-symbol weekday/session start and end offsets in **broker-server time**.
+- `EventDrivenSystem._cognition_price_snapshot()` surfaces these as separate `SESSION` evidence with provider provenance.
+- This does **not** close the full calendar gate: broker-server timezone/DST rules and a complete holiday calendar are not reliably exposed or verified. These windows must not be interpreted as UTC, and the session evidence remains calendar-unverified.
+- Added `tests/test_mt5_symbol_sessions.py` for schedule extraction and unavailable-API behavior. These tests have not been executed here; no pass is claimed.
+
+### Follow-up — synchronized timeframe evidence and shared execution constraints (2026-10-29)
+
+- `cognition.market_lenses` now rejects timezone-naive datetime-like timestamps and emits cross-timeframe alignment as synchronized only when at least two intraday frames have source timestamps, candle opens aligned to their declared epoch grids, and completed bars eligible at one shared snapshot cutoff. D1 is excluded from the synchronization assertion because broker daily boundaries may depend on server timezone/DST. Missing provenance keeps the relationship unverified.
+- `ActionExecutor` now applies a last-mile broker specification gate to every canonical OPEN: live source/specification provenance, full-trading mode, min/max/step volume, point/stops-level availability, valid directional geometry, and broker minimum stop/target distance are required before the broker call. Unknown or incomplete specs reject new exposure; risk-reducing management actions are not blocked by this OPEN-only check.
+- MT5 symbol specs now expose `trade_stops_level` and `trade_freeze_level`. `_money_per_price()` also requires explicitly verified broker tick-value/tick-size data and rejects non-finite or non-positive values.
+- The recording broker used by tests now supplies clearly synthetic, explicitly marked test constraints. Regression cases cover naive timestamps, synchronized timeframe observations, unverified specifications, volume-step violations, stop-distance violations and monetary conversion provenance.
+- **Operational consequence:** the shared executor will fail closed for connector/spec combinations that do not expose a complete verified MT5-style constraint set (including the current Deriv multiplier-only specification). Those routes need a connector-specific full constraint validator before new exposure can be enabled.
+- **Validation still pending:** these tests and `scripts/identity_audit.py` have not been run in a local runtime. The implementation is not declared test-clean. Historical trade-linked feature snapshots with decision-time provenance, complete timezone/DST/holiday calendars, realistic financing costs, and independent walk-forward/untouched-holdout results remain unclosed.
+
+## System 2 continuation — decision-time snapshot and trade linkage (2026-10-30)
+
+Implementation is in branch `redesign/system2-decision-time-provenance` and is **not yet merged or accepted**:
+
+- Both advisor-assisted and native-only Brain campaign paths now capture a point-in-time feature snapshot from the fresh evidence already in the `MarketState`. Each feature carries its evidence ID and original source timestamp; stale/future evidence is excluded, values are normalized for JSON serialization, and snapshots are explicitly marked unvalidated.
+- Campaign translation carries the same snapshot into `OriginationIntent`, then the shared `Intent`. The Brain origination sink rejects a missing, incomplete, or decision-ID-mismatched snapshot rather than creating a trade that cannot be attributed.
+- The shared flush loop now has a successful-OPEN callback. The bootstrap associates the snapshot with the exact broker ticket and emits a durable `DECISION_TRADE_ENTRY_SNAPSHOT` event. Close attribution attempts exact-ticket recovery from the event ledger after restart and emits `DECISION_TRADE_OUTCOME` with the linked decision/campaign/opportunity IDs, snapshot ID, realized P&L, commission, swap, fee and exit reason.
+- Added `tests/test_decision_feature_snapshot.py` for fresh evidence capture, stale/future evidence exclusion, and snapshot propagation through campaign translation.
+
+**Not yet verified:** tests have not been executed in a supported runtime; event-store queue persistence/recovery, provider-specific ticket fields, and full end-to-end entry-to-close attribution still require focused integration tests. This branch must not be described as System 2 complete until those tests and `scripts/identity_audit.py` run successfully and all remaining calendar, connector-constraint, financing-cost and independent validation gates are closed or explicitly accepted as blockers. No live broker orders were sent.
+

@@ -57,6 +57,26 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **ove
         values.update(source="ai_brain", decision_id="decision-test",
                       campaign_id="campaign-test", opportunity_id="opportunity-test")
     values.update(overrides)
+    if brain_provenance and "decision_feature_snapshot" not in overrides:
+        now = time.time()
+        values["decision_feature_snapshot"] = {
+            "schema": "apex.decision_feature_snapshot.v1",
+            "snapshot_id": f"decision-test:{now:.6f}",
+            "decision_id": values["decision_id"],
+            "symbol": str(values["symbol"]),
+            "decision_timestamp_epoch": now,
+            "captured_at_decision": True,
+            "snapshot_complete": True,
+            "evidence_count": 1,
+            "evidence_ids": ["test-evidence-1"],
+            "features": [{
+                "evidence_id": "test-evidence-1",
+                "source_timestamp_epoch": now,
+                "measurements": {"synthetic_fixture": True},
+            }],
+            "validation_status": "unvalidated",
+            "predictive_ability_demonstrated": False,
+        }
     if "payoff_geometry" not in overrides:
         entry = float(values["entry_price"])
         stop = float(values["sl"])
@@ -837,4 +857,78 @@ def test_rejects_brain_entry_without_activated_opportunity_id():
     result = executor.execute(intent, {})
     assert not result.success and result.rejected_by_gate
     assert "opportunity_id" in result.gate_reason
+    assert broker.open_calls == []
+
+
+
+def test_open_rejects_missing_decision_feature_snapshot():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    result = executor.execute(
+        _open_intent("XAUUSD", decision_feature_snapshot=None),
+        {},
+    )
+    assert not result.success
+    assert result.rejected_by_gate
+    assert "decision_feature_snapshot" in (result.error or "")
+    assert broker.open_calls == []
+
+
+def test_open_rejects_unverified_broker_spec_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": False,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.00001,
+        "trade_stops_level": 0,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "broker_spec_unverified" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_volume_step_violation_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.04,
+        "point": 0.00001,
+        "trade_stops_level": 0,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD", lots=0.10), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "volume step" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_stops_inside_verified_broker_minimum_distance():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.0001,
+        "trade_stops_level": 2000,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "minimum distance" in result.gate_reason
     assert broker.open_calls == []

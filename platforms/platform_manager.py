@@ -12,6 +12,7 @@ Deriv: single connection (WebSocket API is account-scoped).
 """
 
 import json
+import math
 import os
 import threading
 import time as _time
@@ -42,6 +43,27 @@ from platforms.base_connector import (
 )
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.mt5.mt5_connector import MT5Connector
+
+
+_DEFAULT_DERIV_TOKEN_TTL_SECONDS = 3600.0
+
+
+def _deriv_token_ttl_from_env() -> float:
+    """Return a validated Deriv access-token TTL, defaulting on blank/invalid input."""
+    raw = os.getenv("DERIV_TOKEN_EXPIRES_IN", "").strip()
+    if not raw:
+        return _DEFAULT_DERIV_TOKEN_TTL_SECONDS
+
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid DERIV_TOKEN_EXPIRES_IN; using the 3600-second default")
+        return _DEFAULT_DERIV_TOKEN_TTL_SECONDS
+
+    if not math.isfinite(ttl) or ttl <= 0:
+        logger.warning("DERIV_TOKEN_EXPIRES_IN must be a finite positive number; using the 3600-second default")
+        return _DEFAULT_DERIV_TOKEN_TTL_SECONDS
+    return ttl
 
 
 @dataclass
@@ -139,7 +161,7 @@ class PlatformManager:
             client_id=os.getenv("DERIV_CLIENT_ID", ""),
             access_token=os.getenv("DERIV_ACCESS_TOKEN", ""),
             account_type=os.getenv("DERIV_ACCOUNT_TYPE", "demo"),
-            token_expires_in=float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600")),
+            token_expires_in=_deriv_token_ttl_from_env(),
             app_id=os.getenv("DERIV_APP_ID", ""),
             token_refresh_callback=self._refresh_deriv_token,
             max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
@@ -763,11 +785,7 @@ class PlatformManager:
                 logger.warning("Deriv token file {} unreadable: {}", token_file, exc)
         if not token:
             token = os.getenv("DERIV_ACCESS_TOKEN", "").strip()
-        try:
-            expires_in = float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600") or 3600.0)
-        except (TypeError, ValueError):
-            expires_in = 3600.0
-        return token, expires_in
+        return token, _deriv_token_ttl_from_env()
 
     def get_account_summary(self) -> dict[str, AccountInfo]:
         summary: dict[str, AccountInfo] = {}

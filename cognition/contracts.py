@@ -150,9 +150,11 @@ class DecisionType(Enum):
     #     pounce, which is fundamentally different from seeing nothing.
     NO_OPPORTUNITY = "no_opportunity"
     OPPORTUNITY_FORMING = "opportunity_forming"
-    # Infrastructure state (Part XVIII, Art 5): the Brain has no usable reasoner
-    # (provider down / unavailable). This is explicitly NOT a market conclusion —
-    # it must never be read as a FLAT/observe view of the market.
+    # Legacy compatibility state for previously serialized infrastructure outcomes.
+    # Under the native-first Constitution, an optional advisor outage MUST NOT
+    # replace a native market verdict with this enum. Current Brain paths record
+    # advisor health in questions_answered/provider_status and preserve the
+    # native verdict (e.g. CONTINUE_OBSERVING or OPEN_CAMPAIGN).
     REASONER_UNAVAILABLE = "reasoner_unavailable"
     # In-campaign management (Part VI, Article 5)
     HOLD = "hold"

@@ -488,11 +488,9 @@ class CognitiveBrain:
             # hypotheses BEFORE any advisor is consulted. This is the Brain's
             # native view; the advisor opinion later INFORMS it, never replaces it.
             analysis, hypotheses = self._native_reasoning(market_state, consolidation, symbol)
-            # Distinguish "no reasoner configured" (a benign build-time state —
-            # no obligation to trade) from "reasoner wired but its provider is
-            # unavailable" (an INFRASTRUCTURE failure). The latter must never be
-            # surfaced as a market view (Part XVIII Art 5 / Q78/Q80): it is a
-            # distinct REASONER_UNAVAILABLE state, not a FLAT/observe conclusion.
+            # Provider configuration/health is infrastructure metadata, never a
+            # market verdict. Native analysis is already complete; preserve its
+            # qualified campaign or native observe result in every advisor state.
             if self._reasoner is None:
                 # AI is an optional advisor, not the source of truth. The native
                 # Brain has already analysed the market and challenged its own
@@ -504,13 +502,17 @@ class CognitiveBrain:
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="no external advisor configured — native Brain-only decision",
                     market_state=market_state,
+                    advisor_status="not_configured",
                 )
                 if independent is not None:
                     return independent
-                return self._observe(
+                return self._native_fallback_observe(
                     symbol,
-                    "native Brain-only analysis did not find an action-qualified opportunity",
+                    "no external advisor configured; native analysis did not find an action-qualified opportunity",
                     consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
+                    advisor_status="not_configured",
                 )
             if not getattr(self._reasoner, "available", False):
                 # Article X — the Brain can still DISCOVER an opportunity from its
@@ -523,7 +525,7 @@ class CognitiveBrain:
                 )
                 if independent is not None:
                     return independent
-                return self._reasoner_unavailable(
+                return self._native_fallback_observe(
                     symbol,
                     "external advisor unavailable; native analysis completed but no independent campaign qualified",
                     consolidation,
@@ -550,13 +552,10 @@ class CognitiveBrain:
                 symbol, advisor_payload, now=now,
             )
             if opinion is None:
-                # An AVAILABLE reasoner that yields no opinion did NOT form a
-                # market view. If its last call actually FAILED (provider down /
-                # timeout / unparsable reply) that is an INFRASTRUCTURE state —
-                # Part XVIII Art 5 / Q78/Q80/Q81/Q106: it must never be surfaced
-                # as a FLAT/observe read of the market. Only a benign no-op (e.g.
-                # a throttled cycle: provider healthy, simply no fresh call this
-                # cycle) may lawfully continue observing.
+                # A missing advisor opinion is not a market verdict. A degraded
+                # provider is recorded as unavailable; a healthy no-op/throttled
+                # cycle is recorded as available. In either case native qualification
+                # still runs and may originate a campaign if every gate passes.
                 if self._reasoner_degraded(symbol):
                     independent = self._originate_independent(
                         symbol, consolidation, analysis, hypotheses,
@@ -566,15 +565,32 @@ class CognitiveBrain:
                     )
                     if independent is not None:
                         return independent
-                    return self._reasoner_unavailable(
+                    return self._native_fallback_observe(
                         symbol,
                         "external advisor returned no usable opinion; native analysis completed but no independent campaign qualified",
                         consolidation,
                         analysis=analysis,
                         hypotheses=hypotheses,
+                        advisor_status="unavailable",
                     )
-                return self._observe(
-                    symbol, "no reasoner opinion this cycle — do nothing", consolidation,
+                # A healthy advisor may return no opinion because this cycle was
+                # throttled or had no fresh response. The advisor is optional:
+                # native qualification still runs and may originate independently.
+                independent = self._originate_independent(
+                    symbol, consolidation, analysis, hypotheses,
+                    reason_txt="advisor available but returned no opinion this cycle; native-only assessment",
+                    market_state=market_state,
+                    advisor_status="available",
+                )
+                if independent is not None:
+                    return independent
+                return self._native_fallback_observe(
+                    symbol,
+                    "advisor available but no opinion was returned; native analysis found no action-qualified opportunity",
+                    consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
+                    advisor_status="available",
                 )
             return self._from_opinion(
                 symbol, market_state, consolidation, opinion, now,
@@ -1284,6 +1300,7 @@ class CognitiveBrain:
             initial_execution_intent={
                 "kind": "market",
                 "confidence": round(eff_conf, 4),
+                "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                 **({
                     "entry_price": geometry.entry_price,
                     "sl": geometry.stop_price,
@@ -2566,11 +2583,13 @@ class CognitiveBrain:
         self, symbol: str, consolidation: dict,
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
         *, reason_txt: str, market_state: Optional[MarketState] = None,
+        advisor_status: str = "unavailable",
     ) -> Optional[BrainOutput]:
-        """Discover an opportunity from native analysis when no advisor is available.
+        """Discover a native opportunity whenever the advisor supplies no usable opinion.
 
-        Native-only reasoning can discover and evaluate opportunities during
-        provider failure. Do not impose a universal named-pattern allowlist or
+        Native-only reasoning can qualify an opportunity when the advisor is
+        absent, unavailable, degraded, or returns no opinion this cycle. Do not
+        impose a universal named-pattern allowlist or
         fixed confidence/uncertainty cutoffs: the identity requires methods to be
         selected from the market context. Require fresh independent market
         evidence, corroboration across distinct domains, a testable activation
@@ -2743,9 +2762,7 @@ class CognitiveBrain:
             questions = {
                 "what_is_happening": lead.statement,
                 "reasoning_mode": "native_only",
-                "external_advisor_status": (
-                    "not_configured" if "no external advisor configured" in reason_txt else "unavailable"
-                ),
+                "external_advisor_status": advisor_status,
                 "why_is_it_happening": "; ".join(analysis.observations) or lead.statement,
                 "evidence_supports": "; ".join(
                     p for p in lead.supporting_patterns) or "native structural patterns",
@@ -2816,6 +2833,7 @@ class CognitiveBrain:
                     "kind": "market",
                     "confidence": round(lead_conf, 4),
                     "independent_origination": True,
+                    "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                     "entry_price": geometry.entry_price,
                     "sl": geometry.stop_price,
                     "tp": geometry.target_price,
@@ -2842,6 +2860,93 @@ class CognitiveBrain:
             logger.debug("[brain] independent origination(%s) ignored a fault: %s", symbol, exc)
             return None
 
+
+    @staticmethod
+    def _decision_feature_snapshot(
+        market_state: Optional[MarketState],
+        decision: DecisionPackage,
+    ) -> dict:
+        """Capture immutable-by-convention point-in-time features used by a decision.
+
+        This is an evidence ledger, not a reconstructed market snapshot. Each
+        feature retains its source timestamp and evidence ID. Empty or stale
+        evidence is not backfilled from current prices after the decision.
+        """
+        import copy
+        import math
+        import time as _time
+
+        def json_safe(value):
+            if value is None or isinstance(value, (str, bool, int)):
+                return value
+            if isinstance(value, float):
+                return value if math.isfinite(value) else None
+            if isinstance(value, dict):
+                return {str(key): json_safe(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [json_safe(item) for item in value]
+            enum_value = getattr(value, "value", None)
+            if enum_value is not None:
+                return json_safe(enum_value)
+            iso = getattr(value, "isoformat", None)
+            if callable(iso):
+                try:
+                    return iso()
+                except Exception:
+                    pass
+            item = getattr(value, "item", None)
+            if callable(item):
+                try:
+                    return json_safe(item())
+                except Exception:
+                    pass
+            try:
+                numeric = float(value)
+                return numeric if math.isfinite(numeric) else None
+            except (TypeError, ValueError, OverflowError):
+                return str(value)[:500]
+
+        decision_epoch = _time.time()
+        rows: list[dict] = []
+        try:
+            if market_state is not None:
+                for evidence in market_state.fresh_evidence(now=decision_epoch):
+                    row = evidence.to_dict()
+                    row["source_timestamp_epoch"] = float(
+                        getattr(evidence, "timestamp_epoch", 0.0) or 0.0
+                    )
+                    rows.append(copy.deepcopy(json_safe(row)))
+        except Exception:
+            # An incomplete snapshot must remain visibly incomplete; do not
+            # reconstruct features from later data or silently claim validation.
+            rows = []
+        evidence_ids = [
+            str(row.get("evidence_id") or "") for row in rows
+            if str(row.get("evidence_id") or "")
+        ]
+        valid_timestamps = all(
+            isinstance(row.get("source_timestamp_epoch"), (int, float))
+            and math.isfinite(float(row["source_timestamp_epoch"]))
+            and 0.0 < float(row["source_timestamp_epoch"]) <= decision_epoch
+            for row in rows
+        )
+        return {
+            "schema": "apex.decision_feature_snapshot.v1",
+            "snapshot_id": (
+                f"{getattr(decision, 'decision_id', '')}:"
+                f"{decision_epoch:.6f}"
+            ),
+            "decision_id": str(getattr(decision, "decision_id", "") or ""),
+            "symbol": str(getattr(decision, "symbol", "") or ""),
+            "decision_timestamp_epoch": decision_epoch,
+            "captured_at_decision": True,
+            "snapshot_complete": bool(rows) and bool(evidence_ids) and valid_timestamps,
+            "evidence_count": len(rows),
+            "evidence_ids": evidence_ids,
+            "features": rows,
+            "validation_status": "unvalidated",
+            "predictive_ability_demonstrated": False,
+        }
 
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
@@ -2965,7 +3070,7 @@ class CognitiveBrain:
             reasons.append("native-only expected-value or final qualification gate did not pass")
         return "; ".join(reasons), patterns, hypothesis_summary
 
-    def _reasoner_unavailable(
+    def _native_fallback_observe(
         self,
         symbol: str,
         reason_txt: str,
@@ -2973,13 +3078,14 @@ class CognitiveBrain:
         *,
         analysis: Optional[EvidenceAnalysis] = None,
         hypotheses: Optional[list[BrainHypothesis]] = None,
+        advisor_status: str = "unavailable",
     ) -> BrainOutput:
-        """Report advisor outage while preserving the native analysis and its no-entry rationale.
+        """Preserve the native no-action verdict while reporting advisor state separately.
 
-        This is an infrastructure state, not a claim that market analysis stopped.
-        Native reasoning has already run. If it qualified a campaign, the caller
-        returns that campaign; otherwise we stand down and surface the native
-        evidence, hypotheses and qualification blockers for diagnosis.
+        Native reasoning has already run and failed to qualify a campaign.
+        Provider health/configuration is infrastructure metadata, not a substitute
+        market verdict. Return the native observe outcome and retain advisor state
+        and native diagnostics for observability.
         """
         hypotheses = list(hypotheses or [])
         native_status, patterns, hypothesis_summary = self._native_fallback_diagnostic(
@@ -3015,11 +3121,11 @@ class CognitiveBrain:
             "opportunity": "none qualified by native-only gates",
             "should_i_do_nothing": (
                 "evaluated: continue observing because native-only qualification did not pass; "
-                "external-advisor outage is not evidence of a market opportunity"
+                "advisor status is infrastructure metadata, not evidence of a market opportunity"
             ),
             "reasoner_state": reason_txt,
-            "reasoning_mode": "native_fallback",
-            "external_advisor_status": "unavailable",
+            "reasoning_mode": "native_only" if advisor_status == "not_configured" else "native_fallback",
+            "external_advisor_status": advisor_status,
             "native_fallback_status": native_status,
             "native_analysis_summary": analysis_summary,
             "native_hypotheses": hypothesis_summary or "none",
@@ -3027,15 +3133,18 @@ class CognitiveBrain:
             "native_evidence_uncertainty": uncertainty,
         })
         decision = DecisionPackage(
-            symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
-            thesis="external advisor unavailable; native analysis ran but no qualified independent campaign was found",
+            symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
+            thesis="native analysis completed; no qualified opportunity met action criteria",
             confidence=0.0, uncertainty=uncertainty,
-            campaign_recommendation="stand_down",
-            risk_rationale=reason_txt,
+            campaign_recommendation="observe",
+            risk_rationale=(
+                "Native-only opportunity qualification did not pass; no new exposure is authorised. "
+                "External advisor status is recorded separately and is not the market verdict."
+            ),
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
-        return self._record(BrainOutput(decision=decision, direction=None))
+        return self._record(BrainOutput(decision=decision, direction=FLAT))
 
     def _record(self, output: BrainOutput) -> BrainOutput:
         output.decided_at_epoch = time.time()

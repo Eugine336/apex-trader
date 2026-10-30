@@ -1,0 +1,156 @@
+ .\.venv\Scripts\python.exe main.py
+[datadog] DD_API_KEY not set — Datadog APM disabled
+2026-10-29 12:24:53.263 | INFO     | __main__:main:58 - ============================================================
+2026-10-29 12:24:53.264 | INFO     | __main__:main:59 -   APEX TRADER — Identity v1.0.0: Apex is a continuously operating, market-aware trading intelligence. It does not belong to one strategy, timeframe or trading style. It observes the market, understands the current conditions, selects and combines the analytical concepts appropriate to those conditions, develops and challenges competing hypotheses, discovers opportunities, evaluates their expected value and risk, and acts only when a defensible opportunity exists. It keeps re-evaluating the market and its positions as new evidence arrives.
+2026-10-29 12:24:53.266 | INFO     | __main__:main:60 - ============================================================
+2026-10-29 12:24:53.268 | INFO     | config:__post_init__:962 - [config] max_tick_age_seconds set from MAX_TICK_AGE_SECONDS env → 120.0s
+2026-10-29 12:24:53.269 | WARNING  | config:_warn_provider_resilience:3476 - [config] provider 'gemini' has NO budget limits configured (LLM_RPM/_RPD/_TPM/_TPD all 0) — the reasoner runs UNMETERED and a scarce free tier can be exhausted without warning. Declare explicit per-provider limits so provider capacity is a first-class concept.
+2026-10-29 12:24:53.335 | INFO     | ops.logging_config:configure_structured_logging:195 - Structured logging configured — format=json, main=logs/apex.log, trade_audit=logs/trade_audit.log, risk_audit=logs/risk_audit.log
+2026-10-29 12:24:53.338 | INFO     | __main__:main:90 - Instrument registry loaded — 65 instruments
+2026-10-29 12:24:53.338 | INFO     | __main__:main:91 - Trading mode: GOLD
+2026-10-29 12:24:53.340 | INFO     | __main__:main:94 -   COMMODITY: 4 instruments enabled
+2026-10-29 12:24:53.340 | INFO     | __main__:main:95 - Total enabled instruments: 1
+2026-10-29 12:24:53.340 | INFO     | __main__:main:97 - Running broker symbol auto-discovery ...
+2026-10-29 12:24:54.679 | INFO     | platforms.mt5.mt5_discovery:detect_broker_slug:54 - MT5 broker detected: 'MetaQuotes Ltd.' → slug: 'metaquotes_ltd'
+2026-10-29 12:24:54.682 | INFO     | brain.broker_autodiscovery:run:146 - Broker config for 'metaquotes_ltd' is up to date — skipping auto-discovery
+2026-10-29 12:24:54.684 | INFO     | brain.broker_autodiscovery:run:446 - Deriv config is up to date — skipping auto-discovery
+2026-10-29 12:24:54.687 | INFO     | __main__:main:101 - Broker auto-discovery complete
+2026-10-29 12:24:54.687 | INFO     | __main__:main:105 - Active decision path: market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor
+2026-10-29 12:24:54.687 | INFO     | __main__:main:107 - Phase 5 — Risk loaded (risk engine, position sizer, P&L tracker, spread, reporter)
+2026-10-29 12:24:54.687 | INFO     | __main__:main:109 - Phase 6 — Adaptive Optimizer loaded (analyzer, optimizers, learners)
+2026-10-29 12:24:55.237 | INFO     | __main__:main:112 - Phase 7 — Platforms loaded (MT5 + Deriv connectors)
+2026-10-29 12:24:55.242 | INFO     | __main__:main:114 - Phase 8 — Dashboard available (--dashboard to launch)
+2026-10-29 12:24:56.410 | CRITICAL | __main__:main:144 - [clean-start] CRITICAL: UNSAFE REPOSITORY TOPOLOGY
+2026-10-29 12:24:56.410 | CRITICAL | __main__:main:144 - [clean-start]
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start] not a git repository.
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start]
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start] Expected:
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start]   ..\apex-trader-data
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start]       -> eugine336/apex-trader-data
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start]
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start] Actual:
+2026-10-29 12:24:56.413 | CRITICAL | __main__:main:144 - [clean-start]   ..\apex-trader-data
+2026-10-29 12:24:56.419 | CRITICAL | __main__:main:144 - [clean-start]       -> none
+2026-10-29 12:24:56.419 | CRITICAL | __main__:main:144 - [clean-start]
+2026-10-29 12:24:56.419 | CRITICAL | __main__:main:144 - [clean-start] AUTO-SYNC DISABLED.
+2026-10-29 12:24:56.419 | CRITICAL | __main__:main:144 - [clean-start] No Git mutation permitted.
+2026-10-29 12:24:56.419 | CRITICAL | platforms.clean_start:run_startup_clean_start:456 - [clean-start] read-only inspection skipped because data repository topology is unsafe or unverified
+2026-10-29 12:24:56.419 | INFO     | __main__:main:163 - [event-driven] clean-start — pull: skipped (unsafe or unverified data repository topology) | event-store: skipped (unsafe or unverified data repository topology) | purge: skipped (unsafe or unverified data repository topology)
+2026-10-29 12:24:56.446 | ERROR    | platforms.platform_manager:_load_mt5_configs:115 - MT5_BROKERS JSON parse failed — falling back to MT5_LOGIN: Expecting value: line 1 column 1 (char 0)
+2026-10-29 12:24:56.559 | INFO     | risk.risk_engine:__init__:131 - RiskEngine initialized — balance=$10,000.00, risk=0.75%, max_daily_dd=3.0%
+2026-10-29 12:24:56.580 | INFO     | core.system_context:create:396 - [SystemContext] risk layer initialized — drawdown=True corr=True risk_engine=True portfolio_sm=True governor=True account_risk=True reporter=True portfolio=True
+2026-10-29 12:24:56.608 | INFO     | core.system_context:create:455 - [SystemContext] decision layer initialized — session=True news=True
+2026-10-29 12:24:56.612 | INFO     | core.system_context:create:497 - [SystemContext] scan/sizing layer initialized — opp_exec=False orchestrator=False vol_mon=True density=True exec_mon=True
+2026-10-29 12:25:04.111 | WARNING  | logging:callHandlers:1706 - [RLBridge] INACTIVE_NO_CHECKPOINT — config enabled but no checkpoint at C:\Users\Anthony\apex-trader\checkpoints\apex_rl_best.pt. rl_delta will be 0 for all decisions. Train and save a checkpoint (populate data/ CSVs, then run run_training.py) to activate.
+2026-10-29 12:25:04.116 | INFO     | logging:callHandlers:1706 - [rl] subsystem: INACTIVE_NO_CHECKPOINT (stage JOURNAL_ONLY)
+2026-10-29 12:25:04.121 | INFO     | adaptive.score_optimizer:load_weights:659 - No saved weights found — using defaults
+2026-10-29 12:25:04.525 | INFO     | core.system_context:create:872 - [SystemContext] LLM reasoner ONLINE — provider 'gemini' model 'gemini-3.8-flash'
+2026-10-29 12:25:04.560 | INFO     | core.system_context:create:978 - [SystemContext] Knowledge source ready — enabled=True advisor=True
+2026-10-29 12:25:04.561 | INFO     | core.system_context:create:986 - [SystemContext] Action layer ready — enabled=True adapter=unavailable (dry_run=False)
+2026-10-29 12:25:04.726 | INFO     | logging:callHandlers:1706 - [apex-identity] version=1.0.0 statement=Apex is a continuously operating, market-aware trading intelligence. It does not belong to one strategy, timeframe or trading style. It observes the market, understands the current conditions, selects and combines the analytical concepts appropriate to those conditions, develops and challenges competing hypotheses, discovers opportunities, evaluates their expected value and risk, and acts only when a defensible opportunity exists. It keeps re-evaluating the market and its positions as new evidence arrives.
+2026-10-29 12:25:04.726 | INFO     | llm.reasoning_orchestrator:build_reasoning_orchestrator:772 - [council] assembled 2 advisor(s) [panel]: ollama-deep, vllm-deep
+2026-10-29 12:25:04.747 | INFO     | core.system_context:create:1628 - [SystemContext] Cognitive Brain ready — reasoner_available=True shadow=False gate_mode=authoritative
+2026-10-29 12:25:04.753 | INFO     | core.system_context:create:1709 - [SystemContext] learning layer initialized - outcome_fb=True ledger=True emitter_fb=True post_close=True shadow=True tuner=True ml=True
+2026-10-29 12:25:04.784 | INFO     | core.system_context:create:1796 - [SystemContext] continuous-learning closure — adaptive_weights=True rec_applier=True
+2026-10-29 12:25:04.799 | INFO     | core.system_context:create:1841 - [SystemContext] cross-instrument layer — quality_sizing=True displacement=True (queue/scanner on event-driven system)
+2026-10-29 12:25:04.999 | CRITICAL | core.system_context:create:1899 - [SystemContext] auto-sync DISABLED — data repo identity invalid: not a git repository
+2026-10-29 12:25:05.008 | INFO     | core.system_context:create:1958 - [SystemContext] ops layer initialized — journal=True watchdog=True maintenance=True
+2026-10-29 12:25:05.122 | INFO     | core.system_context:create:2089 - [SystemContext] evolution+planning initialized — cap_alloc=True exec_prof=True regime=True behavior=True sig_disc=False virt_reg=False virt_mgr=False planner=True outcome_log=True calibrator=True re_entry=True
+2026-10-29 12:25:05.237 | INFO     | __main__:_connect_and_bootstrap:210 - Connecting to platforms…
+2026-10-29 12:25:05.239 | INFO     | platforms.platform_manager:connect_all:239 - Connecting to MT5…
+2026-10-29 12:25:05.297 | INFO     | platforms.mt5.mt5_connector:connect:174 - MT5 connected — account ******5316 | balance 30.0 USD
+2026-10-29 12:25:05.302 | INFO     | platforms.mt5.mt5_connector:connect:190 - MT5 broker identified: 'MetaQuotes Ltd.' → config slug: 'metaquotes_ltd'
+2026-10-29 12:25:05.302 | INFO     | platforms.platform_manager:connect_all:245 - MT5 — ONLINE (metaquotes_ltd)
+2026-10-29 12:25:05.302 | INFO     | platforms.platform_manager:connect_all:252 - Connecting to Deriv…
+2026-10-29 12:25:05.302 | ERROR    | platforms.deriv.deriv_connector:connect:289 - Deriv access_token not provided (set DERIV_ACCESS_TOKEN)
+2026-10-29 12:25:05.307 | WARNING  | platforms.platform_manager:connect_all:258 - Deriv — OFFLINE (credentials missing or connection failed)
+2026-10-29 12:25:05.315 | INFO     | risk.spread_bootstrap:bootstrap_spreads:83 - Spread bootstrap complete — 1 updated, 0 kept hardcoded fallback
+2026-10-29 12:25:05.318 | INFO     | __main__:_connect_and_bootstrap:223 - ------------------------------------------------------------
+2026-10-29 12:25:05.318 | INFO     | __main__:_connect_and_bootstrap:224 - APEX TRADER IS LIVE
+2026-10-29 12:25:05.318 | INFO     | __main__:_connect_and_bootstrap:225 -   MT5   — ONLINE
+2026-10-29 12:25:05.318 | INFO     | __main__:_connect_and_bootstrap:226 -   Deriv — OFFLINE
+2026-10-29 12:25:05.318 | INFO     | __main__:_connect_and_bootstrap:227 - ------------------------------------------------------------
+2026-10-29 12:25:05.386 | INFO     | config:__post_init__:962 - [config] max_tick_age_seconds set from MAX_TICK_AGE_SECONDS env → 120.0s
+2026-10-29 12:25:05.388 | WARNING  | config:_warn_provider_resilience:3476 - [config] provider 'gemini' has NO budget limits configured (LLM_RPM/_RPD/_TPM/_TPD all 0) — the reasoner runs UNMETERED and a scarce free tier can be exhausted without warning. Declare explicit per-provider limits so provider capacity is a first-class concept.
+2026-10-29 12:25:05.391 | INFO     | config:__post_init__:962 - [config] max_tick_age_seconds set from MAX_TICK_AGE_SECONDS env → 120.0s
+2026-10-29 12:25:05.393 | WARNING  | config:_warn_provider_resilience:3476 - [config] provider 'gemini' has NO budget limits configured (LLM_RPM/_RPD/_TPM/_TPD all 0) — the reasoner runs UNMETERED and a scarce free tier can be exhausted without warning. Declare explicit per-provider limits so provider capacity is a first-class concept.
+2026-10-29 12:25:05.446 | INFO     | __main__:_run_startup_self_test:236 -   [✅] imports — All critical modules imported (62ms)
+2026-10-29 12:25:05.449 | INFO     | __main__:_run_startup_self_test:236 -   [✅] config — AppConfig loaded — 1 pairs enabled (0ms)
+2026-10-29 12:25:05.452 | INFO     | __main__:_run_startup_self_test:236 -   [✅] instrument_registry — 65 instruments registered (0ms)
+2026-10-29 12:25:05.453 | INFO     | __main__:_run_startup_self_test:236 -   [✅] database — SQLite OK — 0 persisted positions (47ms)
+2026-10-29 12:25:05.455 | INFO     | __main__:_run_startup_self_test:236 -   [✅] disk_space — 5872MB free (0ms)
+2026-10-29 12:25:05.904 | INFO     | brain.calibration_engine:load:135 - [calibration] loaded 1 symbol(s) from data/calibration_state.json
+2026-10-29 12:25:05.911 | INFO     | event_driven_bootstrap:__init__:1271 - [event-driven] CalibrationEngine ACTIVE — get_profile is self-calibrating (state=data/calibration_state.json)
+2026-10-29 12:25:05.972 | INFO     | execution.management_state:_init_db:145 - [mgmt-state] SQLite persistence enabled — loaded 0 states from data/management_state.db
+2026-10-29 12:25:05.973 | INFO     | event_driven_bootstrap:__init__:1573 - [event-driven] Governance Division active — recommendation authoriser=True, governance_required=True
+2026-10-29 12:25:05.980 | INFO     | event_driven_bootstrap:_register_tunable_adapters:1920 - [tuner] registered 16 tunable adapters with TunerAgent
+2026-10-29 12:25:05.983 | INFO     | event_driven_bootstrap:__init__:1699 - [event-driven] system initialized
+2026-10-29 12:25:05.985 | INFO     | event_driven_bootstrap:start:2956 - ============================================================
+2026-10-29 12:25:05.988 | INFO     | event_driven_bootstrap:start:2957 -   APEX TRADER — EVENT-DRIVEN MODE
+2026-10-29 12:25:05.990 | INFO     | event_driven_bootstrap:start:2958 - ============================================================
+2026-10-29 12:25:05.993 | WARNING  | ops.lifecycle:run:248 - ⚠️ Crash marker present — previous run exited UNCLEAN (pid=6028 started=2026-08-08T04:35:41.543179+00:00). Broker reconciliation will verify open positions.
+2026-10-29 12:25:06.000 | WARNING  | event_driven_bootstrap:start:2975 - [event-driven] previous run exited UNCLEAN — broker reconciliation recommended
+2026-10-29 12:25:06.046 | INFO     | persistence.recovery:run_startup_recovery:225 - [recovery] event-log reconciliation clean — 0 open position(s) match the log
+2026-10-29 12:25:06.049 | INFO     | event_driven_bootstrap:_restore_governor_state:3605 - [event-driven] governor state from 2026-08-02 is stale (today 2026-10-29) — starting daily tally fresh
+2026-10-29 12:25:06.049 | INFO     | event_driven_bootstrap:start:3215 - [event-driven] registered 1 symbols for candle detection
+2026-10-29 12:25:06.403 | INFO     | scanner.candle_close_handler:warmup:188 - [cc-handler] warmup complete — 5 WorldModel update(s) across 1 symbol(s) × 5 timeframe(s)
+2026-10-29 12:25:06.451 | INFO     | tick.live_candle_aggregator:warmup:219 - [live-candles] warmup complete — seeded 6 (symbol, timeframe) pair(s) across 1 symbol(s) × 6 timeframe(s)
+2026-10-29 12:25:06.661 | INFO     | gold_desk.apex_observer:start:229 - [gold-desk] market observer started: symbols=['XAUUSD'], venue=MT5, detectors=8, decision_authority=CognitiveBrain, live_orders=disabled
+2026-10-29 12:25:06.661 | INFO     | tick.tick_router:start:103 - [tick-router] started
+2026-10-29 12:25:06.664 | INFO     | tick.candle_close_detector:start:182 - [candle-close] watchdog started (interval=5.0s, max_catchup=5)
+2026-10-29 12:25:06.669 | INFO     | tick.tick_sources:start:64 - [mt5-poller] started for 1 symbols
+2026-10-29 12:25:06.669 | INFO     | tick.tick_sources:start:188 - [deriv-adapter] started for 1 symbols
+2026-10-29 12:25:06.669 | INFO     | execution.lifecycle_loops:start:68 - [flush-loop] started (interval=100ms)
+2026-10-29 12:25:06.678 | INFO     | execution.lifecycle_loops:start:250 - [tick-eval] started (interval=100ms)
+2026-10-29 12:25:06.679 | INFO     | brain.developing_analysis:start:124 - [developing] started — 1 symbol(s), refresh(s)={'M5': 10.0, 'M15': 15.0, 'H1': 30.0, 'H4': 60.0, 'D1': 300.0}
+2026-10-29 12:25:06.733 | INFO     | adaptive.adaptive_scheduler:start:76 - [adaptive-scheduler] started — periodic=900.0s scan=3600.0s
+2026-10-29 12:25:06.792 | INFO     | brain.proactive_scanner:start:87 - [proactive-scan] started — interval=60.0s min_ev=0.50R
+2026-10-29 12:25:06.861 | INFO     | llm.worker:start:116 - [llm-worker] started (interval=60s, max_symbols/cycle=12)
+2026-10-29 12:25:06.865 | INFO     | tick.structural_interaction_detector:start:214 - [structural-interaction] started (tol=2.0pips, sweep_window=12.0s)
+2026-10-29 12:25:06.881 | INFO     | logging:callHandlers:1706 - [cognition-loop] started (interval=30s, shadow=False, event_driven=True)
+2026-10-29 12:25:06.896 | INFO     | event_driven_bootstrap:start:3425 - [event-driven] process watchdog started
+2026-10-29 12:25:06.901 | INFO     | event_driven_bootstrap:start:3435 - [event-driven] shutdown signal handlers installed
+2026-10-29 12:25:07.317 | INFO     | event_driven_bootstrap:start:3487 - [event-driven] learner trade-history pipeline wired (ml_adapter ← TradeJournal)
+2026-10-29 12:25:07.322 | INFO     | event_driven_bootstrap:start:3501 - [event-driven] all subsystems started
+2026-10-29 12:25:07.327 | INFO     | event_driven_bootstrap:start:3502 - ------------------------------------------------------------
+2026-10-29 12:25:07.334 | INFO     | event_driven_bootstrap:start:3503 -   ANALYSIS:  candle-close → brain modules → WorldModel
+2026-10-29 12:25:07.347 | INFO     | event_driven_bootstrap:start:3504 -   EXECUTION: ticks → position workers → intent aggregator → executor
+2026-10-29 12:25:07.386 | INFO     | event_driven_bootstrap:start:3505 -   DECISION:  market evidence → WorldModel/CognitiveBrain → risk admission → ActionExecutor
+2026-10-29 12:25:07.399 | INFO     | event_driven_bootstrap:start:3506 - ------------------------------------------------------------
+2026-10-29 12:25:07.950 | INFO     | platforms.maintenance:_memory_maintenance:316 - [maintenance] memory — gc collected 33 object(s), rss=n/a
+2026-10-29 12:25:07.952 | INFO     | event_driven_bootstrap:_watchdog_loop:4006 - [event-driven] daily maintenance — {'data_topology': 'unsafe: data is a plain directory inside a git work tree with no data junction or its own .git — refusing to use it as the data dir (would let git operations reach the source repo)', 'db_backup': 'skipped (unsafe data topology)', 'stale_cleaned': 'skipped (unsafe data topology)', 'logs_cleaned': 0, 'event_store_pruned': 'skipped (automatic event deletion disabled)', 'databases_vacuumed': {'event_store': 'skipped (automatic database rewrite disabled)', 'vacuumed': 0, 'checked': 0}, 'memory': {'collected': 33, 'rss_mb': None}}
+2026-10-29 12:25:07.955 | INFO     | event_driven_bootstrap:_watchdog_loop:4031 - [event-driven] automatic event/shadow-state pruning disabled; persistent history preserved
+2026-10-29 12:25:08.873 | INFO     | gold_desk.apex_observer:_evaluate_tick:593 - [gold-desk][EVIDENCE] MT5 XAUUSD: 0 factual pattern observation(s); authority=CognitiveBrain; no order/decision emitted
+2026-10-29 12:25:13.030 | WARNING  | llm.client:_note_failure:418 - [llm] ollama unavailable — HTTP 0 — URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+2026-10-29 12:25:13.044 | WARNING  | llm.client:_note_failure:418 - [llm] vllm unavailable — HTTP 0 — URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+2026-10-29 12:25:13.051 | INFO     | llm.reasoning_orchestrator:_log_panel:619 - [council] XAUUSD — 0/2 advisors contributing: (none replied) || absent: ollama-deep, vllm-deep
+2026-10-29 12:25:17.187 | WARNING  | llm.client:_note_failure:418 - [llm] ollama unavailable — HTTP 0 — URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+2026-10-29 12:25:21.248 | WARNING  | llm.client:_note_failure:418 - [llm] vllm unavailable — HTTP 0 — URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+2026-10-29 12:25:21.256 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:25:21.358 | INFO     | llm.reasoning_orchestrator:_log_panel:619 - [council] XAUUSD — 0/2 advisors contributing: (none replied) || absent: ollama-deep, vllm-deep
+2026-10-29 12:25:21.409 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:25:40.403 | INFO     | llm.reasoning_orchestrator:_log_panel:619 - [council] XAUUSD — 0/2 advisors contributing: (none replied) || absent: ollama-deep, vllm-deep
+2026-10-29 12:25:48.586 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:25:48.715 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:25:48.838 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:17.113 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:17.238 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:22.364 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:57.430 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:57.550 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:26:57.668 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:27:31.841 | INFO     | llm.reasoning_orchestrator:_log_panel:619 - [council] XAUUSD — 0/2 advisors contributing: (none replied) || absent: ollama-deep, vllm-deep
+2026-10-29 12:27:31.907 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:27:32.042 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:27:39.752 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:27:47.716 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:27:55.789 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:00.954 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:13.799 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:13.933 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:20.014 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:35.171 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:35.287 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:28:52.144 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:29:00.154 | INFO     | logging:callHandlers:1706 - [cognition] XAUUSD -> decision=reasoner_unavailable thesis=external advisor unavailable; native analysis ran but no qualified independent c (conf=0.00) reasoning_mode=native_fallback external_advisor=unavailable native_status=leading hypothesis was not directional
+2026-10-29 12:29:02.137 | INFO     | ops.lifecycle:request_shutdown:100 - Shutdown requested (SIG
