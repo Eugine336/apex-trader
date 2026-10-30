@@ -963,15 +963,16 @@ class BrainReasoner:
             # measurements. Unknown semantics are not reverse-engineered into a
             # convenient known pattern or a directional implication.
             unclassified = analysis.market_context.get("unclassified_observations", [])
-            seen_unknown_sources: set[str] = set()
+            unknown_by_source: dict[str, set[str]] = {}
             for record in unclassified:
                 if not isinstance(record, dict):
                     continue
                 source = str(record.get("source", "") or "")
-                keys = list(record.get("measurement_keys", []) or [])
-                if source in seen_unknown_sources:
-                    continue
-                seen_unknown_sources.add(source)
+                unknown_by_source.setdefault(source, set()).update(
+                    str(key) for key in (record.get("measurement_keys", []) or []) if key
+                )
+            for source, unknown_keys in sorted(unknown_by_source.items()):
+                keys = sorted(unknown_keys)
                 source_ids = [
                     item["evidence_id"] for item in analysis.evidence_index
                     if item.get("source_module") == source
