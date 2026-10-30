@@ -345,6 +345,33 @@ def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction(
     assert BrainReasoner.leading([directional, no_trade]) is no_trade
 
 
+def test_native_origination_rejects_empty_records_even_if_consolidation_counts_domains():
+    from cognition.brain import CognitiveBrain
+
+    state = MarketState(symbol="SYNTHETIC")
+    for domain in ("structure", "liquidity", "momentum"):
+        state.add(_evidence(domain, {}, confidence=0.99, source=f"empty.{domain}"))
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    forced_direction = BrainHypothesis(
+        statement="test-only directional hypothesis",
+        confidence=0.99,
+        direction_implication=LONG,
+        hypothesis_kind="continuation",
+    )
+    brain = CognitiveBrain(reasoner=None)
+    result = brain._originate_independent(
+        "SYNTHETIC",
+        {"market_domain_count": 6, "aggregate_uncertainty": 0.01},
+        analysis,
+        [forced_direction],
+        reason_txt="test",
+        market_state=state,
+        now=state.created_epoch,
+    )
+    assert result is None
+
+
 def test_high_confidence_empty_records_do_not_count_as_usable_market_coverage():
     state = MarketState(symbol="SYNTHETIC")
     for domain in ("structure", "liquidity", "momentum"):
