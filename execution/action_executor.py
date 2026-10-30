@@ -412,13 +412,25 @@ class ActionExecutor:
         return self._manage_breaker(f"{symbol}:{op}" if symbol else op)
 
     def _broker_entry_constraints_error(self, intent: Intent) -> str | None:
-        """Fail closed unless the broker exposes a verified, usable MT5-style spec.
+        """Fail closed unless provenance storage and broker constraints are healthy.
 
         This last-mile check complements (does not replace) connector validation.
         Contract types without a verified lot/stop/trade-mode specification are
         intentionally rejected here until they have an equivalent adapter-specific
         constraint validator; market context alone is never execution authority.
         """
+        # A durable provenance write can fail after a broker fill. EventStore
+        # marks itself degraded in that case; refuse subsequent new exposure
+        # until the audit ledger is healthy again. Do not lazily create a DB
+        # from this gate, because initialization belongs to system startup.
+        try:
+            from persistence.event_store import get_existing_event_store
+            event_store = get_existing_event_store()
+        except Exception as exc:
+            return f"decision_provenance_store_unavailable: {type(exc).__name__}"
+        if event_store is not None and event_store.is_degraded:
+            return "decision_provenance_store_degraded: refusing new exposure"
+
         spec_fn = getattr(self._broker, "get_symbol_spec", None)
         if not callable(spec_fn):
             return "broker_spec_unavailable: shared executor requires verified broker constraints"
