@@ -707,6 +707,12 @@ def get_event_store(db_path: Optional[str] = None) -> EventStore:
         return _global_store
 
 
+def get_existing_event_store() -> Optional[EventStore]:
+    """Return the initialized store without creating a database as a side effect."""
+    with _global_lock:
+        return _global_store
+
+
 def shutdown_event_store() -> None:
     """Flush and close the global store (call at process exit)."""
     global _global_store

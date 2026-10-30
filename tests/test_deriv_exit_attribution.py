@@ -42,6 +42,9 @@ class TestDerivGetDealCloseInfo:
         assert info.close_price == 1.10001
         assert info.close_time == datetime(2024, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
         assert info.raw_comment == "lost"
+        assert info.commission is None
+        assert info.swap is None
+        assert info.fee is None
 
     def test_tp_hit(self):
         c = self._make_connector()

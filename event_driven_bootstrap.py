@@ -4175,8 +4175,8 @@ class EventDrivenSystem:
             try:
                 es = get_event_store()
                 es.flush(timeout=3.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.critical("[shutdown] durable event-store flush failed: {}", exc)
 
             # Clear crash marker
             try:
@@ -4338,8 +4338,8 @@ class EventDrivenSystem:
                         self._wd_last_flush_count = cur_flush
                         self._wd_last_ticks_routed = cur_ticks
                     ctx.process_watchdog.check_stall()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[watchdog] process stall check failed: {}", exc)
 
             # ── Deriv position-store health ───────────────────────────
             # Losing this store leaves multiplier contracts unmanaged. Surface
@@ -4355,8 +4355,12 @@ class EventDrivenSystem:
                             store.degraded_reason() if hasattr(store, "degraded_reason") else "unknown",
                         )
                         self._deriv_store_unhealthy_warned = True
-            except Exception:
-                pass
+            except Exception as exc:
+                self._deriv_store_unhealthy_warned = True
+                logger.critical(
+                    "[event-driven] Deriv position-store health check failed; "
+                    "treating connector state as degraded: {}", exc,
+                )
 
             # ── Broker auto-reconnection ──────────────────────────────
             # Self-heal dropped MT5/Deriv sockets so an unattended system
@@ -4412,8 +4416,12 @@ class EventDrivenSystem:
                         self._scanner_blind_warned = True
                     elif not blind:
                         self._scanner_blind_warned = False
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._scanner_blind_warned = True
+                    logger.critical(
+                        "[event-driven] scanner health check failed; "
+                        "entries must remain blocked: {}", exc,
+                    )
 
             if ctx is not None and ctx.daily_maintenance is not None:
                 try:
@@ -4726,8 +4734,11 @@ class EventDrivenSystem:
                             bal = self._pm.get_platform_balance(symbol)
                             if bal and bal > 0:
                                 ctx.account_risk.update_balance(acct, bal)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "[risk-state] account balance refresh failed for {}: {}",
+                                acct, exc,
+                            )
             except Exception as exc:
                 logger.debug("[risk-state] position risk calc failed: {}", exc)
                 continue
@@ -4869,8 +4880,14 @@ class EventDrivenSystem:
                         from brain.drawdown_guard import DrawdownMode
                         if ctx.drawdown_guard.get_status().mode == DrawdownMode.FROZEN.value:
                             trig.drawdown_frozen = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Unknown drawdown state is treated as frozen; it may
+                        # escalate risk reduction, never permit additional exposure.
+                        trig.drawdown_frozen = True
+                        logger.critical(
+                            "[risk-state] drawdown guard status unavailable; "
+                            "forcing emergency reduction: {}", exc,
+                        )
                 if trig.any_fired:
                     ctx.portfolio_risk_sm.escalate_to_emergency(
                         trig, heat_pct, corr_safe,
@@ -4957,8 +4974,13 @@ class EventDrivenSystem:
                             if acct and acct_risk.heat(acct) < emerg_pct:
                                 skipped += 1
                                 continue
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Unknown account heat takes the fail-safe path below:
+                            # close the position rather than skip a risk reduction.
+                            logger.warning(
+                                "[heat-monitor] account heat unavailable for {}; "
+                                "closing conservatively: {}", ticket, exc,
+                            )
                     self._aggregator.submit([Intent.close(
                         symbol=symbol,
                         ticket=ticket,
@@ -5405,9 +5427,11 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None
         exit_reason_source = "event_driven"
         raw_broker_reason: Optional[int] = None
-        broker_commission = 0.0
-        broker_swap = 0.0
-        broker_fee = 0.0
+        # None means the broker did not provide realized cost data. Do not
+        # serialize missing commission/swap/fees as a verified zero.
+        broker_commission: Optional[float] = None
+        broker_swap: Optional[float] = None
+        broker_fee: Optional[float] = None
 
         resp = getattr(result, "broker_response", None)
         platform = getattr(resp, "platform", "") if resp is not None else ""
@@ -5432,9 +5456,12 @@ class EventDrivenSystem:
             di_pnl = getattr(deal_info, "pnl", None)
             if di_pnl is not None:
                 pnl_dollars = float(di_pnl)
-            broker_commission = float(getattr(deal_info, "commission", 0.0) or 0.0)
-            broker_swap = float(getattr(deal_info, "swap", 0.0) or 0.0)
-            broker_fee = float(getattr(deal_info, "fee", 0.0) or 0.0)
+            raw_commission = getattr(deal_info, "commission", None)
+            raw_swap = getattr(deal_info, "swap", None)
+            raw_fee = getattr(deal_info, "fee", None)
+            broker_commission = float(raw_commission) if raw_commission is not None else None
+            broker_swap = float(raw_swap) if raw_swap is not None else None
+            broker_fee = float(raw_fee) if raw_fee is not None else None
             # Part XIX Art 7 — self-calibrate the round-trip commission-per-lot
             # from realised deals so the net-EV opportunity gate uses the broker's
             # true cost. EMA over |commission+fee| / lots. Best-effort.
@@ -5456,8 +5483,8 @@ class EventDrivenSystem:
                     rt = _cost / _lots
                     prev = float(getattr(self, "_commission_per_lot_est", 0.0) or 0.0)
                     self._commission_per_lot_est = rt if prev <= 0.0 else (0.8 * prev + 0.2 * rt)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[close] commission-per-lot calibration skipped: {}", exc)
             di_close = getattr(deal_info, "close_price", None)
             if di_close:
                 close_price = float(di_close)
@@ -5536,8 +5563,11 @@ class EventDrivenSystem:
         try:
             with self._inflight_manage_lock:
                 self._inflight_manage[(str(ticket), int(intent_type))] = prev
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("[management] failed to record rollback snapshot for {}: {}", ticket, exc)
+            raise RuntimeError(
+                f"cannot safely stage management rollback for ticket {ticket}"
+            ) from exc
 
     def _clear_inflight_manage_ticket(self, ticket: str) -> None:
         """Drop all in-flight rollback snapshots for a (now closed) ticket."""
@@ -5545,8 +5575,8 @@ class EventDrivenSystem:
             with self._inflight_manage_lock:
                 for key in [k for k in self._inflight_manage if k[0] == str(ticket)]:
                     self._inflight_manage.pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[management] failed to clear rollback snapshots for {}: {}", ticket, exc)
 
     def _handle_manage_result(self, intent: Intent, result: Any) -> None:
         """Commit or roll back an optimistic management mutation.
@@ -5590,8 +5620,11 @@ class EventDrivenSystem:
                     for field_name, value in prev.items():
                         try:
                             setattr(mgmt, field_name, value)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.critical(
+                                "[management] rollback restore failed for {}.{}: {}",
+                                ticket, field_name, exc,
+                            )
                     try:
                         self._mgmt_store.persist(mgmt, force=True)
                     except Exception as exc:
@@ -5978,6 +6011,11 @@ class EventDrivenSystem:
         we additionally block new entries near the Friday close and during the
         gap-prone first minutes of the Sunday FX reopen.
         """
+        if getattr(self, "_scanner_blind_warned", False):
+            logger.warning(
+                "[entry-gate] scanner is blind or its health is unknown; blocking new exposure"
+            )
+            return False
         ctx = self._ctx
         if ctx is None or ctx.session_engine is None:
             return True
@@ -6015,8 +6053,8 @@ class EventDrivenSystem:
                     return False
             return status.is_tradeable
         except Exception as exc:
-            logger.debug("[session-gate] SessionEngine check failed: {}", exc)
-            return True
+            logger.warning("[session-gate] SessionEngine check failed; blocking entry for {}: {}", symbol, exc)
+            return False
 
     def _is_fx_market_closed(self) -> bool:
         """True when the FX market is closed (weekend) per the SessionEngine.
@@ -6706,9 +6744,9 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None,
         exit_reason_source: str = "event_driven",
         raw_broker_reason: Optional[int] = None,
-        commission: float = 0.0,
-        swap: float = 0.0,
-        fee: float = 0.0,
+        commission: Optional[float] = None,
+        swap: Optional[float] = None,
+        fee: Optional[float] = None,
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 
@@ -6815,9 +6853,12 @@ class EventDrivenSystem:
                         "closed_at_epoch": _time.time(),
                         "pnl_dollars": float(pnl_dollars or 0.0),
                         "pnl_pips": float(pnl_pips or 0.0),
-                        "commission": float(commission or 0.0),
-                        "swap": float(swap or 0.0),
-                        "fee": float(fee or 0.0),
+                        "commission": float(commission) if commission is not None else None,
+                        "swap": float(swap) if swap is not None else None,
+                        "fee": float(fee) if fee is not None else None,
+                        "realized_costs_observed": (
+                            commission is not None and swap is not None and fee is not None
+                        ),
                         "exit_reason": str(exit_reason or ""),
                         "validation_status": "unvalidated",
                         "predictive_ability_demonstrated": False,

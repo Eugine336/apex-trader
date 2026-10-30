@@ -428,6 +428,18 @@ class ActionExecutor:
             return f"broker_spec_unavailable: specification lookup failed ({type(exc).__name__})"
         if not isinstance(spec, dict) or not spec:
             return "broker_spec_unavailable: no live symbol specification"
+        # A durable provenance write can fail after a broker fill. EventStore
+        # marks itself degraded in that case; refuse subsequent new exposure
+        # until the audit ledger is healthy again. Do not lazily create a DB
+        # from this gate, because initialization belongs to system startup.
+        try:
+            from persistence.event_store import get_existing_event_store
+            event_store = get_existing_event_store()
+        except Exception as exc:
+            return f"decision_provenance_store_unavailable: {type(exc).__name__}"
+        if event_store is not None and event_store.is_degraded:
+            return "decision_provenance_store_degraded: refusing new exposure"
+
         if spec.get("source_verified") is not True or spec.get("specification_verified") is not True:
             return "broker_spec_unverified: source/specification provenance is not verified"
 

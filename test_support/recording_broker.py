@@ -102,8 +102,11 @@ class RecordingFakeBroker:
             "volume_step": 0.01,
             "point": 0.00001,
             "trade_stops_level": 0,
+            "trade_freeze_level": 0,
             "trade_tick_value": 1.0,
             "trade_tick_size": 0.00001,
+            "trade_contract_size": 100000.0,
+            "digits": 5,
         }
 
     def execute_entry(

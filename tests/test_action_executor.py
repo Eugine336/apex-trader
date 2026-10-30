@@ -990,3 +990,64 @@ def test_open_rejects_unverified_broker_calendar_before_broker_call():
     assert not result.success and result.rejected_by_gate
     assert "broker_calendar_unverified" in result.gate_reason
     assert broker.open_calls == []
+
+
+def test_open_rejected_when_durable_provenance_store_is_degraded(monkeypatch):
+    from persistence import event_store as event_store_module
+
+    degraded_store = type("DegradedStore", (), {"is_degraded": True})()
+    monkeypatch.setattr(
+        event_store_module,
+        "get_existing_event_store",
+        lambda: degraded_store,
+    )
+    broker = FakeBroker()
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "decision_provenance_store_degraded" in result.gate_reason
+    assert broker.open_calls == []
+
+
+
+def test_open_rejects_off_tick_price_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.01,
+        "trade_stops_level": 0,
+        "trade_freeze_level": 0,
+        "trade_tick_size": 0.03,
+        "trade_tick_value": 1.0,
+        "trade_contract_size": 100.0,
+        "digits": 2,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "off tick size" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_deriv_contract_constraints_do_not_authorize_shared_open():
+    import time
+    from types import SimpleNamespace
+
+    from platforms.deriv.deriv_connector import DerivConnector
+
+    connector = DerivConnector.__new__(DerivConnector)
+    connector._mapper = SimpleNamespace(to_broker=lambda symbol: symbol)
+    connector._discovered_multipliers = {"R_75": [100, 200, 300]}
+    connector._discovered_multipliers_at = {"R_75": time.time()}
+    result = ActionExecutor(connector, _fast_cfg()).execute(
+        _open_intent("R_75"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "broker_spec_unverified" in result.gate_reason

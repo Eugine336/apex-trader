@@ -2186,9 +2186,11 @@ class DerivConnector(BaseConnector):
             return DealCloseInfo(
                 pnl=pnl,
                 exit_reason=exit_reason,
-                commission=0.0,
-                swap=0.0,
-                fee=0.0,
+                commission=(
+                    float(poc["commission"]) if poc.get("commission") is not None else None
+                ),
+                swap=float(poc["swap"]) if poc.get("swap") is not None else None,
+                fee=float(poc["fee"]) if poc.get("fee") is not None else None,
                 close_price=close_price,
                 close_time=close_time,
                 raw_comment=str(poc.get("status", "")),
