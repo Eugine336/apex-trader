@@ -41,6 +41,10 @@ def test_native_analysis_preserves_evidence_lineage_and_epistemic_categories():
     assert structure.evidence_id in encoded["pattern_evidence_ids"]["displacement_confirmed"]
     assert encoded["epistemic_record"]["observed_facts"]
     assert encoded["epistemic_record"]["inferences"]
+    assert any(
+        item.startswith("structure=")
+        for item in encoded["epistemic_record"]["inferences"]
+    )
     assert encoded["epistemic_record"]["unknowns"]
     assert encoded["epistemic_record"]["assumptions"] == []
 
