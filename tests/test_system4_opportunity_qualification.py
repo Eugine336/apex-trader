@@ -23,7 +23,7 @@ def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC"):
             "data_leakage_checked": True,
             "selection_bias_checked": True,
             "overfitting_checked": True,
-            "direction": direction,
+            "calibration_side": direction,
             "win_probability": 0.61,
             "sample_count": 240,
             "brier_score": 0.17,
