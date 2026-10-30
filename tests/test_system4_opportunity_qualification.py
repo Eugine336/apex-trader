@@ -240,3 +240,26 @@ def test_execution_cost_from_another_symbol_cannot_qualify_candidate():
     )._execution_cost_estimate(state)
     assert verified is False
     assert "not verified" in source
+
+
+
+def test_cost_flag_without_attributable_source_cannot_qualify():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(Evidence(
+        source_module="execution.unattributed",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol="SYNTHETIC",
+        observation="cost flag with no source attribution",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "cost_verified": True,
+            "estimated_total_cost_r": 0.01,
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=60,
+    ))
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._execution_cost_estimate(state)
+    assert verified is False
