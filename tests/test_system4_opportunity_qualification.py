@@ -27,6 +27,7 @@ def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC"):
             "win_probability": 0.61,
             "sample_count": 240,
             "brier_score": 0.17,
+            "reliability_gap": 0.08,
             "calibration_method": "isotonic",
             "calibration_id": "holdout-2026-q3",
         },
