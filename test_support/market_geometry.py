@@ -87,6 +87,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "win_probability": 0.72,
             "sample_count": 240,
             "brier_score": 0.17,
+            "reliability_gap": 0.08,
             "calibration_method": "synthetic_isotonic",
             "calibration_id": "unit-test-holdout",
         },
