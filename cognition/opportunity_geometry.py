@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+import time
 from typing import Any, Optional
 
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
@@ -128,14 +129,25 @@ def derive_opportunity_geometry(
         if (
             measurements.get("source_kind") != "market_lens"
             or measurements.get("source_timestamp_known") is not True
+            or measurements.get("data_basis") != "completed_ohlc"
             or measurements.get("provisional") is True
             or measurements.get("completed") is False
         ):
             continue
         domain_value = getattr(getattr(item, "domain", None), "value", None)
         domain = str(domain_value or getattr(item, "domain", "") or "").lower()
-        source_time = _finite(getattr(item, "timestamp_epoch", None))
-        if source_time is None:
+        # Evidence arrival time is not the candle's observation time. Geometry
+        # must use the source bar epoch and enforce its own age at the decision
+        # cutoff, so late-arriving old bars cannot masquerade as current facts.
+        source_time = _finite(measurements.get("source_bar_epoch"))
+        decision_time = _finite(now) if now is not None else time.time()
+        horizon = _finite(getattr(item, "relevance_horizon_seconds", None))
+        if (
+            source_time is None or decision_time is None
+            or source_time > decision_time
+            or horizon is None or horizon <= 0.0
+            or decision_time - source_time > horizon
+        ):
             continue
         if domain == "structure":
             price = _finite_positive(measurements.get("current_close"))
