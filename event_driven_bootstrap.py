@@ -5563,8 +5563,11 @@ class EventDrivenSystem:
         try:
             with self._inflight_manage_lock:
                 self._inflight_manage[(str(ticket), int(intent_type))] = prev
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("[management] failed to record rollback snapshot for {}: {}", ticket, exc)
+            raise RuntimeError(
+                f"cannot safely stage management rollback for ticket {ticket}"
+            ) from exc
 
     def _clear_inflight_manage_ticket(self, ticket: str) -> None:
         """Drop all in-flight rollback snapshots for a (now closed) ticket."""
@@ -5572,8 +5575,8 @@ class EventDrivenSystem:
             with self._inflight_manage_lock:
                 for key in [k for k in self._inflight_manage if k[0] == str(ticket)]:
                     self._inflight_manage.pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[management] failed to clear rollback snapshots for {}: {}", ticket, exc)
 
     def _handle_manage_result(self, intent: Intent, result: Any) -> None:
         """Commit or roll back an optimistic management mutation.
@@ -5617,8 +5620,11 @@ class EventDrivenSystem:
                     for field_name, value in prev.items():
                         try:
                             setattr(mgmt, field_name, value)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.critical(
+                                "[management] rollback restore failed for {}.{}: {}",
+                                ticket, field_name, exc,
+                            )
                     try:
                         self._mgmt_store.persist(mgmt, force=True)
                     except Exception as exc:
