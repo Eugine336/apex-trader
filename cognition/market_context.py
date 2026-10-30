@@ -173,6 +173,11 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "conflict_score", "volatility_state", "momentum_state",
             "rolling_zscore_30", "ema_spread_atr", "pattern_tags",
             "bullish_patterns", "bearish_patterns", "near_range_boundary",
+            "probability_calibration_verified", "source_verified",
+            "out_of_sample", "walk_forward", "untouched_holdout",
+            "data_leakage_checked", "selection_bias_checked", "overfitting_checked",
+            "calibration_side", "win_probability", "sample_count", "brier_score",
+            "reliability_gap", "calibration_method", "calibration_id",
         }
         unknown_keys = sorted(str(k) for k in m if k not in known_keys and
                               k not in {
