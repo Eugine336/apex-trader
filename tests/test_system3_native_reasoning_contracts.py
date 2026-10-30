@@ -344,6 +344,35 @@ def test_stale_and_future_evidence_never_enters_native_hypothesis_lineage():
 
 
 
+def test_verified_execution_cost_uses_decision_time_cutoff():
+    from cognition.brain import CognitiveBrain
+
+    state = MarketState(symbol="SYNTHETIC")
+    old_cost = _evidence(
+        "execution_quality",
+        {"cost_verified": True, "estimated_total_cost_r": 0.08,
+         "cost_source": "prior-quote"},
+        source="cost.prior",
+    )
+    old_cost.timestamp_epoch = 95.0
+    future_cost = _evidence(
+        "execution_quality",
+        {"cost_verified": True, "estimated_total_cost_r": 0.001,
+         "cost_source": "future-quote"},
+        source="cost.future",
+    )
+    future_cost.timestamp_epoch = 101.0
+    state.add(old_cost)
+    state.add(future_cost)
+
+    verified, cost, source = CognitiveBrain(reasoner=None)._execution_cost_estimate(
+        state, now=100.0,
+    )
+    assert verified is True
+    assert cost == 0.08
+    assert source == "prior-quote"
+
+
 def test_native_analysis_uses_same_decision_time_cutoff_as_consolidation():
     state = MarketState(symbol="SYNTHETIC")
     valid = _evidence("structure", {"displacement": 1.0}, source="valid")
