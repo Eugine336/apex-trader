@@ -113,9 +113,11 @@ def test_weak_execution_is_evaluated_by_net_ev_and_activation():
     weaker = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9,
                                 execution_confidence=0.2))
     assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    # Low execution confidence affects the EV estimate and sizing; it is not
-    # itself a universal binary veto. The actual net-EV outcome decides.
-    assert weaker.decision.expected_value < strong.decision.expected_value
+    # The calibrated win probability is unchanged for the same market/setup;
+    # execution quality changes exposure, not the empirical outcome probability.
+    assert weaker.decision.expected_value == strong.decision.expected_value
+    assert weaker.campaign is not None
+    assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
     if weaker.decision.expected_value > 0:
         assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
         assert weaker.campaign is not None
