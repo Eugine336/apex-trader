@@ -322,7 +322,7 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 - Sweep/reversal activation requires a counter-side sweep, explicit reclaim confirmation, measured swept level and a completed close back across that level.
 - Every directional opportunity receives its own independently derived entry, stop, target, risk/reward distances and supporting geometry evidence IDs.
 - Effective reasoning confidence remains a conviction/sizing input, not a win probability, in both advisor-assisted and native-only origination. EV used for action requires fresh exact-symbol, direction-specific calibration evidence with explicit source verification, walk-forward/out-of-sample and untouched-holdout controls, leakage/selection/overfit checks, calibration method/ID, at least 30 samples, Brier score and reliability gap no greater than the existing 0.25 calibration tolerance.
-- Without verified calibration, EV is marked diagnostic only and directional exposure is blocked. Historical calibration metadata is excluded from independent market-domain coverage.
+- Without verified calibration, EV is marked diagnostic only, canonical `DecisionPackage.expected_value` remains zero, and directional exposure is blocked in both advisor-assisted and native-only origination. Execution-cost qualification also requires exact symbol identity and a non-fallback attributable source. Historical calibration metadata is excluded from independent market-domain coverage.
 - Sizing is bounded by effective confidence; reasoning quality can reduce exposure but cannot lift it above confidence.
 
 ### Deterministic tests added
