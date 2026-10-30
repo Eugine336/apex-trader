@@ -416,6 +416,7 @@ class MarketState:
             EvidenceDomain.EXECUTION_QUALITY.value,
             EvidenceDomain.REASONING.value,
             EvidenceDomain.PORTFOLIO.value,
+            EvidenceDomain.HISTORICAL_ANALOGUE.value,
             EvidenceDomain.OTHER.value,
         }
         # These OHLC observers can retain an unknown-time reading for qualitative
