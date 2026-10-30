@@ -301,8 +301,12 @@ class EventStore:
             campaign_id=source_payload.get("campaign_id", ""),
         )
         try:
-            payload_json = json.dumps(event_payload)
-        except (TypeError, ValueError):
+            payload_json = json.dumps(event_payload, allow_nan=not durable)
+        except (TypeError, ValueError) as exc:
+            if durable:
+                raise ValueError(
+                    "durable event payload is not strict JSON serializable"
+                ) from exc
             payload_json = json.dumps({
                 "identity_version": event_payload.get("identity_version", ""),
                 "event_id": eid,
