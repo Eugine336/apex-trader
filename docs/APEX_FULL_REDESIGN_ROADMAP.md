@@ -316,12 +316,12 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 - `expected_value_r` explicitly treats its first input as win probability, while System 3 marks native confidence as uncalibrated reasoning strength. The prior integration passed effective confidence directly as probability. That semantic mismatch is corrected by requiring separate verified calibration evidence for action.
 
 ### Implemented in PR #797
-- Geometry requires exact instrument identity and a declared timeframe. Explicitly provisional/incomplete observations are excluded.
+- Geometry requires exact instrument identity, declared timeframe, `data_basis=completed_ohlc`, and the original `source_bar_epoch`. Source-bar age is checked at the decision-time cutoff independently of evidence arrival time; late-arriving stale bars and future bars are rejected. Explicitly provisional/incomplete observations are excluded.
 - The latest structural observation alone can establish breakout/trend activation; same-time/same-timeframe incompatible structure readings fail closed.
 - Trend/momentum and range-response activation require matching timeframes and non-future evidence.
 - Sweep/reversal activation requires a counter-side sweep, explicit reclaim confirmation, measured swept level and a completed close back across that level.
 - Every directional opportunity receives its own independently derived entry, stop, target, risk/reward distances and supporting geometry evidence IDs.
-- Effective reasoning confidence remains a conviction/sizing input, not a win probability. EV used for action requires fresh exact-symbol, direction-specific calibration evidence with explicit source verification, walk-forward/out-of-sample and untouched-holdout controls, leakage/selection/overfit checks, calibration method/ID, at least 30 samples, Brier score and reliability gap no greater than the existing 0.25 calibration tolerance.
+- Effective reasoning confidence remains a conviction/sizing input, not a win probability, in both advisor-assisted and native-only origination. EV used for action requires fresh exact-symbol, direction-specific calibration evidence with explicit source verification, walk-forward/out-of-sample and untouched-holdout controls, leakage/selection/overfit checks, calibration method/ID, at least 30 samples, Brier score and reliability gap no greater than the existing 0.25 calibration tolerance.
 - Without verified calibration, EV is marked diagnostic only and directional exposure is blocked. Historical calibration metadata is excluded from independent market-domain coverage.
 - Sizing is bounded by effective confidence; reasoning quality can reduce exposure but cannot lift it above confidence.
 
