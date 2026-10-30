@@ -12,7 +12,7 @@ from gold_desk.indicators import atr
 from gold_desk.models import Candle, EventWindow, MarketSnapshot, PatternObservation, Venue
 from gold_desk.news_context import build_verified_event_window
 from gold_desk.strategies import CandleRangeTheoryDetector, EventWindowBreakoutDetector, default_pattern_detectors
-from gold_desk.symbols import GoldOnlyGuard
+from gold_desk.symbols import SymbolPolicy
 
 
 def _snapshot(symbol: str = "XAUUSD") -> MarketSnapshot:
@@ -114,13 +114,13 @@ def test_crt_emits_facts_and_measurements_without_trade_geometry():
         assert not hasattr(finding, forbidden)
 
 
-def test_gold_symbol_guard_uses_exact_allowlist_not_prefix_matching():
-    guard = GoldOnlyGuard()
-    assert guard.canonical_symbol("XAUUSD") == "XAUUSD"
-    assert guard.canonical_symbol("xauusdm") == "XAUUSD"
-    assert guard.canonical_symbol("GOLD") == "XAUUSD"
-    assert guard.canonical_symbol("XAUUSD_FAKE") is None
-    assert guard.canonical_symbol("EURUSD") is None
+def test_symbol_policy_observes_every_instrument_with_case_insensitive_keys():
+    policy = SymbolPolicy()
+    assert policy.canonical_symbol("XAUUSD") == "XAUUSD"
+    assert policy.canonical_symbol(" eurusd ") == "EURUSD"
+    assert policy.canonical_symbol("BTCUSD") == "BTCUSD"
+    assert policy.canonical_symbol("") is None
+    assert policy.is_observable("US30") and not policy.is_observable("   ")
 
 
 def test_snapshot_rejects_future_candles_and_naive_timestamps():
@@ -140,7 +140,7 @@ def test_atr_is_deterministic_and_positive_for_valid_bars():
 def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements():
     evidence = evidence_from_gold_market("XAUUSD", _payload())
     assert len(evidence) == 3
-    root = next(item for item in evidence if item.source_module == "gold_market_desk")
+    root = next(item for item in evidence if item.source_module == "market_desk")
     assert all(item.polarity == 0.0 for item in evidence)
     assert root.measurements["pattern_families"] == ["crt_range_observation"]
     assert root.measurements["overlap_policy"] == "single_brain_synthesis_no_vote_summing"
@@ -161,10 +161,19 @@ def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements
     assert "NOT independent votes" in root.observation
 
 
-def test_gold_market_adapter_rejects_stale_and_non_gold_payloads():
+def test_market_adapter_rejects_stale_and_mismatched_symbol_payloads():
     old = datetime.now(timezone.utc) - timedelta(seconds=30)
     assert evidence_from_gold_market("XAUUSD", _payload(observed_at=old)) == []
-    assert evidence_from_gold_market("EURUSD", _payload(symbol="EURUSD")) == []
+    # Evidence is only valid for the instrument it was observed on.
+    assert evidence_from_gold_market("XAUUSD", _payload(symbol="EURUSD")) == []
+    assert evidence_from_gold_market("EURUSD", _payload(symbol="XAUUSD")) == []
+
+
+def test_market_adapter_accepts_non_gold_instruments():
+    for symbol in ("EURUSD", "BTCUSD", "US30"):
+        evidence = evidence_from_gold_market(symbol, _payload(symbol=symbol))
+        assert evidence, symbol
+        assert any(item.source_module == "market_desk" for item in evidence)
 
 
 class _FakeFrame:
@@ -286,7 +295,7 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
 
     assert len(bus.events) == 1
     event_type, payload = bus.events[0]
-    assert event_type == "gold_market_evidence"
+    assert event_type == "market_evidence"
     assert payload["decision_authority"] == "CognitiveBrain"
     assert payload["orders_sent"] is False
     observation = payload["pattern_observations"][0]
@@ -462,14 +471,17 @@ def test_gold_observations_enter_existing_market_state_not_a_parallel_decider():
     consolidator = EvidenceConsolidator()
     consolidator.set_gold_market_source(source)
     state = consolidator.build("XAUUSD")
-    gold_records = [item for item in state.evidence if item.source_module.startswith("gold_market_desk")]
+    gold_records = [item for item in state.evidence if item.source_module.startswith("market_desk")]
     assert calls == ["XAUUSD"]
     assert len(gold_records) == 3
     assert all(item.polarity == 0.0 for item in gold_records)
-    root = next(item for item in gold_records if item.source_module == "gold_market_desk")
+    root = next(item for item in gold_records if item.source_module == "market_desk")
     assert root.measurements["orders_sent"] is False
     assert any(item.domain.value == "liquidity" for item in gold_records)
     assert any(item.domain.value == "structure" for item in gold_records)
 
-    consolidator.build("EURUSD")
-    assert calls == ["XAUUSD"]
+    # Every instrument is asked for its own market read; a payload observed on a
+    # different instrument is never attached as evidence for it.
+    eurusd_state = consolidator.build("EURUSD")
+    assert calls == ["XAUUSD", "EURUSD"]
+    assert not [item for item in eurusd_state.evidence if item.source_module.startswith("market_desk")]

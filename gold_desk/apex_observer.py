@@ -1,6 +1,6 @@
 """Shadow-only bridge from Apex's live broker feed to its SINGLE CognitiveBrain.
 
-The Gold pattern detectors are measurement instruments. They do not compete to
+The pattern detectors are measurement instruments, run for every enabled instrument. They do not compete to
 select a trade, assign a final direction, or publish an executable opportunity.
 Their factual observations are consolidated into one neutral payload consumed by
 CognitionLoop, where Apex's existing CognitiveBrain is the sole decision
@@ -9,7 +9,6 @@ authority. This observer has no broker order API.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from queue import Empty, Full, Queue
 import hashlib
 import json
 import threading
@@ -97,16 +96,18 @@ def _frame_to_closed_candles(
         unique: dict[datetime, Candle] = {bar.timestamp: bar for bar in result}
         return tuple(unique[timestamp] for timestamp in sorted(unique))
     except Exception as exc:
-        logger.debug("[gold-desk] OHLC conversion failed for {}: {}", tf, exc)
+        logger.debug("[market-observer] OHLC conversion failed for {}: {}", tf, exc)
         return ()
 
 
-class ApexGoldDeskShadowObserver:
-    """Continuously update Gold observations, then let CognitionLoop decide.
+class ApexMarketObserver:
+    """Continuously update factual market observations for every enabled instrument.
 
-    `venue` must be "MT5" or "DERIV". The selected symbol must resolve through
-    PlatformManager to that same venue, and ticks from other venues are ignored.
-    This prevents mixing broker feeds when XAUUSD is available on both.
+    `venue` is "MT5", "DERIV" or "AUTO". With a fixed venue each symbol must resolve
+    through PlatformManager to that venue and ticks from other venues are ignored
+    (this prevents mixing broker feeds when a symbol exists on both). With "AUTO"
+    each symbol is observed on whichever venue PlatformManager routes it to. The
+    observer emits facts only; CognitionLoop and the Brain decide.
     """
 
     def __init__(
@@ -124,12 +125,13 @@ class ApexGoldDeskShadowObserver:
         ] | None = None,
         pattern_detectors: Sequence[Any] | None = None,
         max_tick_age_seconds: float = 5.0,
+        min_eval_interval_seconds: float = 1.0,
     ) -> None:
         from gold_desk.strategies import default_pattern_detectors
 
         selected_venue = str(venue or "").strip().upper()
-        if selected_venue not in {"MT5", "DERIV"}:
-            raise ValueError("APEX Gold desk venue must be explicitly MT5 or DERIV")
+        if selected_venue not in {"MT5", "DERIV", "AUTO"}:
+            raise ValueError("APEX market observer venue must be MT5, DERIV or AUTO")
         if max_tick_age_seconds <= 0:
             raise ValueError("max_tick_age_seconds must be positive")
 
@@ -145,15 +147,21 @@ class ApexGoldDeskShadowObserver:
         self._pattern_detectors = list(pattern_detectors or default_pattern_detectors())
         self.max_tick_age_seconds = float(max_tick_age_seconds)
 
-        from gold_desk.symbols import GoldOnlyGuard
-        self.gold_guard = GoldOnlyGuard()
+        from gold_desk.symbols import SymbolPolicy
+        self.policy = SymbolPolicy()
         self.symbols = tuple(sorted({
             str(symbol).strip()
             for symbol in symbols
-            if symbol and self.gold_guard.is_gold(str(symbol).strip())
+            if symbol and self.policy.is_observable(str(symbol).strip())
         }))
 
-        self._queue: Queue[Any] = Queue(maxsize=1)
+        # Latest tick per symbol (coalesced) so a busy instrument can never starve
+        # another; each symbol is evaluated at most every min_eval_interval seconds.
+        self._pending_ticks: dict[str, Any] = {}
+        self._last_eval: dict[str, float] = {}
+        self.min_eval_interval_seconds = float(min_eval_interval_seconds)
+        self._wakeup = threading.Event()
+        self._venue_by_symbol: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -192,29 +200,31 @@ class ApexGoldDeskShadowObserver:
             try:
                 connector_name = str(self.venue_resolver(symbol) or "").upper()
             except Exception as exc:
-                logger.warning("[gold-desk] cannot resolve venue for {}: {}", symbol, exc)
+                logger.warning("[market-observer] cannot resolve venue for {}: {}", symbol, exc)
                 continue
             resolved = (
                 "MT5" if "MT5" in connector_name
                 else "DERIV" if "DERIV" in connector_name
                 else None
             )
-            if resolved != self.venue:
+            if resolved is None or (self.venue != "AUTO" and resolved != self.venue):
                 logger.warning(
-                    "[gold-desk] not observing {}: requested venue {}, PlatformManager resolved {}",
+                    "[market-observer] not observing {}: requested venue {}, PlatformManager resolved {}",
                     symbol, self.venue, resolved or "unknown",
                 )
                 continue
-            selected.add(self.gold_guard.canonical_symbol(symbol) or symbol.upper())
+            canonical = self.policy.canonical_symbol(symbol) or symbol.upper()
+            selected.add(canonical)
+            self._venue_by_symbol[canonical] = resolved
 
         if not selected:
-            logger.warning("[gold-desk] observer disabled: no Gold symbol on selected {} venue", self.venue)
+            logger.warning("[market-observer] observer disabled: no symbol routes to venue {}", self.venue)
             return False
 
         self._selected_symbols = selected
         now = datetime.now(timezone.utc)
         for symbol in self.symbols:
-            if (self.gold_guard.canonical_symbol(symbol) or symbol.upper()) not in selected:
+            if (self.policy.canonical_symbol(symbol) or symbol.upper()) not in selected:
                 continue
             for timeframe in _TIMEFRAMES:
                 self._refresh(symbol, timeframe, now)
@@ -223,11 +233,11 @@ class ApexGoldDeskShadowObserver:
         self._running = True
         self.tick_router.register_callback(self._on_tick)
         self._thread = threading.Thread(
-            target=self._run, name="apex-gold-market-observer", daemon=True,
+            target=self._run, name="apex-market-observer", daemon=True,
         )
         self._thread.start()
         logger.info(
-            "[gold-desk] market observer started: symbols={}, venue={}, "
+            "[market-observer] market observer started: symbols={}, venue={}, "
             "detectors={}, decision_authority=CognitiveBrain, live_orders=disabled",
             sorted(selected), self.venue, len(self._pattern_detectors),
         )
@@ -242,28 +252,23 @@ class ApexGoldDeskShadowObserver:
         except Exception:
             pass
         self._stop.set()
-        try:
-            self._queue.put_nowait(None)
-        except Full:
-            pass
+        self._wakeup.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
         self._thread = None
         logger.info(
-            "[gold-desk] observer stopped: ticks={}, evaluations={}, evidence_events={}",
+            "[market-observer] observer stopped: ticks={}, evaluations={}, evidence_events={}",
             self.ticks_received, self.snapshots_evaluated, self.evidence_events_emitted,
         )
 
     def evidence_for(self, symbol: str) -> dict[str, Any] | None:
         """Return the latest broker-backed evidence payload to CognitionLoop."""
-        if not self.gold_guard.is_gold(symbol):
+        key = self.policy.canonical_symbol(symbol)
+        if key is None:
             return None
         with self._lock:
-            payload = self._latest_market_evidence.get(str(symbol).strip().upper())
-            if payload is None:
-                # Gold aliases are canonicalised at the broker boundary.
-                payload = self._latest_market_evidence.get("XAUUSD")
+            payload = self._latest_market_evidence.get(key)
             if payload is None:
                 return None
             copied = dict(payload)
@@ -288,7 +293,7 @@ class ApexGoldDeskShadowObserver:
         return copied
 
     def set_evidence_change_callback(self, callback: Callable[[str], Any] | None) -> None:
-        """Register the single-Brain wake callback for material Gold market changes.
+        """Register the single-Brain wake callback for material market changes.
 
         The callback must enqueue work only. It runs on the observer worker thread;
         market-data/tick routing is never blocked by Brain reasoning.
@@ -302,19 +307,17 @@ class ApexGoldDeskShadowObserver:
         max_age_seconds: float = 15.0,
         now_epoch: float | None = None,
     ) -> bool:
-        """Fail closed unless a recent, open-market Gold quote/bar snapshot exists.
+        """Fail closed unless a recent, open-market quote/bar snapshot exists.
 
         Used by the shared ActionExecutor immediately before a new OPEN. This is
         operational data-integrity validation, not a pattern score or decision.
         It intentionally does not block CLOSE or other risk-reducing intents.
         """
-        if not self.gold_guard.is_gold(symbol) or max_age_seconds <= 0:
+        key = self.policy.canonical_symbol(symbol)
+        if key is None or max_age_seconds <= 0:
             return False
-        key = str(symbol or "").strip().upper()
         with self._lock:
             payload = self._latest_market_evidence.get(key)
-            if payload is None:
-                payload = self._latest_market_evidence.get("XAUUSD")
             if payload is None:
                 return False
             # Copy only primitive fields while holding the lock.
@@ -356,43 +359,54 @@ class ApexGoldDeskShadowObserver:
             return
         try:
             symbol = str(getattr(tick, "symbol", "") or "").strip()
-            canonical = self.gold_guard.canonical_symbol(symbol)
+            canonical = self.policy.canonical_symbol(symbol)
             if canonical is None or canonical not in self._selected_symbols:
                 return
-            if self._tick_venue(tick) != self.venue:
+            expected_venue = self._venue_by_symbol.get(canonical) or (
+                None if self.venue == "AUTO" else self.venue
+            )
+            if expected_venue is not None and self._tick_venue(tick) != expected_venue:
                 return
-            try:
-                self._queue.put_nowait(tick)
-            except Full:
-                # Latest broker observation wins; never process a backlog of old ticks.
-                try:
-                    self._queue.get_nowait()
-                except Empty:
-                    pass
-                try:
-                    self._queue.put_nowait(tick)
-                except Full:
-                    pass
+            # Latest broker observation per symbol wins; never process a backlog.
+            with self._lock:
+                self._pending_ticks[canonical] = tick
+            self._wakeup.set()
         except Exception:
             self.feed_errors += 1
-            logger.exception("[gold-desk] tick enqueue failed")
+            logger.exception("[market-observer] tick enqueue failed")
 
     def _run(self) -> None:
+        import time as _time
+
         while not self._stop.is_set():
-            try:
-                tick = self._queue.get(timeout=0.5)
-            except Empty:
-                continue
-            if tick is None:
-                continue
-            try:
-                self._evaluate_tick(tick)
-            except Exception:
-                self.feed_errors += 1
-                logger.exception("[gold-desk] market evidence cycle failed")
+            self._wakeup.wait(timeout=0.5)
+            self._wakeup.clear()
+            with self._lock:
+                batch = list(self._pending_ticks.items())
+            deferred = False
+            for symbol, tick in batch:
+                if self._stop.is_set():
+                    return
+                now = _time.monotonic()
+                if now - self._last_eval.get(symbol, 0.0) < self.min_eval_interval_seconds:
+                    deferred = True
+                    continue
+                with self._lock:
+                    # Only drop the tick we are about to evaluate (a newer one may have arrived).
+                    if self._pending_ticks.get(symbol) is tick:
+                        del self._pending_ticks[symbol]
+                self._last_eval[symbol] = now
+                try:
+                    self._evaluate_tick(tick)
+                except Exception:
+                    self.feed_errors += 1
+                    logger.exception("[market-observer] market evidence cycle failed")
+            if deferred:
+                _time.sleep(0.05)
+                self._wakeup.set()
 
     def _refresh(self, symbol: str, timeframe: str, observed_at: datetime) -> bool:
-        key = (self.gold_guard.canonical_symbol(symbol) or symbol.upper(), timeframe)
+        key = (self.policy.canonical_symbol(symbol) or symbol.upper(), timeframe)
         try:
             frame = self.candle_fetcher(symbol, timeframe, _HISTORY_BARS)
             bars = _frame_to_closed_candles(frame, timeframe, observed_at)
@@ -402,7 +416,7 @@ class ApexGoldDeskShadowObserver:
                 self._bars[key] = bars
             return True
         except Exception as exc:
-            logger.debug("[gold-desk] history refresh failed {}/{}: {}", symbol, timeframe, exc)
+            logger.debug("[market-observer] history refresh failed {}/{}: {}", symbol, timeframe, exc)
             return False
 
     @staticmethod
@@ -431,8 +445,11 @@ class ApexGoldDeskShadowObserver:
             return
 
         original_symbol = str(getattr(tick, "symbol", "") or "").strip()
-        symbol = self.gold_guard.canonical_symbol(original_symbol)
-        if symbol != "XAUUSD" or symbol not in self._selected_symbols:
+        symbol = self.policy.canonical_symbol(original_symbol)
+        if symbol is None or symbol not in self._selected_symbols:
+            return
+        venue = self._venue_by_symbol.get(symbol) or (None if self.venue == "AUTO" else self.venue)
+        if venue is None:
             return
         bid, ask = float(getattr(tick, "bid", 0.0)), float(getattr(tick, "ask", 0.0))
         if bid <= 0 or ask <= 0 or ask < bid:
@@ -474,10 +491,10 @@ class ApexGoldDeskShadowObserver:
                 event_window = self.event_window_source(symbol, observed_at, candle_map)
             except Exception as exc:
                 self.feed_errors += 1
-                logger.debug("[gold-desk] event-window source failed: {}", exc)
+                logger.debug("[market-observer] event-window source failed: {}", exc)
         snapshot = MarketSnapshot(
             symbol=symbol,
-            venue=self.venue,
+            venue=venue,
             observed_at=observed_at,
             bid=bid,
             ask=ask,
@@ -505,7 +522,7 @@ class ApexGoldDeskShadowObserver:
                     })
             except Exception as exc:
                 self.detector_errors += 1
-                logger.warning("[gold-desk] detector {} failed: {}", family, exc)
+                logger.warning("[market-observer] detector {} failed: {}", family, exc)
 
         completed_bars = {
             tf: self._bar_facts(candle_map.get(tf, ()))
@@ -515,7 +532,7 @@ class ApexGoldDeskShadowObserver:
         payload: dict[str, Any] = {
             "observed_at": observed_at.isoformat(),
             "symbol": symbol,
-            "venue": self.venue,
+            "venue": venue,
             "market_open": market_is_open,
             "data_quality_ok": snapshot.data_quality_ok,
             "quote": {"bid": bid, "ask": ask, "spread": ask - bid},
@@ -536,7 +553,7 @@ class ApexGoldDeskShadowObserver:
         }
         signature_payload = {
             "symbol": symbol,
-            "venue": self.venue,
+            "venue": venue,
             "completed_bar_times": {
                 tf: bars[-1]["close_time"] for tf, bars in completed_bars.items() if bars
             },
@@ -563,10 +580,13 @@ class ApexGoldDeskShadowObserver:
             if prior_wake is None or should_publish:
                 should_wake = True
             else:
-                price_threshold = max(0.25 * m5_atr, 3.0 * current_spread, 0.50)
+                # Scale-free (per-instrument) thresholds: ATR/spread relative, with a
+                # tiny price-relative floor so a zero-ATR/zero-spread feed still wakes.
+                tiny = max(abs(current_mid) * 1e-6, 1e-12)
+                price_threshold = max(0.25 * m5_atr, 3.0 * current_spread, tiny)
                 moved_materially = abs(current_mid - prior_wake["mid"]) >= price_threshold
                 prior_spread = prior_wake["spread"]
-                spread_changed = abs(current_spread - prior_spread) >= max(0.10, 0.50 * prior_spread)
+                spread_changed = abs(current_spread - prior_spread) >= max(0.50 * prior_spread, tiny)
                 should_wake = moved_materially or spread_changed
 
             if should_wake:
@@ -580,7 +600,7 @@ class ApexGoldDeskShadowObserver:
         self.last_result_summary = {
             "observed_at": observed_at.isoformat(),
             "symbol": symbol,
-            "venue": self.venue,
+            "venue": venue,
             "pattern_observation_count": len(observations),
             "decision_authority": "CognitiveBrain",
             "orders_sent": False,
@@ -588,12 +608,12 @@ class ApexGoldDeskShadowObserver:
         # This event is for monitoring/audit. CognitionLoop reads the same latest
         # payload directly; it never consumes a selected trade or direction vote.
         if should_publish:
-            self.event_bus.publish("gold_market_evidence", payload)
+            self.event_bus.publish("market_evidence", payload)
             self.evidence_events_emitted += 1
             logger.info(
-                "[gold-desk][EVIDENCE] {} {}: {} factual pattern observation(s); "
+                "[market-observer][EVIDENCE] {} {}: {} factual pattern observation(s); "
                 "authority=CognitiveBrain; no order/decision emitted",
-                self.venue, symbol, len(observations),
+                venue, symbol, len(observations),
             )
         if should_wake and wake_callback is not None:
             try:
@@ -601,7 +621,7 @@ class ApexGoldDeskShadowObserver:
                 # runs the Brain or performs broker I/O on this worker thread.
                 wake_callback(symbol)
             except Exception as exc:
-                logger.debug("[gold-desk] Brain wake callback failed: {}", exc)
+                logger.debug("[market-observer] Brain wake callback failed: {}", exc)
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -618,3 +638,7 @@ class ApexGoldDeskShadowObserver:
             "decision_authority": "CognitiveBrain",
             "live_orders_enabled": False,
         }
+
+
+# Backwards-compatible name for older imports.
+ApexGoldDeskShadowObserver = ApexMarketObserver

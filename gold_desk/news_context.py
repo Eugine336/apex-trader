@@ -25,7 +25,8 @@ def build_verified_event_window(
     from bars that closed at/after the scheduled event time.
     """
     try:
-        if str(symbol or "").strip().upper() != "XAUUSD":
+        symbol = str(symbol or "").strip()
+        if not symbol:
             return None
         if news_guard is None:
             return None
@@ -33,7 +34,7 @@ def build_verified_event_window(
             return None
         observed_at = observed_at.astimezone(timezone.utc)
 
-        status = news_guard.check(["XAUUSD"], observed_at)
+        status = news_guard.check([symbol], observed_at)
         events = list(getattr(status, "events_nearby", None) or [])
         events = [
             event for event in events
