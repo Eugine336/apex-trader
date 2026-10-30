@@ -71,7 +71,9 @@ class EvidenceAnalysis:
 
     # What domains are present and their strength.
     domain_coverage: dict = field(default_factory=dict)  # {domain: mean_confidence}
-    coverage_gap: float = 1.0  # 0-1, how much of the market picture is missing
+    informative_domains: list[str] = field(default_factory=list)
+    uninformative_domains: list[str] = field(default_factory=list)
+    coverage_gap: float = 1.0  # 0-1, based on usable measured domains
 
     # Evidence-derived market state observations (plain-text).
     observations: "list[str]" = field(default_factory=list)
@@ -129,6 +131,8 @@ class EvidenceAnalysis:
         return {
             "identity_version": self.identity_version,
             "domain_coverage": {k: round(v, 4) for k, v in self.domain_coverage.items()},
+            "informative_domains": list(self.informative_domains),
+            "uninformative_domains": list(self.uninformative_domains),
             "coverage_gap": round(self.coverage_gap, 4),
             "observations": list(self.observations),
             "detected_patterns": list(self.detected_patterns),
@@ -304,13 +308,31 @@ class BrainReasoner:
             fresh = []
         consolidation = consolidation or {}
 
-        # Per-domain mean confidence.
+        # Confidence and measurement coverage are separate. A high-confidence
+        # record with an empty measurement payload is not usable market evidence.
         by_domain: "dict[str, list[float]]" = {}
+        informative_domains: set[str] = set()
+        provenance_only_keys = {
+            "source_kind", "timeframe", "timestamp", "timestamp_epoch",
+            "source_timestamp", "source_timestamp_epoch", "symbol", "instrument",
+            "source", "source_module", "evidence_id", "provisional",
+            "forming", "is_forming", "completed", "is_completed",
+            "measurement_version",
+        }
         for e in fresh:
             dom = getattr(getattr(e, "domain", None), "value", None) or "other"
             by_domain.setdefault(dom, []).append(_clamp01(getattr(e, "confidence", 0.0)))
+            measurements = getattr(e, "measurements", {})
+            if isinstance(measurements, dict) and any(
+                str(key) not in provenance_only_keys for key in measurements
+            ):
+                informative_domains.add(str(dom))
         domain_coverage = {d: (sum(v) / len(v) if v else 0.0) for d, v in by_domain.items()}
-        coverage_gap = round(1.0 - min(1.0, len(domain_coverage) / 6.0), 4)
+        core_domain_count = 6
+        coverage_gap = round(
+            1.0 - min(1.0, len(informative_domains) / core_domain_count), 4,
+        )
+        uninformative_domains = sorted(set(domain_coverage) - informative_domains)
 
         detected = detect_patterns(fresh)
         names = [pattern_name(p) for p in detected]
@@ -336,6 +358,10 @@ class BrainReasoner:
                 "opportunity_horizon": str(
                     getattr(item, "measurements", {}).get("opportunity_horizon", "") or ""
                 ),
+                "measurement_keys": sorted(
+                    str(key) for key in getattr(item, "measurements", {})
+                    if str(key) not in provenance_only_keys
+                ) if isinstance(getattr(item, "measurements", {}), dict) else [],
             }
             evidence_index.append(record)
             measurements = getattr(item, "measurements", {})
@@ -357,7 +383,7 @@ class BrainReasoner:
         regime = self._classify_regime(fresh, names)
         observations = self._observations(fresh, detected, regime)
         contradictions = self._contradictions(fresh, names, regime)
-        missing = self._missing(domain_coverage)
+        missing = self._missing(domain_coverage, informative_domains)
         agreement = self._agreement(names, contradictions, regime)
         strategy_lenses = assess_strategy_lenses(fresh, names, regime)
         # Preserve explicit unknowns and epistemic limits. This context is
@@ -386,6 +412,8 @@ class BrainReasoner:
 
         return EvidenceAnalysis(
             domain_coverage=domain_coverage,
+            informative_domains=sorted(informative_domains),
+            uninformative_domains=uninformative_domains,
             coverage_gap=coverage_gap,
             observations=observations,
             detected_patterns=detected,
@@ -674,10 +702,18 @@ class BrainReasoner:
         return list(dict.fromkeys(out))
 
     @staticmethod
-    def _missing(domain_coverage: dict) -> "list[str]":
+    def _missing(
+        domain_coverage: dict, informative_domains: Optional[set[str]] = None,
+    ) -> "list[str]":
         core = ["structure", "liquidity", "momentum", "volume", "order_flow", "volatility"]
         present = set(domain_coverage.keys())
-        return [f"no {d} evidence" for d in core if d not in present]
+        usable = set(informative_domains) if informative_domains is not None else present
+        missing = [
+            f"no {domain} evidence" if domain not in present
+            else f"no usable measurement in {domain}"
+            for domain in core if domain not in usable
+        ]
+        return missing
 
     @staticmethod
     def _agreement(names: "list[str]", contradictions: "list[str]", regime: dict) -> float:
@@ -1072,12 +1108,16 @@ class BrainReasoner:
             except (TypeError, ValueError, OverflowError):
                 range_frames = 0
 
-            coverage_quality = (
-                sum(_clamp01(value) for value in analysis.domain_coverage.values())
-                / len(analysis.domain_coverage)
-                if analysis.domain_coverage else 0.0
+            quality_domains = (
+                list(analysis.informative_domains)
+                if analysis.evidence_index else list(analysis.domain_coverage)
             )
-            coverage_completeness = min(1.0, len(analysis.domain_coverage) / 6.0)
+            coverage_quality = (
+                sum(_clamp01(analysis.domain_coverage.get(domain, 0.0)) for domain in quality_domains)
+                / len(quality_domains)
+                if quality_domains else 0.0
+            )
+            coverage_completeness = min(1.0, len(quality_domains) / 6.0)
             coverage_gap = (
                 _clamp01(analysis.coverage_gap)
                 if analysis.coverage_gap != 1.0 or not analysis.domain_coverage
