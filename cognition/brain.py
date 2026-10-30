@@ -1361,7 +1361,8 @@ class CognitiveBrain:
         questions["sizing_rationale"] = (
             f"exposure {desired_exposure:.4f} = min(quality-weighted confidence "
             f"{weighted_confidence:.2f}, ev_normalized {ev_normalized:.2f}) — "
-            f"effective confidence {eff_conf:.2f} x reasoning quality {quality_score:.2f}, "
+            f"effective confidence {eff_conf:.2f} x quality scale "
+            f"{(0.5 + 0.5 * quality_score):.2f}, "
             f"EV {expected_value:.4f}R on {reward_r:.1f}R reward"
         )
         campaign = CampaignSpecification(
