@@ -566,6 +566,7 @@ class CognitiveBrain:
                         reason_txt=("reasoner returned no usable opinion — provider "
                                     "failure / unparsable output (not a market view)"),
                         market_state=market_state,
+                        now=now,
                     )
                     if independent is not None:
                         return independent
@@ -585,6 +586,7 @@ class CognitiveBrain:
                     reason_txt="advisor available but returned no opinion this cycle; native-only assessment",
                     market_state=market_state,
                     advisor_status="available",
+                    now=now,
                 )
                 if independent is not None:
                     return independent
