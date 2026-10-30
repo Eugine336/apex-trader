@@ -357,3 +357,20 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 - Intent construction deep-copies nested decision snapshot content to prevent mutation through the original caller-owned object. Intrinsic immutability is still not claimed.
 - DecisionPackage now records a precise creation epoch; snapshot capture uses that epoch as its cutoff and fails closed when the timestamp is missing or invalid. Regression cases cover later-arriving evidence and missing decision chronology.
 - Added tests for synchronous commit visibility and exact-ticket query behavior. Not executed. No CI runs or status checks were reported for the base merge commit. The full integration path, supported-runtime test suite, identity audit, exact broker ticket semantics, authoritative calendars, complete connector constraints, verified financing estimates and untouched-holdout validation remain unresolved.
+
+
+
+## System 3 native reasoning implementation refresh — 2026-10-30
+
+Implementation is in progress on `redesign/system3-native-reasoning`; this does not claim System 3 acceptance.
+
+- Native analysis in `cognition/brain_reasoning.py` now preserves source evidence IDs, source modules, original timestamps, domains, source confidence/uncertainty, observed measurements and pattern-to-evidence lineage.
+- The serialized epistemic record distinguishes observed facts, inferred patterns/contradictions, assumptions and unknowns. Missing domains and unknown horizons remain explicit.
+- Native hypotheses now have stable IDs, family/type, supporting and contradicting evidence IDs, unresolved unknowns, assumptions, distinguishing evidence, source-declared horizon and decomposed reasoning-strength metadata. The confidence field is explicitly labelled uncalibrated; it is not a probability.
+- The leading-hypothesis selector now compares no-trade and non-directional explanations against directional hypotheses rather than automatically preferring any directional candidate.
+- The native classifier preserves conflicts across multiple displacement sources, order-flow sources, same-timeframe trend observations, momentum states, volatility states, statistical z-scores and M1 patterns. It does not select a directional reading based on input order.
+- Native evidence freshness is evaluated at the same decision-time cutoff supplied to consolidation.
+- The counter-hypothesis is generated against the strongest current explanation, and self-criticism penalizes missing attributable support and contradictory independent source readings.
+- New deterministic tests cover evidence lineage, epistemic separation, conflicting readings, no-trade comparison, source horizon metadata, stale/future data and decision-time consistency.
+
+**Not yet verified:** GitHub Actions for this branch are pending. System 3 remains in progress until supported-runtime tests, full CI, canonical identity audit, advisor-outage tests and adversarial scenario coverage pass. The prior implementation audit's findings on limited native hypothesis breadth and runtime route reachability remain open until these checks are complete.
