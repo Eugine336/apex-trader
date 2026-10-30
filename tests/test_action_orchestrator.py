@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from action.composio import ComposioAdapter, MockActionAdapter, build_adapter
+from action.composio import (
+    ComposioAdapter, MockActionAdapter, UnavailableActionAdapter, build_adapter,
+)
 from action.orchestrator import (
     ActionObjective,
     ActionOrchestrator,
@@ -167,7 +169,7 @@ class _Cfg:
 def test_build_adapter_mock_unless_fully_live():
     assert isinstance(build_adapter(_Cfg(enabled=False)), MockActionAdapter)
     assert isinstance(build_adapter(_Cfg(enabled=True, dry_run=True, api_key="k")), MockActionAdapter)
-    assert isinstance(build_adapter(_Cfg(enabled=True, dry_run=False, api_key="")), MockActionAdapter)
+    assert isinstance(build_adapter(_Cfg(enabled=True, dry_run=False, api_key="")), UnavailableActionAdapter)
     live = build_adapter(_Cfg(enabled=True, dry_run=False, api_key="k"))
     assert isinstance(live, ComposioAdapter)
 

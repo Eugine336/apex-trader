@@ -23,6 +23,25 @@ from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from test_support.recording_broker import FakeBroker, FakeCloseResult, FakeOpenResult
 
 
+def test_open_intent_detaches_nested_decision_snapshot_from_caller():
+    snapshot = {
+        "schema": "apex.decision_feature_snapshot.v1",
+        "features": [{"measurements": {"range": 1.5}}],
+    }
+    intent = Intent.open(
+        symbol="XAUUSD",
+        direction="BUY",
+        lots=0.1,
+        sl=2300.0,
+        tp=2400.0,
+        source="test",
+        reason="test",
+        decision_feature_snapshot=snapshot,
+    )
+    snapshot["features"][0]["measurements"]["range"] = 99.0
+    assert intent.decision_feature_snapshot["features"][0]["measurements"]["range"] == 1.5
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _positions(**overrides) -> dict[str, dict]:
@@ -905,6 +924,11 @@ def test_open_rejects_volume_step_violation_before_broker_call():
         "volume_step": 0.04,
         "point": 0.00001,
         "trade_stops_level": 0,
+        "trade_freeze_level": 0,
+        "trade_tick_size": 0.00001,
+        "trade_tick_value": 1.0,
+        "trade_contract_size": 100000.0,
+        "digits": 5,
     }
     result = ActionExecutor(broker, _fast_cfg()).execute(
         _open_intent("XAUUSD", lots=0.10), {}
@@ -925,10 +949,44 @@ def test_open_rejects_stops_inside_verified_broker_minimum_distance():
         "volume_step": 0.01,
         "point": 0.0001,
         "trade_stops_level": 2000,
+        "trade_freeze_level": 0,
+        "trade_tick_size": 0.0001,
+        "trade_tick_value": 1.0,
+        "trade_contract_size": 100000.0,
+        "digits": 4,
     }
     result = ActionExecutor(broker, _fast_cfg()).execute(
         _open_intent("XAUUSD"), {}
     )
     assert not result.success and result.rejected_by_gate
     assert "minimum distance" in result.gate_reason
+    assert broker.open_calls == []
+
+
+
+def test_open_rejects_unverified_broker_calendar_before_broker_call():
+    broker = FakeBroker()
+    broker.get_symbol_spec = lambda symbol: {
+        "source_verified": True,
+        "specification_verified": True,
+        "trade_mode": 4,
+        "volume_min": 0.01,
+        "volume_max": 100.0,
+        "volume_step": 0.01,
+        "point": 0.00001,
+        "trade_stops_level": 0,
+        "trade_freeze_level": 0,
+        "trade_tick_size": 0.00001,
+        "trade_tick_value": 1.0,
+        "trade_contract_size": 100000.0,
+        "digits": 5,
+        "broker_trading_sessions": [],
+        "broker_session_timezone_verified": False,
+        "broker_holiday_calendar_verified": False,
+    }
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "broker_calendar_unverified" in result.gate_reason
     assert broker.open_calls == []

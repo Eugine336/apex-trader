@@ -328,7 +328,9 @@ def _event_db_is_corrupt(db_path: Path) -> bool:
 
     conn = None
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        # Read-only immutable inspection preserves WAL/SHM forensic sidecars.
+        uri = db_path.resolve().as_uri() + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
         row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.OperationalError as exc:
         # Locked/busy or otherwise unreadable for a non-structural reason —

@@ -222,7 +222,7 @@ class TestWorkerTp1MinLotGuard:
         worker = _legacy_worker()
         out = worker.evaluate(snap, NOW)
         assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_minlot_close"]
+        close = [i for i in out if i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason]
         assert len(close) == 1
         assert close[0].intent_type == IntentType.CLOSE
 

@@ -431,6 +431,16 @@ class ActionExecutor:
         if spec.get("source_verified") is not True or spec.get("specification_verified") is not True:
             return "broker_spec_unverified: source/specification provenance is not verified"
 
+        # MT5 weekly sessions are server-clock offsets. Without a verified
+        # server timezone/DST rule and a broker holiday calendar they cannot
+        # establish whether this instrument is currently tradeable. Do not
+        # turn an incomplete schedule into an assumed-open market.
+        if "broker_trading_sessions" in spec:
+            if spec.get("broker_session_timezone_verified") is not True:
+                return "broker_calendar_unverified: broker session timezone/DST is unknown"
+            if spec.get("broker_holiday_calendar_verified") is not True:
+                return "broker_calendar_unverified: broker holiday calendar is unknown"
+
         def number(key: str) -> float | None:
             value = spec.get(key)
             if isinstance(value, bool):
@@ -471,8 +481,21 @@ class ActionExecutor:
 
         point = number("point")
         stops_level = number("trade_stops_level")
-        if point is None or point <= 0.0 or stops_level is None or stops_level < 0.0:
-            return "broker_stop_constraints_missing: point/stops level must be verified"
+        freeze_level = number("trade_freeze_level")
+        tick_size = number("trade_tick_size")
+        tick_value = number("trade_tick_value")
+        contract_size = number("trade_contract_size")
+        digits = number("digits")
+        if (
+            point is None or point <= 0.0
+            or stops_level is None or stops_level < 0.0
+            or freeze_level is None or freeze_level < 0.0
+            or tick_size is None or tick_size <= 0.0
+            or tick_value is None or tick_value <= 0.0
+            or contract_size is None or contract_size <= 0.0
+            or digits is None or digits < 0.0 or not digits.is_integer()
+        ):
+            return "broker_spec_economics_missing: point, tick, contract, digits and stop/freeze constraints must be verified"
         try:
             entry = float(getattr(intent, "entry_price", 0.0) or 0.0)
             stop = float(getattr(intent, "new_sl", 0.0) or 0.0)
@@ -490,6 +513,14 @@ class ActionExecutor:
                 return "broker_stop_constraints_reject_entry: invalid SHORT geometry"
         else:
             return "broker_stop_constraints_reject_entry: invalid direction"
+        # Entry, stop and target must be representable at the broker's
+        # actual tick size. Decimal digits alone are not sufficient for symbols
+        # whose tick size is larger than one point.
+        for price_name, price in (("entry", entry), ("stop", stop), ("target", target)):
+            tick_units = price / tick_size
+            if abs(tick_units - round(tick_units)) > 1e-6:
+                return f"broker_price_precision_reject_entry: {price_name} is off tick size"
+
         minimum_distance = point * stops_level
         if direction in {"LONG", "BUY"}:
             if entry - stop < minimum_distance or target - entry < minimum_distance:

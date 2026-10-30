@@ -5340,6 +5340,7 @@ class EventDrivenSystem:
                     correlation_id=decision_id or None,
                     parent_id=ticket,
                     source_module="execution.decision_provenance",
+                    durable=True,
                     payload={
                         **context,
                         "identity_version": str(getattr(intent, "identity_version", "") or ""),
@@ -6712,8 +6713,8 @@ class EventDrivenSystem:
                         rows = store.query_events(
                             severity_min="DEBUG",
                             event_types=[DE.DECISION_TRADE_ENTRY_SNAPSHOT],
-                            symbol=str(symbol or ""),
-                            limit=5000,
+                            parent_id=str(ticket),
+                            limit=10,
                         )
                         for row in rows:
                             payload = json.loads(row.get("payload_json") or "{}")
@@ -6779,6 +6780,7 @@ class EventDrivenSystem:
                     correlation_id=str(info.get("decision_id") or "") or None,
                     parent_id=str(ticket or "") or None,
                     source_module="learning.decision_provenance",
+                    durable=True,
                     payload={
                         "ticket": str(ticket or ""),
                         "symbol": str(symbol or ""),

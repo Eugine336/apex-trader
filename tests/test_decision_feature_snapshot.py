@@ -2,6 +2,7 @@
 
 These tests verify provenance capture only; they do not claim predictive ability.
 """
+import time
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
@@ -22,7 +23,7 @@ def test_decision_feature_snapshot_preserves_source_timestamps_and_ids():
         measurements={"range": 12.5, "nested": {"confirmed": True}},
     )
     state.add(evidence)
-    decision = SimpleNamespace(decision_id="decision-test-1", symbol="XAUUSD")
+    decision = SimpleNamespace(decision_id="decision-test-1", symbol="XAUUSD", created_epoch=time.time())
 
     snapshot = CognitiveBrain._decision_feature_snapshot(state, decision)
 
@@ -52,7 +53,7 @@ def test_decision_feature_snapshot_does_not_backfill_stale_evidence():
         timestamp_epoch=1.0,
     )
     state.add(evidence)
-    decision = SimpleNamespace(decision_id="decision-test-stale", symbol="XAUUSD")
+    decision = SimpleNamespace(decision_id="decision-test-stale", symbol="XAUUSD", created_epoch=time.time())
 
     snapshot = CognitiveBrain._decision_feature_snapshot(state, decision)
 
@@ -126,9 +127,59 @@ def test_decision_feature_snapshot_rejects_future_dated_evidence():
         timestamp_epoch=9_999_999_999.0,
     )
     state.add(evidence)
-    decision = SimpleNamespace(decision_id="decision-test-future", symbol="XAUUSD")
+    decision = SimpleNamespace(decision_id="decision-test-future", symbol="XAUUSD", created_epoch=time.time())
 
     snapshot = CognitiveBrain._decision_feature_snapshot(state, decision)
 
     assert snapshot["features"] == []
     assert snapshot["snapshot_complete"] is False
+
+def test_snapshot_uses_precise_decision_creation_epoch_as_cutoff():
+    state = MarketState(symbol="XAUUSD")
+    decision_epoch = time.time()
+    evidence = Evidence(
+        source_module="test.market",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="XAUUSD",
+        observation="post-decision synthetic observation",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={"range": 12.5},
+        timestamp_epoch=decision_epoch + 1.0,
+    )
+    state.add(evidence)
+    decision = SimpleNamespace(
+        decision_id="decision-test-cutoff",
+        symbol="XAUUSD",
+        created_epoch=decision_epoch,
+    )
+
+    snapshot = CognitiveBrain._decision_feature_snapshot(state, decision)
+
+    assert snapshot["decision_timestamp_epoch"] == decision_epoch
+    assert snapshot["captured_at_decision"] is True
+    assert snapshot["features"] == []
+    assert snapshot["snapshot_complete"] is False
+
+
+def test_snapshot_without_decision_creation_epoch_fails_closed():
+    state = MarketState(symbol="XAUUSD")
+    evidence = Evidence(
+        source_module="test.market",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="XAUUSD",
+        observation="synthetic observation",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={"range": 12.5},
+    )
+    state.add(evidence)
+    decision = SimpleNamespace(decision_id="decision-test-no-time", symbol="XAUUSD")
+
+    snapshot = CognitiveBrain._decision_feature_snapshot(state, decision)
+
+    assert snapshot["decision_timestamp_epoch"] == 0.0
+    assert snapshot["captured_at_decision"] is False
+    assert snapshot["snapshot_complete"] is False
+    assert snapshot["features"] == []
+

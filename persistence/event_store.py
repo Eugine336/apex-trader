@@ -1,9 +1,9 @@
 """
 APEX TRADER — Append-Only Event Store
 Every signal, decision, trade, and log line becomes a structured, correlated
-event.  Append-only SQLite, WAL-mode, thread-safe.  Writes are non-blocking:
-a bounded queue feeds a background writer thread so the trading loop never
-waits on disk.
+event.  Append-only SQLite, WAL-mode, thread-safe. Ordinary telemetry writes
+are non-blocking and use a bounded background-writer queue. Critical trade
+provenance may opt into a synchronous SQLite commit before the caller returns.
 
 Mirror the sync-sqlite3 + WAL pattern used by ``persistence/position_store.py``.
 """
@@ -89,13 +89,14 @@ def new_setup_id() -> str:
 class EventStore:
     """Append-only event store backed by SQLite (WAL mode).
 
-    Writes happen on a dedicated background thread fed by a bounded queue so
-    the caller (trading loop / loguru sink) is never blocked by disk I/O.  If
-    the queue saturates, oldest un-written events are dropped and a counter is
-    incremented — the trading system is never stalled.
+    Ordinary telemetry writes use a dedicated background thread fed by a
+    bounded queue. Queue saturation increments a drop counter rather than
+    stalling the trading loop. Critical provenance callers may use
+    emit(..., durable=True) to commit synchronously and receive database
+    errors instead of a queue-only acknowledgement.
 
-    Thread-safe: any thread may call ``emit``; only the writer thread touches
-    the DB connection.
+    Thread-safe: the background writer, durable emitters and readers share the
+    SQLite connection under _db_lock.
     """
 
     def __init__(
@@ -280,8 +281,9 @@ class EventStore:
         parent_id: Optional[str] = None,
         source_module: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
+        durable: bool = False,
     ) -> str:
-        """Enqueue an event for background persistence.  Returns event_id."""
+        """Persist synchronously when durable=True; otherwise enqueue best-effort."""
         eid = generate_id()
         # Add canonical provenance to every newly written event without changing
         # the existing SQLite schema or rewriting any historical row. Explicit
@@ -299,8 +301,12 @@ class EventStore:
             campaign_id=source_payload.get("campaign_id", ""),
         )
         try:
-            payload_json = json.dumps(event_payload)
-        except (TypeError, ValueError):
+            payload_json = json.dumps(event_payload, allow_nan=not durable)
+        except (TypeError, ValueError) as exc:
+            if durable:
+                raise ValueError(
+                    "durable event payload is not strict JSON serializable"
+                ) from exc
             payload_json = json.dumps({
                 "identity_version": event_payload.get("identity_version", ""),
                 "event_id": eid,
@@ -322,6 +328,28 @@ class EventStore:
             payload_json,
             seq,
         )
+        if durable:
+            # Decision/position provenance is part of the trade audit record.
+            # Do not acknowledge it merely because it entered the best-effort
+            # telemetry queue: commit it before returning to the caller.
+            if self._db_degraded:
+                raise RuntimeError("event store is degraded; durable event rejected")
+            try:
+                with self._db_lock:
+                    if self._conn is None:
+                        raise RuntimeError("event store connection is unavailable")
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO events "
+                        "(event_id, correlation_id, parent_id, ts_utc_ms, event_type, "
+                        "severity, symbol, source_module, payload_json, seq) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        row,
+                    )
+                    self._conn.commit()
+            except Exception:
+                self._db_degraded = True
+                raise
+            return eid
         try:
             self._queue.put_nowait(row)
         except queue.Full:
@@ -390,11 +418,12 @@ class EventStore:
         event_types: Optional[List[str]] = None,
         symbol: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
         since_ms: Optional[int] = None,
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Dashboard-oriented read: severity-filtered, multi-type, paginated, newest-first."""
+        """Dashboard-oriented read with optional exact parent/ticket filtering."""
         min_rank = self._SEVERITY_RANK.get(severity_min.upper(), 1)
         allowed = [s for s, r in self._SEVERITY_RANK.items() if r >= min_rank]
 
@@ -415,6 +444,9 @@ class EventStore:
         if correlation_id is not None:
             clauses.append("correlation_id = ?")
             params.append(correlation_id)
+        if parent_id is not None:
+            clauses.append("parent_id = ?")
+            params.append(parent_id)
         if since_ms is not None:
             clauses.append("ts_utc_ms >= ?")
             params.append(since_ms)

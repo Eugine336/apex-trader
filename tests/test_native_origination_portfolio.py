@@ -173,6 +173,26 @@ def _origination(**overrides):
         "entry_timeframe": "M5",
         "evidence_timestamp_epoch": time.time(),
     }
+    decision_epoch = time.time()
+    values["meta"] = {
+        "decision_feature_snapshot": {
+            "schema": "apex.decision_feature_snapshot.v1",
+            "snapshot_id": f"{values['decision_id']}:{decision_epoch:.6f}",
+            "decision_id": str(values["decision_id"]),
+            "symbol": str(values["symbol"]),
+            "decision_timestamp_epoch": decision_epoch,
+            "captured_at_decision": True,
+            "snapshot_complete": True,
+            "evidence_count": 2,
+            "evidence_ids": ["test-structure", "test-momentum"],
+            "features": [
+                {"evidence_id": "test-structure", "source_timestamp_epoch": decision_epoch},
+                {"evidence_id": "test-momentum", "source_timestamp_epoch": decision_epoch},
+            ],
+            "validation_status": "unvalidated",
+            "predictive_ability_demonstrated": False,
+        }
+    }
     return SimpleNamespace(**values)
 
 

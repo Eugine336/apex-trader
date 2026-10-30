@@ -9,6 +9,7 @@ Frozen so they can be safely queued across threads.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import IntEnum
@@ -154,7 +155,7 @@ class Intent:
                 dict(payoff_geometry) if isinstance(payoff_geometry, dict) else None
             ),
             decision_feature_snapshot=(
-                dict(decision_feature_snapshot)
+                copy.deepcopy(decision_feature_snapshot)
                 if isinstance(decision_feature_snapshot, dict) else None
             ),
             priority=IntentType.OPEN,

@@ -2874,7 +2874,6 @@ class CognitiveBrain:
         """
         import copy
         import math
-        import time as _time
 
         def json_safe(value):
             if value is None or isinstance(value, (str, bool, int)):
@@ -2906,10 +2905,16 @@ class CognitiveBrain:
             except (TypeError, ValueError, OverflowError):
                 return str(value)[:500]
 
-        decision_epoch = _time.time()
+        try:
+            decision_epoch = float(getattr(decision, "created_epoch", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            decision_epoch = 0.0
+        if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+            decision_epoch = 0.0
+
         rows: list[dict] = []
         try:
-            if market_state is not None:
+            if market_state is not None and decision_epoch > 0.0:
                 for evidence in market_state.fresh_evidence(now=decision_epoch):
                     row = evidence.to_dict()
                     row["source_timestamp_epoch"] = float(
@@ -2924,11 +2929,16 @@ class CognitiveBrain:
             str(row.get("evidence_id") or "") for row in rows
             if str(row.get("evidence_id") or "")
         ]
-        valid_timestamps = all(
-            isinstance(row.get("source_timestamp_epoch"), (int, float))
-            and math.isfinite(float(row["source_timestamp_epoch"]))
-            and 0.0 < float(row["source_timestamp_epoch"]) <= decision_epoch
-            for row in rows
+        valid_timestamps = (
+            decision_epoch > 0.0
+            and len(evidence_ids) == len(rows)
+            and len(evidence_ids) == len(set(evidence_ids))
+            and all(
+                isinstance(row.get("source_timestamp_epoch"), (int, float))
+                and math.isfinite(float(row["source_timestamp_epoch"]))
+                and 0.0 < float(row["source_timestamp_epoch"]) <= decision_epoch
+                for row in rows
+            )
         )
         return {
             "schema": "apex.decision_feature_snapshot.v1",
@@ -2939,7 +2949,7 @@ class CognitiveBrain:
             "decision_id": str(getattr(decision, "decision_id", "") or ""),
             "symbol": str(getattr(decision, "symbol", "") or ""),
             "decision_timestamp_epoch": decision_epoch,
-            "captured_at_decision": True,
+            "captured_at_decision": decision_epoch > 0.0,
             "snapshot_complete": bool(rows) and bool(evidence_ids) and valid_timestamps,
             "evidence_count": len(rows),
             "evidence_ids": evidence_ids,

@@ -27,6 +27,7 @@ If the rate file is absent or a symbol is not listed, the model returns
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -124,11 +125,34 @@ def estimate_swap(
         return (None, "unavailable")
 
     entry = rates[key]
-    is_long = direction.upper() in ("BUY", "LONG")
-    rate_key = "long_per_lot_per_night" if is_long else "short_per_lot_per_night"
-    rate = entry.get(rate_key, 0.0)
+    if not isinstance(entry, dict):
+        return (None, "unavailable")
 
-    nights = _count_rollover_nights(open_time, close_time, rollover_hour_utc, triple_weekday)
+    side = str(direction or "").strip().upper()
+    if side in ("BUY", "LONG"):
+        rate_key = "long_per_lot_per_night"
+    elif side in ("SELL", "SHORT"):
+        rate_key = "short_per_lot_per_night"
+    else:
+        return (None, "unavailable")
 
-    value = round(rate * lots * nights, 4)
+    # Missing side-specific data is unknown, not a zero-cost assumption.
+    if rate_key not in entry:
+        return (None, "unavailable")
+    try:
+        rate = float(entry[rate_key])
+        volume = float(lots)
+        if not math.isfinite(rate) or not math.isfinite(volume) or volume <= 0.0:
+            return (None, "unavailable")
+        if not 0 <= int(rollover_hour_utc) <= 23 or not 0 <= int(triple_weekday) <= 6:
+            return (None, "unavailable")
+        nights = _count_rollover_nights(
+            open_time, close_time, int(rollover_hour_utc), int(triple_weekday)
+        )
+    except (TypeError, ValueError, OverflowError):
+        return (None, "unavailable")
+
+    value = round(rate * volume * nights, 4)
+    if not math.isfinite(value):
+        return (None, "unavailable")
     return (value, "modeled")

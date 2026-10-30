@@ -29,6 +29,41 @@ def store(tmp_path):
 
 
 class TestEventStoreEmitAndQuery:
+    def test_durable_emit_is_committed_before_return(self, store):
+        event_id = store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT",
+            "INFO",
+            parent_id="ticket-9001",
+            symbol="XAUUSD",
+            payload={"decision_id": "decision-1"},
+            durable=True,
+        )
+        rows = store.query(event_type="DECISION_TRADE_ENTRY_SNAPSHOT")
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == event_id
+        assert rows[0]["parent_id"] == "ticket-9001"
+        assert store._queue.empty()
+
+    def test_query_events_filters_exact_parent_ticket(self, store):
+        store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT", "INFO",
+            parent_id="ticket-1", symbol="XAUUSD",
+            payload={"ticket": "ticket-1"}, durable=True,
+        )
+        store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT", "INFO",
+            parent_id="ticket-2", symbol="XAUUSD",
+            payload={"ticket": "ticket-2"}, durable=True,
+        )
+        rows = store.query_events(
+            severity_min="DEBUG",
+            event_types=["DECISION_TRADE_ENTRY_SNAPSHOT"],
+            parent_id="ticket-2",
+            limit=10,
+        )
+        assert len(rows) == 1
+        assert rows[0]["parent_id"] == "ticket-2"
+
     def test_emit_returns_event_id(self, store):
         eid = store.emit("LOG", "INFO", payload={"msg": "hello"})
         assert isinstance(eid, str) and len(eid) == 32
@@ -100,6 +135,34 @@ class TestConcurrentWrites:
         store.flush()
         assert store.count() == n_threads * n_per_thread
 
+
+    def test_durable_emit_rejects_non_json_payload(self, store):
+        with pytest.raises(ValueError, match="strict JSON"):
+            store.emit(
+                "DECISION_TRADE_ENTRY_SNAPSHOT",
+                "INFO",
+                payload={"invalid": object()},
+                durable=True,
+            )
+        assert store.query(event_type="DECISION_TRADE_ENTRY_SNAPSHOT") == []
+
+    def test_durable_emit_surfaces_database_failure(self, store):
+        real_conn = store._conn
+
+        class _FailingExecuteConnection:
+            def execute(self, *args, **kwargs):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        store._conn = _FailingExecuteConnection()
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                store.emit("DECISION_TRADE_ENTRY_SNAPSHOT", "INFO", durable=True)
+            assert store.is_degraded
+        finally:
+            store._conn = real_conn
 
 # ── Queue saturation / drop ───────────────────────────────────────────────────
 

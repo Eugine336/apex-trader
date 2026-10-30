@@ -686,7 +686,8 @@ class TestMultipleIntents:
         worker = _legacy_worker(cfg)
         intents = worker.evaluate(snap, NOW)
         sources = {i.source for i in intents}
-        assert "dynamic_sl_tighten" in sources
+        assert "legacy_mechanical" in sources
+        assert any("[legacy_source=dynamic_sl_tighten]" in i.reason for i in intents)
 
 
 class TestDiscretionaryExitsToggle:

@@ -221,14 +221,14 @@ For every system, record: branch/PR and merge SHA; changed files; acceptance cri
 
 ## System 2 progress update — 2026-10-30
 
-Branch `redesign/system2-decision-time-provenance` implements decision-time feature capture in both Brain origination paths, propagates the snapshot through campaign translation and the shared OPEN intent, fails closed at the Brain origination sink when the snapshot is incomplete, and records a durable ticket-linked entry snapshot plus realized outcome event. Focused tests were added but have **not been executed**. These changes are not merged. System 2 remains **IN PROGRESS** until runtime tests, identity audit, exact-ticket recovery, broker-calendar/constraint coverage, financing-cost integrity and independent historical validation are demonstrated. Do not start System 3 before acceptance.
+PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc. It implements decision-time feature capture in both Brain origination paths, snapshot propagation through campaign translation and the shared OPEN intent, an execution-boundary snapshot gate, and ticket-linked entry/outcome events. The implementation remains NOT ACCEPTED: focused tests and scripts/identity_audit.py have not been executed, exact-ticket restart recovery has not been integration-tested, and calendar, connector, financing and independent historical-validation gates remain open. Follow-up branch redesign/system2-durable-provenance adds synchronous commits for entry/outcome provenance, exact parent-ticket querying and detached deep copies of snapshots into intents. Its tests are added but not executed. Do not start System 3 before System 2 acceptance.
 
 ## Roadmap progress register (updated 2026-10-30)
 
 | System | Status | Acceptance evidence |
 |---|---|---|
 | 1. Canonical identity and contracts | **Foundation present; audit required** | Canonical identity and contract code exist; current whole-repository conformance still requires a fresh executed audit. |
-| 2. Market intelligence and evidence integrity | **IN PROGRESS — BLOCKED** | PR #792 has point-in-time snapshot and trade-outcome linkage implementation plus financing fail-closed changes. Draft only; tests/audit not executed. Calendar, Deriv constraints, actual financing estimates and independent historical validation remain open. |
+| 2. Market intelligence and evidence integrity | **IN PROGRESS — BLOCKED** | PR #792 merged at 74e0b845; follow-up branch redesign/system2-durable-provenance adds durable provenance commits and exact-ticket recovery lookup. Tests/audit remain unexecuted. Calendar, Deriv constraints, verified financing estimates and independent historical validation remain open. |
 | 3. Native market reasoning | **NOT STARTED — gated on System 2** | No acceptance evidence recorded. |
 | 4. Opportunity discovery and payoff geometry | **NOT STARTED — gated on System 3** | No acceptance evidence recorded. Existing code must be audited when reached. |
 | 5. Compliance and portfolio allocation | **NOT STARTED — gated on System 4** | No acceptance evidence recorded. Existing code must be audited when reached. |
@@ -240,3 +240,13 @@ Branch `redesign/system2-decision-time-provenance` implements decision-time feat
 
 A status can move to **COMPLETE** only when the acceptance evidence is linked in the table or accompanying audit, all critical tests have actually run, and unresolved limitations are either closed or explicitly accepted by the owner. A merge alone never changes the status to COMPLETE.
 
+
+
+### System 2 durability follow-up — 2026-10-30
+
+- PR #793 (draft, not accepted): redesign/system2-durable-provenance, based on merge commit 74e0b845390cebe8385b2812003da8344b59e0cc.
+- Critical entry-snapshot and trade-outcome events now use a synchronous SQLite commit path (emit(..., durable=True)) instead of relying on the best-effort telemetry queue. A database failure raises to the producer and marks the store degraded.
+- Event queries accept an exact parent_id filter; restart recovery now queries by the broker ticket instead of scanning up to 5,000 same-symbol events and filtering in Python.
+- Intent.open() deep-copies the nested snapshot payload to detach it from the caller's mutable source object. This is defensive copying, not a claim that the nested intent payload is intrinsically immutable.
+- DecisionPackage now records a precise created_epoch; Brain snapshots use it as the source-time cutoff rather than sampling time.time() after the decision. Missing/invalid decision timestamps produce incomplete snapshots. Added regression tests for post-decision evidence and missing chronology.
+- Added EventStore tests for commit-before-return and exact ticket filtering. These tests have not been executed. Callback-level entry-to-close recovery, ticket-shape compatibility, database failure injection, identity audit, calendar/connector/cost and independent historical-validation gates remain open.
