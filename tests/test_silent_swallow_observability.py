@@ -209,3 +209,22 @@ def test_no_silent_exception_handlers():
             f"{len(silent)} unclassified silent exception handler(s) found — "
             f"add logging, re-raise, or document the safe fallback locally:\n{detail}"
         )
+
+
+
+def test_pass_handler_followed_by_fail_closed_sentinel_is_classified_safe():
+    tree = ast.parse(
+        "def f():\n"
+        "    try:\n"
+        "        return 1.0\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return 0.0\n"
+    )
+    parent_map = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    handler = next(n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler))
+    assert _has_following_fail_closed_sentinel(handler, parent_map) is True
