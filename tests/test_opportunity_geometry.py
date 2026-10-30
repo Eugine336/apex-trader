@@ -250,3 +250,71 @@ def test_missing_evidence_symbol_cannot_be_inherited_from_market_state():
     state.evidence[0].symbol = ""
     state.evidence[1].symbol = ""
     assert derive_opportunity_geometry(state, "LONG") is None
+
+
+
+def test_counter_side_sweep_requires_measured_reclaim_for_reversal_candidate():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    state.add(Evidence(
+        source_module="market_lenses.m5.liquidity",
+        domain=EvidenceDomain.LIQUIDITY,
+        symbol="SYNTHETIC",
+        observation="completed sell-side sweep and reclaim",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "sweep_side": "sell",
+            "swept_level": 1.095,
+            "sweep_reclaimed": True,
+            "current_close": 1.100,
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    geometry = derive_opportunity_geometry(state, "LONG")
+    assert geometry is not None
+    assert geometry.activated is True
+    assert "sweep/reclaim" in geometry.activation_reason
+
+
+def test_sweep_side_without_reclaim_does_not_activate_reversal():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    state.add(Evidence(
+        source_module="market_lenses.m5.liquidity",
+        domain=EvidenceDomain.LIQUIDITY,
+        symbol="SYNTHETIC",
+        observation="sweep observed but reclaim not confirmed",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "timeframe": "M5",
+            "sweep_side": "sell",
+            "swept_level": 1.095,
+            "sweep_reclaimed": False,
+            "current_close": 1.090,
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_low_liquidity_or_unfamiliar_only_market_state_has_no_geometry():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(Evidence(
+        source_module="unknown_adapter",
+        domain=EvidenceDomain.OTHER,
+        symbol="SYNTHETIC",
+        observation="unfamiliar market measurement",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"unknown_microstructure_metric": 0.73},
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    assert derive_opportunity_geometry(state, "LONG") is None
