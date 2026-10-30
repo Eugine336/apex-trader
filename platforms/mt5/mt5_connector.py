@@ -1279,13 +1279,25 @@ class MT5Connector(BaseConnector):
                 sum(getattr(d, "profit", 0.0) or 0.0 for d in deals),
             )
             total_pnl = total_profit + total_commission + total_swap + total_fee
-            closing_deal = None
-            for d in deals:
-                if getattr(d, "entry", None) == 1:  # DEAL_ENTRY_OUT
-                    closing_deal = d
-                    break
-            if closing_deal is None:
-                closing_deal = deals[-1]
+            # Partial closes can produce multiple DEAL_ENTRY_OUT rows.
+            # The position's final exit reason/price/time belong to the latest
+            # closing deal, while realized P&L and financing above aggregate
+            # every deal belonging to the position.
+            closing_deals = [
+                d for d in deals if getattr(d, "entry", None) == 1
+            ]
+
+            def _deal_epoch(deal: Any) -> int:
+                return int(
+                    getattr(deal, "time_msc", 0)
+                    or (getattr(deal, "time", 0) or 0) * 1000
+                )
+
+            closing_deal = (
+                max(closing_deals, key=_deal_epoch)
+                if closing_deals
+                else max(deals, key=_deal_epoch)
+            )
             reason_code = getattr(closing_deal, "reason", None)
             comment = getattr(closing_deal, "comment", None)
             exit_reason = _MT5_DEAL_REASON_MAP.get(reason_code, "BROKER_CLOSED_UNKNOWN")
