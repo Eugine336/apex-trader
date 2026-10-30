@@ -6011,6 +6011,11 @@ class EventDrivenSystem:
         we additionally block new entries near the Friday close and during the
         gap-prone first minutes of the Sunday FX reopen.
         """
+        if getattr(self, "_scanner_blind_warned", False):
+            logger.warning(
+                "[entry-gate] scanner is blind or its health is unknown; blocking new exposure"
+            )
+            return False
         ctx = self._ctx
         if ctx is None or ctx.session_engine is None:
             return True
