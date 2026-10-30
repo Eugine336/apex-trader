@@ -89,6 +89,7 @@ def test_hypotheses_carry_support_challenge_unknowns_and_uncalibrated_confidence
     )
     assert serialized["confidence_semantics"] == "uncalibrated_reasoning_strength"
     assert serialized["confidence_components"]["calibrated_probability"] is False
+    assert serialized["evidence_lineage_scope"] == "domain_level_candidate_sources"
     assert serialized["distinguishing_evidence"]
     assert serialized["unresolved_unknowns"]
 
