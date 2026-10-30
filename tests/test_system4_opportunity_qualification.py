@@ -1,9 +1,11 @@
 """System 4 probability and opportunity qualification contracts."""
 
 import time
+from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
-from cognition.contracts import Evidence, EvidenceDomain, MarketState
+from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
+from test_support.market_geometry import add_market_geometry
 
 
 def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC"):
@@ -113,3 +115,82 @@ def test_poor_reliability_gap_cannot_qualify_calibration():
         reasoner=None,
     )._calibrated_win_probability(state, "LONG")
     assert verified is False
+
+
+
+def test_uncalibrated_directional_opinion_cannot_create_campaign_or_claim_positive_ev():
+    state = MarketState(symbol="SYNTHETIC")
+    add_market_geometry(state, "LONG")
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "historical_analogue"
+    ]
+    for domain in ("liquidity", "volume", "order_flow"):
+        state.add(Evidence(
+            source_module=f"test.{domain}",
+            domain=domain,
+            symbol="SYNTHETIC",
+            observation=f"synthetic {domain} measurement",
+            confidence=0.9,
+            uncertainty=0.1,
+            measurements={"test_measurement": 1.0},
+            timestamp_epoch=time.time(),
+            relevance_horizon_seconds=900,
+        ))
+    state.add(Evidence(
+        source_module="reasoning_engine.test_council",
+        domain=EvidenceDomain.REASONING,
+        symbol="SYNTHETIC",
+        observation="test advisor quorum",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "advisors_responded": 2,
+            "advisors_available": 2,
+            "advisors_total": 2,
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    state.add(Evidence(
+        source_module="execution.test_quote",
+        domain=EvidenceDomain.EXECUTION_QUALITY,
+        symbol="SYNTHETIC",
+        observation="verified test execution cost",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "cost_verified": True,
+            "estimated_total_cost_r": 0.05,
+            "cost_source": "synthetic quote",
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=60,
+    ))
+    opinion = SimpleNamespace(
+        direction="LONG",
+        confidence=0.95,
+        rationale="synthetic directional thesis",
+        competing_hypotheses=[],
+        missing_information=[],
+        opportunities=[{
+            "id": "candidate",
+            "direction": "LONG",
+            "state": "ACTIVE",
+            "quality": 0.9,
+            "asymmetry": 0.9,
+            "evidence_strength": 0.9,
+        }],
+        preferred_opportunity_id="candidate",
+    )
+    brain = CognitiveBrain(reasoner=None, min_expected_value=0.0)
+    out = brain._from_opinion(
+        "SYNTHETIC", state, state.consolidation(), opinion, None,
+    )
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert out.decision.expected_value == 0.0
+    assert "DIAGNOSTIC ONLY" in out.decision.questions_answered["expected_value"]
+    assert "confidence is not probability" in out.decision.questions_answered[
+        "win_probability_verification"
+    ]
