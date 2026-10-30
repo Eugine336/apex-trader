@@ -2625,11 +2625,15 @@ class CognitiveBrain:
             required_domains = max(3, int(self.min_evidence_domains))
             raw_market_domains = (consolidation or {}).get("market_domain_count")
             try:
-                available_market_domains = (
+                consolidated_market_domains = (
                     int(raw_market_domains) if raw_market_domains is not None else None
                 )
             except (TypeError, ValueError, OverflowError):
-                available_market_domains = None
+                consolidated_market_domains = None
+            available_market_domains = (
+                len(set(analysis.informative_domains))
+                if analysis.evidence_index else consolidated_market_domains
+            )
             if available_market_domains is None or available_market_domains < required_domains:
                 return None
 
@@ -2647,17 +2651,31 @@ class CognitiveBrain:
                     "order_flow", "multi_timeframe", "correlation", "session", "macro",
                     "historical_analogue"}
             ]
-            directional_facts = [
-                item for item in market_evidence
-                if str(getattr(item, "observation", "") or "").strip()
-                and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
-            ]
+            if analysis.evidence_index:
+                informative_evidence_ids = {
+                    str(item.get("evidence_id", ""))
+                    for item in analysis.evidence_index
+                    if item.get("measurement_keys")
+                }
+                informative_facts = [
+                    item for item in market_evidence
+                    if str(getattr(item, "evidence_id", "") or "")
+                    in informative_evidence_ids
+                ]
+            else:
+                # Compatibility for manually constructed test/legacy analyses
+                # without a point-in-time evidence index.
+                informative_facts = [
+                    item for item in market_evidence
+                    if str(getattr(item, "observation", "") or "").strip()
+                    and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
+                ]
             independent_domains = {
                 str(getattr(getattr(item, "domain", None), "value",
                             getattr(item, "domain", ""))).lower()
-                for item in directional_facts
+                for item in informative_facts
             }
-            if len(independent_domains) < required_domains or not directional_facts:
+            if len(independent_domains) < required_domains or not informative_facts:
                 return None
 
             # A directional hypothesis may become actionable below 0.70 confidence
@@ -2716,17 +2734,23 @@ class CognitiveBrain:
             # Preserve the actual evidence provenance that informed the native
             # hypothesis. Do not infer evidence domains from a hard-coded pattern
             # catalogue or manufacture support when a method has no matching fact.
-            supporting_evidence_ids = [
-                str(getattr(item, "evidence_id", "") or "")
-                for item in directional_facts
-                if getattr(item, "evidence_id", "")
-            ]
+            supporting_evidence_ids = list(dict.fromkeys(
+                list(lead.supporting_evidence_ids)
+                + list(geometry.evidence_ids)
+            ))
             competing_statements = [
                 item.statement for item in hypotheses if item is not lead
             ]
+            market_coverage_domains = (
+                set(analysis.informative_domains)
+                if analysis.evidence_index else {
+                    key for key in analysis.domain_coverage
+                    if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+                }
+            )
             market_coverage = {
                 key: value for key, value in analysis.domain_coverage.items()
-                if key not in {"execution_quality", "reasoning", "portfolio", "other"}
+                if key in market_coverage_domains
             }
             evidence_strength = (
                 sum(market_coverage.values()) / len(market_coverage)
@@ -2750,7 +2774,7 @@ class CognitiveBrain:
                         geometry.activation_reason,
                         f"Market-derived entry {geometry.entry_price:.10g}; stop {geometry.stop_price:.10g}; target {geometry.target_price:.10g}",
                         f"Current evidence supports this hypothesis across {len(independent_domains)} independent market domains",
-                        *[str(getattr(item, "observation", "") or "")[:180] for item in directional_facts[:4]],
+                        *[str(getattr(item, "observation", "") or "")[:180] for item in informative_facts[:4]],
                         "Fresh quote, broker feasibility, protective-risk checks and common admission must pass before submission",
                     ],
                     "confirmation_conditions": [
