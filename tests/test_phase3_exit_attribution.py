@@ -84,6 +84,9 @@ class TestDealCloseInfo:
         assert info.raw_comment is None
         assert info.close_price is None
         assert info.close_time is None
+        assert info.commission is None
+        assert info.swap is None
+        assert info.fee is None
 
     def test_unknown_reason_preserves_raw(self):
         info = DealCloseInfo(
