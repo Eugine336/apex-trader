@@ -47,8 +47,8 @@ class StartupCheck:
         t0 = _time.monotonic()
         missing: list[str] = []
         for mod in [
-            "brain", "risk", "trigger", "management",
-            "scanner", "platforms", "config", "persistence",
+            "brain", "risk", "entry", "tick", "execution", "cognition",
+            "management", "scanner", "platforms", "config", "persistence",
         ]:
             try:
                 __import__(mod)
