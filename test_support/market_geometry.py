@@ -83,7 +83,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "data_leakage_checked": True,
             "selection_bias_checked": True,
             "overfitting_checked": True,
-            "direction": side,
+            "calibration_side": side,
             "win_probability": 0.72,
             "sample_count": 240,
             "brier_score": 0.17,
