@@ -16,6 +16,7 @@ Executable assertions for the six violations fixed in this session:
 Pure standard library (no third-party deps) so these run in a minimal sandbox.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,8 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         uncertainty=1.0 - conf,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "current_close": 1.100,
             "prior_range_high": target_high, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
@@ -134,6 +137,8 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         uncertainty=1.0 - conf,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
