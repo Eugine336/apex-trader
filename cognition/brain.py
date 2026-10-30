@@ -843,9 +843,14 @@ class CognitiveBrain:
         )
         # Effective confidence is retained for diagnostics only. It is not a
         # substitute for an empirically calibrated win probability.
-        expected_value = expected_value_r(
-            win_probability if probability_verified else eff_conf,
-            reward_r, risk_r, cost_r=cost_r,
+        diagnostic_expected_value = expected_value_r(
+            eff_conf, reward_r, risk_r, cost_r=cost_r,
+        )
+        # DecisionPackage.expected_value has calibrated probability semantics.
+        # Never place an uncalibrated diagnostic estimate in that field.
+        expected_value = (
+            expected_value_r(win_probability, reward_r, risk_r, cost_r=cost_r)
+            if probability_verified else 0.0
         )
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
@@ -880,7 +885,8 @@ class CognitiveBrain:
             "expected_value": (
                 f"{expected_value:.4f}R (calibrated p={win_probability:.4f}; {probability_source})"
                 if probability_verified else (
-                    f"DIAGNOSTIC ONLY {expected_value:.4f}R; no calibrated win probability"
+                    f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
+                    "no calibrated win probability; DecisionPackage EV is zero"
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
