@@ -134,6 +134,43 @@ def test_same_timeframe_and_domain_conflicts_remain_explicit():
     assert any("volatility evidence simultaneously" in item for item in analysis.contradictions)
 
 
+def test_relevant_strategy_lenses_become_evidence_linked_non_directional_candidates():
+    state = MarketState(symbol="SYNTHETIC")
+    structure = _evidence(
+        "structure", {"fvg": True, "displacement": 1.0},
+        source="synthetic.structure",
+    )
+    liquidity = _evidence(
+        "liquidity", {"pool": True, "sweep_side": "sell"},
+        source="synthetic.liquidity",
+    )
+    flow = _evidence(
+        "order_flow", {"delta": 1.0},
+        source="synthetic.order_flow",
+    )
+    state.add(structure)
+    state.add(liquidity)
+    state.add(flow)
+
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    assert any(
+        item["key"] == "ict_smc" and item["status"] == "relevant"
+        for item in analysis.strategy_lenses
+    )
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+    lens_hypothesis = next(
+        item for item in hypotheses if item.hypothesis_kind == "strategy_lens:ict_smc"
+    )
+    assert lens_hypothesis.direction_implication == FLAT
+    assert set(lens_hypothesis.supporting_evidence_ids) == {
+        structure.evidence_id, liquidity.evidence_id, flow.evidence_id,
+    }
+    assert lens_hypothesis.confidence_components["score_kind"] == (
+        "lens_relevance_not_forecast_confidence"
+    )
+
+
 def test_unknown_measurements_and_volatility_create_non_directional_hypotheses():
     state = MarketState(symbol="SYNTHETIC")
     unfamiliar = _evidence(
