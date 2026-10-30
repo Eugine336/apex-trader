@@ -1589,11 +1589,31 @@ class BrainReasoner:
                 if getattr(item, "hypothesis_kind", "") == "counter_hypothesis"
                 or "counter" in str(getattr(item, "opportunity_implication", "")).lower()
             ]
-            counter = max(counters, key=lambda item: item.confidence) if counters else None
+            counter_by_primary = {
+                str(item.confidence_components.get("primary_hypothesis_id")): item
+                for item in counters
+                if isinstance(item.confidence_components, dict)
+                and item.confidence_components.get("primary_hypothesis_id")
+            }
+            unlinked_counters = [
+                item for item in counters
+                if not (
+                    isinstance(item.confidence_components, dict)
+                    and item.confidence_components.get("primary_hypothesis_id")
+                )
+            ]
+            fallback_counter = (
+                max(unlinked_counters, key=lambda item: item.confidence)
+                if unlinked_counters else None
+            )
             refined: list[BrainHypothesis] = []
             for i, h in enumerate(hypotheses):
                 notes: list[str] = []
                 factor = 1.0
+                # Compare only the counter that was generated for this exact
+                # primary hypothesis. A stronger challenge to another thesis
+                # must not contaminate this one's confidence.
+                counter = counter_by_primary.get(h.hypothesis_id) or fallback_counter
                 # 1) A detected pattern contradicts this hypothesis.
                 active_contra = [n for n in h.contradicting_patterns if n in names]
                 if active_contra:
