@@ -276,6 +276,23 @@ def test_unknown_measurements_and_volatility_create_non_directional_hypotheses()
     assert volatility.supporting_evidence_ids
 
 
+def test_counter_hypothesis_can_challenge_but_never_become_primary_direction():
+    primary = BrainHypothesis(
+        statement="weak long thesis",
+        confidence=0.25,
+        direction_implication=LONG,
+        hypothesis_kind="continuation",
+    )
+    counter = BrainHypothesis(
+        statement="counter to weak long thesis",
+        confidence=0.9,
+        direction_implication="SHORT",
+        hypothesis_kind="counter_hypothesis",
+        confidence_components={"primary_hypothesis_id": primary.hypothesis_id},
+    )
+    assert BrainReasoner.leading([primary, counter]) is primary
+
+
 def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction():
     directional = BrainHypothesis(
         statement="weak directional thesis",
