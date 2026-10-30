@@ -427,18 +427,27 @@ class BrainReasoner:
         # Keep each timeframe's directional structure observation separate. The
         # aggregate here reports only whether a repeated trend context exists;
         # it does not choose a LONG/SHORT market bias.
-        trend_states: dict[str, str] = {}
+        trend_readings: dict[str, set[str]] = {}
         ranged_timeframes: set[str] = set()
         for item in struct:
             measurements = getattr(item, "measurements", {})
             if not isinstance(measurements, dict) or measurements.get("source_kind") != "market_lens":
                 continue
-            tf = str(measurements.get("timeframe", "") or "")
+            tf = str(measurements.get("timeframe", "") or "").upper()
             state = str(measurements.get("trend_state", "") or "").lower()
             if tf and state in {"uptrend", "downtrend"}:
-                trend_states[tf] = state
+                trend_readings.setdefault(tf, set()).add(state)
             if tf and bool(measurements.get("range_rotation")):
                 ranged_timeframes.add(tf)
+        # A timeframe is usable only when its independent readings agree.
+        trend_states = {
+            tf: next(iter(states))
+            for tf, states in trend_readings.items()
+            if len(states) == 1
+        }
+        conflicted_trend_timeframes = sorted(
+            tf for tf, states in trend_readings.items() if len(states) > 1
+        )
         up_n = sum(value == "uptrend" for value in trend_states.values())
         down_n = sum(value == "downtrend" for value in trend_states.values())
         if len(trend_states) >= 2 and max(up_n, down_n) / len(trend_states) >= 0.67:
@@ -448,23 +457,39 @@ class BrainReasoner:
         else:
             trend_context = "mixed"
 
-        # Volatility regime.
-        if "volatility_compression" in names or state_is(vlt, "volatility_state", "compressing", "contracting"):
-            volatility = "compressing"
-        elif state_is(vlt, "volatility_state", "expanding") or has_flag(vlt, "expansion"):
-            volatility = "expanding"
-        else:
-            volatility = "unknown"
-
-        # Momentum regime.
-        if "momentum_acceleration" in names or state_is(mom, "momentum_state", "accelerating"):
-            momentum = "accelerating"
-        elif ("liquidity_sweep_with_momentum_exhaustion" in names
-              or state_is(mom, "momentum_state", "decelerating", "exhausting")
-              or has_flag(mom, "deceleration")):
-            momentum = "decelerating"
-        else:
-            momentum = "unknown"
+        # Preserve opposing regime observations instead of allowing the first
+        # matching branch to hide a live contradiction.
+        volatility_compressing = (
+            "volatility_compression" in names
+            or state_is(vlt, "volatility_state", "compressing", "contracting")
+            or has_flag(vlt, "compression", "squeeze")
+        )
+        volatility_expanding = (
+            "volatility_expansion_breakout" in names
+            or state_is(vlt, "volatility_state", "expanding")
+            or has_flag(vlt, "expansion")
+        )
+        volatility = (
+            "conflicted" if volatility_compressing and volatility_expanding else
+            "compressing" if volatility_compressing else
+            "expanding" if volatility_expanding else "unknown"
+        )
+        momentum_accelerating = (
+            "momentum_acceleration" in names
+            or state_is(mom, "momentum_state", "accelerating")
+            or has_flag(mom, "acceleration")
+        )
+        momentum_decelerating = (
+            "liquidity_sweep_with_momentum_exhaustion" in names
+            or "trend_exhaustion" in names
+            or state_is(mom, "momentum_state", "decelerating", "exhausting")
+            or has_flag(mom, "deceleration", "exhaustion")
+        )
+        momentum = (
+            "conflicted" if momentum_accelerating and momentum_decelerating else
+            "accelerating" if momentum_accelerating else
+            "decelerating" if momentum_decelerating else "unknown"
+        )
 
         # Preserve independent readings. Conflicting sources must not be
         # collapsed by "first value wins" into a synthetic directional fact.
@@ -542,10 +567,22 @@ class BrainReasoner:
             # Statistical displacement remains a measurement. It is not collapsed
             # into a directional bias; the hypothesis generator below can form a
             # mean-reversion counter-thesis from its signed z-score.
-            "statistical_zscore": numeric(mom, "rolling_zscore_30"),
+            "statistical_zscore": (
+                None if len({
+                    1 if value > 0 else -1
+                    for item in mom
+                    if (value := _num(getattr(item, "measurements", {}).get("rolling_zscore_30"))) not in (None, 0.0)
+                }) > 1 else numeric(mom, "rolling_zscore_30")
+            ),
+            "statistical_zscore_conflicted": len({
+                1 if value > 0 else -1
+                for item in mom
+                if (value := _num(getattr(item, "measurements", {}).get("rolling_zscore_30"))) not in (None, 0.0)
+            }) > 1,
             "ema_spread_atr": numeric(mom, "ema_spread_atr"),
             "trend_context": trend_context,
             "trend_timeframes": len(trend_states),
+            "trend_conflicted_timeframes": conflicted_trend_timeframes,
             "range_timeframes": len(ranged_timeframes),
             "m1_price_action": m1_price_action,
         }
@@ -599,6 +636,17 @@ class BrainReasoner:
         m1 = regime.get("m1_price_action", {})
         if m1.get("bullish_patterns") and m1.get("bearish_patterns"):
             out.append("M1 price-action observations contain both bullish and bearish patterns")
+        if regime.get("trend_conflicted_timeframes"):
+            out.append(
+                "independent trend readings conflict on timeframe(s): "
+                + ", ".join(regime["trend_conflicted_timeframes"])
+            )
+        if regime.get("volatility") == "conflicted":
+            out.append("volatility evidence simultaneously reports compression and expansion")
+        if regime.get("momentum") == "conflicted":
+            out.append("momentum evidence simultaneously reports acceleration and exhaustion")
+        if regime.get("statistical_zscore_conflicted"):
+            out.append("momentum sources report statistical displacement on opposing sides of the mean")
         return list(dict.fromkeys(out))
 
     @staticmethod
@@ -1129,7 +1177,10 @@ class BrainReasoner:
                 + [f"challenge: {pattern_name(item)}" for item in against]
                 + ([f"invalidation: {invalidation}"] if invalidation else [])
             ),
-            horizon=horizon,
+            horizon=(
+                horizon if horizon != "unspecified"
+                else self._evidence_horizon(analysis, support, against)
+            ),
             confidence_components=components,
         )
 
@@ -1203,7 +1254,8 @@ class BrainReasoner:
                 "A structural move could still be forming beneath the noise; absence of a "
                 "pattern now does not preclude one developing.")
             direction = ""
-        # A counter-hypothesis carries the residual probability mass.
+        # This is a heuristic reasoning-strength score, not calibrated residual
+        # probability. Calibration requires independent historical validation.
         conf = _clamp01(max(0.0, (1.0 - primary.confidence)) * (0.5 + 0.5 * analysis.agreement_score))
         return BrainHypothesis(
             statement=statement, supporting_patterns=list(primary.contradicting_patterns),
