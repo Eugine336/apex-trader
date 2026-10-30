@@ -228,9 +228,9 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc. It implement
 | System | Status | Acceptance evidence |
 |---|---|---|
 | 1. Canonical identity and contracts | **Foundation present; audit required** | Canonical identity and contract code exist; current whole-repository conformance still requires a fresh executed audit. |
-| 2. Market intelligence and evidence integrity | **IN PROGRESS — BLOCKED** | PR #792 merged at 74e0b845; follow-up branch redesign/system2-durable-provenance adds durable provenance commits and exact-ticket recovery lookup. Tests/audit remain unexecuted. Calendar, Deriv constraints, verified financing estimates and independent historical validation remain open. |
-| 3. Native market reasoning | **NOT STARTED — gated on System 2** | No acceptance evidence recorded. |
-| 4. Opportunity discovery and payoff geometry | **NOT STARTED — gated on System 3** | No acceptance evidence recorded. Existing code must be audited when reached. |
+| 2. Market intelligence and evidence integrity | **IN PROGRESS — NOT ACCEPTED** | PR #793 merged; durable entry/outcome provenance and exact-ticket recovery are on main. Full acceptance remains open: inherited silent-exception audit, broker-agnostic calendar/connector capabilities, verified financing and independent historical validation. |
+| 3. Native market reasoning | **IMPLEMENTED AND MERGED — ACCEPTANCE GATES TRACKED** | PR #796 merged at 94a01c7. Python 3.11/3.12 each reported 3,963 passed and the same inherited 180-handler audit failure as the pre-merge baseline. No new test regression in the baseline comparison. |
+| 4. Opportunity discovery and payoff geometry | **IN PROGRESS — NOT ACCEPTED** | PR #797 draft. Geometry now requires exact symbol, timeframe/temporal consistency, current structural activation and verified reclaim for sweep reversals; every directional candidate receives independent geometry. Directional action now requires verified direction-specific out-of-sample probability calibration in addition to fresh costs. Full CI and adversarial scenario validation are pending. |
 | 5. Compliance and portfolio allocation | **NOT STARTED — gated on System 4** | No acceptance evidence recorded. Existing code must be audited when reached. |
 | 6. Execution integrity and broker adapters | **NOT STARTED — gated on System 5** | Some shared executor protections already exist; system-wide acceptance is not recorded. |
 | 7. Position operations and trade lifecycle | **NOT STARTED — gated on System 6** | No end-to-end lifecycle acceptance evidence recorded. |
@@ -303,3 +303,41 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 - Unknown time horizons, missing domains and unverified facts remain explicit. No strategy-family catalog is a guarantee of competence.
 
 No live broker orders, runtime database changes, credential changes, `.env` access or destructive cleanup are part of this work.
+
+
+
+## System 4 implementation record — 2026-10-30
+
+**Status: IN PROGRESS — NOT ACCEPTED.** Branch `redesign/system4-opportunity-qualification`; draft PR #797.
+
+### Existing architecture audit
+- `cognition/opportunity_geometry.py` already derived entry/stop/target from fresh market-lens structural observations and supported breakout, trend/momentum, range rotation and sweep/reclaim activation. The audit found activation could be borrowed from any still-fresh older structure, momentum was not timeframe-aligned, missing evidence symbols inherited the state symbol, sweep-side labels could qualify without a measured reclaim, and same-time structural conflicts could be resolved by arrival order.
+- `CognitiveBrain` already built a ranked opportunity set and used market-derived geometry for the preferred directional opportunity, but conditional directional alternatives did not each receive their own geometry.
+- `expected_value_r` explicitly treats its first input as win probability, while System 3 marks native confidence as uncalibrated reasoning strength. The prior integration passed effective confidence directly as probability. That semantic mismatch is corrected by requiring separate verified calibration evidence for action.
+
+### Implemented in PR #797
+- Geometry requires exact instrument identity and a declared timeframe. Explicitly provisional/incomplete observations are excluded.
+- The latest structural observation alone can establish breakout/trend activation; same-time/same-timeframe incompatible structure readings fail closed.
+- Trend/momentum and range-response activation require matching timeframes and non-future evidence.
+- Sweep/reversal activation requires a counter-side sweep, explicit reclaim confirmation, measured swept level and a completed close back across that level.
+- Every directional opportunity receives its own independently derived entry, stop, target, risk/reward distances and supporting geometry evidence IDs.
+- Effective reasoning confidence remains a conviction/sizing input, not a win probability. EV used for action requires fresh exact-symbol, direction-specific calibration evidence with explicit source verification, walk-forward/out-of-sample and untouched-holdout controls, leakage/selection/overfit checks, calibration method/ID, at least 30 samples, Brier score and reliability gap no greater than the existing 0.25 calibration tolerance.
+- Without verified calibration, EV is marked diagnostic only and directional exposure is blocked. Historical calibration metadata is excluded from independent market-domain coverage.
+- Sizing is bounded by effective confidence; reasoning quality can reduce exposure but cannot lift it above confidence.
+
+### Deterministic tests added
+- Older breakout cannot activate a newer non-breakout.
+- Cross-timeframe momentum cannot confirm a structure trend.
+- Same-time structural conflicts and missing instrument identity fail closed.
+- Reversal sweep requires measured reclaim; sweep without reclaim does not activate.
+- Unfamiliar-only / low-liquidity evidence cannot manufacture geometry.
+- Uncalibrated confidence, opposite-direction calibration, unverified source, cross-symbol calibration and poor reliability gap are rejected.
+- Calibration metadata does not inflate market-evidence coverage.
+
+### Outstanding acceptance gates
+- The runtime calibration producer is not yet demonstrated end-to-end from durable decision/outcome history into direction-specific, symbol-scoped calibration evidence. Until that producer and its provenance are integrated, new directional exposure remains blocked by design.
+- Full Python 3.11/3.12 CI, focused Gold desk workflow after the latest scenario tests, canonical identity audit and adversarial trend/range/reversal/low-liquidity/conflict/unfamiliar scenarios must pass.
+- Verify every opportunity's stable identity, lifecycle, geometry lineage and qualification status through the canonical decision and downstream campaign record.
+- Verify opportunity discovery across brokers and instruments without broker-specific assumptions; this remains dependent on System 2 connector capability gates.
+
+No broker orders, runtime database changes, credential changes, `.env` access or destructive cleanup were performed in this implementation pass.
