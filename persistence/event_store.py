@@ -1,9 +1,9 @@
 """
 APEX TRADER — Append-Only Event Store
 Every signal, decision, trade, and log line becomes a structured, correlated
-event.  Append-only SQLite, WAL-mode, thread-safe.  Writes are non-blocking:
-a bounded queue feeds a background writer thread so the trading loop never
-waits on disk.
+event.  Append-only SQLite, WAL-mode, thread-safe. Ordinary telemetry writes
+are non-blocking and use a bounded background-writer queue. Critical trade
+provenance may opt into a synchronous SQLite commit before the caller returns.
 
 Mirror the sync-sqlite3 + WAL pattern used by ``persistence/position_store.py``.
 """
@@ -89,13 +89,14 @@ def new_setup_id() -> str:
 class EventStore:
     """Append-only event store backed by SQLite (WAL mode).
 
-    Writes happen on a dedicated background thread fed by a bounded queue so
-    the caller (trading loop / loguru sink) is never blocked by disk I/O.  If
-    the queue saturates, oldest un-written events are dropped and a counter is
-    incremented — the trading system is never stalled.
+    Ordinary telemetry writes use a dedicated background thread fed by a
+    bounded queue. Queue saturation increments a drop counter rather than
+    stalling the trading loop. Critical provenance callers may use
+    emit(..., durable=True) to commit synchronously and receive database
+    errors instead of a queue-only acknowledgement.
 
-    Thread-safe: any thread may call ``emit``; only the writer thread touches
-    the DB connection.
+    Thread-safe: the background writer, durable emitters and readers share the
+    SQLite connection under _db_lock.
     """
 
     def __init__(
