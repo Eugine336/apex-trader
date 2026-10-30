@@ -65,4 +65,32 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
         timestamp_epoch=now,
         relevance_horizon_seconds=900.0,
     ))
+    # Explicit synthetic calibration is supplied only by test fixtures. The
+    # production Brain never promotes raw reasoning confidence to probability.
+    market_state.add(Evidence(
+        source_module="validation.out_of_sample_probability_calibration.test_fixture",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+        symbol=symbol,
+        observation="synthetic direction-specific calibration for admission tests",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True,
+            "source_verified": True,
+            "out_of_sample": True,
+            "walk_forward": True,
+            "untouched_holdout": True,
+            "data_leakage_checked": True,
+            "selection_bias_checked": True,
+            "overfitting_checked": True,
+            "direction": side,
+            "win_probability": 0.72,
+            "sample_count": 240,
+            "brier_score": 0.17,
+            "calibration_method": "synthetic_isotonic",
+            "calibration_id": "unit-test-holdout",
+        },
+        timestamp_epoch=now,
+        relevance_horizon_seconds=900.0,
+    ))
     return market_state
