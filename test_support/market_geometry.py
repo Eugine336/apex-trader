@@ -35,7 +35,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "source_kind": "market_lens",
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
-            "source_bar_epoch": stamp,
+            "source_bar_epoch": now,
             "timeframe": "M5",
             "current_close": 1.100,
             # The synthetic structure is oriented to provide positive payoff
@@ -62,7 +62,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "source_kind": "market_lens",
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
-            "source_bar_epoch": stamp,
+            "source_bar_epoch": now,
             "timeframe": "M5",
             "close_change": change,
         },
