@@ -362,7 +362,7 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 
 ## System 3 native reasoning implementation refresh — 2026-10-30
 
-Implementation is in progress on `redesign/system3-native-reasoning`; this does not claim System 3 acceptance.
+**Implemented and merged to `main` in PR #796 at commit `94a01c793d7418357f81adf7c8989f965c2c3e5b` on 2026-10-30.**
 
 - Native analysis in `cognition/brain_reasoning.py` now preserves source evidence IDs, source modules, original timestamps, domains, source confidence/uncertainty, observed measurements and pattern-to-evidence lineage.
 - The serialized epistemic record distinguishes observed facts, inferred patterns/contradictions, assumptions and unknowns. Missing domains and unknown horizons remain explicit.
@@ -376,4 +376,4 @@ Implementation is in progress on `redesign/system3-native-reasoning`; this does 
 - Every evidence-relevant lens in the strategy-lens registry now becomes an explicitly non-directional candidate hypothesis with its own source domains, required context and limitations. Volatility-regime and unfamiliar-measurement hypotheses are also preserved without inventing a side. Pattern-source links disclose domain-level candidate-source granularity; unknown measurements retain exact source IDs.
 - New deterministic tests cover evidence lineage, epistemic separation, conflicting readings, no-trade comparison, source horizon metadata, stale/future data and decision-time consistency.
 
-**Not yet verified:** GitHub Actions for this branch are pending. System 3 remains in progress until supported-runtime tests, full CI, canonical identity audit, advisor-outage tests and adversarial scenario coverage pass. The prior implementation audit's findings on limited native hypothesis breadth and runtime route reachability remain open until these checks are complete.
+**Validation:** focused Gold desk tests and lint passed. Full Python 3.11 and 3.12 suites each reported 3,963 passed and one failure: the silent-exception audit's 180 unclassified handlers. The pre-merge `main` baseline reported 3,948 passed and the same single 180-handler audit failure on both runtimes. No audit rules were weakened or suppressed. The post-merge main workflow remains queued. System 3 implementation is complete; the inherited repository-wide audit is still an outstanding global quality gate, not a new System 3 regression.
