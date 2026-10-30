@@ -805,7 +805,16 @@ class CognitiveBrain:
         cost_verified, cost_r, cost_source = self._execution_cost_estimate(
             market_state, now=now,
         )
-        expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
+        probability_verified, win_probability, probability_source = (
+            self._calibrated_win_probability(market_state, direction, now=now)
+            if direction in (LONG, SHORT) else (False, 0.0, "not directional")
+        )
+        # Effective confidence is retained for diagnostics only. It is not a
+        # substitute for an empirically calibrated win probability.
+        expected_value = expected_value_r(
+            win_probability if probability_verified else eff_conf,
+            reward_r, risk_r, cost_r=cost_r,
+        )
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
             if cost_verified else
@@ -836,9 +845,17 @@ class CognitiveBrain:
             else (key_uncertainty or "none reported"),
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
-            "expected_value": ev_txt or (
-                f"{expected_value:.4f}R (native: conviction {eff_conf:.2f} x market geometry)"
-                if direction in (LONG, SHORT) else "not established"
+            "expected_value": (
+                f"{expected_value:.4f}R (calibrated p={win_probability:.4f}; {probability_source})"
+                if probability_verified else (
+                    f"DIAGNOSTIC ONLY {expected_value:.4f}R; no calibrated win probability"
+                    if direction in (LONG, SHORT) else "not established"
+                )
+            ),
+            "win_probability_verification": (
+                f"VERIFIED: {probability_source}; p={win_probability:.4f}"
+                if probability_verified else
+                f"UNVERIFIED: {probability_source}; confidence is not probability"
             ),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
@@ -1045,6 +1062,7 @@ class CognitiveBrain:
             and quorum_ok
             and domain_ok
             and cost_verified
+            and probability_verified
             and has_actionable_opportunity
             and geometry_qualified
         )
@@ -2292,6 +2310,68 @@ class CognitiveBrain:
         except (TypeError, ValueError, OverflowError):
             return None
         return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
+
+    def _calibrated_win_probability(
+        self, market_state: MarketState, direction: str, *, now: Optional[float] = None,
+    ) -> tuple[bool, float, str]:
+        """Return only an independently validated, direction-specific win probability.
+
+        Raw Brain/advisor confidence is reasoning strength, not a calibrated
+        probability. Without an explicit out-of-sample calibration record the
+        returned numeric value is diagnostic only and cannot authorize exposure.
+        """
+        side = str(direction or "").strip().upper()
+        if side not in (LONG, SHORT):
+            return False, 0.0, "not directional"
+        candidates: list[tuple[float, float, str]] = []
+        try:
+            for item in market_state.fresh_evidence(now):
+                domain = str(getattr(getattr(item, "domain", None), "value",
+                                     getattr(item, "domain", "")) or "").lower()
+                if domain != "historical_analogue":
+                    continue
+                if str(getattr(item, "symbol", "") or "").strip().upper() != str(
+                    getattr(market_state, "symbol", "") or ""
+                ).strip().upper():
+                    continue
+                m = getattr(item, "measurements", None)
+                if not isinstance(m, dict):
+                    continue
+                if (
+                    m.get("probability_calibration_verified") is not True
+                    or m.get("source_verified") is not True
+                    or m.get("out_of_sample") is not True
+                    or m.get("walk_forward") is not True
+                    or m.get("untouched_holdout") is not True
+                    or m.get("data_leakage_checked") is not True
+                    or m.get("selection_bias_checked") is not True
+                    or m.get("overfitting_checked") is not True
+                    or str(m.get("direction", "")).strip().upper() != side
+                    or not str(m.get("calibration_method", "")).strip()
+                    or not str(m.get("calibration_id", "")).strip()
+                ):
+                    continue
+                probability = self._cost_value(m.get("win_probability"))
+                sample_count = self._cost_value(m.get("sample_count"))
+                brier_score = self._cost_value(m.get("brier_score"))
+                if (
+                    probability is None or probability > 1.0
+                    or sample_count is None or sample_count < 1
+                    or brier_score is None or brier_score > 1.0
+                ):
+                    continue
+                stamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+                candidates.append((
+                    stamp, probability,
+                    f"{m['calibration_method']}:{m['calibration_id']} "
+                    f"(n={int(sample_count)}, Brier={brier_score:.4f})",
+                ))
+        except Exception:
+            return False, 0.0, "calibration evidence unavailable"
+        if not candidates:
+            return False, 0.0, "no fresh verified out-of-sample probability calibration"
+        _, probability, source = max(candidates, key=lambda row: row[0])
+        return True, probability, source
 
     def _execution_cost_estimate(
         self, market_state: MarketState, *, now: Optional[float] = None,
