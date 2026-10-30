@@ -351,7 +351,7 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 
 ## System 2 durability follow-up — 2026-10-30
 
-- Follow-up implementation branch: redesign/system2-durable-provenance, based on 74e0b845390cebe8385b2812003da8344b59e0cc.
+- Follow-up implementation PR #793 (draft, not accepted): redesign/system2-durable-provenance, based on 74e0b845390cebe8385b2812003da8344b59e0cc.
 - Entry-snapshot and outcome events use synchronous SQLite commits through EventStore.emit(..., durable=True). Failure raises to the producer and marks the store degraded; the event is not acknowledged as persisted merely because it was queued.
 - Restart recovery filters by exact parent_id ticket at the SQL layer; it no longer scans a capped set of same-symbol rows and filters tickets in application code.
 - Intent construction deep-copies nested decision snapshot content to prevent mutation through the original caller-owned object. Intrinsic immutability is still not claimed.
