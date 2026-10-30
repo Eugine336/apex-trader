@@ -134,6 +134,32 @@ def test_same_timeframe_and_domain_conflicts_remain_explicit():
     assert any("volatility evidence simultaneously" in item for item in analysis.contradictions)
 
 
+def test_unknown_measurements_and_volatility_create_non_directional_hypotheses():
+    state = MarketState(symbol="SYNTHETIC")
+    unfamiliar = _evidence(
+        "other", {"unfamiliar_microstructure_metric": 0.73},
+        source="synthetic.unknown_adapter",
+    )
+    state.add(unfamiliar)
+    state.add(_evidence(
+        "volatility", {"volatility_state": "expanding"},
+        source="synthetic.volatility",
+    ))
+
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+
+    unknown = next(item for item in hypotheses if item.hypothesis_kind == "unknown_pattern")
+    volatility = next(item for item in hypotheses if item.hypothesis_kind == "volatility_regime")
+    assert unknown.direction_implication == FLAT
+    assert unfamiliar.evidence_id in unknown.supporting_evidence_ids
+    assert unknown.assumptions
+    assert unknown.unresolved_unknowns
+    assert volatility.direction_implication == FLAT
+    assert volatility.supporting_evidence_ids
+
+
 def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction():
     directional = BrainHypothesis(
         statement="weak directional thesis",
