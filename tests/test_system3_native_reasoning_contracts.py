@@ -217,6 +217,11 @@ def test_unknown_measurements_and_volatility_create_non_directional_hypotheses()
         source="synthetic.unknown_adapter",
     )
     state.add(unfamiliar)
+    unfamiliar_second = _evidence(
+        "other", {"unfamiliar_regime_signature": "regime-7"},
+        source="synthetic.unknown_adapter",
+    )
+    state.add(unfamiliar_second)
     state.add(_evidence(
         "volatility", {"volatility_state": "expanding"},
         source="synthetic.volatility",
@@ -230,6 +235,9 @@ def test_unknown_measurements_and_volatility_create_non_directional_hypotheses()
     volatility = next(item for item in hypotheses if item.hypothesis_kind == "volatility_regime")
     assert unknown.direction_implication == FLAT
     assert unfamiliar.evidence_id in unknown.supporting_evidence_ids
+    assert unfamiliar_second.evidence_id in unknown.supporting_evidence_ids
+    assert "unfamiliar_microstructure_metric" in unknown.statement
+    assert "unfamiliar_regime_signature" in unknown.statement
     assert unknown.assumptions
     assert unknown.unresolved_unknowns
     assert volatility.direction_implication == FLAT
