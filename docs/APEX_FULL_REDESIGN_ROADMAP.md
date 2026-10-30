@@ -244,7 +244,7 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 
 ### System 2 durability follow-up — 2026-10-30
 
-- Branch: redesign/system2-durable-provenance, based on merge commit 74e0b845390cebe8385b2812003da8344b59e0cc.
+- PR #793 (draft, not accepted): redesign/system2-durable-provenance, based on merge commit 74e0b845390cebe8385b2812003da8344b59e0cc.
 - Critical entry-snapshot and trade-outcome events now use a synchronous SQLite commit path (emit(..., durable=True)) instead of relying on the best-effort telemetry queue. A database failure raises to the producer and marks the store degraded.
 - Event queries accept an exact parent_id filter; restart recovery now queries by the broker ticket instead of scanning up to 5,000 same-symbol events and filtering in Python.
 - Intent.open() deep-copies the nested snapshot payload to detach it from the caller's mutable source object. This is defensive copying, not a claim that the nested intent payload is intrinsically immutable.
