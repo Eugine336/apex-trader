@@ -44,7 +44,7 @@ class _Opinion:
         # opportunity so origination flows through a structured object (these
         # tests exercise native/advisor integration, not the legacy-scalar path).
         self.opportunities = (
-            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+            [{"id": "auto", "calibration_side": direction, "state": "ACTIVE",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -145,7 +145,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
             "source_verified": True, "out_of_sample": True,
             "walk_forward": True, "untouched_holdout": True,
             "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "direction": side,
+            "overfitting_checked": True, "calibration_side": side,
             "win_probability": 0.72, "sample_count": 240,
             "brier_score": 0.17, "calibration_method": "synthetic_isotonic",
             "calibration_id": "unit-test-holdout",
