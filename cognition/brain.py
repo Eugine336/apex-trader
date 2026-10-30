@@ -505,6 +505,7 @@ class CognitiveBrain:
                     reason_txt="no external advisor configured — native Brain-only decision",
                     market_state=market_state,
                     advisor_status="not_configured",
+                    now=now,
                 )
                 if independent is not None:
                     return independent
@@ -524,6 +525,7 @@ class CognitiveBrain:
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="reasoner unavailable — provider down (not a market view)",
                     market_state=market_state,
+                    now=now,
                 )
                 if independent is not None:
                     return independent
@@ -798,7 +800,9 @@ class CognitiveBrain:
         # Net EV includes the best available cost estimate. The configured
         # default remains diagnostic only; it cannot substitute for verified,
         # fresh execution-cost evidence when the Brain authorizes a campaign.
-        cost_verified, cost_r, cost_source = self._execution_cost_estimate(market_state)
+        cost_verified, cost_r, cost_source = self._execution_cost_estimate(
+            market_state, now=now,
+        )
         expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
@@ -2279,7 +2283,7 @@ class CognitiveBrain:
         return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
     def _execution_cost_estimate(
-        self, market_state: MarketState,
+        self, market_state: MarketState, *, now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
         """Return (verified, round-trip cost R, source) from fresh broker-cost evidence.
 
@@ -2291,7 +2295,7 @@ class CognitiveBrain:
         """
         try:
             candidates: list[tuple[float, float, str]] = []
-            for item in market_state.fresh_evidence():
+            for item in market_state.fresh_evidence(now):
                 if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
                     continue
                 measurements = getattr(item, "measurements", None)
@@ -2331,13 +2335,17 @@ class CognitiveBrain:
             pass
         return False, max(0.0, float(self.default_cost_r)), "configured default (not verified)"
 
-    def _execution_cost_r(self, market_state: MarketState) -> float:
-        """Return the best current cost estimate, for diagnostics and EV only."""
-        return self._execution_cost_estimate(market_state)[1]
+    def _execution_cost_r(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> float:
+        """Return the best cost estimate at the decision-time cutoff."""
+        return self._execution_cost_estimate(market_state, now=now)[1]
 
-    def _has_current_execution_cost_evidence(self, market_state: MarketState) -> bool:
+    def _has_current_execution_cost_evidence(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> bool:
         """True only when a fresh, finite, non-negative cost measurement exists."""
-        return self._execution_cost_estimate(market_state)[0]
+        return self._execution_cost_estimate(market_state, now=now)[0]
 
     def _synthesize_from_evidence(
         self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
@@ -2589,6 +2597,7 @@ class CognitiveBrain:
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
         *, reason_txt: str, market_state: Optional[MarketState] = None,
         advisor_status: str = "unavailable",
+        now: Optional[float] = None,
     ) -> Optional[BrainOutput]:
         """Discover a native opportunity whenever the advisor supplies no usable opinion.
 
@@ -2627,7 +2636,7 @@ class CognitiveBrain:
             # in a fixed catalogue of familiar pattern names. Require multiple
             # fresh, independent market domains and at least one concrete current
             # observation that can be named in the opportunity contract.
-            fresh = list(market_state.fresh_evidence())
+            fresh = list(market_state.fresh_evidence(now))
             market_evidence = [
                 item for item in fresh
                 if str(getattr(getattr(item, "domain", None), "value",
@@ -2661,7 +2670,9 @@ class CognitiveBrain:
             # Native fallback may not invent a cost estimate. A current execution
             # cost observation from the shared consolidator is mandatory; use its
             # actual net round-trip estimate for EV rather than a constant default.
-            cost_verified, _, _ = self._execution_cost_estimate(market_state)
+            cost_verified, _, _ = self._execution_cost_estimate(
+                market_state, now=now,
+            )
             if not cost_verified:
                 return None
 
@@ -2669,7 +2680,9 @@ class CognitiveBrain:
             # A native opportunity needs a real, activated market-structure
             # geometry. Missing stop/target levels or activation evidence means
             # observe; never manufacture the previous configured reward multiple.
-            geometry = derive_opportunity_geometry(market_state, direction)
+            geometry = derive_opportunity_geometry(
+                market_state, direction, now=now,
+            )
             if geometry is None or not geometry.activated:
                 return None
 
@@ -2686,7 +2699,7 @@ class CognitiveBrain:
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
-            cost_r = self._execution_cost_r(market_state)
+            cost_r = self._execution_cost_r(market_state, now=now)
             expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
