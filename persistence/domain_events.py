@@ -25,6 +25,10 @@ ORDER_FILLED = "ORDER_FILLED"
 TRADE_OPEN = "TRADE_OPEN"
 TRADE_CLOSE = "TRADE_CLOSE"
 
+# ── Decision-time evidence linked to realized trade outcomes (System 2) ───────
+DECISION_TRADE_ENTRY_SNAPSHOT = "DECISION_TRADE_ENTRY_SNAPSHOT"
+DECISION_TRADE_OUTCOME = "DECISION_TRADE_OUTCOME"
+
 # ── In-trade management actions (event-driven) ──────────────────────────────
 # One event per executed management Intent that is not a full close — SL/TP
 # modification (breakeven, trailing, tighten, protective stop) or partial

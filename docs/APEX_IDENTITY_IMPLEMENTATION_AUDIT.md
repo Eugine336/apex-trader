@@ -335,3 +335,15 @@ System 2 is **in progress, not merge-ready**. Missing data remains unknown; no p
 - The recording broker used by tests now supplies clearly synthetic, explicitly marked test constraints. Regression cases cover naive timestamps, synchronized timeframe observations, unverified specifications, volume-step violations, stop-distance violations and monetary conversion provenance.
 - **Operational consequence:** the shared executor will fail closed for connector/spec combinations that do not expose a complete verified MT5-style constraint set (including the current Deriv multiplier-only specification). Those routes need a connector-specific full constraint validator before new exposure can be enabled.
 - **Validation still pending:** these tests and `scripts/identity_audit.py` have not been run in a local runtime. The implementation is not declared test-clean. Historical trade-linked feature snapshots with decision-time provenance, complete timezone/DST/holiday calendars, realistic financing costs, and independent walk-forward/untouched-holdout results remain unclosed.
+
+## System 2 continuation — decision-time snapshot and trade linkage (2026-10-30)
+
+Implementation is in branch `redesign/system2-decision-time-provenance` and is **not yet merged or accepted**:
+
+- Both advisor-assisted and native-only Brain campaign paths now capture a point-in-time feature snapshot from the fresh evidence already in the `MarketState`. Each feature carries its evidence ID and original source timestamp; stale/future evidence is excluded, values are normalized for JSON serialization, and snapshots are explicitly marked unvalidated.
+- Campaign translation carries the same snapshot into `OriginationIntent`, then the shared `Intent`. The Brain origination sink rejects a missing, incomplete, or decision-ID-mismatched snapshot rather than creating a trade that cannot be attributed.
+- The shared flush loop now has a successful-OPEN callback. The bootstrap associates the snapshot with the exact broker ticket and emits a durable `DECISION_TRADE_ENTRY_SNAPSHOT` event. Close attribution attempts exact-ticket recovery from the event ledger after restart and emits `DECISION_TRADE_OUTCOME` with the linked decision/campaign/opportunity IDs, snapshot ID, realized P&L, commission, swap, fee and exit reason.
+- Added `tests/test_decision_feature_snapshot.py` for fresh evidence capture, stale/future evidence exclusion, and snapshot propagation through campaign translation.
+
+**Not yet verified:** tests have not been executed in a supported runtime; event-store queue persistence/recovery, provider-specific ticket fields, and full end-to-end entry-to-close attribution still require focused integration tests. This branch must not be described as System 2 complete until those tests and `scripts/identity_audit.py` run successfully and all remaining calendar, connector-constraint, financing-cost and independent validation gates are closed or explicitly accepted as blockers. No live broker orders were sent.
+

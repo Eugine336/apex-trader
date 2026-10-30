@@ -1591,6 +1591,7 @@ class EventDrivenSystem:
             evaluator=self._evaluator,
             on_close_callback=self._handle_close_result,
             on_manage_callback=self._handle_manage_result,
+            on_open_callback=self._handle_open_result,
         )
         self._tick_eval_loop = TickEvalLoop(
             self._evaluator, scheduler=self._mgmt_scheduler,
@@ -2296,6 +2297,22 @@ class EventDrivenSystem:
                         symbol, direction,
                     )
                     return False
+                snapshot = getattr(origination, "meta", {}).get("decision_feature_snapshot") \
+                    if isinstance(getattr(origination, "meta", None), dict) else None
+                if (
+                    not isinstance(snapshot, dict)
+                    or snapshot.get("schema") != "apex.decision_feature_snapshot.v1"
+                    or snapshot.get("captured_at_decision") is not True
+                    or snapshot.get("snapshot_complete") is not True
+                    or str(snapshot.get("decision_id") or "")
+                       != str(getattr(origination, "decision_id", "") or "")
+                    or not snapshot.get("evidence_ids")
+                ):
+                    logger.warning(
+                        "[origination-sink] {} {} skipped — complete point-in-time decision snapshot missing",
+                        symbol, direction,
+                    )
+                    return False
                 try:
                     reference_entry = float(getattr(origination, "reference_entry_price", 0.0) or 0.0)
                     geometry_entry = float(geometry.get("entry_price", 0.0) or 0.0)
@@ -2388,6 +2405,12 @@ class EventDrivenSystem:
                         if isinstance(getattr(origination, "payoff_geometry", None), dict)
                         else None
                     ),
+                    decision_feature_snapshot=(
+                        dict(getattr(origination, "meta", {}).get("decision_feature_snapshot", {}) or {})
+                        if isinstance(getattr(origination, "meta", None), dict)
+                        and isinstance(getattr(origination, "meta", {}).get("decision_feature_snapshot"), dict)
+                        else None
+                    ),
                 )])
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
@@ -2467,11 +2490,11 @@ class EventDrivenSystem:
     def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
         """Estimate round-trip cost in account currency (Part XIX Art 7).
 
-        Requires broker tick-value/tick-size conversion and a successful positive
-        spread observation. Missing or invalid spread data is UNKNOWN, not zero,
-        and returns 0.0 so the mandatory net-EV qualification gate fails closed.
-        The slippage buffer is an explicit conservative assumption; it is not a
-        claim that future slippage or financing costs are known exactly.
+        Requires broker tick-value/tick-size conversion, a successful positive
+        spread observation, commission-model verification, and a verified per-symbol
+        round-trip financing estimate for the expected holding horizon. Any missing
+        cost input is UNKNOWN, not zero, and returns 0.0 so the mandatory net-EV gate
+        fails closed. The slippage buffer remains an explicit conservative assumption.
         """
         try:
             lots = float(lots or 0.0)
@@ -2510,7 +2533,28 @@ class EventDrivenSystem:
                 # estimate/configuration is available; net-EV then fails closed.
                 return 0.0
             commission_ccy = comm_per_lot * lots
-            total = spread_ccy + slippage_ccy + commission_ccy
+            # Financing is instrument- and holding-horizon-dependent. Require
+            # an explicit per-broker-symbol round-trip estimate (account currency
+            # per lot) and operator verification; broker swap fields alone are
+            # not interchangeable across swap calculation modes.
+            financing_model_verified = bool(
+                cog is not None
+                and getattr(cog, "financing_model_verified", False) is True
+            )
+            financing_map = (
+                getattr(cog, "financing_per_lot_round_trip", {})
+                if cog is not None else {}
+            )
+            if not financing_model_verified or not isinstance(financing_map, dict):
+                return 0.0
+            financing_per_lot = financing_map.get(str(symbol or "").strip().upper())
+            if isinstance(financing_per_lot, bool) or financing_per_lot is None:
+                return 0.0
+            financing_per_lot = float(financing_per_lot)
+            if not math.isfinite(financing_per_lot) or financing_per_lot < 0.0:
+                return 0.0
+            financing_ccy = financing_per_lot * lots
+            total = spread_ccy + slippage_ccy + commission_ccy + financing_ccy
             return total if math.isfinite(total) and total > 0.0 else 0.0
         except Exception:  # noqa: BLE001 — unknown cost must not be fail-open
             return 0.0
@@ -5219,6 +5263,100 @@ class EventDrivenSystem:
 
         self._known_open = {**current, **still_pending}
 
+    def _handle_open_result(self, intent: Intent, result: Any) -> None:
+        """Persist the Brain's decision-time evidence against the broker ticket.
+
+        The callback runs only after the shared executor reports a successful
+        OPEN. It never sends or retries an order. Missing ticket/snapshot data is
+        surfaced as an attribution gap rather than guessed from symbol/time.
+        """
+        try:
+            if not bool(getattr(result, "success", False)):
+                return
+            response = getattr(result, "broker_response", None)
+            ticket = ""
+            if isinstance(response, dict):
+                ticket = str(
+                    response.get("order_id") or response.get("ticket")
+                    or response.get("position_id") or ""
+                )
+            else:
+                ticket = str(
+                    getattr(response, "order_id", "")
+                    or getattr(response, "ticket", "")
+                    or getattr(response, "position_id", "")
+                    or ""
+                )
+            if not ticket:
+                logger.error(
+                    "[decision-provenance] successful OPEN for {} has no broker ticket; "
+                    "decision-to-trade attribution remains unresolved",
+                    getattr(intent, "symbol", ""),
+                )
+                return
+            snapshot = getattr(intent, "decision_feature_snapshot", None)
+            snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+            decision_id = str(getattr(intent, "decision_id", "") or "")
+            campaign_id = str(getattr(intent, "campaign_id", "") or "")
+            opportunity_id = str(getattr(intent, "opportunity_id", "") or "")
+            snapshot_id = str(snapshot.get("snapshot_id") or "")
+            complete = (
+                snapshot.get("schema") == "apex.decision_feature_snapshot.v1"
+                and snapshot.get("captured_at_decision") is True
+                and snapshot.get("snapshot_complete") is True
+                and bool(snapshot_id)
+                and bool(decision_id)
+                and str(snapshot.get("decision_id") or "") == decision_id
+                and bool(snapshot.get("evidence_ids"))
+            )
+            context = {
+                "ticket": ticket,
+                "symbol": str(getattr(intent, "symbol", "") or ""),
+                "direction": str(getattr(intent, "direction", "") or "").upper(),
+                "decision_id": decision_id,
+                "campaign_id": campaign_id,
+                "opportunity_id": opportunity_id,
+                "decision_feature_snapshot": snapshot,
+                "snapshot_id": snapshot_id,
+                "decision_snapshot_complete": bool(complete),
+                "entry_intent_timestamp": getattr(
+                    getattr(intent, "timestamp", None), "isoformat", lambda: ""
+                )(),
+            }
+            contexts = getattr(self, "_entry_context", None)
+            if isinstance(contexts, dict):
+                prior = contexts.get(ticket)
+                merged = dict(prior) if isinstance(prior, dict) else {}
+                merged.update(context)
+                contexts[ticket] = merged
+            from persistence import domain_events as DE
+            from persistence.event_store import get_event_store
+            store = get_event_store()
+            if store is not None:
+                store.emit(
+                    event_type=DE.DECISION_TRADE_ENTRY_SNAPSHOT,
+                    severity="INFO" if complete else "WARNING",
+                    symbol=context["symbol"],
+                    correlation_id=decision_id or None,
+                    parent_id=ticket,
+                    source_module="execution.decision_provenance",
+                    payload={
+                        **context,
+                        "identity_version": str(getattr(intent, "identity_version", "") or ""),
+                        "provenance_status": "captured" if complete else "incomplete",
+                        "validation_status": "unvalidated",
+                        "predictive_ability_demonstrated": False,
+                    },
+                )
+            if not complete:
+                logger.warning(
+                    "[decision-provenance] OPEN ticket {} lacks a complete decision-time snapshot; "
+                    "do not use it for predictive validation",
+                    ticket,
+                )
+        except Exception as exc:  # noqa: BLE001 — attribution must not interrupt order lifecycle
+            logger.warning("[decision-provenance] open attribution failed: {}", exc)
+
     def _handle_close_result(self, intent: Intent, result: Any) -> None:
         """Called by FlushLoop when a CLOSE intent succeeds.
 
@@ -6562,6 +6700,43 @@ class EventDrivenSystem:
         info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            # Recover the immutable entry snapshot from the append-only event
+            # ledger after process restart. Match the exact broker ticket; never
+            # infer a trade link from symbol, direction, or approximate time.
+            if not isinstance(info.get("decision_feature_snapshot"), dict):
+                try:
+                    from persistence import domain_events as DE
+                    from persistence.event_store import get_event_store
+                    store = get_event_store()
+                    if store is not None:
+                        rows = store.query_events(
+                            severity_min="DEBUG",
+                            event_types=[DE.DECISION_TRADE_ENTRY_SNAPSHOT],
+                            symbol=str(symbol or ""),
+                            limit=5000,
+                        )
+                        for row in rows:
+                            payload = json.loads(row.get("payload_json") or "{}")
+                            if str(payload.get("ticket") or row.get("parent_id") or "") != str(ticket):
+                                continue
+                            recovered = payload.get("decision_feature_snapshot")
+                            if not isinstance(recovered, dict):
+                                recovered = payload.get("feature_snapshot")
+                            if isinstance(recovered, dict):
+                                info.update({
+                                    "decision_id": str(payload.get("decision_id") or ""),
+                                    "campaign_id": str(payload.get("campaign_id") or ""),
+                                    "opportunity_id": str(payload.get("opportunity_id") or ""),
+                                    "snapshot_id": str(payload.get("snapshot_id") or recovered.get("snapshot_id") or ""),
+                                    "decision_snapshot_complete": bool(payload.get("decision_snapshot_complete")),
+                                    "decision_feature_snapshot": recovered,
+                                })
+                                break
+                except Exception as exc:  # noqa: BLE001 — history may be unavailable
+                    logger.warning(
+                        "[decision-provenance] entry snapshot recovery failed for ticket {}: {}",
+                        ticket, exc,
+                    )
             # Release candidate provenance now the position has left the book.
             self._candidate_positions.pop(str(ticket), None)
             # A flat-dollar close that still gained pips (e.g. commission ate
@@ -6586,6 +6761,48 @@ class EventDrivenSystem:
                 )
         except Exception as exc:
             logger.debug("[close-learn] zone-edge record failed: {}", exc)
+
+        # Durable outcome link for System 2. The open snapshot is stored once
+        # against the broker ticket; this event references its exact snapshot ID
+        # and records realized costs/outcome without claiming predictive validity.
+        try:
+            from persistence import domain_events as DE
+            from persistence.event_store import get_event_store
+            store = get_event_store()
+            if store is not None:
+                snapshot = info.get("decision_feature_snapshot")
+                snapshot = snapshot if isinstance(snapshot, dict) else {}
+                store.emit(
+                    event_type=DE.DECISION_TRADE_OUTCOME,
+                    severity="INFO" if snapshot and info.get("decision_snapshot_complete") else "WARNING",
+                    symbol=str(symbol or ""),
+                    correlation_id=str(info.get("decision_id") or "") or None,
+                    parent_id=str(ticket or "") or None,
+                    source_module="learning.decision_provenance",
+                    payload={
+                        "ticket": str(ticket or ""),
+                        "symbol": str(symbol or ""),
+                        "direction": str(direction or "").upper(),
+                        "decision_id": str(info.get("decision_id") or ""),
+                        "campaign_id": str(info.get("campaign_id") or ""),
+                        "opportunity_id": str(info.get("opportunity_id") or ""),
+                        "snapshot_id": str(info.get("snapshot_id") or snapshot.get("snapshot_id") or ""),
+                        "decision_snapshot_complete": bool(info.get("decision_snapshot_complete")),
+                        "entry_snapshot_present": bool(snapshot),
+                        "entry_snapshot_schema": str(snapshot.get("schema") or ""),
+                        "closed_at_epoch": _time.time(),
+                        "pnl_dollars": float(pnl_dollars or 0.0),
+                        "pnl_pips": float(pnl_pips or 0.0),
+                        "commission": float(commission or 0.0),
+                        "swap": float(swap or 0.0),
+                        "fee": float(fee or 0.0),
+                        "exit_reason": str(exit_reason or ""),
+                        "validation_status": "unvalidated",
+                        "predictive_ability_demonstrated": False,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — outcome persistence must not interrupt close accounting
+            logger.warning("[decision-provenance] close outcome persistence failed for {}: {}", ticket, exc)
 
         ctx = self._ctx
         if ctx is None:

@@ -78,6 +78,8 @@ def _cost_system(spread_getter, *, commission_verified=False):
         cognition=SimpleNamespace(
             commission_per_lot_round_trip=0.0,
             commission_model_verified=commission_verified,
+            financing_per_lot_round_trip={"XAUUSD": 0.0},
+            financing_model_verified=True,
         )
     )
     system._money_per_price = lambda symbol, lots: 100.0
@@ -110,6 +112,16 @@ def test_measured_cross_asset_evidence_is_classified_as_verified_association():
     assert relationships["cross_asset_status"] == "verified_synchronized_observations_present"
     assert relationships["cross_asset_records"][0]["causation_established"] is False
     assert "synchronized cross-asset relationship measurements with a defined window and source provenance" not in result["missing_information"]
+
+
+def test_round_trip_cost_fails_closed_when_financing_model_is_unknown():
+    system = _cost_system(lambda symbol: 2.0, commission_verified=True)
+    system._config.cognition.financing_model_verified = False
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
+
+    system = _cost_system(lambda symbol: 2.0, commission_verified=True)
+    system._config.cognition.financing_per_lot_round_trip = {}
+    assert system._estimate_round_trip_cost("XAUUSD", 1.0) == 0.0
 
 
 def test_round_trip_cost_fails_closed_when_zero_commission_is_unverified():

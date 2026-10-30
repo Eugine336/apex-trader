@@ -260,7 +260,15 @@ def translate(
             identity_version=spec_identity_version,
             identity=spec_identity,
             confidence=_clampf(getattr(spec, "confidence", 0.0), 0.0, 1.0, 0.0),
-            meta={"objectives": list(getattr(spec, "objectives", []) or [])},
+            meta={
+                "objectives": list(getattr(spec, "objectives", []) or []),
+                "decision_feature_snapshot": dict(
+                    getattr(spec, "initial_execution_intent", {}).get("decision_feature_snapshot", {})
+                    if isinstance(getattr(spec, "initial_execution_intent", {}), dict)
+                    and isinstance(getattr(spec, "initial_execution_intent", {}).get("decision_feature_snapshot"), dict)
+                    else {}
+                ),
+            },
             reference_entry_price=reference_entry,
             payoff_geometry=dict(geometry),
         )
