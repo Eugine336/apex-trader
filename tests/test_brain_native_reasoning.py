@@ -418,7 +418,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
     )
-    brain._native_reasoning = lambda state, consolidation, symbol: (analysis, [hypothesis])
+    brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.direction == LONG
