@@ -312,19 +312,25 @@ class BrainReasoner:
         # record with an empty measurement payload is not usable market evidence.
         by_domain: "dict[str, list[float]]" = {}
         informative_domains: set[str] = set()
+        core_domains = {
+            "structure", "liquidity", "momentum", "volume", "order_flow", "volatility",
+        }
         provenance_only_keys = {
-            "source_kind", "timeframe", "timestamp", "timestamp_epoch",
-            "source_timestamp", "source_timestamp_epoch", "symbol", "instrument",
-            "source", "source_module", "evidence_id", "provisional",
-            "forming", "is_forming", "completed", "is_completed",
-            "measurement_version",
+            "source_kind", "timeframe", "opportunity_horizon", "timestamp",
+            "timestamp_epoch", "source_timestamp", "source_timestamp_epoch",
+            "symbol", "instrument", "source", "source_module", "evidence_id",
+            "provisional", "forming", "is_forming", "completed", "is_completed",
+            "measurement_version", "source_verified", "specification_verified",
+            "session_calendar_verified", "verified", "confidence", "uncertainty",
         }
         for e in fresh:
             dom = getattr(getattr(e, "domain", None), "value", None) or "other"
             by_domain.setdefault(dom, []).append(_clamp01(getattr(e, "confidence", 0.0)))
             measurements = getattr(e, "measurements", {})
-            if isinstance(measurements, dict) and any(
-                str(key) not in provenance_only_keys for key in measurements
+            if (
+                str(dom) in core_domains
+                and isinstance(measurements, dict)
+                and any(str(key) not in provenance_only_keys for key in measurements)
             ):
                 informative_domains.add(str(dom))
         domain_coverage = {d: (sum(v) / len(v) if v else 0.0) for d, v in by_domain.items()}
@@ -332,7 +338,9 @@ class BrainReasoner:
         coverage_gap = round(
             1.0 - min(1.0, len(informative_domains) / core_domain_count), 4,
         )
-        uninformative_domains = sorted(set(domain_coverage) - informative_domains)
+        uninformative_domains = sorted(
+            core_domains.intersection(domain_coverage) - informative_domains
+        )
 
         detected = detect_patterns(fresh)
         names = [pattern_name(p) for p in detected]
