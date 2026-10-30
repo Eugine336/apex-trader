@@ -990,3 +990,21 @@ def test_open_rejects_unverified_broker_calendar_before_broker_call():
     assert not result.success and result.rejected_by_gate
     assert "broker_calendar_unverified" in result.gate_reason
     assert broker.open_calls == []
+
+
+def test_open_rejected_when_durable_provenance_store_is_degraded(monkeypatch):
+    from persistence import event_store as event_store_module
+
+    degraded_store = type("DegradedStore", (), {"is_degraded": True})()
+    monkeypatch.setattr(
+        event_store_module,
+        "get_existing_event_store",
+        lambda: degraded_store,
+    )
+    broker = FakeBroker()
+    result = ActionExecutor(broker, _fast_cfg()).execute(
+        _open_intent("XAUUSD"), {}
+    )
+    assert not result.success and result.rejected_by_gate
+    assert "decision_provenance_store_degraded" in result.gate_reason
+    assert broker.open_calls == []
