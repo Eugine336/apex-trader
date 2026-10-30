@@ -98,6 +98,34 @@ def test_hypotheses_carry_support_challenge_unknowns_and_uncalibrated_confidence
     assert serialized["unresolved_unknowns"]
 
 
+def test_directional_thesis_is_challenged_when_structure_and_flow_disagree():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_evidence(
+        "structure", {"displacement": 2.0, "bos": True},
+        source="structure.bullish",
+    ))
+    state.add(_evidence(
+        "order_flow", {"delta": -1.0},
+        source="order_flow.bearish",
+    ))
+    state.add(_evidence(
+        "volume", {"volume_z": 1.8, "expansion": True},
+        source="volume",
+    ))
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    assert any(
+        "structural displacement and order-flow pressure point in opposite directions" in item
+        for item in analysis.contradictions
+    )
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+    continuation = next(item for item in hypotheses if item.hypothesis_kind == "continuation")
+    before = continuation.confidence
+    reasoner.self_criticize(hypotheses, analysis)
+    assert continuation.confidence < before
+    assert "challenged by independent contradiction" in continuation.criticism
+
+
 def test_same_timeframe_and_domain_conflicts_remain_explicit():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_evidence(
