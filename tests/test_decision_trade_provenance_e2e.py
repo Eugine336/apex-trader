@@ -113,5 +113,7 @@ def test_entry_snapshot_is_recovered_by_exact_ticket_and_linked_to_close(
     assert outcome["entry_snapshot_present"] is True
     assert outcome["validation_status"] == "unvalidated"
     assert outcome["predictive_ability_demonstrated"] is False
+    assert outcome["swap"] is None
+    assert outcome["realized_costs_observed"] is False
 
     store.close()
