@@ -548,9 +548,11 @@ def test_native_reasoning_precedes_advisor_availability_check():
     brain = CognitiveBrain(reasoner=reasoner)
     original_native_reasoning = brain._native_reasoning
 
-    def _record_native_start(market_state, consolidation, symbol):
+    def _record_native_start(market_state, consolidation, symbol, *, now=None):
         reasoner.native_started = True
-        return original_native_reasoning(market_state, consolidation, symbol)
+        return original_native_reasoning(
+            market_state, consolidation, symbol, now=now,
+        )
 
     brain._native_reasoning = _record_native_start
     reasoner.assert_runtime_order = True
