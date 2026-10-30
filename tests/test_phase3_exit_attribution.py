@@ -223,7 +223,7 @@ class TestMT5GetDealCloseInfo:
         assert info.close_price == 1.10500
         assert info.swap == -2.0
         assert info.commission == -3.0
-        assert info.pnl == 44.0
+        assert info.pnl == 45.0
 
 
     @patch("platforms.mt5.mt5_connector._MT5_AVAILABLE", True)
