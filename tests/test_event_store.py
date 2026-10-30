@@ -29,6 +29,41 @@ def store(tmp_path):
 
 
 class TestEventStoreEmitAndQuery:
+    def test_durable_emit_is_committed_before_return(self, store):
+        event_id = store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT",
+            "INFO",
+            parent_id="ticket-9001",
+            symbol="XAUUSD",
+            payload={"decision_id": "decision-1"},
+            durable=True,
+        )
+        rows = store.query(event_type="DECISION_TRADE_ENTRY_SNAPSHOT")
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == event_id
+        assert rows[0]["parent_id"] == "ticket-9001"
+        assert store._queue.empty()
+
+    def test_query_events_filters_exact_parent_ticket(self, store):
+        store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT", "INFO",
+            parent_id="ticket-1", symbol="XAUUSD",
+            payload={"ticket": "ticket-1"}, durable=True,
+        )
+        store.emit(
+            "DECISION_TRADE_ENTRY_SNAPSHOT", "INFO",
+            parent_id="ticket-2", symbol="XAUUSD",
+            payload={"ticket": "ticket-2"}, durable=True,
+        )
+        rows = store.query_events(
+            severity_min="DEBUG",
+            event_types=["DECISION_TRADE_ENTRY_SNAPSHOT"],
+            parent_id="ticket-2",
+            limit=10,
+        )
+        assert len(rows) == 1
+        assert rows[0]["parent_id"] == "ticket-2"
+
     def test_emit_returns_event_id(self, store):
         eid = store.emit("LOG", "INFO", payload={"msg": "hello"})
         assert isinstance(eid, str) and len(eid) == 32
