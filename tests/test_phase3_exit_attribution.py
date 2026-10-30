@@ -110,6 +110,7 @@ class _FakeDeal:
     comment: str = "sl"
     price: float = 1.10234
     time: int = 1717502400  # 2024-06-04T12:00:00Z
+    time_msc: int = 1717502400000
 
 
 class TestMT5GetDealCloseInfo:
@@ -194,6 +195,36 @@ class TestMT5GetDealCloseInfo:
         info = c.get_deal_close_info("12345")
         assert info is not None
         assert info.pnl == 44.50  # (0-2+0+0) + (50-2-1.5+0)
+
+    @patch("platforms.mt5.mt5_connector._MT5_AVAILABLE", True)
+    @patch("platforms.mt5.mt5_connector.mt5")
+    def test_partial_close_uses_latest_exit_but_aggregates_all_swap(self, mock_mt5):
+        mock_mt5.history_deals_get.return_value = [
+            _FakeDeal(
+                profit=0.0, commission=-1.0, swap=0.0, entry=0,
+                time=1717500000, time_msc=1717500000000,
+            ),
+            _FakeDeal(
+                profit=20.0, commission=-1.0, swap=-0.5, entry=1,
+                reason=5, comment="partial-tp", price=1.11000,
+                time=1717501000, time_msc=1717501000000,
+            ),
+            _FakeDeal(
+                profit=30.0, commission=-1.0, swap=-1.5, entry=1,
+                reason=4, comment="final-sl", price=1.10500,
+                time=1717502000, time_msc=1717502000000,
+            ),
+        ]
+        c = self._make_connector()
+        info = c.get_deal_close_info("12345")
+        assert info is not None
+        assert info.exit_reason == "SL"
+        assert info.raw_comment == "final-sl"
+        assert info.close_price == 1.10500
+        assert info.swap == -2.0
+        assert info.commission == -3.0
+        assert info.pnl == 45.0
+
 
     @patch("platforms.mt5.mt5_connector._MT5_AVAILABLE", True)
     @patch("platforms.mt5.mt5_connector.mt5")
