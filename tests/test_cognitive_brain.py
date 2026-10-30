@@ -70,6 +70,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": entry,
             "prior_range_high": high,
@@ -92,6 +94,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "close_change": change,
         },
