@@ -164,7 +164,7 @@ def test_fail_closed_sentinel_return_is_classified_safe():
 def test_fail_open_true_return_is_reported():
     handler = ast.parse(
         "def f():\n    try:\n        pass\n    except Exception:\n        return True\n"
-    ).body[0].handlers[0]
+    ).body[0].body[0].handlers[0]
     assert _is_silent_handler(handler) is True
 
 
