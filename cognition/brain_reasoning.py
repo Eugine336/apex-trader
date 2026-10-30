@@ -1365,7 +1365,7 @@ class BrainReasoner:
                 if (
                     not notes and h.is_directional
                     and analysis.agreement_score >= 0.7
-                    and h.supporting_evidence_ids
+                    and (h.supporting_evidence_ids or not analysis.evidence_index)
                 ):
                     factor *= 1.04
                     notes.append("survived criticism: attributable support and no active challenge")
