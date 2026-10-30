@@ -326,3 +326,59 @@ def test_naive_datetimes_treated_as_utc():
         triple_weekday=2,
     )
     assert nights == 1
+
+
+
+def test_missing_directional_rate_is_unavailable_not_zero():
+    rates = {"EURUSD": {"long_per_lot_per_night": -6.5}}
+    value, status = estimate_swap(
+        "EURUSD", "SELL", 1.0,
+        datetime(2025, 6, 2, 10, 0, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 10, 0, tzinfo=timezone.utc),
+        rates=rates,
+    )
+    assert value is None
+    assert status == "unavailable"
+
+
+def test_invalid_direction_is_unavailable():
+    rates = {"EURUSD": {"long_per_lot_per_night": -6.5, "short_per_lot_per_night": 1.2}}
+    value, status = estimate_swap(
+        "EURUSD", "SIDEWAYS", 1.0,
+        datetime(2025, 6, 2, 10, 0, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 10, 0, tzinfo=timezone.utc),
+        rates=rates,
+    )
+    assert value is None
+    assert status == "unavailable"
+
+
+def test_non_finite_rate_and_non_positive_lots_are_unavailable():
+    from math import inf
+
+    times = (
+        datetime(2025, 6, 2, 10, 0, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 10, 0, tzinfo=timezone.utc),
+    )
+    for rates, lots in (
+        ({"EURUSD": {"long_per_lot_per_night": inf}}, 1.0),
+        ({"EURUSD": {"long_per_lot_per_night": -6.5}}, 0.0),
+        ({"EURUSD": {"long_per_lot_per_night": -6.5}}, -1.0),
+    ):
+        value, status = estimate_swap(
+            "EURUSD", "BUY", lots, *times, rates=rates,
+        )
+        assert value is None
+        assert status == "unavailable"
+
+
+def test_invalid_rollover_configuration_is_unavailable():
+    value, status = estimate_swap(
+        "EURUSD", "BUY", 1.0,
+        datetime(2025, 6, 2, 10, 0, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 10, 0, tzinfo=timezone.utc),
+        rates={"EURUSD": {"long_per_lot_per_night": -6.5}},
+        rollover_hour_utc=24,
+    )
+    assert value is None
+    assert status == "unavailable"
