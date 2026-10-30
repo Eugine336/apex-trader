@@ -25,6 +25,15 @@ def test_secret_like_environment_values_are_blank_in_example():
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
+        normalized_key = key.strip().upper()
+        # Expiry durations are policy/configuration values, not bearer tokens.
+        # Validate the numeric duration explicitly, then continue scanning all
+        # actual credential-bearing fields with the strict blank-value rule.
+        if normalized_key.endswith("_EXPIRES_IN"):
+            assert value.strip().isdigit() and int(value.strip()) > 0, (
+                f"{key.strip()} must contain a positive expiry duration"
+            )
+            continue
         if _SECRET_KEY.search(key.strip()):
             assert not value.strip(), f"{key.strip()} must not contain a committed credential"
 
