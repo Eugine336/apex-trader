@@ -92,9 +92,9 @@ class DealCloseInfo:
     """Broker-reported close details for a closed ticket."""
     pnl: float
     exit_reason: str
-    commission: float = 0.0
-    swap: float = 0.0
-    fee: float = 0.0
+    commission: Optional[float] = None
+    swap: Optional[float] = None
+    fee: Optional[float] = None
     raw_reason_code: Optional[int] = None
     raw_comment: Optional[str] = None
     close_price: Optional[float] = None
