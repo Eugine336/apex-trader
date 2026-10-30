@@ -1324,10 +1324,20 @@ class BrainReasoner:
                     evidence_lineage_scope="domain_level_candidate_sources",
                 ))
 
-            # ALWAYS generate a counter to the strongest current explanation,
-            # not merely whichever branch happened to be appended first.
-            primary = max(hyps, key=lambda item: item.confidence)
-            hyps.append(self._counter(primary, analysis))
+            # Generate explicit counter-hypotheses for the strongest distinct
+            # directional explanations. When no directional thesis exists, still
+            # challenge the strongest market-state interpretation.
+            directional_primaries = sorted(
+                (item for item in hyps if item.is_directional),
+                key=lambda item: item.confidence,
+                reverse=True,
+            )
+            if directional_primaries:
+                for primary in directional_primaries[:3]:
+                    hyps.append(self._counter(primary, analysis))
+            else:
+                primary = max(hyps, key=lambda item: item.confidence)
+                hyps.append(self._counter(primary, analysis))
             return hyps
         except Exception:  # noqa: BLE001 — hypothesis generation must never break reasoning
             return [BrainHypothesis(
