@@ -68,7 +68,7 @@ def test_conflicting_sources_are_not_collapsed_into_one_direction():
 
 def test_hypotheses_carry_support_challenge_unknowns_and_uncalibrated_confidence():
     state = MarketState(symbol="SYNTHETIC")
-    state.add(_evidence("structure", {"displacement": 2.0, "bos": True}))
+    state.add(_evidence("structure", {"displacement": 2.0, "bos": True, "timeframe": "M15", "opportunity_horizon": "intraday"}))
     state.add(_evidence("volume", {"volume_z": 1.8, "expansion": True}))
     state.add(_evidence("order_flow", {"delta": 1.0}))
     state.add(_evidence("momentum", {"momentum_state": "accelerating"}))
@@ -176,7 +176,7 @@ def test_native_analysis_uses_same_decision_time_cutoff_as_consolidation():
     future = _evidence("order_flow", {"delta": 1.0}, source="future")
     future.timestamp_epoch = 101.0
     stale = _evidence("momentum", {"momentum_state": "accelerating"}, source="stale")
-    stale.timestamp_epoch = 1.0
+    stale.timestamp_epoch = -1000.0
     state.add(valid)
     state.add(future)
     state.add(stale)
