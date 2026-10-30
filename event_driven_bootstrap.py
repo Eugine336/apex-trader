@@ -5405,9 +5405,11 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None
         exit_reason_source = "event_driven"
         raw_broker_reason: Optional[int] = None
-        broker_commission = 0.0
-        broker_swap = 0.0
-        broker_fee = 0.0
+        # None means the broker did not provide realized cost data. Do not
+        # serialize missing commission/swap/fees as a verified zero.
+        broker_commission: Optional[float] = None
+        broker_swap: Optional[float] = None
+        broker_fee: Optional[float] = None
 
         resp = getattr(result, "broker_response", None)
         platform = getattr(resp, "platform", "") if resp is not None else ""
@@ -5432,9 +5434,12 @@ class EventDrivenSystem:
             di_pnl = getattr(deal_info, "pnl", None)
             if di_pnl is not None:
                 pnl_dollars = float(di_pnl)
-            broker_commission = float(getattr(deal_info, "commission", 0.0) or 0.0)
-            broker_swap = float(getattr(deal_info, "swap", 0.0) or 0.0)
-            broker_fee = float(getattr(deal_info, "fee", 0.0) or 0.0)
+            raw_commission = getattr(deal_info, "commission", None)
+            raw_swap = getattr(deal_info, "swap", None)
+            raw_fee = getattr(deal_info, "fee", None)
+            broker_commission = float(raw_commission) if raw_commission is not None else None
+            broker_swap = float(raw_swap) if raw_swap is not None else None
+            broker_fee = float(raw_fee) if raw_fee is not None else None
             # Part XIX Art 7 — self-calibrate the round-trip commission-per-lot
             # from realised deals so the net-EV opportunity gate uses the broker's
             # true cost. EMA over |commission+fee| / lots. Best-effort.
@@ -6706,9 +6711,9 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None,
         exit_reason_source: str = "event_driven",
         raw_broker_reason: Optional[int] = None,
-        commission: float = 0.0,
-        swap: float = 0.0,
-        fee: float = 0.0,
+        commission: Optional[float] = None,
+        swap: Optional[float] = None,
+        fee: Optional[float] = None,
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 
@@ -6815,9 +6820,12 @@ class EventDrivenSystem:
                         "closed_at_epoch": _time.time(),
                         "pnl_dollars": float(pnl_dollars or 0.0),
                         "pnl_pips": float(pnl_pips or 0.0),
-                        "commission": float(commission or 0.0),
-                        "swap": float(swap or 0.0),
-                        "fee": float(fee or 0.0),
+                        "commission": float(commission) if commission is not None else None,
+                        "swap": float(swap) if swap is not None else None,
+                        "fee": float(fee) if fee is not None else None,
+                        "realized_costs_observed": (
+                            commission is not None and swap is not None and fee is not None
+                        ),
                         "exit_reason": str(exit_reason or ""),
                         "validation_status": "unvalidated",
                         "predictive_ability_demonstrated": False,
