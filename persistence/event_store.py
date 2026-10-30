@@ -280,8 +280,9 @@ class EventStore:
         parent_id: Optional[str] = None,
         source_module: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
+        durable: bool = False,
     ) -> str:
-        """Enqueue an event for background persistence.  Returns event_id."""
+        """Persist synchronously when durable=True; otherwise enqueue best-effort."""
         eid = generate_id()
         # Add canonical provenance to every newly written event without changing
         # the existing SQLite schema or rewriting any historical row. Explicit
@@ -322,6 +323,28 @@ class EventStore:
             payload_json,
             seq,
         )
+        if durable:
+            # Decision/position provenance is part of the trade audit record.
+            # Do not acknowledge it merely because it entered the best-effort
+            # telemetry queue: commit it before returning to the caller.
+            if self._db_degraded:
+                raise RuntimeError("event store is degraded; durable event rejected")
+            try:
+                with self._db_lock:
+                    if self._conn is None:
+                        raise RuntimeError("event store connection is unavailable")
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO events "
+                        "(event_id, correlation_id, parent_id, ts_utc_ms, event_type, "
+                        "severity, symbol, source_module, payload_json, seq) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        row,
+                    )
+                    self._conn.commit()
+            except Exception:
+                self._db_degraded = True
+                raise
+            return eid
         try:
             self._queue.put_nowait(row)
         except queue.Full:
@@ -390,11 +413,12 @@ class EventStore:
         event_types: Optional[List[str]] = None,
         symbol: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
         since_ms: Optional[int] = None,
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Dashboard-oriented read: severity-filtered, multi-type, paginated, newest-first."""
+        """Dashboard-oriented read with optional exact parent/ticket filtering."""
         min_rank = self._SEVERITY_RANK.get(severity_min.upper(), 1)
         allowed = [s for s, r in self._SEVERITY_RANK.items() if r >= min_rank]
 
@@ -415,6 +439,9 @@ class EventStore:
         if correlation_id is not None:
             clauses.append("correlation_id = ?")
             params.append(correlation_id)
+        if parent_id is not None:
+            clauses.append("parent_id = ?")
+            params.append(parent_id)
         if since_ms is not None:
             clauses.append("ts_utc_ms >= ?")
             params.append(since_ms)
