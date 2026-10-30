@@ -143,6 +143,7 @@ class EvidenceAnalysis:
             "pattern_evidence_ids": {
                 str(key): list(value) for key, value in self.pattern_evidence_ids.items()
             },
+            "pattern_evidence_scope": "domain_level_candidate_sources",
             "epistemic_record": {
                 "observed_facts": [dict(item) for item in self.observed_facts],
                 "inferences": list(self.inferences),
@@ -174,6 +175,7 @@ class BrainHypothesis:
     horizon: str = "unspecified"
     confidence_components: dict = field(default_factory=dict)
     confidence_semantics: str = "uncalibrated_reasoning_strength"
+    evidence_lineage_scope: str = "not_available"
     identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
@@ -220,6 +222,7 @@ class BrainHypothesis:
             "horizon": self.horizon,
             "confidence_components": dict(self.confidence_components),
             "confidence_semantics": self.confidence_semantics,
+            "evidence_lineage_scope": self.evidence_lineage_scope,
         }
 
 
@@ -1148,6 +1151,10 @@ class BrainReasoner:
                     confidence_components=self._confidence_components(
                         candidate["support"], candidate["against"], analysis,
                     ),
+                    evidence_lineage_scope=(
+                        "domain_level_candidate_sources"
+                        if candidate["support"] or candidate["against"] else "not_available"
+                    ),
                 ))
                 hypothesis_text += " " + candidate["key"]
 
@@ -1197,6 +1204,10 @@ class BrainReasoner:
                 else self._evidence_horizon(analysis, support, against)
             ),
             confidence_components=components,
+            evidence_lineage_scope=(
+                "domain_level_candidate_sources"
+                if support_ids or against_ids else "not_available"
+            ),
         )
 
     @staticmethod
@@ -1292,6 +1303,7 @@ class BrainReasoner:
                 "primary_hypothesis_id": primary.hypothesis_id,
                 "calibrated_probability": False,
             },
+            evidence_lineage_scope=primary.evidence_lineage_scope,
         )
 
     @staticmethod
