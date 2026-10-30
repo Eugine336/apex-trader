@@ -325,6 +325,12 @@ class BrainReasoner:
                 "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
                 "confidence": _clamp01(getattr(item, "confidence", 0.0)),
                 "uncertainty": _clamp01(getattr(item, "uncertainty", 1.0), 1.0),
+                "timeframe": str(
+                    getattr(item, "measurements", {}).get("timeframe", "") or ""
+                ).upper(),
+                "opportunity_horizon": str(
+                    getattr(item, "measurements", {}).get("opportunity_horizon", "") or ""
+                ),
             }
             evidence_index.append(record)
             domain_evidence_ids.setdefault(domain, []).append(evidence_id)
@@ -651,6 +657,7 @@ class BrainReasoner:
                     invalidation="Displacement fails and price reclaims the origin of the move",
                     opportunity=f"{direction} continuation while structure and flow persist"
                     if direction in (LONG, SHORT) else "directional continuation",
+                    hypothesis_kind="continuation",
                 ))
 
             # 2) Liquidity-sweep reversal thesis.
@@ -684,6 +691,7 @@ class BrainReasoner:
                     direction=direction,
                     invalidation="Fresh flow breaks decisively beyond the swept level",
                     opportunity=f"{direction} reversal off the sweep" if direction in (LONG, SHORT) else "reversal",
+                    hypothesis_kind="liquidity_reversal",
                 ))
 
             # Trend exhaustion is a competing, context-dependent hypothesis.
@@ -716,6 +724,7 @@ class BrainReasoner:
                         f"{direction} exhaustion/reversal hypothesis requiring a confirmed structural response"
                         if direction in (LONG, SHORT) else "exhaustion hypothesis with direction unresolved"
                     ),
+                    hypothesis_kind="trend_exhaustion",
                 ))
 
             # A range is a market state, not an instruction to trade. It can be
@@ -745,6 +754,7 @@ class BrainReasoner:
                     direction=FLAT,
                     invalidation="A completed candle accepts beyond the range with sustained expansion",
                     opportunity="monitor both range-edge reactions and conditional breakout alternatives",
+                    hypothesis_kind="range_rotation",
                 ))
 
             # 3) Statistical displacement / mean-reversion hypothesis.
@@ -775,6 +785,7 @@ class BrainReasoner:
                         f"{direction} mean-reversion hypothesis if displacement fails to extend"
                         if direction in (LONG, SHORT) else "mean-reversion hypothesis"
                     ),
+                    hypothesis_kind="mean_reversion",
                 ))
 
             # 3) Order-flow-at-structure thesis.
@@ -790,6 +801,7 @@ class BrainReasoner:
                     direction=direction,
                     invalidation="The structural level fails and flow reverses through it",
                     opportunity=f"{direction} reaction at structure" if direction in (LONG, SHORT) else "reaction",
+                    hypothesis_kind="order_flow_reaction",
                 ))
 
             # M1 price-action is contextual evidence, not a universal trigger.
@@ -824,6 +836,7 @@ class BrainReasoner:
                         f"{direction} M1 reaction hypothesis requiring broader market confirmation"
                         if direction in (LONG, SHORT) else "mixed M1 reaction; await clarifying evidence"
                     ),
+                    hypothesis_kind="m1_context",
                 ))
 
             # Regime-derived trend context is a separate native hypothesis family.
@@ -869,6 +882,7 @@ class BrainReasoner:
                         f"{direction} trend-context hypothesis; wait for fresh confirmation "
                         "and common opportunity admission"
                     ),
+                    hypothesis_kind="trend_context",
                 ))
 
             # 4) Consolidation / no-edge thesis (when nothing exploitable was found).
@@ -881,6 +895,7 @@ class BrainReasoner:
                     direction=FLAT,
                     invalidation="Fresh, independent evidence supports a testable market-state hypothesis",
                     opportunity="observe; do not infer that missing evidence means a trade or a proven consolidation",
+                    hypothesis_kind="no_trade",
                 ))
 
             # State-first competitor set (I-2 / I-4).
@@ -1048,11 +1063,35 @@ class BrainReasoner:
                     direction_implication=candidate["direction"],
                     invalidation=candidate["invalidation"],
                     opportunity_implication=candidate["opportunity"],
+                    hypothesis_kind=str(candidate["key"]).replace(" ", "_"),
+                    supporting_evidence_ids=list(dict.fromkeys(
+                        evidence_id for name in candidate["support"]
+                        for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+                    )),
+                    contradicting_evidence_ids=list(dict.fromkeys(
+                        evidence_id for name in candidate["against"]
+                        for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+                    )),
+                    assumptions=list(analysis.assumptions),
+                    unresolved_unknowns=list(analysis.unknowns or analysis.missing_information),
+                    distinguishing_evidence=(
+                        [f"support: {pattern_name(name)}" for name in candidate["support"]]
+                        + [f"challenge: {pattern_name(name)}" for name in candidate["against"]]
+                        + [f"invalidation: {candidate['invalidation']}"]
+                    ),
+                    horizon=self._evidence_horizon(
+                        analysis, candidate["support"], candidate["against"],
+                    ),
+                    confidence_components=self._confidence_components(
+                        candidate["support"], candidate["against"], analysis,
+                    ),
                 ))
                 hypothesis_text += " " + candidate["key"]
 
-            # ALWAYS generate at least one counter-hypothesis (Article IV).
-            hyps.append(self._counter(hyps[0], analysis))
+            # ALWAYS generate a counter to the strongest current explanation,
+            # not merely whichever branch happened to be appended first.
+            primary = max(hyps, key=lambda item: item.confidence)
+            hyps.append(self._counter(primary, analysis))
             return hyps
         except Exception:  # noqa: BLE001 — hypothesis generation must never break reasoning
             return [BrainHypothesis(
@@ -1093,6 +1132,27 @@ class BrainReasoner:
             horizon=horizon,
             confidence_components=components,
         )
+
+    @staticmethod
+    def _evidence_horizon(
+        analysis: EvidenceAnalysis, support: "list[str]", against: "list[str]",
+    ) -> str:
+        evidence_ids = {
+            evidence_id
+            for name in list(support) + list(against)
+            for evidence_id in analysis.pattern_evidence_ids.get(pattern_name(name), [])
+        }
+        horizons = {
+            str(item.get("opportunity_horizon", "")).strip()
+            for item in analysis.evidence_index
+            if item.get("evidence_id") in evidence_ids
+            and str(item.get("opportunity_horizon", "")).strip()
+        }
+        if len(horizons) == 1:
+            return next(iter(horizons))
+        if len(horizons) > 1:
+            return "conflicting_source_horizons"
+        return "unspecified"
 
     @staticmethod
     def _confidence_components(
