@@ -460,6 +460,18 @@ def test_native_fallback_requires_explicit_verified_execution_cost():
 # ── Article X: independent origination when the advisor is unavailable ────────
 
 
+def test_native_only_origination_requires_verified_probability_calibration():
+    brain = CognitiveBrain(reasoner=None, min_expected_value=0.0)
+    state = _strong_long_state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "historical_analogue"
+    ]
+    out = brain.reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+
+
 def test_native_campaign_uses_the_observed_entry_stop_and_target_geometry():
     brain = CognitiveBrain(reasoner=None, reward_r_default=99.0)
     out = brain.reason(_strong_long_state())
