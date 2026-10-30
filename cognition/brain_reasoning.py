@@ -959,6 +959,94 @@ class BrainReasoner:
                     hypothesis_kind="no_trade",
                 ))
 
+            # Preserve an explicit, non-directional hypothesis for unfamiliar
+            # measurements. Unknown semantics are not reverse-engineered into a
+            # convenient known pattern or a directional implication.
+            unclassified = analysis.market_context.get("unclassified_observations", [])
+            seen_unknown_sources: set[str] = set()
+            for record in unclassified:
+                if not isinstance(record, dict):
+                    continue
+                source = str(record.get("source", "") or "")
+                keys = list(record.get("measurement_keys", []) or [])
+                if source in seen_unknown_sources:
+                    continue
+                seen_unknown_sources.add(source)
+                source_ids = [
+                    item["evidence_id"] for item in analysis.evidence_index
+                    if item.get("source_module") == source
+                ]
+                hyps.append(BrainHypothesis(
+                    statement=(
+                        f"Unclassified measurements from {source or 'an unknown source'} "
+                        f"({', '.join(str(key) for key in keys[:8])}) are present on {symbol}; "
+                        "their units, semantics and predictive relevance are not established."
+                    ),
+                    confidence=0.0,
+                    direction_implication=FLAT,
+                    invalidation="The measurement definition, units, provenance and independent interpretation are documented and tested",
+                    opportunity_implication="unknown-pattern observation; retain as context without assigning a direction or trade permission",
+                    hypothesis_kind="unknown_pattern",
+                    supporting_evidence_ids=source_ids,
+                    assumptions=["No semantic or directional meaning is assumed for unfamiliar measurements."],
+                    unresolved_unknowns=[
+                        "measurement semantics and units are undocumented",
+                        "predictive relevance has not been established",
+                    ],
+                    distinguishing_evidence=[
+                        "obtain the producer's measurement definition and units",
+                        "validate source timestamp, freshness and symbol scope",
+                        "test whether independent evidence corroborates the interpretation",
+                    ],
+                    confidence_components={
+                        "unclassified_measurement_count": len(keys),
+                        "calibrated_probability": False,
+                    },
+                    evidence_lineage_scope="source_exact" if source_ids else "not_available",
+                ))
+
+            # Volatility expansion/compression is a market-state hypothesis, not
+            # a directional trigger. The Brain waits for structural acceptance
+            # and a separate opportunity thesis before deriving direction.
+            if regime.get("volatility") in {"expanding", "compressing"}:
+                volatility_ids = [
+                    item["evidence_id"] for item in analysis.evidence_index
+                    if item.get("domain") == "volatility"
+                ]
+                state = str(regime["volatility"])
+                hyps.append(BrainHypothesis(
+                    statement=(
+                        f"{symbol} volatility is {state}; expansion can continue price discovery "
+                        "or exhaust into a snapback, while compression can precede expansion "
+                        "in either direction. The next structural acceptance remains unresolved."
+                    ),
+                    confidence=min(0.5, _clamp01(
+                        sum(analysis.domain_coverage.get("volatility", 0.0) for _ in [0])
+                    )),
+                    direction_implication=FLAT,
+                    invalidation="Completed-bar structural acceptance resolves the direction of the volatility transition",
+                    opportunity_implication="volatility-regime hypothesis; monitor both continuation and rejection without assigning direction",
+                    hypothesis_kind="volatility_regime",
+                    supporting_evidence_ids=volatility_ids,
+                    assumptions=["Volatility state alone does not establish directional intent."],
+                    unresolved_unknowns=[
+                        "whether expansion is accepted or rejected",
+                        "whether volatility change is transient or persistent",
+                    ],
+                    distinguishing_evidence=[
+                        "completed-bar acceptance beyond a measured boundary",
+                        "follow-through in independent order-flow and volume observations",
+                        "rejection back into the prior range",
+                    ],
+                    confidence_components={
+                        "volatility_domain_quality": round(
+                            _clamp01(analysis.domain_coverage.get("volatility", 0.0)), 4,
+                        ),
+                        "calibrated_probability": False,
+                    },
+                    evidence_lineage_scope="domain_level_candidate_sources" if volatility_ids else "not_available",
+                ))
+
             # State-first competitor set (I-2 / I-4).
             # Form each explanation from the current regime even when the pattern
             # detector returns nothing. Pattern names below are evidence that can
