@@ -638,7 +638,6 @@ class CognitiveBrain:
         opp_horizon = str(getattr(opinion, "opportunity_horizon", "") or "")
         efe = str(getattr(opinion, "expected_favorable_excursion", "") or "")
         eae = str(getattr(opinion, "expected_adverse_excursion", "") or "")
-        ev_txt = str(getattr(opinion, "expected_value", "") or "")
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
