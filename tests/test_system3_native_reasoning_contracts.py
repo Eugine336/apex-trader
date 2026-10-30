@@ -292,6 +292,21 @@ def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction(
     assert BrainReasoner.leading([directional, no_trade]) is no_trade
 
 
+def test_high_confidence_empty_records_do_not_count_as_usable_market_coverage():
+    state = MarketState(symbol="SYNTHETIC")
+    for domain in ("structure", "liquidity", "momentum"):
+        state.add(_evidence(domain, {}, confidence=0.99, source=f"empty.{domain}"))
+
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    assert analysis.domain_coverage
+    assert analysis.informative_domains == []
+    assert analysis.coverage_gap == 1.0
+    assert "no usable measurement in structure" in analysis.missing_information
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+    assert reasoner.leading(hypotheses).hypothesis_kind == "no_trade"
+
+
 def test_stale_and_future_evidence_never_enters_native_hypothesis_lineage():
     state = MarketState(symbol="SYNTHETIC")
     stale = _evidence("structure", {"displacement": 3.0})
