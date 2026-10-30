@@ -781,7 +781,7 @@ class CognitiveBrain:
             )
             if candidate_geometry is None:
                 continue
-            opportunity_geometries[candidate.opportunity_id] = candidate_geometry
+            opportunity_geometries[id(candidate)] = candidate_geometry
             candidate.entry_price = candidate_geometry.entry_price
             candidate.stop_price = candidate_geometry.stop_price
             candidate.target_price = candidate_geometry.target_price
@@ -803,7 +803,7 @@ class CognitiveBrain:
             opportunity_set, preferred_opp_id, direction,
         )
         geometry = (
-            opportunity_geometries.get(driving_opp.opportunity_id)
+            opportunity_geometries.get(id(driving_opp))
             if driving_opp is not None else (
                 derive_opportunity_geometry(market_state, direction, now=now)
                 if direction in (LONG, SHORT) else None
