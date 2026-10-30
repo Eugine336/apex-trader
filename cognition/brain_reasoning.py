@@ -292,10 +292,11 @@ class BrainReasoner:
 
     def analyze_evidence(
         self, market_state: MarketState, consolidation: Optional[dict] = None,
+        *, now: Optional[float] = None,
     ) -> EvidenceAnalysis:
-        """Read the fresh evidence into a structured analysis (no LLM). Never raises."""
+        """Read the evidence fresh at the caller's decision-time cutoff. Never raises."""
         try:
-            fresh = list(market_state.fresh_evidence())
+            fresh = list(market_state.fresh_evidence(now))
         except Exception:  # noqa: BLE001 — analysis must never break reasoning
             fresh = []
         consolidation = consolidation or {}
