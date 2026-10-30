@@ -203,6 +203,42 @@ def test_relevant_strategy_lenses_become_evidence_linked_non_directional_candida
     )
 
 
+def test_self_criticism_does_not_apply_another_thesis_counter_to_this_thesis():
+    from cognition.brain_reasoning import SHORT
+    from cognition.brain_reasoning import EvidenceAnalysis
+
+    primary_a = BrainHypothesis(
+        statement="primary A", confidence=0.6, direction_implication=LONG,
+        hypothesis_kind="continuation",
+    )
+    primary_b = BrainHypothesis(
+        statement="primary B", confidence=0.7, direction_implication=SHORT,
+        hypothesis_kind="mean_reversion",
+    )
+    counter_a = BrainHypothesis(
+        statement="counter A", confidence=0.95, direction_implication=SHORT,
+        hypothesis_kind="counter_hypothesis",
+        confidence_components={"primary_hypothesis_id": primary_a.hypothesis_id},
+    )
+    counter_b = BrainHypothesis(
+        statement="counter B", confidence=0.1, direction_implication=LONG,
+        hypothesis_kind="counter_hypothesis",
+        confidence_components={"primary_hypothesis_id": primary_b.hypothesis_id},
+    )
+    analysis = EvidenceAnalysis(
+        domain_coverage={"structure": 0.9, "volume": 0.9},
+        agreement_score=0.9,
+        evidence_uncertainty=0.1,
+    )
+    before_b = primary_b.confidence
+    BrainReasoner().self_criticize(
+        [primary_a, primary_b, counter_a, counter_b], analysis,
+    )
+    assert primary_a.confidence < 0.6
+    assert primary_b.confidence > before_b
+    assert "survived criticism" in primary_b.criticism
+
+
 def test_each_leading_directional_hypothesis_gets_its_own_counter():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_evidence(
