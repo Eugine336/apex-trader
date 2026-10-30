@@ -2458,13 +2458,20 @@ class CognitiveBrain:
                 # Legacy/test evidence without an explicit verification field
                 # is treated as unverified. It can inform diagnostics but cannot
                 # authorize new exposure.
-                if measurements.get("cost_verified") is not True:
+                cost_source = str(measurements.get("cost_source") or "").strip()
+                if (
+                    measurements.get("cost_verified") is not True
+                    or not cost_source
+                    or any(token in cost_source.lower() for token in (
+                        "fallback", "unverified", "configured default",
+                    ))
+                ):
                     continue
                 total = self._cost_value(measurements.get("estimated_total_cost_r"))
                 if total is not None:
                     candidates.append((
                         timestamp, total,
-                        str(measurements.get("cost_source") or "verified execution cost"),
+                        cost_source,
                     ))
                     continue
 
@@ -2474,8 +2481,7 @@ class CognitiveBrain:
                     candidates.append((
                         timestamp,
                         spread + slippage,
-                        str(measurements.get("cost_source") or
-                            "verified spread + slippage"),
+                        cost_source,
                     ))
             if candidates:
                 _, cost, source = max(candidates, key=lambda item: item[0])
