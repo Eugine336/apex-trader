@@ -3202,6 +3202,25 @@ class CognitiveBrain:
             "native_detected_patterns": patterns,
             "native_evidence_uncertainty": uncertainty,
         })
+        if analysis is not None:
+            native_analysis_record = analysis.to_dict()
+            questions["native_epistemic_record"] = native_analysis_record.get(
+                "epistemic_record", {},
+            )
+            questions["native_informative_domains"] = list(
+                getattr(analysis, "informative_domains", []) or []
+            )
+            questions["native_uninformative_domains"] = list(
+                getattr(analysis, "uninformative_domains", []) or []
+            )
+        if hypotheses:
+            questions["native_hypothesis_records"] = [
+                item.to_dict() for item in hypotheses[:12]
+            ]
+            lead = self._native.leading(hypotheses)
+            questions["native_lead_hypothesis_id"] = (
+                getattr(lead, "hypothesis_id", "") if lead is not None else ""
+            )
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="native analysis completed; no qualified opportunity met action criteria",
