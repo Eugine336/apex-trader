@@ -23,6 +23,25 @@ from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from test_support.recording_broker import FakeBroker, FakeCloseResult, FakeOpenResult
 
 
+def test_open_intent_detaches_nested_decision_snapshot_from_caller():
+    snapshot = {
+        "schema": "apex.decision_feature_snapshot.v1",
+        "features": [{"measurements": {"range": 1.5}}],
+    }
+    intent = Intent.open(
+        symbol="XAUUSD",
+        direction="BUY",
+        lots=0.1,
+        sl=2300.0,
+        tp=2400.0,
+        source="test",
+        reason="test",
+        decision_feature_snapshot=snapshot,
+    )
+    snapshot["features"][0]["measurements"]["range"] = 99.0
+    assert intent.decision_feature_snapshot["features"][0]["measurements"]["range"] == 1.5
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _positions(**overrides) -> dict[str, dict]:
