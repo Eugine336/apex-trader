@@ -783,12 +783,23 @@ class DecisionPackage:
     identity_version: str = IDENTITY_VERSION
     # Appended so every live decision exposes the identity value it claims.
     identity: str = IDENTITY_STATEMENT
+    # Precise UTC epoch captured when this decision object is created. Used as
+    # the strict cutoff for decision-time evidence; created_iso is display-only
+    # and intentionally has only second precision.
+    created_epoch: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.decision_id:
             self.decision_id = uuid.uuid4().hex[:12]
         if not self.created_iso:
             self.created_iso = _now_iso()
+        try:
+            created_epoch = float(self.created_epoch)
+        except (TypeError, ValueError, OverflowError):
+            created_epoch = 0.0
+        if not (created_epoch > 0.0 and created_epoch < float("inf")):
+            created_epoch = _now_epoch()
+        self.created_epoch = created_epoch
         if isinstance(self.decision_type, str):
             try:
                 self.decision_type = DecisionType(self.decision_type)
@@ -867,6 +878,7 @@ class DecisionPackage:
             "identity": self.identity,
             "decision_id": self.decision_id,
             "created": self.created_iso,
+            "created_epoch": self.created_epoch,
             "symbol": self.symbol,
             "decision_type": self.decision_type.value,
             "thesis": self.thesis,
