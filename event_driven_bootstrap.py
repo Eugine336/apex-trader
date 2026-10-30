@@ -4175,8 +4175,8 @@ class EventDrivenSystem:
             try:
                 es = get_event_store()
                 es.flush(timeout=3.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.critical("[shutdown] durable event-store flush failed: {}", exc)
 
             # Clear crash marker
             try:
@@ -4338,8 +4338,8 @@ class EventDrivenSystem:
                         self._wd_last_flush_count = cur_flush
                         self._wd_last_ticks_routed = cur_ticks
                     ctx.process_watchdog.check_stall()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[watchdog] process stall check failed: {}", exc)
 
             # ── Deriv position-store health ───────────────────────────
             # Losing this store leaves multiplier contracts unmanaged. Surface
@@ -4355,8 +4355,12 @@ class EventDrivenSystem:
                             store.degraded_reason() if hasattr(store, "degraded_reason") else "unknown",
                         )
                         self._deriv_store_unhealthy_warned = True
-            except Exception:
-                pass
+            except Exception as exc:
+                self._deriv_store_unhealthy_warned = True
+                logger.critical(
+                    "[event-driven] Deriv position-store health check failed; "
+                    "treating connector state as degraded: {}", exc,
+                )
 
             # ── Broker auto-reconnection ──────────────────────────────
             # Self-heal dropped MT5/Deriv sockets so an unattended system
@@ -4412,8 +4416,12 @@ class EventDrivenSystem:
                         self._scanner_blind_warned = True
                     elif not blind:
                         self._scanner_blind_warned = False
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._scanner_blind_warned = True
+                    logger.critical(
+                        "[event-driven] scanner health check failed; "
+                        "entries must remain blocked: {}", exc,
+                    )
 
             if ctx is not None and ctx.daily_maintenance is not None:
                 try:
@@ -4726,8 +4734,11 @@ class EventDrivenSystem:
                             bal = self._pm.get_platform_balance(symbol)
                             if bal and bal > 0:
                                 ctx.account_risk.update_balance(acct, bal)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "[risk-state] account balance refresh failed for {}: {}",
+                                acct, exc,
+                            )
             except Exception as exc:
                 logger.debug("[risk-state] position risk calc failed: {}", exc)
                 continue
@@ -4869,8 +4880,14 @@ class EventDrivenSystem:
                         from brain.drawdown_guard import DrawdownMode
                         if ctx.drawdown_guard.get_status().mode == DrawdownMode.FROZEN.value:
                             trig.drawdown_frozen = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Unknown drawdown state is treated as frozen; it may
+                        # escalate risk reduction, never permit additional exposure.
+                        trig.drawdown_frozen = True
+                        logger.critical(
+                            "[risk-state] drawdown guard status unavailable; "
+                            "forcing emergency reduction: {}", exc,
+                        )
                 if trig.any_fired:
                     ctx.portfolio_risk_sm.escalate_to_emergency(
                         trig, heat_pct, corr_safe,
@@ -4957,8 +4974,13 @@ class EventDrivenSystem:
                             if acct and acct_risk.heat(acct) < emerg_pct:
                                 skipped += 1
                                 continue
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Unknown account heat takes the fail-safe path below:
+                            # close the position rather than skip a risk reduction.
+                            logger.warning(
+                                "[heat-monitor] account heat unavailable for {}; "
+                                "closing conservatively: {}", ticket, exc,
+                            )
                     self._aggregator.submit([Intent.close(
                         symbol=symbol,
                         ticket=ticket,
@@ -5461,8 +5483,8 @@ class EventDrivenSystem:
                     rt = _cost / _lots
                     prev = float(getattr(self, "_commission_per_lot_est", 0.0) or 0.0)
                     self._commission_per_lot_est = rt if prev <= 0.0 else (0.8 * prev + 0.2 * rt)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[close] commission-per-lot calibration skipped: {}", exc)
             di_close = getattr(deal_info, "close_price", None)
             if di_close:
                 close_price = float(di_close)
@@ -6020,8 +6042,8 @@ class EventDrivenSystem:
                     return False
             return status.is_tradeable
         except Exception as exc:
-            logger.debug("[session-gate] SessionEngine check failed: {}", exc)
-            return True
+            logger.warning("[session-gate] SessionEngine check failed; blocking entry for {}: {}", symbol, exc)
+            return False
 
     def _is_fx_market_closed(self) -> bool:
         """True when the FX market is closed (weekend) per the SessionEngine.
