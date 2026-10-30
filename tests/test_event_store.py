@@ -136,6 +136,16 @@ class TestConcurrentWrites:
         assert store.count() == n_threads * n_per_thread
 
 
+    def test_durable_emit_rejects_non_json_payload(self, store):
+        with pytest.raises(ValueError, match="strict JSON"):
+            store.emit(
+                "DECISION_TRADE_ENTRY_SNAPSHOT",
+                "INFO",
+                payload={"invalid": object()},
+                durable=True,
+            )
+        assert store.query(event_type="DECISION_TRADE_ENTRY_SNAPSHOT") == []
+
     def test_durable_emit_surfaces_database_failure(self, store):
         real_conn = store._conn
 
