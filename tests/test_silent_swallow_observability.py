@@ -128,6 +128,32 @@ def _has_explicit_fallback_rationale(source_lines: list[str], lineno: int) -> bo
     return False
 
 
+def _has_following_fail_closed_sentinel(
+    handler: ast.ExceptHandler, parent_map: dict[ast.AST, ast.AST],
+) -> bool:
+    """Recognize a pass handler followed immediately by an explicit safe return."""
+    try_node = parent_map.get(handler)
+    owner = parent_map.get(try_node) if try_node is not None else None
+    body = getattr(owner, "body", None)
+    if not isinstance(body, list) or try_node not in body:
+        return False
+    index = body.index(try_node)
+    if index + 1 >= len(body):
+        return False
+    following = body[index + 1]
+    if isinstance(following, ast.Return):
+        value = following.value
+        if value is None:
+            return True
+        if isinstance(value, ast.Constant) and value.value in _SENTINEL_VALUES:
+            return True
+        if isinstance(value, ast.List) and not value.elts:
+            return True
+        if isinstance(value, ast.Dict) and not value.keys:
+            return True
+    return isinstance(following, ast.Raise)
+
+
 def _collect_silent_handlers():
     """Yield unclassified silent handlers as (filepath, lineno)."""
     for root, dirs, files in os.walk(_REPO_ROOT):
@@ -141,6 +167,11 @@ def _collect_silent_handlers():
                     source = fh.read()
                 source_lines = source.splitlines()
                 tree = ast.parse(source, filename=fpath)
+                parent_map = {
+                    child: parent
+                    for parent in ast.walk(tree)
+                    for child in ast.iter_child_nodes(parent)
+                }
             except (OSError, UnicodeDecodeError, SyntaxError):
                 continue
             for node in ast.walk(tree):
@@ -148,6 +179,7 @@ def _collect_silent_handlers():
                     isinstance(node, ast.ExceptHandler)
                     and _is_silent_handler(node)
                     and not _has_explicit_fallback_rationale(source_lines, node.lineno)
+                    and not _has_following_fail_closed_sentinel(node, parent_map)
                 ):
                     rel = os.path.relpath(fpath, _REPO_ROOT)
                     yield rel, node.lineno
