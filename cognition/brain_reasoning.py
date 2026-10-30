@@ -1471,7 +1471,14 @@ class BrainReasoner:
     def _confidence_components(
         support: "list[str]", against: "list[str]", analysis: EvidenceAnalysis,
     ) -> dict:
-        domain_values = list(analysis.domain_coverage.values())
+        quality_domains = (
+            list(analysis.informative_domains)
+            if analysis.evidence_index else list(analysis.domain_coverage)
+        )
+        domain_values = [
+            analysis.domain_coverage.get(domain, 0.0)
+            for domain in quality_domains
+        ]
         mean_domain_quality = (
             sum(_clamp01(value) for value in domain_values) / len(domain_values)
             if domain_values else 0.0
@@ -1499,8 +1506,15 @@ class BrainReasoner:
         support: "list[str]", against: "list[str]", analysis: EvidenceAnalysis,
     ) -> float:
         base = 0.5 + 0.12 * len(set(support)) - 0.12 * len(set(against))
-        mean_conf = (sum(analysis.domain_coverage.values()) / len(analysis.domain_coverage)
-                     if analysis.domain_coverage else 0.0)
+        quality_domains = (
+            list(analysis.informative_domains)
+            if analysis.evidence_index else list(analysis.domain_coverage)
+        )
+        mean_conf = (
+            sum(analysis.domain_coverage.get(domain, 0.0) for domain in quality_domains)
+            / len(quality_domains)
+            if quality_domains else 0.0
+        )
         quality = 0.7 + 0.3 * mean_conf
         return _clamp01(min(0.95, base) * quality)
 
