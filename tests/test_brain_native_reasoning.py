@@ -135,6 +135,23 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         timestamp_epoch=stamp,
         relevance_horizon_seconds=900.0,
     ))
+    ms.add(Evidence(
+        source_module="validation.out_of_sample_probability_calibration.test_fixture",
+        domain="historical_analogue", symbol=ms.symbol,
+        observation="synthetic direction-specific calibration for admission tests",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True,
+            "source_verified": True, "out_of_sample": True,
+            "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "direction": side,
+            "win_probability": 0.72, "sample_count": 240,
+            "brier_score": 0.17, "calibration_method": "synthetic_isotonic",
+            "calibration_id": "unit-test-holdout",
+        },
+        timestamp_epoch=stamp, relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
