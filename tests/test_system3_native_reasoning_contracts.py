@@ -166,3 +166,25 @@ def test_stale_and_future_evidence_never_enters_native_hypothesis_lineage():
     hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
     assert all(not h.supporting_evidence_ids for h in hypotheses)
     assert all(not h.is_directional for h in hypotheses)
+
+
+
+def test_native_analysis_uses_same_decision_time_cutoff_as_consolidation():
+    state = MarketState(symbol="SYNTHETIC")
+    valid = _evidence("structure", {"displacement": 1.0}, source="valid")
+    valid.timestamp_epoch = 95.0
+    future = _evidence("order_flow", {"delta": 1.0}, source="future")
+    future.timestamp_epoch = 101.0
+    stale = _evidence("momentum", {"momentum_state": "accelerating"}, source="stale")
+    stale.timestamp_epoch = 1.0
+    state.add(valid)
+    state.add(future)
+    state.add(stale)
+
+    reasoner = BrainReasoner()
+    consolidation = state.consolidation(now=100.0)
+    analysis = reasoner.analyze_evidence(state, consolidation, now=100.0)
+
+    assert [item["evidence_id"] for item in analysis.evidence_index] == [valid.evidence_id]
+    assert "no order_flow evidence" in analysis.missing_information
+    assert "no momentum evidence" in analysis.missing_information
