@@ -2378,7 +2378,7 @@ class CognitiveBrain:
                     or m.get("data_leakage_checked") is not True
                     or m.get("selection_bias_checked") is not True
                     or m.get("overfitting_checked") is not True
-                    or str(m.get("direction", "")).strip().upper() != side
+                    or str(m.get("calibration_side", "")).strip().upper() != side
                     or not str(m.get("calibration_method", "")).strip()
                     or not str(m.get("calibration_id", "")).strip()
                 ):
