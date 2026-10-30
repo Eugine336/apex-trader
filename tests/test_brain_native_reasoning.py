@@ -524,6 +524,11 @@ def test_brain_originates_independently_when_advisor_unavailable():
     assert "without advisor" in note
     assert out.decision.questions_answered["reasoning_mode"] == "native_only"
     assert out.decision.questions_answered["external_advisor_status"] == "unavailable"
+    native_records = out.decision.questions_answered["brain_native_hypothesis_records"]
+    assert native_records
+    assert all(record["hypothesis_id"] for record in native_records)
+    assert "observed_facts" in out.decision.questions_answered["brain_epistemic_record"]
+    assert out.decision.questions_answered["brain_lead_hypothesis_id"]
     assert brain.get_status()["independent_originations"] == 1
 
 
