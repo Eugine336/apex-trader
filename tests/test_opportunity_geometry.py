@@ -330,3 +330,18 @@ def test_low_liquidity_or_unfamiliar_only_market_state_has_no_geometry():
         relevance_horizon_seconds=900,
     ))
     assert derive_opportunity_geometry(state, "LONG") is None
+
+
+
+def test_recently_arrived_but_old_source_bar_cannot_define_geometry():
+    state = _state(timestamp=time.time())
+    for item in state.evidence:
+        item.measurements["source_bar_epoch"] = time.time() - 2000
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_future_source_bar_cannot_define_geometry():
+    state = _state(timestamp=time.time())
+    for item in state.evidence:
+        item.measurements["source_bar_epoch"] = time.time() + 30
+    assert derive_opportunity_geometry(state, "LONG") is None
