@@ -116,7 +116,9 @@ def derive_opportunity_geometry(
     liquidity: list[dict[str, Any]] = []
     for item in fresh:
         evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
-        if state_symbol and evidence_symbol and evidence_symbol != state_symbol:
+        # Geometry is instrument-specific. Missing symbol identity is not safe
+        # to inherit from the container because mixed-source states can occur.
+        if not evidence_symbol or evidence_symbol != state_symbol:
             continue
         measurements = getattr(item, "measurements", None)
         if not isinstance(measurements, dict):
@@ -126,6 +128,8 @@ def derive_opportunity_geometry(
         if (
             measurements.get("source_kind") != "market_lens"
             or measurements.get("source_timestamp_known") is not True
+            or measurements.get("provisional") is True
+            or measurements.get("completed") is False
         ):
             continue
         domain_value = getattr(getattr(item, "domain", None), "value", None)
@@ -152,14 +156,14 @@ def derive_opportunity_geometry(
                 "range_rotation": bool(measurements.get("range_rotation", False)),
                 "upper_wick": _finite(measurements.get("upper_wick")),
                 "lower_wick": _finite(measurements.get("lower_wick")),
-                "timeframe": str(measurements.get("timeframe", "") or ""),
+                "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
             })
         elif domain == "momentum":
             change = _finite(measurements.get("close_change"))
             if change is not None:
                 momenta.append({
                     "item": item, "time": source_time, "change": change,
-                    "timeframe": str(measurements.get("timeframe", "") or ""),
+                    "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
                 })
         elif domain == "liquidity":
             liquidity.append({
@@ -167,14 +171,36 @@ def derive_opportunity_geometry(
                 "time": source_time,
                 "side": str(measurements.get("sweep_side", "") or "").lower(),
                 "close": _finite_positive(measurements.get("current_close")),
+                "swept_level": _finite_positive(measurements.get("swept_level")),
+                "reclaimed": measurements.get("sweep_reclaimed") is True,
                 "low": _finite_positive(measurements.get("prior_range_low")),
                 "high": _finite_positive(measurements.get("prior_range_high")),
+                "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
             })
 
+    structures = [record for record in structures if record["timeframe"]]
+    momenta = [record for record in momenta if record["timeframe"]]
+    liquidity = [record for record in liquidity if record["timeframe"]]
     if not structures:
         return None
     structures.sort(key=lambda record: record["time"], reverse=True)
     entry_record = structures[0]
+    # Two incompatible readings from the same timeframe at the same source
+    # instant cannot be resolved by list order. Preserve the conflict and stand down.
+    peers = [
+        record for record in structures
+        if record["timeframe"] == entry_record["timeframe"]
+        and record["time"] == entry_record["time"]
+    ]
+    if any(
+        record["price"] != entry_record["price"]
+        or record["high"] != entry_record["high"]
+        or record["low"] != entry_record["low"]
+        or record["breakout_direction"] != entry_record["breakout_direction"]
+        or record["trend_state"] != entry_record["trend_state"]
+        for record in peers[1:]
+    ):
+        return None
     entry = entry_record["price"]
 
     if side == "LONG":
@@ -201,30 +227,43 @@ def derive_opportunity_geometry(
         return None
 
     direction_word = "up" if side == "LONG" else "down"
-    matching_breakout = [
-        record for record in structures
-        if record["breakout_direction"] == direction_word
-    ]
-    matching_trend = [
-        record for record in structures
-        if record["trend_state"] == ("uptrend" if side == "LONG" else "downtrend")
-        and (record["trend_strength"] or 0.0) > 0.0
-    ]
+    matching_breakout = (
+        [entry_record]
+        if entry_record["breakout_direction"] == direction_word else []
+    )
+    matching_trend = (
+        [entry_record]
+        if entry_record["trend_state"] == ("uptrend" if side == "LONG" else "downtrend")
+        and (entry_record["trend_strength"] or 0.0) > 0.0 else []
+    )
     matching_momentum = [
         record for record in momenta
-        if (record["change"] > 0.0 if side == "LONG" else record["change"] < 0.0)
+        if record["timeframe"] == entry_record["timeframe"]
+        and record["time"] <= entry_record["time"]
+        and (record["change"] > 0.0 if side == "LONG" else record["change"] < 0.0)
     ]
     matching_sweep_side = "sell" if side == "LONG" else "buy"
     matching_sweeps = [
         item for item in liquidity
         if item["side"] == matching_sweep_side
+        and item["reclaimed"]
+        and item["swept_level"] is not None
+        and item["close"] is not None
+        and item["timeframe"] == entry_record["timeframe"]
+        and item["time"] <= entry_record["time"]
+        and (
+            item["close"] > item["swept_level"]
+            if side == "LONG" else item["close"] < item["swept_level"]
+        )
     ]
     # Range rotation is a distinct market state, not a pattern-name gate. It
     # requires a measured range edge plus a fresh response in the candidate
     # direction; merely being in a range or touching an edge is insufficient.
     matching_range_rotation = [
         record for record in structures
-        if record["trend_state"] == "range"
+        if record["timeframe"] == entry_record["timeframe"]
+        and record["time"] == entry_record["time"]
+        and record["trend_state"] == "range"
         and record["range_rotation"]
         and (
             (record["range_position"] is not None and record["range_position"] <= 0.15)
