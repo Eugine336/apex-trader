@@ -152,7 +152,7 @@ def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction(
 def test_stale_and_future_evidence_never_enters_native_hypothesis_lineage():
     state = MarketState(symbol="SYNTHETIC")
     stale = _evidence("structure", {"displacement": 3.0})
-    stale.timestamp_epoch = 1.0
+    stale.timestamp_epoch = -1000.0
     future = _evidence("order_flow", {"delta": 1.0})
     future.timestamp_epoch = state.created_epoch + 3600.0
     state.add(stale)
