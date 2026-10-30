@@ -377,20 +377,3 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 - New deterministic tests cover evidence lineage, epistemic separation, conflicting readings, no-trade comparison, source horizon metadata, stale/future data and decision-time consistency.
 
 **Validation:** focused Gold desk tests and lint passed. Full Python 3.11 and 3.12 suites each reported 3,963 passed and one failure: the silent-exception audit's 180 unclassified handlers. The pre-merge `main` baseline reported 3,948 passed and the same single 180-handler audit failure on both runtimes. No audit rules were weakened or suppressed. The post-merge main workflow remains queued. System 3 implementation is complete; the inherited repository-wide audit is still an outstanding global quality gate, not a new System 3 regression.
-
-
-
-## System 4 — opportunity discovery and payoff qualification (2026-10-30)
-
-**Draft implementation:** PR #797, branch `redesign/system4-opportunity-qualification`. Not accepted; full validation is pending.
-
-- Audited the existing market-derived geometry resolver and found stale-but-fresh older breakout activation, cross-timeframe momentum confirmation, missing-symbol inheritance, unverified sweep reclaim and arrival-order structural conflict weaknesses.
-- Geometry now uses exact symbol identity, declared timeframe, latest structural activation, timeframe-aligned momentum/range response, explicit sweep reclaim and fail-closed same-time structural conflict handling.
-- Each directional candidate in the opportunity set receives its own Brain-derived geometry and source evidence IDs; geometry is no longer attached only to the preferred candidate.
-- System 3 native confidence is explicitly uncalibrated. The old EV path passed effective confidence into a function whose contract treats the value as win probability. Directional action now requires a separate, fresh, direction-specific and exact-symbol out-of-sample calibration record with verified source, walk-forward/untouched holdout, leakage/selection/overfit controls, method/ID, sample count, Brier score and bounded reliability gap.
-- Missing calibration leaves EV diagnostic only and blocks directional exposure. Historical calibration records are excluded from market-domain breadth. This deliberately exposes the missing end-to-end calibration producer as an unresolved acceptance dependency rather than treating reasoning confidence as probability.
-- Exposure sizing is capped by effective confidence; quality scaling cannot raise it above confidence.
-
-New tests cover temporal/timeframe activation, conflicting structures, exact symbol matching, reversal reclaim, no-reclaim rejection, unfamiliar/low-liquidity states, calibrated-probability provenance and quality, and calibration-domain isolation.
-
-**Not yet verified:** final Python 3.11/3.12 full-suite results, latest focused Gold workflow, full identity audit, adversarial scenario matrix, and end-to-end durable outcome-to-calibration producer integration. No live orders or destructive/runtime changes were performed.
