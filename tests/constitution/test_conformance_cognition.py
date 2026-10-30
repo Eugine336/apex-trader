@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 # Make the repo root importable whether this file is collected by pytest (the
@@ -117,6 +118,8 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         observation="completed-bar structural range", confidence=conf, uncertainty=unc,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "current_close": 1.100,
             "prior_range_high": target_high, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
@@ -130,6 +133,8 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         observation="completed-bar momentum", confidence=conf, uncertainty=unc,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
