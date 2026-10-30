@@ -338,7 +338,7 @@ System 2 is **in progress, not merge-ready**. Missing data remains unknown; no p
 
 ## System 2 continuation — decision-time snapshot and trade linkage (2026-10-30)
 
-Implementation is in branch `redesign/system2-decision-time-provenance` and is **not yet merged or accepted**:
+PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implementation is **not accepted**:
 
 - Both advisor-assisted and native-only Brain campaign paths now capture a point-in-time feature snapshot from the fresh evidence already in the `MarketState`. Each feature carries its evidence ID and original source timestamp; stale/future evidence is excluded, values are normalized for JSON serialization, and snapshots are explicitly marked unvalidated.
 - Campaign translation carries the same snapshot into `OriginationIntent`, then the shared `Intent`. The Brain origination sink rejects a missing, incomplete, or decision-ID-mismatched snapshot rather than creating a trade that cannot be attributed.
@@ -347,3 +347,12 @@ Implementation is in branch `redesign/system2-decision-time-provenance` and is *
 
 **Not yet verified:** tests have not been executed in a supported runtime; event-store queue persistence/recovery, provider-specific ticket fields, and full end-to-end entry-to-close attribution still require focused integration tests. This branch must not be described as System 2 complete until those tests and `scripts/identity_audit.py` run successfully and all remaining calendar, connector-constraint, financing-cost and independent validation gates are closed or explicitly accepted as blockers. No live broker orders were sent.
 
+
+
+## System 2 durability follow-up — 2026-10-30
+
+- Follow-up implementation branch: redesign/system2-durable-provenance, based on 74e0b845390cebe8385b2812003da8344b59e0cc.
+- Entry-snapshot and outcome events use synchronous SQLite commits through EventStore.emit(..., durable=True). Failure raises to the producer and marks the store degraded; the event is not acknowledged as persisted merely because it was queued.
+- Restart recovery filters by exact parent_id ticket at the SQL layer; it no longer scans a capped set of same-symbol rows and filters tickets in application code.
+- Intent construction deep-copies nested decision snapshot content to prevent mutation through the original caller-owned object. Intrinsic immutability is still not claimed.
+- Added tests for synchronous commit visibility and exact-ticket query behavior. Not executed. No CI runs or status checks were reported for the base merge commit. The full integration path, supported-runtime test suite, identity audit, exact broker ticket semantics, authoritative calendars, complete connector constraints, verified financing estimates and untouched-holdout validation remain unresolved.
