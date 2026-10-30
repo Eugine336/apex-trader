@@ -83,6 +83,7 @@ def test_hypotheses_carry_support_challenge_unknowns_and_uncalibrated_confidence
 
     assert continuation.hypothesis_id
     assert continuation.supporting_evidence_ids
+    assert continuation.horizon == "intraday"
     assert set(continuation.supporting_evidence_ids).issubset(
         {row["evidence_id"] for row in analysis.evidence_index}
     )
@@ -90,6 +91,46 @@ def test_hypotheses_carry_support_challenge_unknowns_and_uncalibrated_confidence
     assert serialized["confidence_components"]["calibrated_probability"] is False
     assert serialized["distinguishing_evidence"]
     assert serialized["unresolved_unknowns"]
+
+
+def test_same_timeframe_and_domain_conflicts_remain_explicit():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_evidence(
+        "structure",
+        {"source_kind": "market_lens", "timeframe": "M15", "trend_state": "uptrend"},
+        source="structure.m15.a",
+    ))
+    state.add(_evidence(
+        "structure",
+        {"source_kind": "market_lens", "timeframe": "M15", "trend_state": "downtrend"},
+        source="structure.m15.b",
+    ))
+    state.add(_evidence(
+        "momentum", {"momentum_state": "accelerating"},
+        source="momentum.a",
+    ))
+    state.add(_evidence(
+        "momentum", {"momentum_state": "decelerating"},
+        source="momentum.b",
+    ))
+    state.add(_evidence(
+        "volatility", {"volatility_state": "compressing"},
+        source="volatility.a",
+    ))
+    state.add(_evidence(
+        "volatility", {"volatility_state": "expanding"},
+        source="volatility.b",
+    ))
+
+    analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
+    regime = analysis.regime_indicators
+    assert regime["trend_context"] == "mixed"
+    assert regime["trend_conflicted_timeframes"] == ["M15"]
+    assert regime["momentum"] == "conflicted"
+    assert regime["volatility"] == "conflicted"
+    assert any("trend readings conflict" in item for item in analysis.contradictions)
+    assert any("momentum evidence simultaneously" in item for item in analysis.contradictions)
+    assert any("volatility evidence simultaneously" in item for item in analysis.contradictions)
 
 
 def test_leading_hypothesis_compares_no_trade_instead_of_prioritizing_direction():
