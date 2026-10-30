@@ -2438,8 +2438,14 @@ class CognitiveBrain:
         """
         try:
             candidates: list[tuple[float, float, str]] = []
+            state_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
             for item in market_state.fresh_evidence(now):
                 if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
+                    continue
+                # Cost in R is instrument-specific. Missing or cross-symbol
+                # execution quotes cannot authorize a different instrument.
+                item_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                if not state_symbol or item_symbol != state_symbol:
                     continue
                 measurements = getattr(item, "measurements", None)
                 if not isinstance(measurements, dict):
