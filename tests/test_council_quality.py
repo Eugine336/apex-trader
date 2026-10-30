@@ -6,6 +6,7 @@ for a shallow vs deep opinion, and the observability-only quality tracking added
 to :class:`~cognition.influence.InfluenceLedger`.
 """
 
+import time
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
@@ -77,6 +78,8 @@ def _decide(opinion, uncertainty=0.1):
         uncertainty=uncertainty,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "current_close": 1.100,
             "prior_range_high": 1.110, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
@@ -91,6 +94,8 @@ def _decide(opinion, uncertainty=0.1):
         uncertainty=uncertainty,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
