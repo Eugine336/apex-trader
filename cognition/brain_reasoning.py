@@ -1677,10 +1677,16 @@ class BrainReasoner:
         else the highest-confidence hypothesis overall."""
         if not hypotheses:
             return None
-        # Compare all explanations, including no-trade and unresolved market-state
-        # hypotheses. Directional candidates receive no automatic priority.
+        # Counter-hypotheses are adversarial challenges, not independent
+        # recommendations. They may reduce confidence in a primary thesis but
+        # must never become the selected direction merely because the primary
+        # has low confidence. Compare all actual explanations, including no-trade.
+        candidates = [
+            item for item in hypotheses
+            if item.hypothesis_kind != "counter_hypothesis"
+        ] or list(hypotheses)
         return max(
-            hypotheses,
+            candidates,
             key=lambda h: (
                 h.confidence,
                 not h.is_directional,
