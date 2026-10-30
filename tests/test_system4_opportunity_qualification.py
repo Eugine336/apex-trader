@@ -93,3 +93,23 @@ def test_calibration_from_another_symbol_cannot_qualify_candidate():
         reasoner=None,
     )._calibrated_win_probability(state, "LONG")
     assert verified is False
+
+
+
+def test_historical_calibration_metadata_does_not_pad_market_domain_coverage():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_calibration())
+    consolidated = state.consolidation()
+    assert consolidated["market_domain_count"] == 0
+    assert "historical_analogue" not in consolidated["market_domains_present"]
+
+
+def test_poor_reliability_gap_cannot_qualify_calibration():
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration()
+    evidence.measurements["reliability_gap"] = 0.26
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
