@@ -44,7 +44,7 @@ class _Opinion:
         # opportunity so origination flows through a structured object (these
         # tests exercise native/advisor integration, not the legacy-scalar path).
         self.opportunities = (
-            [{"id": "auto", "calibration_side": direction, "state": "ACTIVE",
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
