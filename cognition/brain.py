@@ -487,7 +487,9 @@ class CognitiveBrain:
             # own structured analysis and forms its own (self-criticised)
             # hypotheses BEFORE any advisor is consulted. This is the Brain's
             # native view; the advisor opinion later INFORMS it, never replaces it.
-            analysis, hypotheses = self._native_reasoning(market_state, consolidation, symbol)
+            analysis, hypotheses = self._native_reasoning(
+                market_state, consolidation, symbol, now=now,
+            )
             # Provider configuration/health is infrastructure metadata, never a
             # market verdict. Native analysis is already complete; preserve its
             # qualified campaign or native observe result in every advisor state.
@@ -2416,6 +2418,7 @@ class CognitiveBrain:
 
     def _native_reasoning(
         self, market_state: MarketState, consolidation: dict, symbol: str,
+        *, now: Optional[float] = None,
     ) -> "tuple[EvidenceAnalysis, list[BrainHypothesis]]":
         """Run the full native reasoning pass: analyse → hypothesise → self-criticise.
 
@@ -2423,7 +2426,9 @@ class CognitiveBrain:
         hypotheses, so the LLM path is entirely unaffected.
         """
         try:
-            analysis = self._native.analyze_evidence(market_state, consolidation)
+            analysis = self._native.analyze_evidence(
+                market_state, consolidation, now=now,
+            )
             hypotheses = self._native.generate_hypotheses(analysis, symbol)
             hypotheses = self._native.self_criticize(hypotheses, analysis)
             return analysis, hypotheses
