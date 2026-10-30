@@ -38,12 +38,22 @@ def _load(mod_name, rel_path, *, prime=None):
     so the module-under-test's ``from X import Y`` resolves against light stubs
     instead of dragging the heavy real package.
     """
+    # Stubs are only needed while the module-under-test imports; remove any stub
+    # we inserted afterwards so it cannot shadow the real package (for example
+    # ``tick``) when later test modules are collected in the same process.
+    inserted = []
     for name, stub in (prime or {}).items():
-        sys.modules.setdefault(name, stub)
-    spec = importlib.util.spec_from_file_location(mod_name, _ROOT / rel_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
+        if name not in sys.modules:
+            sys.modules[name] = stub
+            inserted.append(name)
+    try:
+        spec = importlib.util.spec_from_file_location(mod_name, _ROOT / rel_path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    finally:
+        for name in inserted:
+            sys.modules.pop(name, None)
     return mod
 
 
