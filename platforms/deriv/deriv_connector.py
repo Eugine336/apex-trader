@@ -1630,6 +1630,8 @@ class DerivConnector(BaseConnector):
                 valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
                 if valid:
                     self._discovered_multipliers[mapped] = valid
+                    if not hasattr(self, "_discovered_multipliers_at"):
+                        self._discovered_multipliers_at = {}
                     self._discovered_multipliers_at[mapped] = _time.time()
                     nearest = min(valid, key=lambda x: abs(x - multiplier))
                     # Re-fit against the now-known valid list so the SL still
@@ -1892,6 +1894,8 @@ class DerivConnector(BaseConnector):
                 valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
                 if valid:
                     self._discovered_multipliers[mapped] = valid
+                    if not hasattr(self, "_discovered_multipliers_at"):
+                        self._discovered_multipliers_at = {}
                     self._discovered_multipliers_at[mapped] = _time.time()
                     nearest = min(valid, key=lambda x: abs(x - multiplier))
                     corrected = self._fit_multiplier_for_sl(nearest, sl_pct, valid)
