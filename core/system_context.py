@@ -1039,7 +1039,12 @@ class SystemContext:
                         max_weight=float(getattr(cog_cfg, "influence_max_weight", 1.5)
                                          if cog_cfg is not None else 1.5),
                     )
-                    _calibration = _CalibrationTracker()
+                    try:
+                        from runtime_paths import data_dir as _cal_data_dir
+                        _cal_path = str(_cal_data_dir() / "brain_calibration.json")
+                    except Exception:  # noqa: BLE001 — no path means in-memory only
+                        _cal_path = None
+                    _calibration = _CalibrationTracker(path=_cal_path)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[SystemContext] influence/calibration init failed: {}", exc)
                     _influence = _calibration = None

@@ -1,26 +1,18 @@
-"""Canonical symbol policy for the Gold-only specialist."""
+"""Instrument-agnostic symbol policy for market observation.
+
+Apex observes every enabled instrument; no symbol is privileged. Evidence is keyed
+by the exact configured symbol (case-insensitive), so the Brain always asks for
+the same name the broker route uses.
+"""
 from __future__ import annotations
 
-from typing import Sequence
 
-
-class GoldOnlyGuard:
-    """Exact allowlist for broker-specific XAUUSD aliases; no prefix matching."""
-
-    DEFAULT_ALIASES = (
-        "XAUUSD", "GOLD", "XAUUSDm", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
-    )
-
-    def __init__(self, allowed_symbols: Sequence[str] | None = None) -> None:
-        aliases = allowed_symbols or self.DEFAULT_ALIASES
-        self._aliases = {
-            str(value).strip().upper(): "XAUUSD"
-            for value in aliases if str(value).strip()
-        }
-        self._aliases["XAUUSD"] = "XAUUSD"
+class SymbolPolicy:
+    """Canonical (upper-case) symbol keys; any non-empty symbol is observable."""
 
     def canonical_symbol(self, raw: str) -> str | None:
-        return self._aliases.get(str(raw or "").strip().upper())
+        value = str(raw or "").strip().upper()
+        return value or None
 
-    def is_gold(self, raw: str) -> bool:
-        return self.canonical_symbol(raw) == "XAUUSD"
+    def is_observable(self, raw: str) -> bool:
+        return self.canonical_symbol(raw) is not None

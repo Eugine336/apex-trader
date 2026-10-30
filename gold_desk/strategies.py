@@ -1,4 +1,4 @@
-"""Deterministic Gold pattern detectors — evidence only, never trade decisions.
+"""Deterministic market pattern detectors (any instrument) — evidence only, never trade decisions.
 
 Every detector answers: "What factual price pattern is visible in completed
 market data?" None outputs direction, entry, stop, target, position size, rank,
@@ -38,7 +38,7 @@ def _observation(
             raise ValueError("observation requires a source candle")
         source_bar = bars[-1]
     return PatternObservation(
-        symbol="XAUUSD",
+        symbol=snapshot.symbol,
         venue=str(snapshot.venue),
         pattern_id=pattern_id,
         timeframe=timeframe,

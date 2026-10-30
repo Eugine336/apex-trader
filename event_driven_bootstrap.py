@@ -1156,27 +1156,28 @@ class EventDrivenSystem:
         self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
         self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
 
-        # ── Gold specialist research observer (shadow-only) ───────────
+        # ── Market observer (factual evidence for every instrument, shadow-only) ──
         # This observes only the explicitly selected venue and publishes
         # structured hypotheses to EventBus. It has no order/execution API and
         # never bypasses the campaign, portfolio, or execution risk path.
-        self._gold_desk_observer = None
-        _gold_shadow_enabled = os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1").strip().lower()
+        self._market_observer = None
+        _gold_shadow_enabled = (os.getenv("APEX_MARKET_OBSERVER_ENABLED") or os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1")).strip().lower()
         if _gold_shadow_enabled not in {"0", "false", "no", "off"}:
             try:
-                from gold_desk.apex_observer import ApexGoldDeskShadowObserver
-                self._gold_desk_observer = ApexGoldDeskShadowObserver(
+                from gold_desk.apex_observer import ApexMarketObserver
+                self._market_observer = ApexMarketObserver(
                     symbols=list(getattr(self._config, "enabled_pairs", []) or []),
-                    venue=os.getenv("APEX_GOLD_DESK_VENUE", "MT5"),
+                    venue=os.getenv("APEX_MARKET_OBSERVER_VENUE")
+                    or os.getenv("APEX_GOLD_DESK_VENUE", "AUTO"),
                     tick_router=self._tick_router,
                     event_bus=self._event_bus,
-                    candle_fetcher=self._fetch_confirmed_gold_candles,
+                    candle_fetcher=self._fetch_confirmed_candles,
                     venue_resolver=lambda symbol: type(self._pm.get_connector(symbol)).__name__,
                     market_open=self._check_market_open,
-                    event_window_source=self._gold_event_window,
+                    event_window_source=self._market_event_window,
                 )
             except Exception as exc:
-                logger.warning("[gold-desk] shadow observer construction failed: {}", exc)
+                logger.warning("[market-observer] shadow observer construction failed: {}", exc)
 
         # ── Developing analysis store (Phase 2 — live/forming-bar view) ──
         # A SEPARATE WorldModelStore holding the continuously-evolving
@@ -2119,7 +2120,10 @@ class EventDrivenSystem:
                 candidate,
                 book,
                 account,
-                SizingFactors(base_risk_pct=base_risk_pct),
+                SizingFactors(
+                    base_risk_pct=base_risk_pct,
+                    calib_mult=self._calibration_size_scale(),
+                ),
             )
             approved_size = float(getattr(verdict, "approved_size", 0.0) or 0.0)
             approved = bool(getattr(verdict, "approved", False))
@@ -2423,6 +2427,22 @@ class EventDrivenSystem:
                 return False
 
         return _sink
+
+    def _calibration_size_scale(self) -> float:
+        """Risk scale from verified calibration of the Brain's confidence.
+
+        Unverified (or unavailable) calibration scales risk down to the tracker's
+        floor; it never blocks a trade, concept or instrument. As market outcomes
+        verify stated confidence the scale rises to 1.0.
+        """
+        try:
+            tracker = getattr(getattr(self, "_ctx", None), "brain_calibration", None)
+            if tracker is None:
+                return 0.25
+            return float(tracker.sizing_scale())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[calibration] size scale fault: {}", exc)
+            return 0.25
 
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
         """Ask the ComplianceDivision whether new exposure is permitted.
@@ -3648,11 +3668,11 @@ class EventDrivenSystem:
         # Start after broker/candle warmup, but before the tick router and
         # broker pollers. The observer's callback is non-blocking and its worker
         # has no order API; provider/data faults cannot interrupt trading loops.
-        if self._gold_desk_observer is not None:
+        if self._market_observer is not None:
             try:
-                self._gold_desk_observer.start()
+                self._market_observer.start()
             except Exception as exc:
-                logger.warning("[gold-desk] shadow observer start failed: {}", exc)
+                logger.warning("[market-observer] shadow observer start failed: {}", exc)
 
         self._tick_router.start()
         self._candle_detector.start()
@@ -3745,22 +3765,22 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[event-driven] price-source wiring failed: {}", exc)
 
-                # Single Brain architecture: the Gold desk contributes one
+                # Single Brain architecture: the market observer contributes one
                 # neutral, broker-backed market evidence record. Pattern modules
                 # cannot originate independent trades or compete for direction.
                 try:
-                    gold_observer = getattr(self, "_gold_desk_observer", None)
-                    _cog_loop.set_gold_market_source(
+                    gold_observer = getattr(self, "_market_observer", None)
+                    _cog_loop.set_market_source(
                         gold_observer.evidence_for if gold_observer is not None else None
                     )
                     if gold_observer is not None:
                         gold_observer.set_evidence_change_callback(
                             lambda symbol: _cog_loop.request_reason(
-                                symbol, reason="gold_market_evidence_changed"
+                                symbol, reason="market_evidence_changed"
                             )
                         )
                 except Exception as exc:
-                    logger.debug("[event-driven] Gold market evidence wiring failed: {}", exc)
+                    logger.debug("[event-driven] market evidence wiring failed: {}", exc)
                 # Violation #2 — wire the inter-candle structural interactions in
                 # as an evidence source, and give the detector the Brain-wake
                 # handle, then subscribe it to the tick stream. Now a swept pool
@@ -4047,11 +4067,11 @@ class EventDrivenSystem:
 
         self._tick_eval_loop.stop()
         self._flush_loop.stop()
-        if getattr(self, "_gold_desk_observer", None) is not None:
+        if getattr(self, "_market_observer", None) is not None:
             try:
-                self._gold_desk_observer.stop()
+                self._market_observer.stop()
             except Exception as exc:
-                logger.debug("[gold-desk] shadow observer stop failed: {}", exc)
+                logger.debug("[market-observer] shadow observer stop failed: {}", exc)
         self._mt5_poller.stop()
         self._deriv_adapter.stop()
         # Stop the developing analysis loop before the tick router so it stops
@@ -5672,10 +5692,10 @@ class EventDrivenSystem:
                 mt5.append(sym)
         return mt5, deriv
 
-    def _fetch_confirmed_gold_candles(
+    def _fetch_confirmed_candles(
         self, symbol: str, timeframe: str, count: int,
     ) -> Optional[pd.DataFrame]:
-        """Gold-desk history fetch: confirmed bars only, same connector as routing."""
+        """Market-observer history fetch: confirmed bars only, same connector as routing."""
         try:
             data = self._pm.fetch_market_data(
                 symbol, [timeframe], count, include_forming=False,
@@ -5683,7 +5703,7 @@ class EventDrivenSystem:
             return data.get(timeframe)
         except Exception as exc:
             logger.debug(
-                "[gold-desk] confirmed candle fetch failed {}/{}: {}",
+                "[market-observer] confirmed candle fetch failed {}/{}: {}",
                 symbol, timeframe, exc,
             )
             return None
@@ -6604,15 +6624,15 @@ class EventDrivenSystem:
         "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD",
     )
 
-    def _gold_event_window(self, symbol: str, observed_at: datetime, candles: dict) -> Optional[Any]:
-        """Adapt NewsGuard's verified event data into Gold evidence context."""
+    def _market_event_window(self, symbol: str, observed_at: datetime, candles: dict) -> Optional[Any]:
+        """Adapt NewsGuard's verified event data into per-instrument evidence context."""
         try:
             from gold_desk.news_context import build_verified_event_window
             ctx = self._ctx
             guard = getattr(ctx, "news_guard", None) if ctx is not None else None
             return build_verified_event_window(symbol, observed_at, candles, guard)
         except Exception as exc:  # noqa: BLE001 — event context must not break observation
-            logger.debug("[gold-desk] verified event-window lookup failed: {}", exc)
+            logger.debug("[market-observer] verified event-window lookup failed: {}", exc)
             return None
 
     def _dxy_currency_strength(self, symbol: str, lookback_bars: int = 20):

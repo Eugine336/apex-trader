@@ -600,11 +600,11 @@ def evidence_from_portfolio(symbol: str, assessment: Any) -> "list[Evidence]":
 
 
 
-def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
-    """Surface the live Gold desk's broker-backed observations to the single Brain.
+def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
+    """Surface the live market observer's broker-backed observations to the single Brain.
 
-    This deliberately creates ONE neutral Evidence record for the whole Gold
-    desk read. Pattern modules are measurements, not strategy votes: this adapter
+    This deliberately creates ONE neutral Evidence record for the whole market
+    read of one instrument. Pattern modules are measurements, not strategy votes: this adapter
     never exports LONG/SHORT direction, a chosen entry, stop, target, quality
     score or executable order. The Brain combines these raw observations with
     the broker-price picture, structural interactions, portfolio state and its
@@ -613,10 +613,10 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
     """
     try:
         data = dict(payload or {})
-        accepted = {"XAUUSD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A", "GOLD"}
         payload_symbol = str(data.get("symbol", "") or "").strip().upper()
         requested_symbol = str(symbol or "").strip().upper()
-        if payload_symbol not in accepted:
+        # Evidence is only valid for the instrument it was observed on.
+        if not payload_symbol or payload_symbol != requested_symbol:
             return []
         observed_at = str(data.get("observed_at", "") or "")
         try:
@@ -630,10 +630,6 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
         # CognitionLoop polled it again. Freshness follows the original market read.
         age = time.time() - observed_epoch
         if age < -1.0 or age > 15.0:
-            return []
-        if requested_symbol not in accepted:
-            return []
-        if payload_symbol not in accepted:
             return []
         patterns = data.get("pattern_observations")
         patterns = patterns if isinstance(patterns, list) else []
@@ -689,7 +685,7 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
                 "pre_event_low": _safe_number(raw_event.get("pre_event_low")),
             }
         observation_parts = [
-            "Market-backed XAUUSD read from the selected broker feed.",
+            f"Market-backed {payload_symbol} read from the selected broker feed.",
             f"venue={str(data.get('venue', '') or 'unknown')}",
             f"bid={quote.get('bid', 'unknown')}, ask={quote.get('ask', 'unknown')}, "
             f"spread={quote.get('spread', 'unknown')}",
@@ -729,7 +725,7 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
         confidence = 0.95 if data_quality_ok else 0.0
         uncertainty = 0.05 if data_quality_ok else 1.0
         evidence: list[Evidence] = [Evidence(
-            source_module="gold_market_desk",
+            source_module="market_desk",
             domain=EvidenceDomain.MULTI_TIMEFRAME,
             symbol=requested_symbol,
             observation=" ".join(observation_parts)[:4000],
@@ -773,8 +769,8 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
                 continue
             raw = dict(item.get("measurements") or {})
             structured: dict[str, Any] = {
-                "gold_pattern_family": family,
-                "gold_pattern_facts": list(item.get("facts") or []),
+                "pattern_family": family,
+                "pattern_facts": list(item.get("facts") or []),
                 "source_timeframe": str(item.get("timeframe", "") or ""),
                 "source_bar_time": str(item.get("source_bar_time", "") or ""),
             }
@@ -800,10 +796,10 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
 
             facts_text = "; ".join(item.get("facts") or [])
             evidence.append(Evidence(
-                source_module=f"gold_market_desk.pattern.{family}",
+                source_module=f"market_desk.pattern.{family}",
                 domain=primary_domain,
                 symbol=requested_symbol,
-                observation=f"Gold market fact ({family}): {facts_text}"[:1200],
+                observation=f"Market fact ({family}): {facts_text}"[:1200],
                 confidence=confidence,
                 uncertainty=uncertainty,
                 polarity=0.0,
@@ -820,8 +816,8 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
             if family in structural_families and raw.get("bos") is True:
                 displacement = _safe_number(raw.get("displacement"))
                 structure_measurements = {
-                    "gold_pattern_family": family,
-                    "gold_pattern_facts": list(item.get("facts") or []),
+                    "pattern_family": family,
+                    "pattern_facts": list(item.get("facts") or []),
                     "bos": True,
                     "source_timeframe": str(item.get("timeframe", "") or ""),
                     "source_bar_time": str(item.get("source_bar_time", "") or ""),
@@ -837,10 +833,10 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
                     if safe is not None:
                         structure_measurements[key] = safe
                 evidence.append(Evidence(
-                    source_module=f"gold_market_desk.structure.{family}",
+                    source_module=f"market_desk.structure.{family}",
                     domain=EvidenceDomain.STRUCTURE,
                     symbol=requested_symbol,
-                    observation=f"Gold structural fact ({family}): {facts_text}"[:1200],
+                    observation=f"Structural fact ({family}): {facts_text}"[:1200],
                     confidence=confidence,
                     uncertainty=uncertainty,
                     polarity=0.0,
@@ -860,3 +856,7 @@ def _safe_number(value: Any) -> float | None:
         return number if math.isfinite(number) else None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+# Backwards-compatible name for older imports.
+evidence_from_gold_market = evidence_from_market_desk

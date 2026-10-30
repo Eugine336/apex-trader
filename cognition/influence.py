@@ -182,32 +182,103 @@ class CalibrationTracker:
     Reliability gap = |mean predicted confidence − realised win rate| (0 is
     perfectly calibrated). Brier score = mean((confidence − outcome)²) (lower is
     better). Thread-safe, fail-safe, bounded history.
+
+    The market is the only source of truth for whether a stated confidence was
+    right, so outcomes may come from any market-truth source: live closes,
+    demo/shadow results, or a hindcast replay of history (``source=``). The
+    tracker never restricts which concepts the Brain may use; it only reports how
+    far its stated confidence has been verified, which scales *risk*
+    (``sizing_scale``), never permission.
+
+    Optional persistence (``path``) keeps verified calibration across restarts.
     """
 
-    def __init__(self, *, history_limit: int = 500, min_samples: int = 30) -> None:
+    SIZE_FLOOR = 0.25       # unverified calibration still trades, at this fraction of size
+    GAP_TOLERANCE = 0.25    # reliability gap at/above which verified quality is zero
+
+    def __init__(self, *, history_limit: int = 500, min_samples: int = 30,
+                 path: Any = None) -> None:
         self._limit = max(1, int(history_limit))
         self.min_samples = max(1, int(min_samples))
         self._samples: list = []          # list[(confidence, won)]
+        self._sources: dict = {}          # source -> count observed
         self._lock = threading.Lock()
+        self._path = str(path) if path else None
+        self._load()
 
-    def observe(self, confidence: Any, won: bool) -> None:
-        """Record one (predicted confidence, realised outcome) pair. Fail-safe."""
+    # -- persistence -----------------------------------------------------
+    def _load(self) -> None:
+        if not self._path:
+            return
         try:
-            c = _clampf(confidence, 0.0, 1.0, 0.0)
+            import json as _json
+            import os as _os
+            if not _os.path.exists(self._path):
+                return
+            with open(self._path, "r", encoding="utf-8") as fh:
+                data = _json.load(fh)
+            samples = []
+            for row in data.get("samples", []):
+                c = _clampf(row[0], 0.0, 1.0, 0.0)
+                samples.append((c, 1.0 if float(row[1]) >= 0.5 else 0.0))
+            self._samples = samples[-self._limit:]
+            self._sources = {str(k): int(v) for k, v in (data.get("sources") or {}).items()}
+        except Exception as exc:  # noqa: BLE001 — a bad file means unverified, not a crash
+            logger.warning("[calibration] could not load %s: %s (starting unverified)", self._path, exc)
+            self._samples, self._sources = [], {}
+
+    def _save_locked(self) -> None:
+        if not self._path:
+            return
+        try:
+            import json as _json
+            import os as _os
+            _os.makedirs(_os.path.dirname(_os.path.abspath(self._path)), exist_ok=True)
+            tmp = self._path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                _json.dump({"version": 1, "samples": [[c, o] for c, o in self._samples],
+                            "sources": self._sources}, fh)
+            _os.replace(tmp, self._path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[calibration] could not save %s: %s", self._path, exc)
+
+    # -- observation -----------------------------------------------------
+    def observe(self, confidence: Any, won: bool, source: str = "live") -> None:
+        """Record one (predicted confidence, realised outcome) pair. Fail-safe."""
+        self.observe_many([(confidence, won)], source=source)
+
+    def observe_many(self, pairs: Any, source: str = "live") -> int:
+        """Record many (confidence, won) pairs from one market-truth source.
+
+        Returns how many were accepted. Fail-safe: a malformed pair is skipped.
+        """
+        accepted = 0
+        try:
             with self._lock:
-                self._samples.append((c, 1.0 if won else 0.0))
+                for pair in pairs:
+                    try:
+                        c = _clampf(pair[0], 0.0, 1.0, 0.0)
+                        self._samples.append((c, 1.0 if bool(pair[1]) else 0.0))
+                        accepted += 1
+                    except Exception:  # noqa: BLE001
+                        continue
                 if len(self._samples) > self._limit:
                     self._samples = self._samples[-self._limit:]
+                if accepted:
+                    self._sources[source] = self._sources.get(source, 0) + accepted
+                    self._save_locked()
         except Exception as exc:  # noqa: BLE001
             logger.debug("[calibration] observe fault: %s", exc)
+        return accepted
 
     def metrics(self) -> dict:
         with self._lock:
             samples = list(self._samples)
+            sources = dict(self._sources)
         n = len(samples)
         if n == 0:
             return {"samples": 0, "mean_confidence": 0.0, "win_rate": 0.0,
-                    "reliability_gap": 0.0, "brier": 0.0}
+                    "reliability_gap": 0.0, "brier": 0.0, "sources": sources}
         mean_conf = sum(c for c, _ in samples) / n
         win_rate = sum(o for _, o in samples) / n
         brier = sum((c - o) ** 2 for c, o in samples) / n
@@ -217,6 +288,7 @@ class CalibrationTracker:
             "win_rate": round(win_rate, 4),
             "reliability_gap": round(abs(mean_conf - win_rate), 4),
             "brier": round(brier, 4),
+            "sources": sources,
         }
 
     def calibration_adjustment(self) -> float:
@@ -245,8 +317,42 @@ class CalibrationTracker:
             logger.debug("[calibration] adjustment fault: %s", exc)
             return 1.0
 
+    def reliability(self) -> float:
+        """How verified the stated confidence is, in [0, 1].
+
+        Grows with the number of market-truth samples (0.5 at ``min_samples``)
+        and is discounted when the verified reliability gap is large. 0.0 means
+        nothing has been verified yet. Never raises.
+        """
+        try:
+            m = self.metrics()
+            n = int(m.get("samples", 0))
+            if n <= 0:
+                return 0.0
+            volume = n / (n + float(self.min_samples))
+            quality = max(0.0, 1.0 - float(m.get("reliability_gap", 0.0)) / self.GAP_TOLERANCE)
+            return max(0.0, min(1.0, volume * quality))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[calibration] reliability fault: %s", exc)
+            return 0.0
+
+    def sizing_scale(self) -> float:
+        """Risk scale in [SIZE_FLOOR, 1.0] from verified calibration.
+
+        Never zero: unverified calibration reduces size, it does not forbid any
+        trade, concept or instrument. Never raises.
+        """
+        try:
+            r = self.reliability()
+            return round(self.SIZE_FLOOR + (1.0 - self.SIZE_FLOOR) * r, 4)
+        except Exception:  # noqa: BLE001
+            return self.SIZE_FLOOR
+
     def get_status(self) -> dict:
-        return self.metrics()
+        status = self.metrics()
+        status["reliability"] = round(self.reliability(), 4)
+        status["sizing_scale"] = self.sizing_scale()
+        return status
 
 
 __all__ = ["InfluenceLedger", "CalibrationTracker"]
