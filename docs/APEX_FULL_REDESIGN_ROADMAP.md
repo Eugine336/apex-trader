@@ -280,7 +280,8 @@ A status can move to **COMPLETE** only when the acceptance evidence is linked in
 - Market coverage is measured from informative observations in the six core market domains. Empty high-confidence telemetry, advisor metadata, portfolio data and execution metadata cannot inflate market-evidence completeness.
 - Relevant analytical lenses from the complete strategy-lens registry now produce separate, non-directional hypothesis candidates with their required evidence, source lineage and limitations. Volatility-regime and unfamiliar-measurement hypotheses are also retained without inventing direction.
 - Conflicting displacement sources, order-flow signs, same-timeframe trend readings, momentum states, volatility states, statistical z-scores and M1 interpretations remain explicitly conflicted instead of being collapsed by input/arrival order.
-- Native evidence freshness uses the same decision-time cutoff as market-state consolidation.
+- Native evidence freshness uses the same decision-time cutoff as market-state consolidation. Native-only origination, verified execution-cost evidence and opportunity geometry now use that identical cutoff as well.
+- Native open and observe outcomes retain full hypothesis records, the selected hypothesis ID and the epistemic record; sparse or rejected decisions do not discard the reasoning that led to standing down.
 - External advisor integration remains downstream of native analysis. Provider outage does not disable native reasoning; advisor outputs remain subject to Brain synthesis, opportunity geometry, cost and admission checks.
 
 ### New deterministic coverage
