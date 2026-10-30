@@ -35,6 +35,8 @@ def _state(
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": close,
             "prior_range_high": high,
@@ -58,6 +60,8 @@ def _state(
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "close_change": momentum,
         },
@@ -121,6 +125,8 @@ def test_other_symbol_evidence_cannot_contaminate_geometry():
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": 1.2,
             "prior_range_high": 1.25,
@@ -198,6 +204,8 @@ def test_old_breakout_on_same_timeframe_cannot_activate_newer_non_breakout():
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": 1.100,
             "prior_range_high": 1.105,
@@ -265,6 +273,8 @@ def test_counter_side_sweep_requires_measured_reclaim_for_reversal_candidate():
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "sweep_side": "sell",
             "swept_level": 1.095,
@@ -292,6 +302,8 @@ def test_sweep_side_without_reclaim_does_not_activate_reversal():
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "sweep_side": "sell",
             "swept_level": 1.095,
