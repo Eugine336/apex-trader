@@ -51,7 +51,9 @@ class _Reasoner:
         return self._opinion
 
 
-def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
+def _state(
+    symbol: str = "EURUSD", polarity: float = 0.8, win_probability: float = 0.8,
+) -> MarketState:
     # Two market-analysis domains plus explicit reasoning/council metadata. Tests
     # should not accidentally rely on missing coverage being treated as healthy.
     ms = MarketState(symbol=symbol)
@@ -80,6 +82,9 @@ def _state(symbol: str = "EURUSD", polarity: float = 0.8) -> MarketState:
         relevance_horizon_seconds=60.0,
     ))
     add_market_geometry(ms, "LONG" if polarity >= 0 else "SHORT")
+    for item in ms.evidence:
+        if getattr(item.domain, "value", item.domain) == "historical_analogue":
+            item.measurements["win_probability"] = win_probability
     return ms
 
 
@@ -96,14 +101,14 @@ def _brain(confidence, *, ev_primary=True, threshold=0.0, direction="LONG"):
 def test_explicit_legacy_gate_request_cannot_veto_positive_net_ev():
     # The caller explicitly requests the old gate. The Brain must ignore it:
     # positive net EV qualifies the active opportunity, even below confidence 0.55.
-    out = _brain(0.45, ev_primary=False).reason(_state())
+    out = _brain(0.45, ev_primary=False).reason(_state(win_probability=0.45))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.expected_value > 0.0
     assert out.campaign is not None
 
 
 def test_ev_primary_acts_on_positive_ev_below_floor():
-    out = _brain(0.45, ev_primary=True).reason(_state())
+    out = _brain(0.45, ev_primary=True).reason(_state(win_probability=0.45))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.direction == "LONG"
     assert out.decision.expected_value > 0.0
@@ -113,7 +118,7 @@ def test_ev_primary_acts_on_positive_ev_below_floor():
 def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
     # conf 0.30 → EV negative → REJECT_OPPORTUNITY (a real EV verdict, not a
     # confidence-floor "observe").
-    out = _brain(0.30, ev_primary=True).reason(_state())
+    out = _brain(0.30, ev_primary=True).reason(_state(win_probability=0.30))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
@@ -121,10 +126,10 @@ def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
 
 def test_ev_primary_threshold_declines_thin_edge():
     # EV +0.35R at conf 0.45; a 0.4R action threshold declines it …
-    thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state())
+    thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state(win_probability=0.45))
     assert thin.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     # … while a fatter +0.50R edge (conf 0.50) clears it.
-    fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state())
+    fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state(win_probability=0.50))
     assert fat.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
 
@@ -135,7 +140,7 @@ def test_legacy_high_confidence_opens():
 
 
 def test_negative_net_ev_is_rejected_even_without_a_confidence_floor():
-    out = _brain(0.30, ev_primary=False).reason(_state())
+    out = _brain(0.30, ev_primary=False).reason(_state(win_probability=0.30))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
