@@ -2782,8 +2782,7 @@ class CognitiveBrain:
                 if str(getattr(getattr(item, "domain", None), "value",
                                getattr(item, "domain", ""))).lower()
                 in {"structure", "liquidity", "momentum", "volatility", "volume",
-                    "order_flow", "multi_timeframe", "correlation", "session", "macro",
-                    "historical_analogue"}
+                    "order_flow", "multi_timeframe", "correlation", "session", "macro"}
             ]
             if analysis.evidence_index:
                 informative_evidence_ids = {
@@ -2831,6 +2830,14 @@ class CognitiveBrain:
                 return None
 
             direction = lead.direction_implication
+            probability_verified, win_probability, probability_source = (
+                self._calibrated_win_probability(
+                    market_state, direction, now=now,
+                )
+            )
+            if not probability_verified:
+                return None
+
             # A native opportunity needs a real, activated market-structure
             # geometry. Missing stop/target levels or activation evidence means
             # observe; never manufacture the previous configured reward multiple.
@@ -2854,7 +2861,9 @@ class CognitiveBrain:
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
             cost_r = self._execution_cost_r(market_state, now=now)
-            expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
+            expected_value = expected_value_r(
+                win_probability, reward_r, risk_r, cost_r=cost_r,
+            )
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
                 return None
@@ -2947,7 +2956,12 @@ class CognitiveBrain:
                 "evidence_contradicts": "; ".join(analysis.contradictions) or "none detected",
                 "information_missing": "; ".join(analysis.missing_information) or "none",
                 "what_would_change_my_mind": lead.invalidation,
-                "expected_value": f"{expected_value:.4f}R (native)",
+                "expected_value": (
+                    f"{expected_value:.4f}R (native calibrated p={win_probability:.4f})"
+                ),
+                "win_probability_verification": (
+                    f"VERIFIED: {probability_source}; p={win_probability:.4f}"
+                ),
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
