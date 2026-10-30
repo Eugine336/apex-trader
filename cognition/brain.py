@@ -860,6 +860,15 @@ class CognitiveBrain:
                 f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
                 for h in brain_hypotheses
             )[:1000]
+            questions["brain_native_hypothesis_records"] = [
+                item.to_dict() for item in brain_hypotheses[:12]
+            ]
+        if analysis is not None:
+            questions["brain_epistemic_record"] = analysis.to_dict().get(
+                "epistemic_record", {},
+            )
+        if brain_lead is not None:
+            questions["brain_lead_hypothesis_id"] = brain_lead.hypothesis_id
         if brain_lead is not None and getattr(brain_lead, "criticism", ""):
             questions["brain_self_criticism"] = brain_lead.criticism
         if brain_adv_synthesis:
@@ -2825,6 +2834,13 @@ class CognitiveBrain:
                 "brain_hypotheses": " | ".join(
                     f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
                     for h in hypotheses)[:1000],
+                "brain_native_hypothesis_records": [
+                    item.to_dict() for item in hypotheses[:12]
+                ],
+                "brain_epistemic_record": analysis.to_dict().get(
+                    "epistemic_record", {},
+                ),
+                "brain_lead_hypothesis_id": lead.hypothesis_id,
                 "brain_self_criticism": lead.criticism or "no material criticism",
                 "brain_book_comparison": considered,
                 "brain_independent_opportunity_id": native_opportunity.opportunity_id,
