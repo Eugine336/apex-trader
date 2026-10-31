@@ -205,22 +205,19 @@ class CalibrationProducer:
         if not isinstance(evidence, list) or not evidence:
             return False
         decision_epoch = float(payload.get("decision_epoch") or 0.0)
-        known = 0
         for item in evidence:
             if not isinstance(item, dict):
-                continue
+                return False
+            if item.get("source_timestamp_verified") is not True:
+                return False
             stamp = item.get("source_timestamp_epoch")
-            if stamp is None:
-                continue
             try:
                 stamp = float(stamp)
             except (TypeError, ValueError, OverflowError):
                 return False
             if not math.isfinite(stamp) or stamp <= 0.0 or stamp > decision_epoch:
                 return False
-            if item.get("source_timestamp_verified") is True:
-                known += 1
-        return known / max(1, len(evidence)) >= 0.95
+        return True
 
     def refresh(self, symbol: str, *, now: Optional[float] = None) -> list[CalibrationArtifact]:
         current = time.time() if now is None else float(now)
