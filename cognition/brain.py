@@ -2391,13 +2391,6 @@ class CognitiveBrain:
                                      getattr(item, "domain", "")) or "").lower()
                 if domain != "historical_analogue":
                     continue
-                # Calibration evidence is trusted only from the dedicated
-                # in-process producer. A market adapter or advisor cannot
-                # self-assert validation flags and thereby authorize exposure.
-                if str(getattr(item, "source_module", "") or "").strip() != (
-                    "cognition.probability_calibration"
-                ):
-                    continue
                 if str(getattr(item, "symbol", "") or "").strip().upper() != str(
                     getattr(market_state, "symbol", "") or ""
                 ).strip().upper():
