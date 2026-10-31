@@ -364,9 +364,12 @@ class BrainReasoner:
                 "evidence_id": evidence_id,
                 "domain": domain,
                 "source_module": str(getattr(item, "source_module", "") or ""),
-                "independence_group": str(
-                    getattr(item, "independence_group", "") or
-                    getattr(item, "source_module", "") or ""
+                "independence_group": str(getattr(item, "independence_group", "") or ""),
+                "domain": str(getattr(getattr(item, "domain", ""), "value", getattr(item, "domain", ""))),
+                "symbol": str(getattr(item, "symbol", "") or ""),
+                "timeframe": str(
+                    (getattr(item, "measurements", {}) or {}).get("timeframe", "")
+                    if isinstance(getattr(item, "measurements", {}), dict) else ""
                 ),
                 "source_timestamp_epoch": _num(getattr(
                     item, "source_timestamp_epoch", None
@@ -809,13 +812,17 @@ class BrainReasoner:
         # Multiple patterns derived from the same underlying feed/bar are not
         # independent confirmations. Count distinct provenance groups, not
         # the number of labels emitted by correlated observers.
-        group_by_id = {
-            str(item.get("evidence_id", "")): str(
-                item.get("independence_group", "") or item.get("source_module", "")
-            )
-            for item in (evidence_index or [])
-            if isinstance(item, dict) and item.get("evidence_id")
-        }
+        group_by_id = {}
+        for item in (evidence_index or []):
+            if not isinstance(item, dict) or not item.get("evidence_id"):
+                continue
+            group = str(item.get("independence_group", "") or "")
+            if not group:
+                timeframe = str(item.get("timeframe", "") or "unknown")
+                symbol = str(item.get("symbol", "") or "unknown")
+                domain = str(item.get("domain", "") or "other")
+                group = f"{domain}:{symbol}:{timeframe}"
+            group_by_id[str(item["evidence_id"])] = group
         independent_groups = {
             group_by_id.get(str(evidence_id), "")
             for name in continuation
