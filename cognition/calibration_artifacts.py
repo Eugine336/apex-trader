@@ -425,6 +425,8 @@ class CalibrationProducer:
                             except (TypeError, ValueError, OverflowError):
                                 outcomes_match = False
                                 break
+                            status = str(outcome.get("observation_status", "") or "")
+                            tolerance = max(60.0, horizon * 0.10)
                             if (
                                 str(outcome.get("candidate_id", "") or "") != member["candidate_id"]
                                 or str(outcome.get("decision_id", "") or "") != decision_id
@@ -438,6 +440,48 @@ class CalibrationProducer:
                                 or str(outcome.get("reference_evidence_id", "") or "")
                                     != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
                             ):
+                                outcomes_match = False
+                                break
+                            if status == "OBSERVED":
+                                try:
+                                    observed_price = float(outcome.get("observed_price"))
+                                    reference_price = float(
+                                        (member.get("payload", {}).get("reference_quote") or {}).get("mid")
+                                    )
+                                    risk_distance = float(member.get("risk_distance"))
+                                    supplied_r = float(outcome.get("directional_return_r"))
+                                except (TypeError, ValueError, OverflowError):
+                                    outcomes_match = False
+                                    break
+                                expected_r = (
+                                    (observed_price - reference_price)
+                                    * (1.0 if direction == "LONG" else -1.0)
+                                    / risk_distance
+                                ) if risk_distance > 0.0 else float("nan")
+                                expected_label = (
+                                    "FAVOURABLE" if expected_r > 0.0
+                                    else "UNFAVOURABLE" if expected_r < 0.0
+                                    else "FLAT"
+                                )
+                                if (
+                                    observed_at > due_at + tolerance
+                                    or not math.isfinite(observed_price)
+                                    or observed_price <= 0.0
+                                    or not math.isfinite(expected_r)
+                                    or abs(supplied_r - expected_r) > 1e-6
+                                    or outcome.get("outcome_label") != expected_label
+                                ):
+                                    outcomes_match = False
+                                    break
+                            elif status == "MISSED_WINDOW":
+                                if (
+                                    observed_at <= due_at + tolerance
+                                    or outcome.get("outcome_label") != "UNOBSERVED"
+                                    or outcome.get("directional_return_r") is not None
+                                ):
+                                    outcomes_match = False
+                                    break
+                            else:
                                 outcomes_match = False
                                 break
                         if not outcomes_match:
