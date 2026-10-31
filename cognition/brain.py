@@ -850,7 +850,9 @@ class CognitiveBrain:
         # default remains diagnostic only; it cannot substitute for verified,
         # fresh execution-cost evidence when the Brain authorizes a campaign.
         cost_verified, cost_r, cost_source = self._execution_cost_estimate(
-            market_state, now=now,
+            market_state,
+            now=now,
+            risk_distance=geometry.risk_distance if geometry is not None else None,
         )
         return_verified, expected_return_r, return_source = (
             self._calibrated_expected_return(
@@ -2528,7 +2530,11 @@ class CognitiveBrain:
         return True, expected_return, source
 
     def _execution_cost_estimate(
-        self, market_state: MarketState, *, now: Optional[float] = None,
+        self,
+        market_state: MarketState,
+        *,
+        now: Optional[float] = None,
+        risk_distance: Optional[float] = None,
     ) -> tuple[bool, float, str]:
         """Return (verified, round-trip cost R, source) from fresh broker-cost evidence.
 
@@ -2576,21 +2582,42 @@ class CognitiveBrain:
                 ):
                     continue
                 total = self._cost_value(measurements.get("estimated_total_cost_r"))
+                if total is None:
+                    # Monetary costs are normalized only with the candidate's
+                    # validated price risk. A broker currency amount alone is
+                    # not an R-value and cannot be compared to calibrated return.
+                    total_ccy = self._cost_value(
+                        measurements.get("estimated_total_cost_account_ccy_per_lot")
+                    )
+                    money_per_price = self._cost_value(
+                        measurements.get("money_per_price_account_ccy_per_lot")
+                    )
+                    try:
+                        distance = float(risk_distance)
+                    except (TypeError, ValueError, OverflowError):
+                        distance = 0.0
+                    if (
+                        total_ccy is not None
+                        and money_per_price is not None
+                        and total_ccy >= 0.0
+                        and money_per_price > 0.0
+                        and math.isfinite(distance)
+                        and distance > 0.0
+                    ):
+                        normalized = total_ccy / (money_per_price * distance)
+                        total = (
+                            normalized
+                            if math.isfinite(normalized) and normalized >= 0.0
+                            else None
+                        )
                 if total is not None:
-                    candidates.append((
-                        timestamp, total,
-                        cost_source,
-                    ))
+                    candidates.append((timestamp, total, cost_source))
                     continue
 
                 spread = self._cost_value(measurements.get("estimated_spread_r"))
                 slippage = self._cost_value(measurements.get("estimated_slippage_r"))
                 if spread is not None and slippage is not None:
-                    candidates.append((
-                        timestamp,
-                        spread + slippage,
-                        cost_source,
-                    ))
+                    candidates.append((timestamp, spread + slippage, cost_source))
             if candidates:
                 _, cost, source = max(candidates, key=lambda item: item[0])
                 return True, cost, source
@@ -2599,10 +2626,16 @@ class CognitiveBrain:
         return False, max(0.0, float(self.default_cost_r)), "configured default (not verified)"
 
     def _execution_cost_r(
-        self, market_state: MarketState, *, now: Optional[float] = None,
+        self,
+        market_state: MarketState,
+        *,
+        now: Optional[float] = None,
+        risk_distance: Optional[float] = None,
     ) -> float:
-        """Return the best cost estimate at the decision-time cutoff."""
-        return self._execution_cost_estimate(market_state, now=now)[1]
+        """Return the best cost estimate in R at the decision-time cutoff."""
+        return self._execution_cost_estimate(
+            market_state, now=now, risk_distance=risk_distance,
+        )[1]
 
     def _has_current_execution_cost_evidence(
         self, market_state: MarketState, *, now: Optional[float] = None,
@@ -2947,15 +2980,6 @@ class CognitiveBrain:
                     "aggregate_uncertainty", analysis.evidence_uncertainty,
                 )
             )
-            # Native fallback may not invent a cost estimate. A current execution
-            # cost observation from the shared consolidator is mandatory; use its
-            # actual net round-trip estimate for EV rather than a constant default.
-            cost_verified, _, _ = self._execution_cost_estimate(
-                market_state, now=now,
-            )
-            if not cost_verified:
-                return None
-
             direction = lead.direction_implication
             return_verified, expected_return_r, return_source = (
                 self._calibrated_expected_return(
@@ -2980,6 +3004,14 @@ class CognitiveBrain:
             if geometry is None or not geometry.activated:
                 return None
 
+            # Monetary round-trip cost is comparable with calibrated return only
+            # after the candidate's validated stop distance is known.
+            cost_verified, cost_r, _ = self._execution_cost_estimate(
+                market_state, now=now, risk_distance=geometry.risk_distance,
+            )
+            if not cost_verified:
+                return None
+
             # Acknowledge uncertainty continuously rather than converting it into
             # a universal binary cutoff. Uncertainty attenuates the probability
             # estimate used for expectancy; it does not alone prohibit a market
@@ -2993,7 +3025,6 @@ class CognitiveBrain:
             lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
-            cost_r = self._execution_cost_r(market_state, now=now)
             expected_value = expected_return_r - cost_r
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
