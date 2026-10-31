@@ -50,7 +50,7 @@ def _timestamp_epoch(value: Any) -> Optional[float]:
     if callable(stamp):
         try:
             result = float(stamp())
-            return result if result > 0 else None
+            return result if result > 0 and result < float("inf") and result == result else None
         except (TypeError, ValueError, OverflowError, OSError):
             return None
     try:
