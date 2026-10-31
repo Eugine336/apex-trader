@@ -34,7 +34,9 @@ import time as _time
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
-from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
+from cognition.contracts import (
+    DecisionType, Evidence, EvidenceDomain, MarketState, candidate_family_from,
+)
 from cognition.management_translator import translate_management as _translate_management
 from cognition.management_translator import ManagementAction as _ManagementAction
 from cognition.evidence_adapters import (
@@ -1062,13 +1064,12 @@ class CognitionLoop:
                     or getattr(hypothesis, "direction_implication", "")
                     or ""
                 ).upper()
-                data["candidate_family"] = str(
+                data["candidate_family"] = candidate_family_from(
                     data.get("candidate_family")
                     or data.get("hypothesis_kind")
                     or data.get("opportunity_type")
                     or data.get("strategy_family")
-                    or "unclassified"
-                ).strip().lower()
+                )
                 data["calibration_candidate"] = False
                 if direction in {"LONG", "SHORT"}:
                     # Preserve every native directional hypothesis in the
