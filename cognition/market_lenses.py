@@ -132,6 +132,17 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
+                volume_source = next(
+                    (
+                        alias for alias in ("volume", "tick_volume", "real_volume")
+                        if value(alias) is not None
+                    ),
+                    "unknown_volume",
+                )
+                row_data["volume_source"] = (
+                    "tick_volume_proxy" if volume_source == "tick_volume"
+                    else "provider_volume"
+                )
             result.append(row_data)
         return result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
@@ -246,7 +257,7 @@ def _technical_indicator_evidence(
             k_values = [
                 100.0 * (closes[index] - min(lows[index - 13:index + 1]))
                 / max(max(highs[index - 13:index + 1]) - min(lows[index - 13:index + 1]), 1e-12)
-                for index in range(len(bars) - 3, len(bars))
+                for index in range(max(13, len(bars) - 3), len(bars))
             ]
             momentum["stochastic_k"] = k_values[-1]
             momentum["stochastic_d"] = _mean(k_values)
@@ -688,7 +699,8 @@ def analyze_market_frames(
                     "volume_ratio": volume_ratio,
                     "expansion": volume_ratio >= 1.25,
                     "volume_state": "expanding" if volume_ratio >= 1.25 else "baseline_or_lower",
-                    "volume_source": "broker_frame",
+                    "volume_source": current.get("volume_source", "unknown_volume"),
+                    "volume_is_tick_proxy": "tick" in str(current.get("volume_source", "")).lower(),
                 },
                 source_epoch=source_epoch,
             ))
