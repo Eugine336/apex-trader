@@ -42,6 +42,26 @@ def _f(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _timestamp_epoch(value: Any) -> Optional[float]:
+    """Normalize an explicit tick timestamp without inventing source time."""
+    if value is None:
+        return None
+    stamp = getattr(value, "timestamp", None)
+    if callable(stamp):
+        try:
+            result = float(stamp())
+            return result if result > 0 else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if result > 1e12:
+        result /= 1000.0
+    return result if result > 0 else None
+
+
 def _decimals_for(price: float) -> int:
     """A sensible rounding precision from price magnitude (compact output)."""
     p = abs(price)
@@ -533,6 +553,7 @@ def build_price_snapshot(
             price = {
                 "bid": round(bid, dp), "ask": round(ask, dp),
                 "mid": round(mid, dp), "spread": round(abs(ask - bid), dp),
+                "timestamp_epoch": _timestamp_epoch(getattr(tick, "timestamp", None)),
             }
 
     pos: Optional[dict] = None
@@ -636,6 +657,14 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             polarity=0.0,  # Part XXV — the chart is raw market reality, not a lean
             measurements=snap,
             relevance_horizon_seconds=90.0,
+            source_timestamp_epoch=(
+                _timestamp_epoch((snap.get("price") or {}).get("timestamp_epoch"))
+                if isinstance(snap.get("price"), dict) else None
+            ),
+            data_basis="live_quote_and_market_snapshot",
+            provisional=False,
+            independence_group=f"live_quote:{str(symbol or '').upper()}",
+            measurement_version="market-snapshot-v1",
         ))
     except Exception:  # noqa: BLE001
         return out
