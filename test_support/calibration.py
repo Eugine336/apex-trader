@@ -30,7 +30,7 @@ def register_test_calibration(
         symbol=str(symbol).strip().upper(),
         direction=str(direction).strip().upper(),
         horizon_seconds=int(horizon_seconds),
-        win_probability=float(probability),
+        favourable_probability=float(probability),
         expected_return_r=float(expected_return_r),
         holdout_expected_return_r=float(holdout_expected_return_r),
         expected_return_gap=float(expected_return_gap),
