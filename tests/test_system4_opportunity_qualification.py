@@ -61,7 +61,7 @@ def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
     ))
     verified, expected_return, source = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
     assert expected_return == 0.0
     assert "no fresh producer-verified" in source
@@ -72,7 +72,7 @@ def test_verified_direction_specific_calibration_supplies_expected_return():
     state.add(_calibration())
     verified, expected_return, source = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is True
     assert expected_return == 0.25
     assert "chronological_base_rate_fixed_horizon_v1" in source
@@ -93,7 +93,7 @@ def test_calibration_for_opposite_direction_cannot_qualify_candidate():
     state.add(_calibration(direction="SHORT"))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_unregistered_calibration_record_cannot_supply_expected_return():
@@ -101,7 +101,7 @@ def test_unregistered_calibration_record_cannot_supply_expected_return():
     state.add(_calibration(verified=False))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_calibration_from_another_symbol_cannot_qualify_candidate():
@@ -109,7 +109,7 @@ def test_calibration_from_another_symbol_cannot_qualify_candidate():
     state.add(_calibration(symbol="OTHER"))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 
@@ -119,7 +119,7 @@ def test_valid_short_calibration_is_direction_specific():
     state.add(_calibration(direction="SHORT"))
     verified, expected_return, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "SHORT", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "SHORT", candidate_family="continuation", horizon_seconds=300)
     assert verified is True
     assert expected_return == 0.25
 
@@ -133,7 +133,7 @@ def test_stale_calibration_cannot_supply_expected_return():
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_future_calibration_cannot_supply_expected_return():
@@ -144,7 +144,7 @@ def test_future_calibration_cannot_supply_expected_return():
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_insufficient_calibration_sample_count_cannot_supply_expected_return():
@@ -152,7 +152,7 @@ def test_insufficient_calibration_sample_count_cannot_supply_expected_return():
     state.add(_calibration(sample_count=29))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_invalid_brier_score_cannot_supply_expected_return():
@@ -160,7 +160,7 @@ def test_invalid_brier_score_cannot_supply_expected_return():
     state.add(_calibration(brier_score=0.30))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_historical_calibration_metadata_does_not_pad_market_domain_coverage():
@@ -176,7 +176,7 @@ def test_poor_reliability_gap_cannot_qualify_calibration():
     state.add(_calibration(reliability_gap=0.26))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_expected_return(state, "LONG", candidate_family="test_family", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is False
 
 def test_uncalibrated_directional_opinion_cannot_create_campaign_or_claim_positive_ev():
