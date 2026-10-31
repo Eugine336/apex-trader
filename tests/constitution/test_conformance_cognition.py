@@ -142,7 +142,7 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
     # Test-only calibration record; production evidence must come from durable outcomes.
     ms.add(Evidence(
         source_module="validation.test_out_of_sample_calibration",
-        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="symbol",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
         observation="verified test-only direction-specific calibration",
         confidence=0.9, uncertainty=0.1,
         measurements={
