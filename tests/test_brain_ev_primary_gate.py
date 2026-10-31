@@ -130,7 +130,7 @@ def test_explicit_legacy_gate_request_cannot_veto_positive_net_ev():
 
 
 def test_ev_primary_acts_on_positive_ev_below_floor():
-    out = _brain(0.45, ev_primary=True).reason(_state(win_probability=0.45))
+    out = _brain(0.45, ev_primary=True).reason(_state(expected_return_r=0.45))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.direction == "LONG"
     assert out.decision.expected_value > 0.0
@@ -148,7 +148,7 @@ def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
 
 def test_ev_primary_threshold_declines_thin_edge():
     # EV +0.35R at conf 0.45; a 0.4R action threshold declines it …
-    thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state(win_probability=0.45))
+    thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state(expected_return_r=0.40))
     assert thin.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     # … while a fatter +0.50R edge (conf 0.50) clears it.
     fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state(expected_return_r=0.55))
@@ -162,7 +162,7 @@ def test_legacy_high_confidence_opens():
 
 
 def test_negative_net_ev_is_rejected_even_without_a_confidence_floor():
-    out = _brain(0.30, ev_primary=False).reason(_state(win_probability=0.30))
+    out = _brain(0.30, ev_primary=False).reason(_state(expected_return_r=-0.30))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
