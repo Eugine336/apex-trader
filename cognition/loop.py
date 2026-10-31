@@ -1023,13 +1023,18 @@ class CognitionLoop:
                 if not oid:
                     raise ValueError("opportunity candidate omitted opportunity_id")
                 records.append(("opportunity", oid, data))
-            for hypothesis in hypotheses:
-                data = _json_safe(
-                    hypothesis.to_dict() if callable(getattr(hypothesis, "to_dict", None)) else {}
+            def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
+                data = _json_safe(data)
+                hid = str(
+                    data.get("hypothesis_id", "")
+                    or getattr(hypothesis, "hypothesis_id", "")
+                    or ""
                 )
-                hid = str(data.get("hypothesis_id", "") or getattr(hypothesis, "hypothesis_id", "") or "")
-                if not hid:
-                    continue
+                if not hid or any(
+                    kind == "hypothesis" and ref == hid
+                    for kind, ref, _ in records
+                ):
+                    return
                 direction = str(
                     data.get("direction_implication")
                     or getattr(hypothesis, "direction_implication", "")
@@ -1039,9 +1044,8 @@ class CognitionLoop:
                 if direction in {"LONG", "SHORT"}:
                     # Preserve every native directional hypothesis in the
                     # candidate ledger. When the shared market geometry resolver
-                    # can produce a point-in-time stop/entry, it becomes eligible
-                    # for outcome-normalised calibration even if it was not the
-                    # lead hypothesis or never passed activation/admission.
+                    # can produce point-in-time risk geometry, it is calibratable
+                    # even when it was not the lead or never passed admission.
                     try:
                         from cognition.opportunity_geometry import derive_opportunity_geometry
                         geometry = derive_opportunity_geometry(
@@ -1064,6 +1068,24 @@ class CognitionLoop:
                             "calibration_geometry_activated": bool(geometry.activated),
                         })
                 records.append(("hypothesis", hid, data))
+
+            for hypothesis in hypotheses:
+                to_dict = getattr(hypothesis, "to_dict", None)
+                append_hypothesis(
+                    to_dict() if callable(to_dict) else {},
+                    hypothesis,
+                )
+            # Native-only observe/reject decisions preserve their hypotheses in
+            # questions_answered rather than DecisionPackage.hypotheses. Read
+            # those canonical serialized records too; otherwise the full native
+            # candidate universe would disappear whenever no campaign is opened.
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                raw_records = questions.get(key, [])
+                if isinstance(raw_records, list):
+                    for item in raw_records:
+                        if isinstance(item, dict):
+                            append_hypothesis(item)
             if not records:
                 dtype = getattr(getattr(decision, "decision_type", None), "value",
                                 getattr(decision, "decision_type", "unknown"))
@@ -1439,6 +1461,16 @@ class CognitionLoop:
                 candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
                 if candidate_ref:
                     records.append(("hypothesis", candidate_ref))
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                raw_records = questions.get(key, [])
+                if isinstance(raw_records, list):
+                    for item in raw_records:
+                        if not isinstance(item, dict):
+                            continue
+                        candidate_ref = str(item.get("hypothesis_id", "") or "")
+                        if candidate_ref and ("hypothesis", candidate_ref) not in records:
+                            records.append(("hypothesis", candidate_ref))
             if not records:
                 records.append(("decision_outcome", decision_id))
             questions = getattr(decision, "questions_answered", {}) or {}
