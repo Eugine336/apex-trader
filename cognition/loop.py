@@ -912,6 +912,38 @@ class CognitionLoop:
         It deliberately does not label predictive success or train probabilities.
         """
         try:
+            import math
+
+            def _json_safe(value: Any) -> Any:
+                if value is None or isinstance(value, (str, bool, int)):
+                    return value
+                if isinstance(value, float):
+                    return value if math.isfinite(value) else None
+                if isinstance(value, dict):
+                    return {str(key): _json_safe(item) for key, item in value.items()}
+                if isinstance(value, (list, tuple, set)):
+                    return [_json_safe(item) for item in value]
+                enum_value = getattr(value, "value", None)
+                if enum_value is not None:
+                    return _json_safe(enum_value)
+                iso = getattr(value, "isoformat", None)
+                if callable(iso):
+                    try:
+                        return iso()
+                    except Exception:
+                        pass
+                item = getattr(value, "item", None)
+                if callable(item):
+                    try:
+                        return _json_safe(item())
+                    except Exception:
+                        pass
+                try:
+                    number = float(value)
+                    return number if math.isfinite(number) else None
+                except (TypeError, ValueError, OverflowError):
+                    return str(value)[:500]
+
             decision = getattr(output, "decision", None)
             if decision is None:
                 return
@@ -923,12 +955,14 @@ class CognitionLoop:
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
-            decision_data = decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
+            decision_data = _json_safe(
+                decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
+            )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
-            evidence_data = [
+            evidence_data = _json_safe([
                 item.to_dict() for item in evidence_items
                 if callable(getattr(item, "to_dict", None))
-            ]
+            ])
             quote_candidates = []
             for item in evidence_items:
                 measurements = getattr(item, "measurements", {})
@@ -960,13 +994,17 @@ class CognitionLoop:
             hypotheses = list(getattr(decision, "hypotheses", []) or [])
             records: list[tuple[str, str, dict]] = []
             for opportunity in opportunities:
-                data = opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
+                data = _json_safe(
+                    opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
+                )
                 oid = str(data.get("id", "") or getattr(opportunity, "opportunity_id", "") or "")
                 if not oid:
                     raise ValueError("opportunity candidate omitted opportunity_id")
                 records.append(("opportunity", oid, data))
             for hypothesis in hypotheses:
-                data = hypothesis.to_dict() if callable(getattr(hypothesis, "to_dict", None)) else {}
+                data = _json_safe(
+                    hypothesis.to_dict() if callable(getattr(hypothesis, "to_dict", None)) else {}
+                )
                 hid = str(data.get("hypothesis_id", "") or getattr(hypothesis, "hypothesis_id", "") or "")
                 if not hid:
                     continue
@@ -996,7 +1034,7 @@ class CognitionLoop:
                     "symbol": str(getattr(market_state, "symbol", "") or ""),
                     "decision_epoch": float(getattr(decision, "created_epoch", 0.0) or 0.0),
                     "market_snapshot_epoch": float(getattr(market_state, "created_epoch", 0.0) or 0.0),
-                    "reference_quote": reference_quote,
+                    "reference_quote": _json_safe(reference_quote),
                     "identity_version": str(getattr(decision, "identity_version", "") or ""),
                     "candidate": candidate_data,
                     "decision_snapshot": decision_data,
