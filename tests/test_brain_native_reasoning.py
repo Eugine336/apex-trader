@@ -75,7 +75,11 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
         observation=f"{domain} observer measurement: {dict(measurements)}",
         confidence=conf,
         uncertainty=1.0 - conf,
-        measurements=dict(measurements),
+        measurements={
+            **dict(measurements),
+            # This test fixture models an explicitly M5 candidate horizon.
+            "opportunity_horizon": "M5",
+        },
         timestamp_epoch=time.time(),
         source_timestamp_epoch=time.time(),
         relevance_horizon_seconds=900.0,
@@ -440,6 +444,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
         hypothesis_kind="continuation",
+        horizon="M5",
     )
     brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)
