@@ -6,10 +6,12 @@ from cognition.analytical_knowledge import (
     knowledge_coverage,
 )
 from cognition.contracts import (
+    CampaignSpecification,
     DecisionPackage,
     DecisionType,
     Evidence,
     EvidenceDomain,
+    Hypothesis,
     MarketState,
     Opportunity,
     OpportunityState,
@@ -466,3 +468,44 @@ def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time()
     )
     assert explicitly_unknown.source_timestamp_verified is False
     assert explicitly_unknown.source_timestamp_epoch is None
+
+
+
+def test_all_cognitive_contracts_force_the_single_canonical_identity():
+    from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+
+    evidence = Evidence(
+        source_module="test.identity",
+        identity_version="forged-version",
+        timestamp_epoch=100.0,
+    )
+    state = MarketState(
+        symbol="EURUSD",
+        identity_version="forged-version",
+        identity="alternate identity",
+    )
+    hypothesis = Hypothesis(
+        statement="test hypothesis",
+        identity_version="forged-version",
+    )
+    opportunity = Opportunity(
+        opportunity_id="identity-test",
+        identity_version="forged-version",
+    )
+    decision = DecisionPackage(
+        symbol="EURUSD",
+        identity_version="forged-version",
+        identity="alternate identity",
+    )
+    campaign = CampaignSpecification(
+        symbol="EURUSD",
+        identity_version="forged-version",
+        identity="alternate identity",
+    )
+
+    for contract in (evidence, state, hypothesis, opportunity, decision, campaign):
+        assert contract.identity_version == IDENTITY_VERSION
+    for contract in (state, decision, campaign):
+        assert contract.identity == IDENTITY_STATEMENT
+    assert state.to_dict()["identity"] == IDENTITY_STATEMENT
+    assert state.to_dict()["identity_version"] == IDENTITY_VERSION
