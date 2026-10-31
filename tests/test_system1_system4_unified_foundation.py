@@ -394,6 +394,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "decision_id": decision_id,
             "symbol": "EURUSD",
             "direction": "LONG",
+            "candidate_family": "continuation",
             "horizon_seconds": 300,
             "observation_status": "OBSERVED",
             "outcome_label": label,
