@@ -924,10 +924,38 @@ class CognitionLoop:
             if store is None:
                 store = get_event_store()
             decision_data = decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
+            evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_data = [
-                item.to_dict() for item in list(getattr(market_state, "evidence", []) or [])
+                item.to_dict() for item in evidence_items
                 if callable(getattr(item, "to_dict", None))
             ]
+            quote_candidates = []
+            for item in evidence_items:
+                measurements = getattr(item, "measurements", {})
+                quote = measurements.get("price") if isinstance(measurements, dict) else None
+                if not isinstance(quote, dict):
+                    continue
+                try:
+                    bid, ask = float(quote.get("bid")), float(quote.get("ask"))
+                    source_epoch = float(
+                        getattr(item, "source_timestamp_epoch", None) or 0.0
+                    )
+                    if bid > 0.0 and ask >= bid and source_epoch > 0.0:
+                        quote_candidates.append({
+                            "mid": (bid + ask) / 2.0,
+                            "bid": bid,
+                            "ask": ask,
+                            "source_timestamp_epoch": source_epoch,
+                            "source_module": str(getattr(item, "source_module", "") or ""),
+                            "evidence_id": str(getattr(item, "evidence_id", "") or ""),
+                        })
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            reference_quote = max(
+                quote_candidates,
+                key=lambda item: item["source_timestamp_epoch"],
+                default=None,
+            )
             opportunities = list(getattr(decision, "opportunities", []) or [])
             hypotheses = list(getattr(decision, "hypotheses", []) or [])
             records: list[tuple[str, str, dict]] = []
@@ -968,6 +996,7 @@ class CognitionLoop:
                     "symbol": str(getattr(market_state, "symbol", "") or ""),
                     "decision_epoch": float(getattr(decision, "created_epoch", 0.0) or 0.0),
                     "market_snapshot_epoch": float(getattr(market_state, "created_epoch", 0.0) or 0.0),
+                    "reference_quote": reference_quote,
                     "identity_version": str(getattr(decision, "identity_version", "") or ""),
                     "candidate": candidate_data,
                     "decision_snapshot": decision_data,
