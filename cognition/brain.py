@@ -855,6 +855,9 @@ class CognitiveBrain:
             self._calibrated_expected_return(
                 market_state,
                 direction,
+                candidate_family=str(
+                    getattr(driving_opp, "candidate_family", "") or "unclassified"
+                ),
                 horizon_seconds=self._calibration_horizon_seconds(
                     getattr(driving_opp, "horizon", None)
                     or getattr(opinion, "expected_holding_horizon_seconds", None)
@@ -2410,10 +2413,11 @@ class CognitiveBrain:
         market_state: MarketState,
         direction: str,
         *,
+        candidate_family: Optional[str] = None,
         horizon_seconds: Optional[int] = None,
         now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
-        """Return producer-validated expected directional return in R.
+        """Return producer-validated family-conditional expected directional return in R.
 
         The artifact separately reports favourable-return probability, but that
         probability is not a target-before-stop win probability. EV therefore
@@ -2422,6 +2426,9 @@ class CognitiveBrain:
         side = str(direction or "").strip().upper()
         if side not in (LONG, SHORT):
             return False, 0.0, "not directional"
+        family = str(candidate_family or "").strip().lower()
+        if family in {"", "unclassified", "unknown"}:
+            return False, 0.0, "explicit candidate family unavailable"
         if horizon_seconds is None or int(horizon_seconds) <= 0:
             return False, 0.0, "explicit opportunity horizon unavailable"
         try:
@@ -2452,6 +2459,7 @@ class CognitiveBrain:
                     str(m.get("calibration_artifact_id", "") or ""),
                     str(getattr(market_state, "symbol", "") or ""),
                     side,
+                    family,
                     int(horizon_seconds),
                     now=now,
                 )
@@ -2461,14 +2469,16 @@ class CognitiveBrain:
                     continue
                 favourable_probability = self._cost_value(artifact.favourable_probability)
                 try:
-                    expected_return = float(artifact.expected_return_r)
+                    development_return = float(artifact.expected_return_r)
+                    holdout_return = float(artifact.holdout_expected_return_r)
                     expected_return_gap = float(artifact.expected_return_gap)
                 except (TypeError, ValueError, OverflowError):
                     continue
                 if (
                     favourable_probability is None or favourable_probability > 1.0
                     or favourable_probability < 0.0
-                    or not math.isfinite(expected_return)
+                    or not math.isfinite(development_return)
+                    or not math.isfinite(holdout_return)
                     or not math.isfinite(expected_return_gap)
                     or expected_return_gap > 0.50
                     or int(artifact.sample_count) < 30
@@ -2479,13 +2489,14 @@ class CognitiveBrain:
                     or not artifact.dataset_digest
                 ):
                     continue
+                expected_return = min(development_return, holdout_return)
                 stamp = self._cost_value(source_epoch) or 0.0
                 candidates.append((
                     stamp, expected_return,
                     f"{artifact.protocol}:{artifact.artifact_id} "
-                    f"(h={artifact.horizon_seconds}s, n={artifact.sample_count}, "
-                    f"expected_R={expected_return:.4f}, "
-                    f"holdout_R={artifact.holdout_expected_return_r:.4f}, "
+                    f"(family={artifact.candidate_family}, h={artifact.horizon_seconds}s, n={artifact.sample_count}, "
+                    f"development_R={development_return:.4f}, "
+                    f"holdout_R={holdout_return:.4f}, "
                     f"favourable_p={favourable_probability:.4f}, "
                     f"Brier={artifact.brier_score:.4f}, "
                     f"gap={artifact.reliability_gap:.4f})",
@@ -2931,6 +2942,7 @@ class CognitiveBrain:
                 self._calibrated_expected_return(
                     market_state,
                     direction,
+                    candidate_family=str(getattr(lead, "hypothesis_kind", "") or "unclassified"),
                     horizon_seconds=self._calibration_horizon_seconds(
                         getattr(lead, "horizon", None)
                     ),
