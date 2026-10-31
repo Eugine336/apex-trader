@@ -288,6 +288,7 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
         symbol="XAUUSD",
         source="mt5",
         timestamp=snapshot.observed_at,
+        source_timestamp_verified=True,
         bid=snapshot.bid,
         ask=snapshot.ask,
     )

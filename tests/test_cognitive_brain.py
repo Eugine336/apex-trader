@@ -20,6 +20,8 @@ class _Opinion:
         # tests exercise sizing/EV/observability, not the legacy-scalar path.
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "candidate_family": "continuation",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -106,14 +108,23 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
     return ms
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_probability=0.8):
+def _confident_state(
+    symbol="EURUSD",
+    polarity=0.8,
+    target_r=2.0,
+    calibrated_probability=0.8,
+    expected_return_r=0.25,
+):
     ms = MarketState(symbol=symbol)
+    stamp = time.time()
     # Two distinct evidence domains so the Brain's minimum-coverage gate
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
     ms.add(Evidence(source_module="s", domain="momentum", confidence=0.9,
-                    uncertainty=0.1, polarity=polarity))
+                    uncertainty=0.1, polarity=polarity,
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
-                    uncertainty=0.1, polarity=polarity))
+                    uncertainty=0.1, polarity=polarity,
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
     # The Brain has a hard three-domain floor plus an advisor-quorum gate.
     # Keep this fixture genuinely eligible so positive-path tests test EV and
     # campaign construction rather than relying on absent council metadata.
@@ -125,6 +136,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_pro
         symbol=symbol, observation="two independent advisors returned opinions",
         confidence=0.9, uncertainty=0.1, polarity=0.0,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
     ))
     # Action-path fixtures must include fresh execution-cost evidence; a
     # diagnostic default is intentionally insufficient to authorize exposure.
@@ -136,25 +148,27 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_pro
         confidence=0.9,
         uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
-    # Test-only calibration record; production evidence must come from durable outcomes.
+    # Test-only calibration is registered by the test issuer, not by flags.
+    from test_support.calibration import register_test_calibration
+    side = "LONG" if polarity >= 0 else "SHORT"
+    artifact = register_test_calibration(
+        symbol, side, horizon_seconds=300, probability=calibrated_probability,
+        expected_return_r=expected_return_r,
+        holdout_expected_return_r=expected_return_r,
+    )
     ms.add(Evidence(
-        source_module="cognition.probability_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
     ))
     return ms
 
@@ -185,7 +199,7 @@ def test_confident_long_opens_campaign():
 
 def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
-    out = brain.reason(_confident_state(calibrated_probability=0.3))
+    out = brain.reason(_confident_state(calibrated_probability=0.3, expected_return_r=0.01))
     # Negative expected value is a defensible rejection, not merely a wait.
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
@@ -252,6 +266,7 @@ class _RichOpinion:
         # through a structured object (EV/sizing still derive from the excursions).
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "candidate_family": "continuation",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -264,7 +279,7 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     # EV-normalized payoff and quality-weighted confidence. This bare opinion has
     # quality 0.1, so 0.8 effective confidence is scaled by 0.55 to 0.44.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
+    out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
     assert out.campaign.desired_exposure == pytest.approx(0.44)
     assert out.campaign.desired_exposure < out.campaign.confidence
@@ -290,7 +305,7 @@ def test_high_confidence_poor_market_derived_payoff_is_sized_down():
 
 def test_campaign_carries_expected_value_field():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
+    out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
     assert out.campaign.expected_value == pytest.approx(1.35)
     assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)

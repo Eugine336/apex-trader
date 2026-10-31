@@ -13,6 +13,7 @@ import importlib.util
 import sys
 import types
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -64,12 +65,13 @@ _tick_stub = types.ModuleType("tick")
 
 
 class _Tick:
-    def __init__(self, symbol, bid, ask, timestamp, source):
+    def __init__(self, symbol, bid, ask, timestamp, source, source_timestamp_verified=False):
         self.symbol = symbol
         self.bid = bid
         self.ask = ask
         self.timestamp = timestamp
         self.source = source
+        self.source_timestamp_verified = source_timestamp_verified
 
 
 _tick_stub.Tick = _Tick
@@ -81,6 +83,7 @@ class _Px:
     def __init__(self, bid, ask):
         self.bid = bid
         self.ask = ask
+        self.time = datetime.now(timezone.utc)
 
 
 class _PM:

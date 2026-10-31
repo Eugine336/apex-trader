@@ -166,6 +166,7 @@ def translate(
         if (
             spec_identity_version != IDENTITY_VERSION
             or spec_identity != IDENTITY_STATEMENT
+            or getattr(spec, "_identity_input_valid", True) is not True
         ):
             return None
         direction = str(getattr(spec, "direction", "") or "").upper()

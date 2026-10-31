@@ -54,6 +54,8 @@ class _Opinion:
         if "opportunities" not in kw:
             self.opportunities = (
                 [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "candidate_family": "continuation",
+                  "horizon": "M5",
                   "quality": confidence, "asymmetry": confidence,
                   "evidence_strength": confidence}]
                 if str(direction).upper() in ("LONG", "SHORT") else []
@@ -75,14 +77,16 @@ class _Reasoner:
         return self._op
 
 
-def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110, calibrated_probability=0.8):
+def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110, expected_return_r=0.8):
     ms = MarketState(symbol=symbol)
+    stamp = time.time()
     domains = [EvidenceDomain.STRUCTURE, EvidenceDomain.LIQUIDITY,
                EvidenceDomain.MOMENTUM, EvidenceDomain.VOLUME,
                EvidenceDomain.ORDER_FLOW, EvidenceDomain.VOLATILITY]
     for i in range(n):
         ms.add(Evidence(source_module=f"m{i}", domain=domains[i % len(domains)],
                         symbol=symbol, confidence=conf, uncertainty=1.0 - conf,
+                        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
                         relevance_horizon_seconds=900.0))
     # These fixtures exercise reasoning/EV behavior, not missing-quorum behavior.
     ms.add(Evidence(
@@ -93,6 +97,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         confidence=conf,
         uncertainty=1.0 - conf,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=900.0,
     ))
     extras = list(extra or [])
@@ -108,9 +113,18 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
             confidence=conf,
             uncertainty=1.0 - conf,
             measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
+            timestamp_epoch=stamp, source_timestamp_epoch=stamp,
             relevance_horizon_seconds=60.0,
         ))
     for e in extras:
+        if (
+            getattr(e, "domain", None) == EvidenceDomain.EXECUTION_QUALITY
+            and getattr(e, "source_timestamp_epoch", None) is None
+        ):
+            # Test-only cost fixtures model a quote whose source time is known.
+            e.timestamp_epoch = stamp
+            e.source_timestamp_epoch = stamp
+            e.source_timestamp_verified = True
         ms.add(e)
     # EV/origination tests use activated long opportunities, so provide the
     # fresh completed-bar structure required to derive and validate payoff geometry.
@@ -144,21 +158,20 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         relevance_horizon_seconds=900.0,
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(
+        symbol, "LONG", horizon_seconds=300, probability=0.7, expected_return_r=expected_return_r,
+        holdout_expected_return_r=expected_return_r,
+    )
     ms.add(Evidence(
-        source_module="cognition.probability_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
     ))
     return ms
 
@@ -232,11 +245,11 @@ def test_v7_do_nothing_reasoning_on_reject():
     assert txt.startswith("evaluated: doing nothing is correct")
 
 
-def test_v7_do_nothing_reasoning_on_low_calibrated_probability():
+def test_v7_do_nothing_reasoning_on_negative_expected_return():
     # Low reasoning confidence is not itself a probability; supply a matching
     # low calibrated probability to test the no-action explanation.
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(
-        _evidence_state(calibrated_probability=0.3)
+        _evidence_state(expected_return_r=-0.1)
     )
     txt = out.decision.questions_answered["should_i_do_nothing"]
     assert txt.startswith("evaluated: doing nothing is correct")
@@ -254,7 +267,7 @@ def test_v9_execution_cost_reduces_ev():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.3, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev])
+    ms = _evidence_state(extra=[cost_ev], expected_return_r=1.4)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                          reward_r_default=2.0, min_expected_value=0.0).reason(ms)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
@@ -269,7 +282,7 @@ def test_v9_execution_cost_can_flip_ev_negative():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.5, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev], target_high=1.1025, calibrated_probability=0.6)
+    ms = _evidence_state(extra=[cost_ev], target_high=1.1025, expected_return_r=0.4)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.6)),
                          reward_r_default=0.6, min_expected_value=0.0).reason(ms)
     # EV = 0.6*0.6 - 0.4*1 - 0.5 = 0.36 - 0.4 - 0.5 = -0.54 < 0 ⇒ declined.

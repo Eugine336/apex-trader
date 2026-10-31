@@ -34,7 +34,9 @@ import time as _time
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
-from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
+from cognition.contracts import (
+    DecisionType, Evidence, EvidenceDomain, MarketState, candidate_family_from,
+)
 from cognition.management_translator import translate_management as _translate_management
 from cognition.management_translator import ManagementAction as _ManagementAction
 from cognition.evidence_adapters import (
@@ -515,6 +517,8 @@ class CognitionLoop:
         reallocation_concentration_limit: float = 0.6,
         reallocation_trim_fraction: float = 0.5,
         pattern_tracker: Optional[Any] = None,
+        candidate_event_store: Optional[Any] = None,
+        calibration_provider: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -628,6 +632,12 @@ class CognitionLoop:
         # drives execution. ``_origination_patterns`` remembers which patterns a
         # symbol's open campaign rested on, so the close can attribute the outcome.
         self._pattern_tracker = pattern_tracker
+        # Durable candidate provenance is observational and cannot authorize action.
+        self._candidate_event_store = candidate_event_store
+        self._candidate_label_after_seq = 0
+        self._candidate_label_pending: dict[str, dict] = {}
+        self._candidate_label_recorded: set[tuple[str, int]] = set()
+        self._calibration_provider = calibration_provider
         self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
@@ -767,6 +777,10 @@ class CognitionLoop:
                     self._demote_unreviewed_campaign(
                         candidate, "broker position book unverified — new exposure suppressed",
                     )
+        for output in portfolio_outputs:
+            self._record_candidate_disposition(
+                output, stage="portfolio_review_complete",
+            )
         if self.origination_mode != "off" and book_verified:
             for output in portfolio_outputs:
                 self._maybe_originate(output, now=now)
@@ -900,6 +914,734 @@ class CognitionLoop:
         self._cycle_offset = (off + cap) % n
         return batch
 
+    def _record_candidate_snapshot(self, output: Any, market_state: MarketState) -> None:
+        """Durably record the complete considered candidate universe at decision time.
+
+        This is observational provenance, not a qualification or execution gate.
+        It records forming, active, rejected/deferred decision states and the
+        no-opportunity result, together with the exact point-in-time evidence.
+        It deliberately does not label predictive success or train probabilities.
+        """
+        try:
+            import math
+
+            def _json_safe(value: Any) -> Any:
+                if value is None or isinstance(value, (str, bool, int)):
+                    return value
+                if isinstance(value, float):
+                    return value if math.isfinite(value) else None
+                if isinstance(value, dict):
+                    return {str(key): _json_safe(item) for key, item in value.items()}
+                if isinstance(value, (list, tuple, set)):
+                    return [_json_safe(item) for item in value]
+                enum_value = getattr(value, "value", None)
+                if enum_value is not None:
+                    return _json_safe(enum_value)
+                iso = getattr(value, "isoformat", None)
+                if callable(iso):
+                    try:
+                        return iso()
+                    except Exception:
+                        pass
+                item = getattr(value, "item", None)
+                if callable(item):
+                    try:
+                        return _json_safe(item())
+                    except Exception:
+                        pass
+                try:
+                    number = float(value)
+                    return number if math.isfinite(number) else None
+                except (TypeError, ValueError, OverflowError):
+                    return str(value)[:500]
+
+            decision = getattr(output, "decision", None)
+            if decision is None:
+                return
+            decision_id = str(getattr(decision, "decision_id", "") or "")
+            if not decision_id:
+                raise ValueError("candidate snapshot requires canonical decision_id")
+            from persistence.event_store import get_event_store
+            from persistence.domain_events import COGNITIVE_CANDIDATE_SNAPSHOT
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            decision_data = _json_safe(
+                decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
+            )
+            evidence_items = list(getattr(market_state, "evidence", []) or [])
+            evidence_rows = []
+            try:
+                decision_epoch = float(getattr(decision, "created_epoch", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                decision_epoch = 0.0
+            if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+                decision_epoch = 0.0
+            target_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
+            decision_symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
+            if decision_symbol and decision_symbol != target_symbol:
+                target_symbol = ""
+            fresh_items = (
+                market_state.fresh_evidence(now=decision_epoch)
+                if math.isfinite(decision_epoch) and decision_epoch > 0.0 else []
+            )
+            # Point-in-time evidence is stricter than ordinary freshness:
+            # source time must be broker-verified, at/before this decision,
+            # same-instrument, and not a provisional forming-bar estimate.
+            point_in_time_evidence_ids = set()
+            for item in fresh_items:
+                try:
+                    source_epoch = float(getattr(item, "source_timestamp_epoch", None))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                if (
+                    evidence_id
+                    and target_symbol
+                    and evidence_symbol == target_symbol
+                    and getattr(item, "source_timestamp_verified", False) is True
+                    and getattr(item, "provisional", False) is not True
+                    and math.isfinite(source_epoch)
+                    and 0.0 < source_epoch <= decision_epoch
+                ):
+                    point_in_time_evidence_ids.add(evidence_id)
+            for item in evidence_items:
+                to_dict = getattr(item, "to_dict", None)
+                if not callable(to_dict):
+                    continue
+                row = to_dict()
+                measurements = getattr(item, "measurements", {})
+                measurements = measurements if isinstance(measurements, dict) else {}
+                source_epoch = getattr(item, "source_timestamp_epoch", None)
+                source_verified = (
+                    getattr(item, "source_timestamp_verified", False) is True
+                    and source_epoch is not None
+                )
+                row["source_timestamp_epoch"] = source_epoch if source_verified else None
+                row["source_timestamp_verified"] = source_verified
+                evidence_rows.append(row)
+            evidence_data = _json_safe(evidence_rows)
+            evidence_by_id = {
+                str(row.get("evidence_id", "") or ""): row
+                for row in evidence_rows if row.get("evidence_id")
+            }
+            quote_candidates = []
+            for item in fresh_items:
+                measurements = getattr(item, "measurements", {})
+                quote = measurements.get("price") if isinstance(measurements, dict) else None
+                if not isinstance(quote, dict):
+                    continue
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                try:
+                    bid, ask = float(quote.get("bid")), float(quote.get("ask"))
+                    source_epoch = float(getattr(item, "source_timestamp_epoch", None))
+                    quote_epoch = float(quote.get("timestamp_epoch"))
+                    if (
+                        evidence_id in point_in_time_evidence_ids
+                        and evidence_symbol == target_symbol
+                        and quote_symbol == target_symbol
+                        and quote.get("source_timestamp_verified") is True
+                        and math.isfinite(bid) and math.isfinite(ask)
+                        and bid > 0.0 and ask >= bid
+                        and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
+                        and 0.0 < source_epoch <= decision_epoch
+                        and abs(source_epoch - quote_epoch) <= 1e-6
+                        and getattr(item, "source_timestamp_verified", False) is True
+                        and getattr(item, "provisional", False) is not True
+                    ):
+                        quote_candidates.append({
+                            "mid": (bid + ask) / 2.0,
+                            "bid": bid,
+                            "ask": ask,
+                            "timestamp_epoch": quote_epoch,
+                            "source_timestamp_epoch": source_epoch,
+                            "source_timestamp_verified": True,
+                            "symbol": target_symbol,
+                            "source_module": str(getattr(item, "source_module", "") or ""),
+                            "evidence_id": evidence_id,
+                        })
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            reference_quote = max(
+                quote_candidates,
+                key=lambda item: item["source_timestamp_epoch"],
+                default=None,
+            )
+            opportunities = list(getattr(decision, "opportunities", []) or [])
+            hypotheses = list(getattr(decision, "hypotheses", []) or [])
+            records: list[tuple[str, str, dict]] = []
+            for index, opportunity in enumerate(opportunities):
+                data = _json_safe(
+                    opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
+                )
+                oid = str(data.get("id", "") or getattr(opportunity, "opportunity_id", "") or "")
+                if not oid:
+                    oid = f"malformed:{index}"
+                    data["id"] = oid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                records.append(("opportunity", oid, data))
+            def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
+                data = _json_safe(data)
+                hid = str(
+                    data.get("hypothesis_id", "")
+                    or getattr(hypothesis, "hypothesis_id", "")
+                    or ""
+                )
+                if not hid or any(
+                    kind == "hypothesis" and ref == hid
+                    for kind, ref, _ in records
+                ):
+                    return
+                direction = str(
+                    data.get("direction_implication")
+                    or getattr(hypothesis, "direction_implication", "")
+                    or ""
+                ).upper()
+                data["candidate_family"] = candidate_family_from(
+                    data.get("candidate_family")
+                    or data.get("hypothesis_kind")
+                    or data.get("opportunity_type")
+                    or data.get("strategy_family")
+                )
+                data["calibration_candidate"] = False
+                if direction in {"LONG", "SHORT"}:
+                    # Preserve every native directional hypothesis in the
+                    # candidate ledger. When the shared market geometry resolver
+                    # can produce point-in-time risk geometry, it is calibratable
+                    # even when it was not the lead or never passed admission.
+                    try:
+                        from cognition.opportunity_geometry import derive_opportunity_geometry
+                        geometry = derive_opportunity_geometry(
+                            market_state, direction,
+                            now=float(getattr(decision, "created_epoch", 0.0) or 0.0),
+                        )
+                    except Exception:
+                        geometry = None
+                    if geometry is not None:
+                        data.update({
+                            "direction": direction,
+                            "entry_price": geometry.entry_price,
+                            "stop_price": geometry.stop_price,
+                            "target_price": geometry.target_price,
+                            "risk_distance": geometry.risk_distance,
+                            "reward_distance": geometry.reward_distance,
+                            "reward_r": geometry.reward_r,
+                            "geometry_evidence_ids": list(geometry.evidence_ids),
+                            "calibration_candidate": True,
+                            "calibration_geometry_activated": bool(geometry.activated),
+                        })
+                records.append(("hypothesis", hid, data))
+
+            for hypothesis in hypotheses:
+                to_dict = getattr(hypothesis, "to_dict", None)
+                append_hypothesis(
+                    to_dict() if callable(to_dict) else {},
+                    hypothesis,
+                )
+            # Native-only observe/reject decisions preserve their hypotheses in
+            # questions_answered rather than DecisionPackage.hypotheses. Read
+            # those canonical serialized records too; otherwise the full native
+            # candidate universe would disappear whenever no campaign is opened.
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                raw_records = questions.get(key, [])
+                if isinstance(raw_records, list):
+                    for item in raw_records:
+                        if isinstance(item, dict):
+                            append_hypothesis(item)
+            if not records:
+                dtype = getattr(getattr(decision, "decision_type", None), "value",
+                                getattr(decision, "decision_type", "unknown"))
+                records.append(("decision_outcome", decision_id, {
+                    "decision_type": str(dtype),
+                    "thesis": str(getattr(decision, "thesis", "") or ""),
+                    "do_nothing_considered": bool(getattr(decision, "do_nothing_considered", False)),
+                }))
+            for candidate_kind, candidate_ref, candidate_data in records:
+                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                state = str(candidate_data.get("state", "") or candidate_data.get("hypothesis_kind", "") or "considered")
+                required_evidence_ids = {
+                    str(item) for item in (candidate_data.get("geometry_evidence_ids") or [])
+                    if str(item)
+                }
+                if reference_quote and reference_quote.get("evidence_id"):
+                    required_evidence_ids.add(str(reference_quote["evidence_id"]))
+                candidate_point_in_time_rows = [
+                    evidence_by_id[evidence_id]
+                    for evidence_id in sorted(required_evidence_ids)
+                    if evidence_id in evidence_by_id
+                    and evidence_id in point_in_time_evidence_ids
+                ]
+                point_in_time_complete = (
+                    bool(required_evidence_ids)
+                    and required_evidence_ids <= point_in_time_evidence_ids
+                    and required_evidence_ids <= set(evidence_by_id)
+                )
+                payload = {
+                    "schema_version": "1.0.0",
+                    "candidate_id": candidate_id,
+                    "candidate_kind": candidate_kind,
+                    "candidate_ref": candidate_ref,
+                    "candidate_state_at_decision": state,
+                    "decision_id": decision_id,
+                    "decision_type": str(
+                        getattr(getattr(decision, "decision_type", None), "value",
+                                getattr(decision, "decision_type", "unknown"))
+                    ),
+                    "symbol": str(getattr(market_state, "symbol", "") or ""),
+                    "decision_epoch": decision_epoch,
+                    "market_snapshot_epoch": float(getattr(market_state, "created_epoch", 0.0) or 0.0),
+                    "reference_quote": _json_safe(reference_quote),
+                    "identity_version": str(getattr(decision, "identity_version", "") or ""),
+                    "candidate": candidate_data,
+                    "decision_snapshot": decision_data,
+                    "evidence_inventory": evidence_data,
+                    "point_in_time_evidence": _json_safe(candidate_point_in_time_rows),
+                    "point_in_time_complete": point_in_time_complete,
+                    "predictive_label_status": "UNLABELLED",
+                    "predictive_validity": "NOT_ESTABLISHED",
+                    "selection_population": "ALL_RECORDED_BRAIN_CONSIDERED_CANDIDATES",
+                }
+                store.emit(
+                    COGNITIVE_CANDIDATE_SNAPSHOT,
+                    "DEBUG",
+                    symbol=payload["symbol"],
+                    correlation_id=decision_id,
+                    parent_id=decision_id,
+                    source_module="cognition.loop.candidate_ledger",
+                    payload=payload,
+                    durable=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — preserve failure visibility; never invent a durable acknowledgement
+            logger.error(
+                "[cognition-loop] durable candidate snapshot failed for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
+    def _label_due_candidate_horizons(self, market_state: MarketState) -> None:
+        """Record descriptive fixed-horizon outcomes for the unselected candidate universe.
+
+        Labels use the first source-timestamped broker quote observed inside a
+        bounded horizon window. Missing windows are recorded as missing, never
+        backfilled with a later price. These labels are not calibrated forecasts.
+        """
+        try:
+            import json
+            import math
+            from persistence.event_store import get_event_store
+            from persistence.domain_events import (
+                COGNITIVE_CANDIDATE_SNAPSHOT,
+                COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+            )
+
+            symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
+            if not symbol:
+                return
+            quote_rows = []
+            try:
+                cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                cutoff = 0.0
+            if not math.isfinite(cutoff) or cutoff <= 0.0:
+                return
+            for evidence in market_state.fresh_evidence(now=cutoff):
+                measurements = getattr(evidence, "measurements", {})
+                quote = measurements.get("price") if isinstance(measurements, dict) else None
+                if not isinstance(quote, dict):
+                    continue
+                evidence_symbol = str(getattr(evidence, "symbol", "") or "").strip().upper()
+                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                if (
+                    evidence_symbol != symbol
+                    or quote_symbol != symbol
+                    or getattr(evidence, "source_timestamp_verified", False) is not True
+                    or getattr(evidence, "provisional", False) is True
+                    or quote.get("source_timestamp_verified") is not True
+                ):
+                    continue
+                try:
+                    bid = float(quote.get("bid"))
+                    ask = float(quote.get("ask"))
+                    source_epoch = float(getattr(evidence, "source_timestamp_epoch", None))
+                    quote_epoch = float(quote.get("timestamp_epoch"))
+                    if (
+                        math.isfinite(bid) and math.isfinite(ask)
+                        and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
+                        and bid > 0.0 and ask >= bid
+                        and 0.0 < source_epoch <= cutoff
+                        and abs(source_epoch - quote_epoch) <= 1e-6
+                    ):
+                        quote_rows.append({
+                            "mid": (bid + ask) / 2.0,
+                            "bid": bid,
+                            "ask": ask,
+                            "source_timestamp_epoch": source_epoch,
+                            "source_timestamp_verified": (
+                                getattr(evidence, "source_timestamp_verified", False) is True
+                            ),
+                            "symbol": str(getattr(evidence, "symbol", "") or ""),
+                            "source_module": str(getattr(evidence, "source_module", "") or ""),
+                            "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
+                        })
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            if not quote_rows:
+                return
+            quote = max(quote_rows, key=lambda item: item["source_timestamp_epoch"])
+            observed_price = float(quote["mid"])
+            observed_epoch = float(quote["source_timestamp_epoch"])
+
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            recorded = self._candidate_label_recorded
+            pending = self._candidate_label_pending
+            replay = getattr(store, "replay", None)
+            if callable(replay):
+                # Reconstruct pending candidates after restart, then consume only
+                # newly committed events. This prevents old records from starving.
+                for _page_number in range(20):
+                    page = replay(after_seq=self._candidate_label_after_seq, limit=10000) or []
+                    if not page:
+                        break
+                    for event in page:
+                        seq = int(event.get("seq") or 0)
+                        self._candidate_label_after_seq = max(
+                            self._candidate_label_after_seq, seq,
+                        )
+                        event_type = str(event.get("event_type", "") or "")
+                        try:
+                            event_payload = json.loads(event.get("payload_json") or "{}")
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        if not isinstance(event_payload, dict):
+                            continue
+                        event_candidate_id = str(event_payload.get("candidate_id", "") or "")
+                        if not event_candidate_id:
+                            continue
+                        if event_type == COGNITIVE_CANDIDATE_SNAPSHOT:
+                            reference_quote = event_payload.get("reference_quote") or {}
+                            candidate_data = event_payload.get("candidate") or {}
+                            candidate_direction = str(
+                                candidate_data.get("direction")
+                                or candidate_data.get("direction_implication")
+                                or ""
+                            ).upper()
+                            if (
+                                candidate_direction in {"LONG", "SHORT"}
+                                and isinstance(reference_quote, dict)
+                                and reference_quote.get("mid") is not None
+                            ):
+                                pending[event_candidate_id] = event_payload
+                        elif event_type == COGNITIVE_CANDIDATE_HORIZON_OUTCOME:
+                            recorded.add((
+                                event_candidate_id,
+                                int(event_payload.get("horizon_seconds", 0) or 0),
+                            ))
+                    if len(page) < 10000:
+                        break
+                snapshots = [
+                    (event_candidate_id, event_payload)
+                    for event_candidate_id, event_payload in pending.items()
+                    if str(event_payload.get("symbol", "") or "") == symbol
+                ]
+            else:
+                query_events = getattr(store, "query_events", None)
+                if callable(query_events):
+                    snapshot_rows = query_events(
+                        severity_min="DEBUG",
+                        event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
+                        symbol=symbol,
+                        limit=10000,
+                        offset=0,
+                    ) or []
+                    outcome_rows = query_events(
+                        severity_min="DEBUG",
+                        event_types=[COGNITIVE_CANDIDATE_HORIZON_OUTCOME],
+                        symbol=symbol,
+                        limit=10000,
+                        offset=0,
+                    ) or []
+                else:
+                    query = getattr(store, "query", None)
+                    if not callable(query):
+                        return
+                    snapshot_rows = query(
+                        event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
+                        symbol=symbol,
+                        limit=10000,
+                    ) or []
+                    outcome_rows = query(
+                        event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                        symbol=symbol,
+                        limit=10000,
+                    ) or []
+                snapshots = []
+                for row in snapshot_rows:
+                    try:
+                        event_payload = json.loads(row.get("payload_json") or "{}")
+                        event_candidate_id = str(event_payload.get("candidate_id", "") or "")
+                        if event_candidate_id:
+                            snapshots.append((event_candidate_id, event_payload))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                for row in outcome_rows:
+                    try:
+                        event_payload = json.loads(row.get("payload_json") or "{}")
+                        recorded.add((
+                            str(event_payload.get("candidate_id", "")),
+                            int(event_payload.get("horizon_seconds", 0) or 0),
+                        ))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+
+            horizons = (300, 900, 3600, 14400, 86400)
+            for candidate_id, payload in snapshots:
+                try:
+                    candidate = payload.get("candidate") or {}
+                    reference = payload.get("reference_quote") or {}
+                    reference_price = float(reference.get("mid"))
+                    decision_epoch = float(payload.get("decision_epoch"))
+                    direction = str(
+                        candidate.get("direction")
+                        or candidate.get("direction_implication")
+                        or ""
+                    ).upper()
+                    if (
+                        not candidate_id or direction not in {"LONG", "SHORT"}
+                        or not math.isfinite(reference_price) or reference_price <= 0.0
+                        or not math.isfinite(decision_epoch) or decision_epoch <= 0.0
+                        or float(reference.get("source_timestamp_epoch") or 0.0) <= 0.0
+                    ):
+                        continue
+                    raw_entry = candidate.get("entry_price")
+                    raw_stop = candidate.get("stop_price")
+                    entry_price = float(raw_entry) if raw_entry is not None else None
+                    stop_price = float(raw_stop) if raw_stop is not None else None
+                    risk_distance = None
+                    entry_deviation_r = None
+                    if entry_price is not None and stop_price is not None:
+                        # Normalize the fixed-horizon move by risk from the actual
+                        # decision-time quote to the candidate invalidation level.
+                        # A distant unfilled limit entry is not treated as a market fill.
+                        candidate_risk = (
+                            reference_price - stop_price if direction == "LONG"
+                            else stop_price - reference_price
+                        )
+                        if math.isfinite(candidate_risk) and candidate_risk > 0.0:
+                            candidate_deviation = abs(entry_price - reference_price) / candidate_risk
+                            if math.isfinite(candidate_deviation) and candidate_deviation <= 0.25:
+                                risk_distance = candidate_risk
+                                entry_deviation_r = candidate_deviation
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+                for horizon in horizons:
+                    key = (candidate_id, horizon)
+                    if key in recorded:
+                        continue
+                    due_epoch = decision_epoch + horizon
+                    if observed_epoch < due_epoch:
+                        continue
+                    tolerance = max(60.0, horizon * 0.10)
+                    within_window = observed_epoch <= due_epoch + tolerance
+                    signed_return = (
+                        (observed_price / reference_price - 1.0)
+                        * (1.0 if direction == "LONG" else -1.0)
+                    )
+                    if not within_window:
+                        status = "MISSED_WINDOW"
+                        label = "UNOBSERVED"
+                        signed_return_value = None
+                        r_multiple = None
+                    else:
+                        status = "OBSERVED"
+                        signed_return_value = signed_return
+                        label = (
+                            "FAVOURABLE" if signed_return > 0.0
+                            else "UNFAVOURABLE" if signed_return < 0.0
+                            else "FLAT"
+                        )
+                        signed_move = (
+                            (observed_price - reference_price)
+                            * (1.0 if direction == "LONG" else -1.0)
+                        )
+                        r_multiple = (
+                            signed_move / risk_distance if risk_distance else None
+                        )
+                    outcome_payload = {
+                        "schema_version": "1.0.0",
+                        "candidate_id": candidate_id,
+                        "decision_id": str(payload.get("decision_id", "") or ""),
+                        "symbol": symbol,
+                        "direction": direction,
+                        "candidate_kind": str(payload.get("candidate_kind", "") or ""),
+                        "candidate_family": str(
+                            candidate.get("candidate_family")
+                            or candidate.get("hypothesis_kind")
+                            or "unclassified"
+                        ),
+                        "candidate_state_at_decision": str(
+                            payload.get("candidate_state_at_decision", "") or ""
+                        ),
+                        "horizon_seconds": horizon,
+                        "due_at_epoch": due_epoch,
+                        "observed_at_epoch": observed_epoch,
+                        "outcome_source_timestamp_verified": True,
+                        "actual_elapsed_seconds": observed_epoch - decision_epoch,
+                        "observation_window_tolerance_seconds": tolerance,
+                        "observation_status": status,
+                        "outcome_label": label,
+                        "reference_price": reference_price,
+                        "entry_price": entry_price,
+                        "stop_price": stop_price,
+                        "risk_distance_from_decision_quote": risk_distance,
+                        "entry_deviation_r": entry_deviation_r,
+                        "observed_price": observed_price if within_window else None,
+                        "directional_return_fraction": signed_return_value,
+                        "directional_return_r": r_multiple,
+                        "reference_evidence_id": str(reference.get("evidence_id", "") or ""),
+                        "outcome_evidence_id": quote.get("evidence_id", ""),
+                        "outcome_quote": dict(quote),
+                        "predictive_validity": "DESCRIPTIVE_ONLY_UNVALIDATED",
+                        "calibration_authority": False,
+                    }
+                    store.emit(
+                        COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                        "DEBUG",
+                        symbol=symbol,
+                        correlation_id=str(payload.get("decision_id", "") or ""),
+                        parent_id=candidate_id,
+                        source_module="cognition.loop.candidate_outcome_labeler",
+                        payload=outcome_payload,
+                        durable=True,
+                    )
+                    recorded.add(key)
+                if all((candidate_id, horizon) in recorded for horizon in horizons):
+                    pending.pop(candidate_id, None)
+        except Exception as exc:  # noqa: BLE001 — outcome recording must never fabricate a label
+            logger.warning(
+                "[cognition-loop] fixed-horizon candidate labelling unavailable for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
+    def _record_candidate_disposition(self, output: Any, *, stage: str) -> None:
+        """Record the final Brain/portfolio disposition without changing authority."""
+        try:
+            from persistence.event_store import get_event_store
+            from persistence.domain_events import COGNITIVE_CANDIDATE_DISPOSITION
+
+            decision = getattr(output, "decision", None)
+            if decision is None:
+                return
+            decision_id = str(getattr(decision, "decision_id", "") or "")
+            if not decision_id:
+                return
+            decision_type = str(
+                getattr(getattr(decision, "decision_type", None), "value",
+                        getattr(decision, "decision_type", "unknown"))
+            ).lower()
+            campaign_present = getattr(output, "campaign", None) is not None
+            if decision_type == "open_campaign" and campaign_present:
+                disposition = "PASSED_PORTFOLIO_REVIEW_PENDING_EXECUTION_ADMISSION"
+            elif decision_type == "reject_opportunity":
+                disposition = "REJECTED_BY_BRAIN"
+            elif decision_type == "no_opportunity":
+                disposition = "NO_OPPORTUNITY"
+            elif decision_type == "opportunity_forming":
+                disposition = "DEFERRED_FORMING"
+            elif decision_type == "continue_observing":
+                rationale = str(getattr(decision, "risk_rationale", "") or "").lower()
+                disposition = (
+                    "BLOCKED_OR_DEFERRED_BY_ADMISSION"
+                    if any(token in rationale for token in ("portfolio", "broker", "unverified", "suppressed"))
+                    else "OBSERVE"
+                )
+            else:
+                disposition = "NON_ORIGINATION_DECISION"
+
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            opportunities = list(getattr(decision, "opportunities", []) or [])
+            hypotheses = list(getattr(decision, "hypotheses", []) or [])
+            records: list[tuple[str, str]] = []
+            for item in opportunities:
+                candidate_ref = str(getattr(item, "opportunity_id", "") or "")
+                if candidate_ref:
+                    records.append(("opportunity", candidate_ref))
+            for item in hypotheses:
+                candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
+                if candidate_ref:
+                    records.append(("hypothesis", candidate_ref))
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                raw_records = questions.get(key, [])
+                if isinstance(raw_records, list):
+                    for item in raw_records:
+                        if not isinstance(item, dict):
+                            continue
+                        candidate_ref = str(item.get("hypothesis_id", "") or "")
+                        if candidate_ref and ("hypothesis", candidate_ref) not in records:
+                            records.append(("hypothesis", candidate_ref))
+            if not records:
+                records.append(("decision_outcome", decision_id))
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for candidate_kind, candidate_ref in records:
+                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                store.emit(
+                    COGNITIVE_CANDIDATE_DISPOSITION,
+                    "DEBUG",
+                    symbol=str(getattr(decision, "symbol", "") or ""),
+                    correlation_id=decision_id,
+                    parent_id=candidate_id,
+                    source_module="cognition.loop.candidate_disposition",
+                    payload={
+                        "schema_version": "1.0.0",
+                        "candidate_id": candidate_id,
+                        "decision_id": decision_id,
+                        "symbol": str(getattr(decision, "symbol", "") or ""),
+                        "stage": str(stage or "unknown"),
+                        "disposition": disposition,
+                        "decision_type": decision_type,
+                        "campaign_present": campaign_present,
+                        "portfolio_decision": str(questions.get("portfolio_decision", "") or ""),
+                        "risk_rationale": str(getattr(decision, "risk_rationale", "") or ""),
+                        "predictive_validity": "NOT_ESTABLISHED",
+                    },
+                    durable=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — disposition logging cannot authorize or suppress action
+            logger.error(
+                "[cognition-loop] candidate disposition persistence failed: %s", exc,
+            )
+
+    def _inject_calibration_evidence(self, market_state: MarketState) -> None:
+        """Supply only producer-registered calibration artifacts to the Brain."""
+        try:
+            provider = self._calibration_provider
+            if provider is None:
+                from cognition.calibration_artifacts import get_default_calibration_producer
+                provider = get_default_calibration_producer()
+                self._calibration_provider = provider
+            evidence_for = getattr(provider, "evidence_for", None)
+            if not callable(evidence_for):
+                return
+            symbol = str(getattr(market_state, "symbol", "") or "")
+            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            for evidence in evidence_for(symbol, now=cutoff) or []:
+                market_state.add(evidence)
+        except Exception as exc:  # noqa: BLE001 — missing calibration must remain missing
+            logger.warning(
+                "[cognition-loop] producer calibration evidence unavailable for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
@@ -923,7 +1665,10 @@ class CognitionLoop:
                 logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
         try:
             ms = self._consolidator.build(symbol, now=now)
+            self._inject_calibration_evidence(ms)
             output = self._brain.reason(ms, now=now)
+            self._record_candidate_snapshot(output, ms)
+            self._label_due_candidate_horizons(ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
             # so the Brain's live reasoning is observable in the logs — not just
             # when it originates a trade.
@@ -1008,6 +1753,9 @@ class CognitionLoop:
                 self._demote_unreviewed_campaign(
                     output, "broker position book unverified — new exposure suppressed",
                 )
+                self._record_candidate_disposition(
+                    output, stage="broker_book_unverified",
+                )
             self._decisions += 1 if output is not None else 0
             self._event_reasons += 1 if output is not None else 0
             return 1 if output is not None else 0
@@ -1019,7 +1767,14 @@ class CognitionLoop:
         if output is not None and self.origination_mode != "off":
             reviewed = self._reason_portfolio([output])
             for candidate in reviewed:
+                self._record_candidate_disposition(
+                    candidate, stage="event_driven_portfolio_review_complete",
+                )
                 self._maybe_originate(candidate, now=now)
+        elif output is not None:
+            self._record_candidate_disposition(
+                output, stage="event_driven_observation_only",
+            )
         self._decisions += made
         self._event_reasons += made
         return made

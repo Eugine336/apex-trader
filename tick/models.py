@@ -26,6 +26,22 @@ class Tick:
     ask: float
     timestamp: datetime
     source: str
+    # Set only by a broker adapter that preserves and validates the provider's
+    # original quote timestamp. Receipt/analysis timestamps are not source time.
+    source_timestamp_verified: bool = False
+
+    def __post_init__(self) -> None:
+        timestamp = self.timestamp
+        timezone = getattr(timestamp, "tzinfo", None)
+        try:
+            aware = timezone is not None and timestamp.utcoffset() is not None
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            aware = False
+        object.__setattr__(
+            self,
+            "source_timestamp_verified",
+            self.source_timestamp_verified is True and aware,
+        )
 
     @property
     def mid(self) -> float:

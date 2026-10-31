@@ -12,7 +12,12 @@ from typing import Any
 from cognition.contracts import Evidence, EvidenceDomain
 
 
-def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
+def add_market_geometry(
+    market_state: Any,
+    direction: str = "LONG",
+    *,
+    expected_return_r: float = 0.25,
+) -> Any:
     """Attach fresh, timestamped structural and momentum evidence for one side."""
     side = str(direction or "").strip().upper()
     if side in {"BUY", "LONG"}:
@@ -37,6 +42,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "data_basis": "completed_ohlc",
             "source_bar_epoch": now,
             "timeframe": "M5",
+            "opportunity_horizon": "M5",
             "current_close": 1.100,
             # The synthetic structure is oriented to provide positive payoff
             # geometry for whichever side a scenario is explicitly testing.
@@ -64,38 +70,43 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "data_basis": "completed_ohlc",
             "source_bar_epoch": now,
             "timeframe": "M5",
+            "opportunity_horizon": "M5",
             "close_change": change,
         },
         timestamp_epoch=now,
         relevance_horizon_seconds=900.0,
     ))
-    # Explicit synthetic calibration is supplied only by test fixtures. The
-    # production Brain never promotes raw reasoning confidence to probability.
-    market_state.add(Evidence(
-        source_module="validation.out_of_sample_probability_calibration.test_fixture",
-        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
-        symbol=symbol,
-        observation="synthetic direction-specific calibration for admission tests",
-        confidence=0.9,
-        uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True,
-            "source_verified": True,
-            "out_of_sample": True,
-            "walk_forward": True,
-            "untouched_holdout": True,
-            "data_leakage_checked": True,
-            "selection_bias_checked": True,
-            "overfitting_checked": True,
-            "calibration_side": side,
-            "win_probability": 0.72,
-            "sample_count": 240,
-            "brier_score": 0.17,
-            "reliability_gap": 0.08,
-            "calibration_method": "synthetic_isotonic",
-            "calibration_id": "unit-test-holdout",
-        },
-        timestamp_epoch=now,
-        relevance_horizon_seconds=900.0,
-    ))
+    # Test-only artifact is registered through the producer registry. Raw
+    # evidence flags alone are deliberately insufficient in the production Brain.
+    from test_support.calibration import register_test_calibration
+    # Register the exact horizons used by the M5 native fixtures and the
+    # MTF advisor fixtures. Each artifact remains independently scoped by
+    # symbol, side, family and horizon in the producer registry.
+    for horizon_seconds in (300, 3600):
+        artifact = register_test_calibration(
+            symbol,
+            side,
+            horizon_seconds=horizon_seconds,
+            expected_return_r=expected_return_r,
+            holdout_expected_return_r=expected_return_r,
+        )
+        market_state.add(Evidence(
+            source_module="calibration_producer.test_fixture",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            symbol=symbol,
+            observation=(
+                "producer-registered test calibration artifact "
+                f"for {horizon_seconds}s"
+            ),
+            confidence=0.0,
+            uncertainty=0.0,
+            measurements=artifact.to_measurements(),
+            timestamp_epoch=artifact.issued_at_epoch,
+            source_timestamp_epoch=artifact.issued_at_epoch,
+            relevance_horizon_seconds=3600.0,
+            data_basis="test_fixture",
+            independence_group=(
+                f"test_calibration:{symbol}:{side}:{horizon_seconds}"
+            ),
+        ))
     return market_state

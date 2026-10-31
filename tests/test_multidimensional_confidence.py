@@ -8,6 +8,7 @@ unchanged (every dimension resolves to it) — zero regression.
 """
 
 from types import SimpleNamespace
+import time
 
 from cognition.brain import CognitiveBrain
 from test_support.market_geometry import add_market_geometry
@@ -32,6 +33,7 @@ def _decide(opinion, uncertainty=0.1):
     if not getattr(opinion, "opportunities", None) and opinion.direction in ("LONG", "SHORT"):
         opinion.opportunities = [{
             "id": "auto", "direction": opinion.direction, "state": "ACTIVE",
+            "candidate_family": "continuation", "horizon": "M5",
             "quality": opinion.confidence, "asymmetry": opinion.confidence,
             "evidence_strength": opinion.confidence,
         }]
@@ -54,14 +56,21 @@ def _decide(opinion, uncertainty=0.1):
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol="BTCUSD", observation="verified test execution cost",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
-    add_market_geometry(ms, opinion.direction)
+    # These sizing scenarios need enough calibrated EV headroom above the
+    # 0.10 minimum structural payoff from this synthetic geometry, otherwise
+    # both strong and weak profiles are correctly capped at the same EV size.
+    add_market_geometry(ms, opinion.direction, expected_return_r=0.8)
     consolidation = ms.consolidation()
     consolidation["aggregate_uncertainty"] = uncertainty
     return _brain()._from_opinion(
@@ -96,6 +105,9 @@ def test_to_dict_resolves_dims_and_effective():
 
 def test_single_scalar_opinion_opens_campaign_unchanged():
     out = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8))
+    assert out.decision.questions_answered.get("expected_return_verification", "").startswith(
+        "VERIFIED"
+    ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert abs(out.decision.confidence - 0.8) < 1e-9
     # Sizing now reflects EV and reasoning quality (Art XIX/XXVIII): a shallow

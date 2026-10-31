@@ -42,6 +42,31 @@ def _f(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _timestamp_epoch(value: Any) -> Optional[float]:
+    """Normalize an explicit tick timestamp without inventing source time."""
+    if value is None:
+        return None
+    stamp = getattr(value, "timestamp", None)
+    if callable(stamp):
+        try:
+            # A naive datetime's timestamp() depends on the host timezone and
+            # is not broker-source provenance.
+            if hasattr(value, "tzinfo"):
+                if value.tzinfo is None or value.utcoffset() is None:
+                    return None
+            result = float(stamp())
+            return result if result > 0 and result < float("inf") and result == result else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if result > 1e12:
+        result /= 1000.0
+    return result if result > 0 else None
+
+
 def _decimals_for(price: float) -> int:
     """A sensible rounding precision from price magnitude (compact output)."""
     p = abs(price)
@@ -530,9 +555,16 @@ def build_price_snapshot(
         mid = _f(getattr(tick, "mid", 0.0)) or ((bid + ask) / 2.0 if bid and ask else 0.0)
         if bid or ask or mid:
             dp = _decimals_for(mid or bid or ask)
+            tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
+            tick_source_verified = (
+                getattr(tick, "source_timestamp_verified", False) is True
+                and tick_epoch is not None
+            )
             price = {
                 "bid": round(bid, dp), "ask": round(ask, dp),
                 "mid": round(mid, dp), "spread": round(abs(ask - bid), dp),
+                "timestamp_epoch": tick_epoch,
+                "source_timestamp_verified": tick_source_verified,
             }
 
     pos: Optional[dict] = None
@@ -627,6 +659,15 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             f"{spread_txt} | " + ", ".join(parts)
             + pull_txt + micro_txt + book_txt + sess_txt + pos_txt
         )[:360]
+        price_epoch = (
+            _timestamp_epoch(price.get("timestamp_epoch"))
+            if isinstance(price, dict) else None
+        )
+        price_source_verified = bool(
+            isinstance(price, dict)
+            and price.get("source_timestamp_verified") is True
+            and price_epoch is not None
+        )
         out.append(Evidence(
             source_module="market.price_action",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=str(symbol or ""),
@@ -636,6 +677,12 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             polarity=0.0,  # Part XXV — the chart is raw market reality, not a lean
             measurements=snap,
             relevance_horizon_seconds=90.0,
+            source_timestamp_epoch=price_epoch if price_source_verified else None,
+            source_timestamp_verified=price_source_verified,
+            data_basis="live_quote_and_market_snapshot",
+            provisional=False,
+            independence_group=f"live_quote:{str(symbol or '').upper()}",
+            measurement_version="market-snapshot-v1",
         ))
     except Exception:  # noqa: BLE001
         return out

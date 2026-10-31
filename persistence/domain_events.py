@@ -25,6 +25,13 @@ ORDER_FILLED = "ORDER_FILLED"
 TRADE_OPEN = "TRADE_OPEN"
 TRADE_CLOSE = "TRADE_CLOSE"
 
+# ── Selection-aware cognitive candidate universe (Systems 1/4) ────────────────
+# One durable decision-time snapshot for every Brain-considered opportunity,
+# hypothesis or explicit no-opportunity result, including rejected/deferred states.
+COGNITIVE_CANDIDATE_SNAPSHOT = "COGNITIVE_CANDIDATE_SNAPSHOT"
+COGNITIVE_CANDIDATE_HORIZON_OUTCOME = "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
+COGNITIVE_CANDIDATE_DISPOSITION = "COGNITIVE_CANDIDATE_DISPOSITION"
+
 # ── Decision-time evidence linked to realized trade outcomes (System 2) ───────
 DECISION_TRADE_ENTRY_SNAPSHOT = "DECISION_TRADE_ENTRY_SNAPSHOT"
 DECISION_TRADE_OUTCOME = "DECISION_TRADE_OUTCOME"

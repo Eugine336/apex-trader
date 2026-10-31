@@ -170,6 +170,21 @@ class DecisionType(Enum):
         return self.value
 
 
+CANDIDATE_FAMILIES = frozenset({
+    "continuation", "liquidity_reversal", "trend_exhaustion",
+    "range_rotation", "mean_reversion", "order_flow_reaction",
+    "m1_context", "trend_context", "volatility_regime",
+    "breakout", "failed_breakout", "reversal", "pullback",
+    "momentum_continuation", "trend_transition",
+})
+
+
+def candidate_family_from(value: Any) -> str:
+    """Normalize only explicit controlled family labels; never infer from prose."""
+    family = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return family if family in CANDIDATE_FAMILIES else "unclassified"
+
+
 class OpportunityState(Enum):
     """The lifecycle state of a single opportunity (Part XXV — harvesting).
 
@@ -261,8 +276,19 @@ class Evidence:
     timestamp_iso: str = ""
     timestamp_epoch: float = 0.0
     identity_version: str = IDENTITY_VERSION
+    # Source-time and semantic metadata are first-class contract fields. Ingest
+    # time alone cannot prove that cached broker data describes the decision time.
+    source_timestamp_epoch: Optional[float] = None
+    source_timestamp_verified: Optional[bool] = None
+    data_basis: str = ""
+    provisional: bool = False
+    independence_group: str = ""
+    lineage_ids: list[str] = field(default_factory=list)
+    measurement_version: str = ""
 
     def __post_init__(self) -> None:
+        # Caller-supplied identity metadata is never authoritative.
+        self.identity_version = IDENTITY_VERSION
         if not self.evidence_id:
             self.evidence_id = uuid.uuid4().hex[:12]
         if not self.timestamp_epoch:
@@ -273,6 +299,46 @@ class Evidence:
         self.confidence = _clamp01(self.confidence)
         self.uncertainty = _clamp01(self.uncertainty)
         self.polarity = _clamp_signed(self.polarity)
+        measurements = self.measurements if isinstance(self.measurements, dict) else {}
+        if self.source_timestamp_epoch is None:
+            for key in ("source_timestamp_epoch", "source_bar_epoch"):
+                candidate = measurements.get(key)
+                if candidate is not None:
+                    try:
+                        self.source_timestamp_epoch = float(candidate)
+                    except (TypeError, ValueError, OverflowError):
+                        self.source_timestamp_epoch = None
+                    if self.source_timestamp_epoch is not None:
+                        break
+        # timestamp_epoch is ingestion/observation time. It is never promoted
+        # to verified source time: a producer must supply source_timestamp_epoch
+        # (or an explicit source timestamp in measurements). This prevents a
+        # newly ingested stale cache from acquiring false source-time authority.
+        if self.source_timestamp_epoch is not None:
+            try:
+                source_epoch = float(self.source_timestamp_epoch)
+                self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch < float("inf") and source_epoch == source_epoch else None
+            except (TypeError, ValueError, OverflowError):
+                self.source_timestamp_epoch = None
+        if self.source_timestamp_verified is None:
+            self.source_timestamp_verified = self.source_timestamp_epoch is not None
+        else:
+            self.source_timestamp_verified = (
+                bool(self.source_timestamp_verified)
+                and self.source_timestamp_epoch is not None
+            )
+        if not self.source_timestamp_verified:
+            self.source_timestamp_epoch = None
+        self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
+        self.provisional = bool(self.provisional or measurements.get("provisional", False))
+        self.independence_group = str(
+            self.independence_group or measurements.get("independence_group", "") or ""
+        ).strip()
+        raw_lineage = self.lineage_ids or measurements.get("lineage_ids", []) or []
+        self.lineage_ids = list(dict.fromkeys(str(item) for item in raw_lineage if item))
+        self.measurement_version = str(
+            self.measurement_version or measurements.get("measurement_version", "") or ""
+        ).strip()
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         """True if within its relevance horizon (Part XXXV).
@@ -287,7 +353,10 @@ class Evidence:
         if horizon is None:
             horizon = DEFAULT_EVIDENCE_HORIZON_SECONDS
         t = _now_epoch() if now is None else float(now)
-        age = t - self.timestamp_epoch
+        # Prefer the original source timestamp when available. A freshly
+        # ingested stale cache must not acquire a new freshness lifetime.
+        observed_epoch = self.source_timestamp_epoch or self.timestamp_epoch
+        age = t - observed_epoch
         # Future-dated evidence can indicate clock skew or bad timestamp
         # normalization. It must not pass freshness merely because its age is
         # negative and therefore below the maximum age horizon.
@@ -302,6 +371,13 @@ class Evidence:
             "identity_version": self.identity_version,
             "evidence_id": self.evidence_id,
             "timestamp": self.timestamp_iso,
+            "source_timestamp_epoch": self.source_timestamp_epoch,
+            "source_timestamp_verified": self.source_timestamp_verified,
+            "data_basis": self.data_basis,
+            "provisional": self.provisional,
+            "independence_group": self.independence_group,
+            "lineage_ids": list(self.lineage_ids),
+            "measurement_version": self.measurement_version,
             "source_module": self.source_module,
             "domain": self.domain.value,
             "symbol": self.symbol,
@@ -388,8 +464,12 @@ class MarketState:
     # weights each evidence's contribution by its source's learned influence.
     # ``None`` ⇒ unweighted (every source counts equally) — the default.
     influence_weights: Optional[dict] = None
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.created_epoch:
             self.created_epoch = _now_epoch()
         if not self.created_iso:
@@ -515,6 +595,8 @@ class MarketState:
 
     def to_dict(self, *, include_evidence: bool = True) -> dict:
         out = {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "symbol": self.symbol,
             "created": self.created_iso,
             "consolidation": self.consolidation(),
@@ -566,6 +648,7 @@ class Hypothesis:
     identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
         self.probability = _clamp01(self.probability)
         d = str(self.direction or "").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else ""
@@ -630,8 +713,13 @@ class Opportunity:
     geometry_evidence_ids: list[str] = field(default_factory=list)
     # Append new metadata after existing fields to preserve positional callers.
     identity: str = IDENTITY_STATEMENT
+    # Explicit analytical family used to keep calibration conditional. Unknown
+    # families remain uncalibrated; thesis prose is never mined for a family label.
+    candidate_family: str = "unclassified"
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.candidate_family = candidate_family_from(self.candidate_family)
         d = str(self.direction or "FLAT").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else "FLAT"
         self.state = opportunity_state_from(self.state)
@@ -718,6 +806,12 @@ class Opportunity:
             evidence_strength=_clamp01(data.get("evidence_strength")),
             competing_opportunities=_lst("competing_opportunities"),
             is_preferred=bool(oid) and oid == str(preferred_id or ""),
+            candidate_family=candidate_family_from(
+                data.get("candidate_family")
+                or data.get("hypothesis_kind")
+                or data.get("opportunity_type")
+                or data.get("strategy_family")
+            ),
         )
 
     def to_dict(self) -> dict:
@@ -750,6 +844,7 @@ class Opportunity:
             "is_preferred": bool(self.is_preferred),
             "is_actionable": self.is_actionable,
             "is_forming": self.is_forming,
+            "candidate_family": self.candidate_family,
         }
 
 
@@ -797,6 +892,8 @@ class DecisionPackage:
     created_epoch: float = 0.0
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.decision_id:
             self.decision_id = uuid.uuid4().hex[:12]
         if not self.created_iso:
@@ -942,8 +1039,16 @@ class CampaignSpecification:
     identity_version: str = IDENTITY_VERSION
     # Explicit identity text is validated by the translator before execution.
     identity: str = IDENTITY_STATEMENT
+    # Preserve caller conformance before public identity fields are normalized.
+    _identity_input_valid: bool = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        self._identity_input_valid = (
+            str(self.identity_version or "") == IDENTITY_VERSION
+            and str(self.identity or "") == IDENTITY_STATEMENT
+        )
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.campaign_id:
             self.campaign_id = uuid.uuid4().hex[:12]
         if not self.created_iso:
@@ -984,6 +1089,8 @@ __all__ = [
     "DecisionType",
     "OpportunityState",
     "opportunity_state_from",
+    "CANDIDATE_FAMILIES",
+    "candidate_family_from",
     "Hypothesis",
     "Opportunity",
     "DecisionPackage",

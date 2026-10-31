@@ -29,11 +29,14 @@ def _decide(opinion, uncertainty=0.1):
     if not getattr(opinion, "opportunities", None) and opinion.direction in ("LONG", "SHORT"):
         opinion.opportunities = [{
             "id": "auto", "direction": opinion.direction, "state": "ACTIVE",
+            "candidate_family": "continuation",
+            "horizon": "M5",
             "quality": opinion.confidence, "asymmetry": opinion.confidence,
             "evidence_strength": opinion.confidence,
         }]
         opinion.preferred_opportunity_id = "auto"
     state = MarketState(symbol="BTCUSD")
+    stamp = time.time()
     for i, domain in enumerate((
         EvidenceDomain.STRUCTURE,
         EvidenceDomain.LIQUIDITY,
@@ -46,6 +49,7 @@ def _decide(opinion, uncertainty=0.1):
             observation="eligible non-directional market evidence",
             confidence=0.9,
             uncertainty=uncertainty,
+            timestamp_epoch=stamp, source_timestamp_epoch=stamp,
             relevance_horizon_seconds=900.0,
         ))
     state.add(Evidence(
@@ -66,6 +70,7 @@ def _decide(opinion, uncertainty=0.1):
         confidence=0.9,
         uncertainty=uncertainty,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     # Qualification also needs fresh completed-bar structure to derive the
@@ -101,21 +106,20 @@ def _decide(opinion, uncertainty=0.1):
         relevance_horizon_seconds=900.0,
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(
+        "BTCUSD", opinion.direction, horizon_seconds=300, probability=0.9,
+        expected_return_r=1.4, holdout_expected_return_r=1.4,
+    )
     state.add(Evidence(
-        source_module="validation.test_out_of_sample_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="BTCUSD",
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": 0.9, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
     ))
     # The helper supplies exactly three independent market domains above;
     # pass that derived coverage metadata as the production consolidator does.

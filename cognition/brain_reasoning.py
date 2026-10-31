@@ -37,6 +37,7 @@ from cognition.identity import IDENTITY_VERSION
 from cognition.market_context import analyze_market_context
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
+from cognition.analytical_knowledge import assess_analytical_knowledge, knowledge_coverage
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -96,6 +97,10 @@ class EvidenceAnalysis:
 
     # Context-sensitive analytical lenses. These are not trade signals.
     strategy_lenses: list[dict] = field(default_factory=list)
+    # Broad evidence-grounded knowledge registry coverage. This is analytical
+    # context only; it cannot create direction, probability or execution authority.
+    analytical_knowledge: list[dict] = field(default_factory=list)
+    knowledge_coverage: dict = field(default_factory=dict)
     # Instrument economics, sessions, cross-market associations, historical
     # validation status, unfamiliar observations and epistemic limits.
     market_context: dict = field(default_factory=dict)
@@ -142,6 +147,8 @@ class EvidenceAnalysis:
             "missing_information": list(self.missing_information),
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
             "strategy_lenses": [dict(item) for item in self.strategy_lenses],
+            "analytical_knowledge": [dict(item) for item in self.analytical_knowledge],
+            "knowledge_coverage": dict(self.knowledge_coverage),
             "market_context": dict(self.market_context),
             "evidence_index": [dict(item) for item in self.evidence_index],
             "pattern_evidence_ids": {
@@ -357,12 +364,21 @@ class BrainReasoner:
                 "evidence_id": evidence_id,
                 "domain": domain,
                 "source_module": str(getattr(item, "source_module", "") or ""),
+                "independence_group": str(getattr(item, "independence_group", "") or ""),
+                "symbol": str(getattr(item, "symbol", "") or ""),
+                "timeframe": str(
+                    (getattr(item, "measurements", {}) or {}).get("timeframe", "")
+                    if isinstance(getattr(item, "measurements", {}), dict) else ""
+                ).upper(),
+                "source_timestamp_epoch": _num(getattr(
+                    item, "source_timestamp_epoch", None
+                )),
+                "source_timestamp_verified": bool(getattr(item, "source_timestamp_verified", False)),
+                "data_basis": str(getattr(item, "data_basis", "") or ""),
+                "provisional": bool(getattr(item, "provisional", False)),
                 "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
                 "confidence": _clamp01(getattr(item, "confidence", 0.0)),
                 "uncertainty": _clamp01(getattr(item, "uncertainty", 1.0), 1.0),
-                "timeframe": str(
-                    getattr(item, "measurements", {}).get("timeframe", "") or ""
-                ).upper(),
                 "opportunity_horizon": str(
                     getattr(item, "measurements", {}).get("opportunity_horizon", "") or ""
                 ),
@@ -390,10 +406,31 @@ class BrainReasoner:
 
         regime = self._classify_regime(fresh, names)
         observations = self._observations(fresh, detected, regime)
+        indicator_panels = regime.get("technical_indicators", {})
+        if indicator_panels:
+            indicator_counts = {
+                timeframe: len(values)
+                for timeframe, values in indicator_panels.items()
+                if isinstance(values, dict)
+            }
+            observations.append(
+                "Completed-bar technical indicator panel available by timeframe: "
+                + ", ".join(
+                    f"{timeframe} ({count} measurements)"
+                    for timeframe, count in sorted(indicator_counts.items())
+                )
+                + "; indicators are descriptive measurements, not standalone entry rules."
+            )
         contradictions = self._contradictions(fresh, names, regime)
         missing = self._missing(domain_coverage, informative_domains)
-        agreement = self._agreement(names, contradictions, regime)
+        agreement = self._agreement(
+            names, contradictions, regime,
+            pattern_evidence_ids=pattern_evidence_ids,
+            evidence_index=evidence_index,
+        )
         strategy_lenses = assess_strategy_lenses(fresh, names, regime)
+        analytical_knowledge = assess_analytical_knowledge(fresh, regime)
+        knowledge_coverage_record = knowledge_coverage(analytical_knowledge)
         # Preserve explicit unknowns and epistemic limits. This context is
         # descriptive evidence, not a strategy selector or action authority.
         market_context = analyze_market_context(fresh, getattr(market_state, "symbol", ""))
@@ -431,6 +468,8 @@ class BrainReasoner:
             missing_information=missing,
             evidence_uncertainty=ev_unc,
             strategy_lenses=strategy_lenses,
+            analytical_knowledge=analytical_knowledge,
+            knowledge_coverage=knowledge_coverage_record,
             market_context=market_context,
             evidence_index=evidence_index,
             pattern_evidence_ids=pattern_evidence_ids,
@@ -605,6 +644,40 @@ class BrainReasoner:
             "sell" if has_sell_sweep else ("buy" if has_buy_sweep else "none")
         )
 
+        # Preserve the complete per-timeframe indicator panel for native
+        # reasoning. These are measurements, not votes or precomputed direction.
+        technical_indicators: dict[str, dict[str, Any]] = {}
+        technical_evidence_ids: dict[str, list[str]] = {}
+        for item in fresh:
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict):
+                continue
+            if measurements.get("source_kind") != "market_lens":
+                continue
+            source = str(getattr(item, "source_module", "") or "")
+            if ".technical_" not in source:
+                continue
+            timeframe = str(measurements.get("timeframe", "") or "").upper()
+            if not timeframe:
+                continue
+            panel = technical_indicators.setdefault(timeframe, {})
+            for key, value in measurements.items():
+                if key in {
+                    "source_kind", "timeframe", "provisional", "data_basis",
+                    "source_timestamp_known", "source_bar_epoch", "source_timestamp_epoch",
+                    "measurement_version", "calculation_method", "indicator_periods",
+                }:
+                    continue
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    parsed = _num(value)
+                    if parsed is not None:
+                        panel[str(key)] = parsed
+                elif isinstance(value, (str, bool)):
+                    panel[str(key)] = value
+            evidence_id = str(getattr(item, "evidence_id", "") or "")
+            if evidence_id:
+                technical_evidence_ids.setdefault(timeframe, []).append(evidence_id)
+
         # The regime is a set of INDEPENDENT structured observations — a
         # displacement magnitude+direction, an order-flow reading, a sweep event,
         # plus the volatility/momentum regimes. It deliberately does NOT collapse
@@ -643,6 +716,8 @@ class BrainReasoner:
             "trend_conflicted_timeframes": conflicted_trend_timeframes,
             "range_timeframes": len(ranged_timeframes),
             "m1_price_action": m1_price_action,
+            "technical_indicators": technical_indicators,
+            "technical_indicator_evidence_ids": technical_evidence_ids,
         }
 
     @staticmethod
@@ -724,9 +799,42 @@ class BrainReasoner:
         return missing
 
     @staticmethod
-    def _agreement(names: "list[str]", contradictions: "list[str]", regime: dict) -> float:
+    def _agreement(
+        names: "list[str]", contradictions: "list[str]", regime: dict,
+        *, pattern_evidence_ids: Optional[dict] = None,
+        evidence_index: Optional[list[dict]] = None,
+    ) -> float:
         score = 0.6
-        score += 0.12 * sum(1 for n in names if n in _CONTINUATION_PATTERNS)
+        continuation = {n for n in names if n in _CONTINUATION_PATTERNS}
+        # Multiple patterns derived from the same underlying feed/bar are not
+        # independent confirmations. Count distinct provenance groups, not
+        # the number of labels emitted by correlated observers.
+        group_by_id = {}
+        for item in (evidence_index or []):
+            if not isinstance(item, dict) or not item.get("evidence_id"):
+                continue
+            group = str(item.get("independence_group", "") or "")
+            if not group:
+                timeframe = str(item.get("timeframe", "") or "unknown")
+                symbol = str(item.get("symbol", "") or "unknown")
+                domain = str(item.get("domain", "") or "other")
+                if str(item.get("data_basis", "")).lower() == "completed_ohlc":
+                    group = f"ohlc:{symbol}:{timeframe}"
+                else:
+                    group = f"{domain}:{symbol}:{timeframe}"
+            group_by_id[str(item["evidence_id"])] = group
+        independent_groups = {
+            group_by_id.get(str(evidence_id), "")
+            for name in continuation
+            for evidence_id in (pattern_evidence_ids or {}).get(name, [])
+            if group_by_id.get(str(evidence_id), "")
+        }
+        support_count = (
+            len(independent_groups)
+            if independent_groups
+            else len(continuation)
+        )
+        score += 0.12 * min(3, support_count)
         score -= 0.2 * len(contradictions)
         # Reward a COHERENT directional read that EMERGES from the independent
         # structured dimensions (structure displacement sign agreeing with the

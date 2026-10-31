@@ -10,6 +10,7 @@ price-action evidence.
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, timezone
 from math import isfinite, sqrt
@@ -132,6 +133,21 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
+                volume_source = next(
+                    (
+                        alias for alias in ("volume", "tick_volume", "real_volume")
+                        if value(alias) is not None
+                    ),
+                    "unknown_volume",
+                )
+                declared_volume_source = raw_value("volume_source")
+                row_data["volume_source"] = (
+                    str(declared_volume_source).strip().lower()
+                    if declared_volume_source is not None else (
+                        "tick_volume_proxy" if volume_source == "tick_volume"
+                        else "provider_volume"
+                    )
+                )
             result.append(row_data)
         return result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
@@ -147,6 +163,363 @@ def _stddev(values: list[float]) -> float:
         return 0.0
     mean = _mean(values)
     return sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+
+def _sma(values: list[float], period: int) -> float | None:
+    if period <= 0 or len(values) < period:
+        return None
+    return _mean(values[-period:])
+
+
+def _wma(values: list[float], period: int) -> float | None:
+    if period <= 0 or len(values) < period:
+        return None
+    window = values[-period:]
+    denominator = period * (period + 1) / 2.0
+    return sum(value * weight for weight, value in enumerate(window, 1)) / denominator
+
+
+def _rsi_value(values: list[float], period: int) -> float | None:
+    if period <= 0 or len(values) < period + 1:
+        return None
+    changes = [values[index] - values[index - 1] for index in range(len(values) - period, len(values))]
+    gain = _mean([max(value, 0.0) for value in changes])
+    loss = _mean([max(-value, 0.0) for value in changes])
+    if gain == 0.0 and loss == 0.0:
+        return 50.0
+    if loss == 0.0:
+        return 100.0
+    return 100.0 - (100.0 / (1.0 + gain / loss))
+
+
+def _ema_series(values: list[float], period: int) -> list[float | None]:
+    if period <= 0 or len(values) < period:
+        return []
+    alpha = 2.0 / (period + 1.0)
+    seed = _mean(values[:period])
+    result: list[float | None] = [None] * (period - 1) + [seed]
+    current = seed
+    for value in values[period:]:
+        current = alpha * value + (1.0 - alpha) * current
+        result.append(current)
+    return result
+
+
+def _true_ranges(highs: list[float], lows: list[float], closes: list[float]) -> list[float]:
+    result: list[float] = []
+    for index, (high, low) in enumerate(zip(highs, lows)):
+        previous_close = closes[index - 1] if index else closes[index]
+        result.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+    return result
+
+
+def _technical_indicator_evidence(
+    symbol: str,
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    source_epoch: float | None,
+) -> list[Evidence]:
+    """Calculate causal, completed-bar technical measurements without signals."""
+    if len(bars) < 15:
+        return []
+    closes = [float(row["close"]) for row in bars]
+    highs = [float(row["high"]) for row in bars]
+    lows = [float(row["low"]) for row in bars]
+    true_range = _true_ranges(highs, lows, closes)
+    atr14 = _sma(true_range, 14)
+    atr20 = _sma(true_range, 20)
+    momentum: dict[str, Any] = {}
+    volatility: dict[str, Any] = {}
+    volume: dict[str, Any] = {}
+
+    # Trend and momentum indicators. Values are descriptive; no threshold
+    # converts them into a trade direction or permission.
+    for period in (10, 20, 50, 100, 200):
+        sma = _sma(closes, period)
+        ema_values = _ema_series(closes, period)
+        ema = ema_values[-1] if ema_values else None
+        if sma is not None:
+            momentum[f"sma_{period}"] = sma
+        if ema is not None:
+            momentum[f"ema_{period}"] = ema
+    ema12 = _ema_series(closes, 12)
+    ema20 = _ema_series(closes, 20)
+    ema26 = _ema_series(closes, 26)
+    ema50 = _ema_series(closes, 50)
+    if ema20:
+        momentum["ema"] = ema20[-1]
+    sma20 = _sma(closes, 20)
+    if sma20 is not None:
+        momentum["sma"] = sma20
+    wma20 = _wma(closes, 20)
+    if wma20 is not None:
+        momentum["wma"] = wma20
+    if ema20 and ema50 and atr14 and atr14 > 0:
+        momentum["ema_spread_atr"] = (ema20[-1] - ema50[-1]) / atr14
+    if ema20 and len(ema20) >= 6 and ema20[-6] is not None:
+        momentum["ema_slope"] = (ema20[-1] - ema20[-6]) / 5.0
+    for period in (20, 50):
+        weighted = _wma(closes, period)
+        if weighted is not None:
+            momentum[f"wma_{period}"] = weighted
+    if len(closes) >= 20:
+        half_period = 10
+        root_period = 4
+        hull_inputs = []
+        for end in range(max(19, len(closes) - root_period), len(closes)):
+            half = _wma(closes[:end + 1], half_period)
+            full = _wma(closes[:end + 1], 20)
+            if half is not None and full is not None:
+                hull_inputs.append(2.0 * half - full)
+        hull = _wma(hull_inputs, root_period)
+        if hull is not None:
+            momentum["hma_20"] = hull
+            momentum["hma"] = hull
+
+    for period in (2, 14, 21):
+        rsi_value = _rsi_value(closes, period)
+        if rsi_value is not None:
+            momentum["rsi" if period == 14 else f"rsi_{period}"] = rsi_value
+            if period == 2:
+                momentum["rsi_fast"] = rsi_value
+            elif period == 21:
+                momentum["rsi_slow"] = rsi_value
+    rsi_history = [
+        _rsi_value(closes[:index + 1], 14)
+        for index in range(14, len(closes))
+    ]
+    valid_rsi = [value for value in rsi_history if value is not None]
+    if len(valid_rsi) >= 14:
+        recent_rsi = valid_rsi[-14:]
+        rsi_min, rsi_max = min(recent_rsi), max(recent_rsi)
+        momentum["stoch_rsi"] = (
+            50.0 if rsi_max == rsi_min
+            else 100.0 * (valid_rsi[-1] - rsi_min) / (rsi_max - rsi_min)
+        )
+
+    if ema12 and ema26 and len(closes) >= 35:
+        macd_values = [
+            fast - slow for fast, slow in zip(ema12, ema26)
+            if fast is not None and slow is not None
+        ]
+        signal_values = _ema_series(macd_values, 9)
+        if macd_values:
+            momentum["macd"] = macd_values[-1]
+        if signal_values:
+            momentum["macd_signal"] = signal_values[-1]
+            momentum["macd_histogram"] = macd_values[-1] - signal_values[-1]
+
+    if len(bars) >= 14:
+        low14, high14 = min(lows[-14:]), max(highs[-14:])
+        span14 = high14 - low14
+        if span14 > 0:
+            k_values = [
+                100.0 * (closes[index] - min(lows[index - 13:index + 1]))
+                / max(max(highs[index - 13:index + 1]) - min(lows[index - 13:index + 1]), 1e-12)
+                for index in range(max(13, len(bars) - 3), len(bars))
+            ]
+            momentum["stochastic_k"] = k_values[-1]
+            momentum["stochastic_d"] = _mean(k_values)
+            momentum["stochastic"] = k_values[-1]
+
+    if len(bars) >= 25:
+        window = 25
+        recent_highs = highs[-window:]
+        recent_lows = lows[-window:]
+        momentum["aroon_up"] = 100.0 * (recent_highs.index(max(recent_highs)) + 1) / window
+        momentum["aroon_down"] = 100.0 * (recent_lows.index(min(recent_lows)) + 1) / window
+    if len(bars) >= 45:
+        ema15 = _ema_series(closes, 15)
+        ema15_values = [value for value in ema15 if value is not None]
+        ema2 = _ema_series(ema15_values, 15)
+        ema2_values = [value for value in ema2 if value is not None]
+        ema3 = _ema_series(ema2_values, 15)
+        if len(ema3) >= 2 and ema3[-2] not in (None, 0.0):
+            momentum["trix"] = (ema3[-1] / ema3[-2] - 1.0) * 100.0
+
+    if len(bars) >= 20:
+        typical = [(highs[i] + lows[i] + closes[i]) / 3.0 for i in range(len(bars))]
+        typical_mean = _mean(typical[-20:])
+        mean_deviation = _mean([abs(value - typical_mean) for value in typical[-20:]])
+        if mean_deviation > 0:
+            momentum["cci"] = (typical[-1] - typical_mean) / (0.015 * mean_deviation)
+        high14, low14 = max(highs[-14:]), min(lows[-14:])
+        if high14 > low14:
+            momentum["williams_r"] = -100.0 * (high14 - closes[-1]) / (high14 - low14)
+        if len(closes) >= 6 and closes[-6] != 0:
+            momentum["roc_5"] = (closes[-1] / closes[-6] - 1.0) * 100.0
+        if len(closes) >= 11 and closes[-11] != 0:
+            momentum["roc_10"] = (closes[-1] / closes[-11] - 1.0) * 100.0
+            momentum["roc"] = momentum["roc_10"]
+            momentum["momentum_rate"] = momentum["roc_10"]
+        if "roc_5" in momentum and "roc_10" in momentum:
+            momentum["momentum_acceleration"] = momentum["roc_5"] - momentum["roc_10"]
+
+    # ADX / directional movement using rolling 14-bar directional movement and
+    # true-range sums. The smoothing convention is explicitly versioned below.
+    if len(bars) >= 28:
+        dx_values = []
+        for end in range(14, len(bars)):
+            plus_values = []
+            minus_values = []
+            tr_values = []
+            for index in range(end - 13, end + 1):
+                up = highs[index] - highs[index - 1]
+                down = lows[index - 1] - lows[index]
+                plus_values.append(up if up > down and up > 0 else 0.0)
+                minus_values.append(down if down > up and down > 0 else 0.0)
+                tr_values.append(true_range[index])
+            tr_sum = sum(tr_values)
+            if tr_sum <= 0:
+                continue
+            plus_di = 100.0 * sum(plus_values) / tr_sum
+            minus_di = 100.0 * sum(minus_values) / tr_sum
+            denom = plus_di + minus_di
+            if denom > 0:
+                dx_values.append(100.0 * abs(plus_di - minus_di) / denom)
+        if dx_values:
+            momentum["adx"] = _mean(dx_values[-14:])
+            momentum["trend_strength"] = momentum["adx"]
+            momentum["plus_di"] = plus_di
+            momentum["minus_di"] = minus_di
+
+    if momentum:
+        momentum.update({
+            "atr": atr14,
+            "indicator_periods": {"rsi": 14, "adx": 14, "macd": [12, 26, 9]},
+            "calculation_method": "causal_completed_ohlc_v1",
+        })
+
+    # Volatility and statistical location indicators.
+    if atr14 is not None:
+        volatility["atr"] = atr14
+        if closes[-1] > 0:
+            volatility["atr_percent"] = 100.0 * atr14 / closes[-1]
+    atr_history = [
+        _sma(true_range[max(0, index - 13):index + 1], min(14, index + 1))
+        for index in range(max(0, len(true_range) - 100), len(true_range))
+    ]
+    atr_history = [value for value in atr_history if value is not None]
+    if atr_history:
+        volatility["atr_percentile"] = sum(value <= atr_history[-1] for value in atr_history) / len(atr_history)
+        volatility["realized_volatility"] = _stddev([
+            (closes[i] / closes[i - 1] - 1.0)
+            for i in range(max(1, len(closes) - 20), len(closes))
+            if closes[i - 1] > 0
+        ])
+        parkinson_values = [
+            math.log(highs[i] / lows[i]) ** 2
+            for i in range(max(0, len(bars) - 20), len(bars))
+            if highs[i] > 0.0 and lows[i] > 0.0 and highs[i] >= lows[i]
+        ]
+        if parkinson_values:
+            volatility["parkinson_volatility"] = math.sqrt(
+                _mean(parkinson_values) / (4.0 * math.log(2.0))
+            )
+    if len(closes) >= 20:
+        mean20 = _mean(closes[-20:])
+        std20 = _stddev(closes[-20:])
+        if std20 > 0:
+            upper, lower = mean20 + 2.0 * std20, mean20 - 2.0 * std20
+            volatility.update({
+                "bollinger_upper": upper,
+                "bollinger_lower": lower,
+                "bollinger_width": (upper - lower) / max(abs(mean20), 1e-12),
+                "bollinger": (upper - lower) / max(abs(mean20), 1e-12),
+                "bollinger_percent_b": (closes[-1] - lower) / max(upper - lower, 1e-12),
+                "rolling_zscore": (closes[-1] - mean20) / std20,
+                "zscore": (closes[-1] - mean20) / std20,
+                "mean_distance": (
+                    (closes[-1] - mean20) / atr14 if atr14 and atr14 > 0 else 0.0
+                ),
+            })
+        if atr20 is not None and ema20:
+            volatility["keltner_upper"] = ema20[-1] + 2.0 * atr20
+            volatility["keltner_lower"] = ema20[-1] - 2.0 * atr20
+            volatility["keltner"] = (
+                (volatility["keltner_upper"] - volatility["keltner_lower"])
+                / max(abs(closes[-1]), 1e-12)
+            )
+        volatility["donchian_high"] = max(highs[-21:-1]) if len(highs) >= 21 else max(highs[-20:])
+        volatility["donchian_low"] = min(lows[-21:-1]) if len(lows) >= 21 else min(lows[-20:])
+    if volatility:
+        volatility["indicator_periods"] = {"atr": 14, "bollinger": [20, 2.0], "keltner": [20, 2.0]}
+        volatility["calculation_method"] = "causal_completed_ohlc_v1"
+
+    # Volume indicators are calculated only when the provider supplied a
+    # volume field. The exact source is retained; tick volume is never described
+    # as consolidated exchange volume or actual bid/ask order flow.
+    if len(bars) >= 20 and all("volume" in row for row in bars[-20:]):
+        volumes = [float(row.get("volume", 0.0)) for row in bars]
+        volume_sources = {str(row.get("volume_source", "provider_volume")) for row in bars[-20:]}
+        source_label = (
+            next(iter(volume_sources)) if len(volume_sources) == 1 else "mixed_provider_volume"
+        )
+        obv = 0.0
+        for index in range(1, len(closes)):
+            if closes[index] > closes[index - 1]:
+                obv += volumes[index]
+            elif closes[index] < closes[index - 1]:
+                obv -= volumes[index]
+        typical = [(highs[i] + lows[i] + closes[i]) / 3.0 for i in range(len(bars))]
+        raw_flow = [typical[i] * volumes[i] for i in range(len(bars))]
+        positive_flow = sum(raw_flow[i] for i in range(max(1, len(bars) - 14), len(bars))
+                            if typical[i] > typical[i - 1])
+        negative_flow = sum(raw_flow[i] for i in range(max(1, len(bars) - 14), len(bars))
+                            if typical[i] < typical[i - 1])
+        money_ratio = positive_flow / negative_flow if negative_flow > 0 else None
+        mfi = (
+            100.0 - 100.0 / (1.0 + money_ratio)
+            if money_ratio is not None else (100.0 if positive_flow > 0 else 50.0)
+        )
+        mf_multiplier = [
+            ((2.0 * closes[i] - highs[i] - lows[i]) / (highs[i] - lows[i]))
+            if highs[i] > lows[i] else 0.0
+            for i in range(len(bars))
+        ]
+        volume_window = volumes[-20:]
+        flow_window = [mf_multiplier[i] * volumes[i] for i in range(len(bars) - 20, len(bars))]
+        volume_sum = sum(volume_window)
+        if volume_sum > 0:
+            volume["cmf"] = sum(flow_window) / volume_sum
+        volume["obv"] = obv
+        volume["mfi"] = mfi
+        volume["accumulation_distribution"] = sum(
+            mf_multiplier[i] * volumes[i] for i in range(len(bars))
+        )
+        if len(volumes) >= 11 and volumes[-11] > 0:
+            volume["volume_roc"] = (volumes[-1] / volumes[-11] - 1.0) * 100.0
+        if volume_sum > 0:
+            volume["vwap"] = sum(typical[i] * volumes[i] for i in range(len(bars) - 20, len(bars))) / volume_sum
+            volume["vwma_20"] = sum(
+                closes[i] * volumes[i] for i in range(len(bars) - 20, len(bars))
+            ) / volume_sum
+            volume["vwma"] = volume["vwma_20"]
+        volume["volume_source"] = source_label
+        volume["volume_is_tick_proxy"] = any("tick" in item.lower() for item in volume_sources)
+        volume["indicator_periods"] = {"mfi": 14, "cmf": 20, "vwap": 20}
+        volume["calculation_method"] = "causal_completed_ohlc_v1"
+
+    output: list[Evidence] = []
+    if momentum:
+        output.append(_record(
+            symbol, timeframe, EvidenceDomain.MOMENTUM, "technical_momentum",
+            f"{timeframe} completed-bar technical momentum and trend measurements.",
+            momentum, source_epoch=source_epoch,
+        ))
+    if volatility:
+        output.append(_record(
+            symbol, timeframe, EvidenceDomain.VOLATILITY, "technical_volatility",
+            f"{timeframe} completed-bar volatility and statistical-location measurements.",
+            volatility, source_epoch=source_epoch,
+        ))
+    if volume:
+        output.append(_record(
+            symbol, timeframe, EvidenceDomain.VOLUME, "technical_volume",
+            f"{timeframe} provider-volume indicators; source={volume.get('volume_source')}.",
+            volume, source_epoch=source_epoch,
+        ))
+    return output
 
 
 def _record(
@@ -190,6 +563,12 @@ def _record(
         timestamp_epoch=sampled_at,
         timestamp_iso=timestamp_iso,
         relevance_horizon_seconds=max(3 * seconds, 180.0),
+        source_timestamp_epoch=source_epoch if known_source_time else None,
+        source_timestamp_verified=known_source_time,
+        data_basis="completed_ohlc",
+        provisional=False,
+        independence_group=f"ohlc:{str(symbol or '').upper()}:{timeframe}",
+        measurement_version="market-lens-v1",
     )
 
 
@@ -398,6 +777,12 @@ def analyze_market_frames(
             source_epoch=source_epoch,
         ))
 
+        # Broad technical measurements are emitted as evidence only. They
+        # never select a side or authorize an opportunity.
+        output.extend(_technical_indicator_evidence(
+            symbol, timeframe, bars, source_epoch,
+        ))
+
         # Volume is included only when the selected broker actually supplies it.
         volumes = [bar["volume"] for bar in bars if "volume" in bar]
         if len(volumes) >= 5 and "volume" in current:
@@ -419,7 +804,8 @@ def analyze_market_frames(
                     "volume_ratio": volume_ratio,
                     "expansion": volume_ratio >= 1.25,
                     "volume_state": "expanding" if volume_ratio >= 1.25 else "baseline_or_lower",
-                    "volume_source": "broker_frame",
+                    "volume_source": current.get("volume_source", "unknown_volume"),
+                    "volume_is_tick_proxy": "tick" in str(current.get("volume_source", "")).lower(),
                 },
                 source_epoch=source_epoch,
             ))

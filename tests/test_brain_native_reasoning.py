@@ -18,6 +18,7 @@ Pure standard library.
 """
 
 import pytest
+import time
 
 from cognition.brain import CognitiveBrain
 from cognition.brain_reasoning import (
@@ -45,7 +46,8 @@ class _Opinion:
         # tests exercise native/advisor integration, not the legacy-scalar path).
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "quality": confidence, "asymmetry": confidence,
+              "candidate_family": "continuation",
+              "horizon": "M5", "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
         )
@@ -73,7 +75,13 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
         observation=f"{domain} observer measurement: {dict(measurements)}",
         confidence=conf,
         uncertainty=1.0 - conf,
-        measurements=dict(measurements),
+        measurements={
+            **dict(measurements),
+            # This test fixture models an explicitly M5 candidate horizon.
+            "opportunity_horizon": "M5",
+        },
+        timestamp_epoch=time.time(),
+        source_timestamp_epoch=time.time(),
         relevance_horizon_seconds=900.0,
     )
 
@@ -139,28 +147,23 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         timestamp_epoch=stamp,
         relevance_horizon_seconds=900.0,
     ))
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(ms.symbol, side, horizon_seconds=300)
     ms.add(Evidence(
-        source_module="validation.out_of_sample_probability_calibration.test_fixture",
+        source_module="calibration_producer.test_fixture",
         domain="historical_analogue", symbol=ms.symbol,
-        observation="synthetic direction-specific calibration for admission tests",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True,
-            "source_verified": True, "out_of_sample": True,
-            "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": side,
-            "win_probability": 0.72, "sample_count": 240,
-            "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "synthetic_isotonic",
-            "calibration_id": "unit-test-holdout",
-        },
-        timestamp_epoch=stamp, relevance_horizon_seconds=900.0,
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
     ))
     return ms
 
 
 def _with_verified_council(ms, *, responded=2, available=2, total=2):
+    stamp = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol=ms.symbol, observation="fresh test cost estimate",
@@ -170,6 +173,7 @@ def _with_verified_council(ms, *, responded=2, available=2, total=2):
             "cost_verified": True,
             "cost_source": "simulated live quote for test",
         },
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     ms.add(Evidence(
@@ -439,6 +443,8 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         contradicting_patterns=[],
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
+        hypothesis_kind="continuation",
+        horizon="M5",
     )
     brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)

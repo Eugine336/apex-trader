@@ -17,6 +17,7 @@ Executable assertions for the six violations addressed in this session:
 """
 
 import json
+import time
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
@@ -49,9 +50,16 @@ class _Opinion:
         # opportunity so origination flows through a structured object; these
         # tests exercise the quorum / coverage / degradation gates.
         self.opportunities = (
-            [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "quality": confidence, "asymmetry": confidence,
-              "evidence_strength": confidence}]
+            [{
+                "id": "auto",
+                "direction": direction,
+                "state": "ACTIVE",
+                "candidate_family": "continuation",
+                "horizon": "M5",
+                "quality": confidence,
+                "asymmetry": confidence,
+                "evidence_strength": confidence,
+            }]
             if str(direction).upper() in ("LONG", "SHORT") else []
         )
         self.preferred_opportunity_id = "auto"
@@ -87,11 +95,15 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol=symbol, observation="fresh test execution-cost estimate",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     add_market_geometry(ms, "LONG")
@@ -115,7 +127,11 @@ def test_v3_brain_declines_when_only_one_advisor_responded():
 def test_v3_brain_acts_when_two_advisors_responded():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                            min_advisors_for_action=2)
-    out = brain.reason(_state_with_advisors(2, 2, 3))
+    state = _state_with_advisors(2, 2, 3)
+    out = brain.reason(state)
+    assert out.decision.questions_answered.get("expected_return_verification", "").startswith(
+        "VERIFIED"
+    ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.campaign is not None and out.campaign.direction == "LONG"
     assert out.decision.questions_answered.get("advisor_quorum", "").startswith("MET")
@@ -259,11 +275,15 @@ def _state_domains(n, *, symbol="XAUUSD"):
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol=symbol, observation="fresh test execution-cost estimate",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     add_market_geometry(ms, "LONG")

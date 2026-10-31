@@ -84,6 +84,44 @@ def test_snapshot_to_evidence_carries_chart_non_directional():
     assert "chart XAUUSD" in e.observation
 
 
+def test_source_time_requires_explicit_verified_broker_tick():
+    from datetime import datetime, timezone
+
+    timestamp = datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)
+    candles = {"M5": _uptrend()}
+
+    verified = SimpleNamespace(
+        bid=104.0, ask=104.2, mid=104.1,
+        timestamp=timestamp, source_timestamp_verified=True,
+    )
+    verified_evidence = snapshot_to_evidence(
+        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
+    )[0]
+    assert verified_evidence.source_timestamp_verified is True
+    assert verified_evidence.source_timestamp_epoch == timestamp.timestamp()
+
+    unverified = SimpleNamespace(
+        bid=104.0, ask=104.2, mid=104.1,
+        timestamp=timestamp, source_timestamp_verified=False,
+    )
+    unverified_evidence = snapshot_to_evidence(
+        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
+    )[0]
+    assert unverified_evidence.source_timestamp_verified is False
+    assert unverified_evidence.source_timestamp_epoch is None
+
+    naive = SimpleNamespace(
+        bid=104.0, ask=104.2, mid=104.1,
+        timestamp=datetime(2026, 10, 31, 12, 0, 0),
+        source_timestamp_verified=True,
+    )
+    naive_evidence = snapshot_to_evidence(
+        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
+    )[0]
+    assert naive_evidence.source_timestamp_verified is False
+    assert naive_evidence.source_timestamp_epoch is None
+
+
 def test_downtrend_is_also_non_directional():
     snap = build_price_snapshot("EURUSD", {"M5": _downtrend(), "M15": _downtrend()})
     ev = snapshot_to_evidence("EURUSD", snap)

@@ -397,3 +397,29 @@ New tests cover temporal/timeframe activation, conflicting structures, exact sym
 
 ### Calibration data-integrity finding
 The current durable campaign memory is not a valid probability-training corpus: it stores completed campaigns only, which are selected by the existing entry gates and omit rejected/deferred candidates. The decision-provenance event pair is valuable exact-ticket lineage for opened trades, but it explicitly records predictive validity as unvalidated and false; it does not resolve the full candidate universe or supply independent holdout labels. The existing instrument CalibrationEngine learns ATR/spread/zone/structure statistics, not direction-specific win probabilities. Consequently, the calibration producer cannot be completed honestly by simply wiring one of these existing stores into the Brain. The missing dependency is a selection-aware candidate/outcome ledger with fixed-horizon labels and chronological leakage-safe validation. Until that exists, the directional calibration gate remains fail-closed. In addition, the Brain currently validates declared calibration flags but has no structurally enforced producer/attestation boundary; `source_verified=true` is not independent proof. A dedicated producer must own issuance and bind the artifact to its dataset, split protocol, symbol, direction and validation results before production trust can be claimed.
+
+
+
+## System 1 + System 4 concurrent implementation update — 2026-10-31
+
+This update supersedes the 2026-10-30 statement above that the candidate ledger and producer did not yet exist. The implementation is on draft PR #798, branch `redesign/system1-system4-unified-intelligence`; it is not merged or accepted.
+
+### System 1 changes
+- Cognitive contracts normalize their identity version to the canonical source; MarketState, DecisionPackage and CampaignSpecification also normalize the identity statement.
+- Repository audit checks the single definition of identity statement/version/non-negotiable principles, identity fields on all cognitive contracts, Brain-only construction of DecisionPackage/CampaignSpecification, pure-analyst import restrictions and the existing ActionExecutor/platform broker-mutation boundary.
+- Ingestion time and verified source time are distinct. Evidence with only `timestamp_epoch` is not marked source-time verified. Decision snapshots do not backfill source time from ingestion time.
+- The execution-bound decision snapshot requires every included fresh evidence row to carry an explicitly verified source timestamp. Incomplete snapshots remain incomplete and cannot be silently repaired with later data.
+
+### System 4 changes
+- The durable ledger captures opportunities and native hypotheses from stand-down/observe decisions, and records final candidate dispositions.
+- Fixed-horizon outcome labels preserve exact reference and outcome quote provenance and are recomputed by the producer from verified prices and decision-time risk geometry.
+- The producer validates exact candidate, decision, symbol, side, candidate-family and horizon lineage; source-time ordering; fresh non-provisional market evidence; quote/geometry evidence IDs; and final disposition.
+- Calibration is scoped by a controlled, explicit candidate family in addition to symbol, side and horizon. Unclassified directional candidates remain observable and block calibration rather than being silently discarded.
+- Brain consumes only an exact producer-registry artifact for the same family/symbol/side/horizon, and uses the conservative lower of development and untouched-holdout expected R less verified cost. A favourable-direction base rate is not treated as a target-before-stop win probability.
+- The advisor JSON contract now requests the controlled candidate-family field. Native hypotheses already carry an explicit family type; the family is not inferred from thesis prose.
+
+### Current validation boundary
+- Tests have been added/updated but have not been run in this session. The latest PR head has no GitHub Actions workflow runs or commit status checks reported, and a local checkout/test runtime was unavailable.
+- The code is not proven syntactically valid or runtime-correct yet. Do not mark either system accepted, do not merge, and do not authorize live trading based on this implementation record.
+- The family-conditional estimator is a historical expected-return estimator with walk-forward and untouched-holdout checks. It does not establish profitability or current-regime predictive edge without further independent statistical review.
+- No broker orders, `.env` edits, runtime database mutation/deletion or credential changes were performed.

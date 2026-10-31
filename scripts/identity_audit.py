@@ -36,6 +36,25 @@ BROKER_MUTATION_NAMES = {
     "close_position",
 }
 
+# Pure analytical producers may measure and describe, but cannot import an
+# execution gateway, broker adapter or the Brain/loop authority themselves.
+ANALYST_ONLY_MODULES = {
+    "cognition/market_lenses.py",
+    "cognition/analytical_knowledge.py",
+    "cognition/strategy_knowledge.py",
+    "cognition/pattern_rules.py",
+    "cognition/market_context.py",
+    "cognition/brain_reasoning.py",
+    "cognition/opportunity_geometry.py",
+}
+FORBIDDEN_ANALYST_IMPORTS = (
+    "execution", "platforms", "broker", "brokers",
+    "cognition.brain", "cognition.loop",
+)
+CANONICAL_DECISION_CONSTRUCTORS = {
+    "DecisionPackage", "CampaignSpecification",
+}
+
 
 def _python_files() -> list[Path]:
     files: list[Path] = []
@@ -74,6 +93,18 @@ def _single_assignment(path: Path, name: str) -> bool:
     return definitions == [Path("cognition/identity.py")]
 
 
+def _class_has_field(tree: ast.AST, class_name: str, field_name: str) -> bool:
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return any(
+                isinstance(member, ast.AnnAssign)
+                and isinstance(member.target, ast.Name)
+                and member.target.id == field_name
+                for member in node.body
+            )
+    return False
+
+
 def _contains_name(node: ast.AST, name: str) -> bool:
     return any(isinstance(child, ast.Name) and child.id == name for child in ast.walk(node))
 
@@ -82,8 +113,13 @@ def audit_repository() -> list[str]:
     """Return all known static conformance violations (empty means clean)."""
     violations: list[str] = []
     identity_path = ROOT / "cognition" / "identity.py"
-    if not _single_assignment(identity_path, "IDENTITY_STATEMENT"):
-        violations.append("IDENTITY_STATEMENT must have exactly one definition in cognition/identity.py")
+    for identity_name in (
+        "IDENTITY_STATEMENT", "IDENTITY_VERSION", "NON_NEGOTIABLE_PRINCIPLES",
+    ):
+        if not _single_assignment(identity_path, identity_name):
+            violations.append(
+                f"{identity_name} must have exactly one definition in cognition/identity.py"
+            )
 
     documents = [
         ROOT / "README.md",
@@ -128,6 +164,37 @@ def audit_repository() -> list[str]:
             continue
 
         relative = path.relative_to(ROOT).as_posix()
+        if relative in ANALYST_ONLY_MODULES:
+            for node in ast.walk(tree):
+                imported = ""
+                if isinstance(node, ast.Import):
+                    imported = ",".join(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    imported = str(node.module or "")
+                if any(
+                    imported == prefix or imported.startswith(prefix + ".")
+                    for prefix in FORBIDDEN_ANALYST_IMPORTS
+                ):
+                    violations.append(
+                        f"{relative}:{node.lineno} analytical producer imports forbidden authority {imported}"
+                    )
+
+        # Decision and campaign records are authored only by the canonical Brain.
+        # Other modules may consume these inert contracts but cannot construct
+        # alternate market-decision authorities.
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if called in CANONICAL_DECISION_CONSTRUCTORS and relative != "cognition/brain.py":
+                violations.append(
+                    f"{relative}:{node.lineno} constructs {called} outside cognition/brain.py"
+                )
+
         # Broker-mutating adapters are confined to the canonical execution sink
         # and platform connector boundary. Simulation-only trade managers are
         # excluded because their methods mutate in-memory replay state, not live
@@ -150,6 +217,26 @@ def audit_repository() -> list[str]:
                     f"{relative}:{node.lineno} calls broker mutation "
                     f"{node.func.attr} outside the ActionExecutor/platform boundary"
                 )
+
+    contracts_path = ROOT / "cognition" / "contracts.py"
+    try:
+        contracts_tree = ast.parse(contracts_path.read_text(encoding="utf-8"))
+        required_identity_fields = {
+            "Evidence": ("identity_version",),
+            "MarketState": ("identity_version", "identity"),
+            "Hypothesis": ("identity_version",),
+            "Opportunity": ("identity_version", "identity"),
+            "DecisionPackage": ("identity_version", "identity"),
+            "CampaignSpecification": ("identity_version", "identity"),
+        }
+        for class_name, fields in required_identity_fields.items():
+            for field_name in fields:
+                if not _class_has_field(contracts_tree, class_name, field_name):
+                    violations.append(
+                        f"{class_name} must carry canonical identity field {field_name}"
+                    )
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        violations.append("cognition/contracts.py could not be audited")
 
     intents_path = ROOT / "execution" / "intents.py"
     try:
