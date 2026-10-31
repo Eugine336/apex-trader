@@ -201,6 +201,10 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
             measurements={
                 "developing": True,
                 "source_timestamp_epoch": source_epoch if source_verified else None,
+                "model_generated_at_epoch": (
+                    _num(b.get("model_generated_at_epoch"))
+                    if _num(b.get("model_generated_at_epoch")) > 0.0 else None
+                ),
                 "conflict_score": round(conflict, 4),
                 "alignment_degree": round(alignment, 4),
                 "trend_strength": round(strength, 4),
