@@ -1115,19 +1115,38 @@ class CognitionLoop:
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
-            query = getattr(store, "query", None)
-            if not callable(query):
-                return
-            snapshots = query(
-                event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
-                symbol=symbol,
-                limit=10000,
-            ) or []
-            outcomes = query(
-                event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
-                symbol=symbol,
-                limit=10000,
-            ) or []
+            query_events = getattr(store, "query_events", None)
+            if callable(query_events):
+                # The operational store returns newest rows first; this avoids
+                # starving recent candidates behind an old 10k-row history.
+                snapshots = query_events(
+                    severity_min="DEBUG",
+                    event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
+                    symbol=symbol,
+                    limit=10000,
+                    offset=0,
+                ) or []
+                outcomes = query_events(
+                    severity_min="DEBUG",
+                    event_types=[COGNITIVE_CANDIDATE_HORIZON_OUTCOME],
+                    symbol=symbol,
+                    limit=10000,
+                    offset=0,
+                ) or []
+            else:
+                query = getattr(store, "query", None)
+                if not callable(query):
+                    return
+                snapshots = query(
+                    event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
+                    symbol=symbol,
+                    limit=10000,
+                ) or []
+                outcomes = query(
+                    event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                    symbol=symbol,
+                    limit=10000,
+                ) or []
             recorded = set()
             for row in outcomes:
                 try:
