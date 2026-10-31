@@ -698,9 +698,13 @@ class Opportunity:
     geometry_evidence_ids: list[str] = field(default_factory=list)
     # Append new metadata after existing fields to preserve positional callers.
     identity: str = IDENTITY_STATEMENT
+    # Explicit analytical family used to keep calibration conditional. Unknown
+    # families remain uncalibrated; thesis prose is never mined for a family label.
+    candidate_family: str = "unclassified"
 
     def __post_init__(self) -> None:
         self.identity_version = IDENTITY_VERSION
+        self.candidate_family = str(self.candidate_family or "unclassified").strip().lower()[:64]
         d = str(self.direction or "FLAT").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else "FLAT"
         self.state = opportunity_state_from(self.state)
@@ -787,6 +791,13 @@ class Opportunity:
             evidence_strength=_clamp01(data.get("evidence_strength")),
             competing_opportunities=_lst("competing_opportunities"),
             is_preferred=bool(oid) and oid == str(preferred_id or ""),
+            candidate_family=str(
+                data.get("candidate_family")
+                or data.get("hypothesis_kind")
+                or data.get("opportunity_type")
+                or data.get("strategy_family")
+                or "unclassified"
+            ),
         )
 
     def to_dict(self) -> dict:
@@ -819,6 +830,7 @@ class Opportunity:
             "is_preferred": bool(self.is_preferred),
             "is_actionable": self.is_actionable,
             "is_forming": self.is_forming,
+            "candidate_family": self.candidate_family,
         }
 
 
