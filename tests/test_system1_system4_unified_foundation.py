@@ -310,3 +310,115 @@ def test_market_lenses_do_not_invent_volume_indicators_without_volume():
         item.source_module.endswith(".technical_volume")
         for item in evidence
     )
+
+
+
+def test_calibration_producer_requires_complete_selection_aware_chronological_data():
+    import json
+
+    from cognition.calibration_artifacts import (
+        CalibrationProducer,
+        resolve_calibration_artifact,
+    )
+
+    class Store:
+        def __init__(self, events):
+            self.events = events
+
+        def query_events(self, *, event_types, symbol, limit=10000, offset=0, **kwargs):
+            rows = [
+                row for row in self.events
+                if row["event_type"] in event_types and row["symbol"] == symbol
+            ]
+            rows.sort(key=lambda row: row["seq"], reverse=True)
+            return rows[offset:offset + limit]
+
+    events = []
+    start = 1_700_000_000.0
+    for index in range(150):
+        decision_epoch = start + index * 600.0
+        decision_id = f"decision-{index}"
+        candidate_id = f"{decision_id}:opportunity:opp-{index}"
+        candidate = {
+            "opportunity_id": f"opp-{index}",
+            "direction": "LONG",
+            "state": "active",
+            "entry_price": 100.0,
+            "stop_price": 99.0,
+            "target_price": 102.0,
+        }
+        snapshot = {
+            "candidate_id": candidate_id,
+            "candidate_kind": "opportunity",
+            "candidate_state_at_decision": "active",
+            "decision_id": decision_id,
+            "decision_epoch": decision_epoch,
+            "symbol": "EURUSD",
+            "candidate": candidate,
+            "reference_quote": {
+                "mid": 100.0,
+                "bid": 99.99,
+                "ask": 100.01,
+                "source_timestamp_epoch": decision_epoch,
+                "evidence_id": f"quote-{index}",
+            },
+            "point_in_time_evidence": [{
+                "evidence_id": f"feature-{index}",
+                "source_timestamp_epoch": decision_epoch,
+                "source_timestamp_verified": True,
+            }],
+        }
+        label = "FAVOURABLE" if index % 2 == 0 else "UNFAVOURABLE"
+        return_r = 0.2 if index % 2 == 0 else -0.1
+        outcome = {
+            "candidate_id": candidate_id,
+            "decision_id": decision_id,
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "horizon_seconds": 300,
+            "observation_status": "OBSERVED",
+            "outcome_label": label,
+            "directional_return_r": return_r,
+            "observed_at_epoch": decision_epoch + 300.0,
+        }
+        disposition = {
+            "candidate_id": candidate_id,
+            "decision_id": decision_id,
+            "symbol": "EURUSD",
+            "disposition": (
+                "PASSED_PORTFOLIO_REVIEW_PENDING_EXECUTION_ADMISSION"
+                if index % 3 == 0 else "REJECTED_BY_BRAIN"
+            ),
+        }
+        for seq, event_type, payload in (
+            (index * 3 + 1, "COGNITIVE_CANDIDATE_SNAPSHOT", snapshot),
+            (index * 3 + 2, "COGNITIVE_CANDIDATE_HORIZON_OUTCOME", outcome),
+            (index * 3 + 3, "COGNITIVE_CANDIDATE_DISPOSITION", disposition),
+        ):
+            events.append({
+                "seq": seq,
+                "event_type": event_type,
+                "symbol": "EURUSD",
+                "severity": "DEBUG",
+                "payload_json": json.dumps(payload),
+            })
+
+    now = start + 149 * 600.0 + 400.0
+    producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
+    artifacts = producer.refresh("EURUSD", now=now)
+    artifact = next(
+        item for item in artifacts
+        if item.direction == "LONG" and item.horizon_seconds == 300
+    )
+    assert artifact.sample_count == 30
+    assert artifact.walk_forward_folds == 3
+    assert artifact.selection_coverage == 1.0
+    assert artifact.expected_return_r == 0.05
+    assert artifact.holdout_expected_return_r == 0.05
+    assert artifact.brier_score == 0.25
+    assert resolve_calibration_artifact(
+        artifact.artifact_id, "EURUSD", "LONG", 300, now=now,
+    ) is artifact
+    assert resolve_calibration_artifact(
+        artifact.artifact_id, "EURUSD", "SHORT", 300, now=now,
+    ) is None
