@@ -246,6 +246,14 @@ def _technical_indicator_evidence(
     ema20 = _ema_series(closes, 20)
     ema26 = _ema_series(closes, 26)
     ema50 = _ema_series(closes, 50)
+    if ema20:
+        momentum["ema"] = ema20[-1]
+    sma20 = _sma(closes, 20)
+    if sma20 is not None:
+        momentum["sma"] = sma20
+    wma20 = _wma(closes, 20)
+    if wma20 is not None:
+        momentum["wma"] = wma20
     if ema20 and ema50 and atr14 and atr14 > 0:
         momentum["ema_spread_atr"] = (ema20[-1] - ema50[-1]) / atr14
     if ema20 and len(ema20) >= 6 and ema20[-6] is not None:
@@ -266,6 +274,7 @@ def _technical_indicator_evidence(
         hull = _wma(hull_inputs, root_period)
         if hull is not None:
             momentum["hma_20"] = hull
+            momentum["hma"] = hull
 
     for period in (2, 14, 21):
         rsi_value = _rsi_value(closes, period)
@@ -307,6 +316,7 @@ def _technical_indicator_evidence(
             ]
             momentum["stochastic_k"] = k_values[-1]
             momentum["stochastic_d"] = _mean(k_values)
+            momentum["stochastic"] = k_values[-1]
 
     if len(bars) >= 25:
         window = 25
@@ -397,8 +407,10 @@ def _technical_indicator_evidence(
                 "bollinger_upper": upper,
                 "bollinger_lower": lower,
                 "bollinger_width": (upper - lower) / max(abs(mean20), 1e-12),
+                "bollinger": (upper - lower) / max(abs(mean20), 1e-12),
                 "bollinger_percent_b": (closes[-1] - lower) / max(upper - lower, 1e-12),
                 "rolling_zscore": (closes[-1] - mean20) / std20,
+                "zscore": (closes[-1] - mean20) / std20,
             })
         if atr20 is not None and ema20:
             volatility["keltner_upper"] = ema20[-1] + 2.0 * atr20
@@ -455,6 +467,7 @@ def _technical_indicator_evidence(
             volume["vwma_20"] = sum(
                 closes[i] * volumes[i] for i in range(len(bars) - 20, len(bars))
             ) / volume_sum
+            volume["vwma"] = volume["vwma_20"]
         volume["volume_source"] = source_label
         volume["volume_is_tick_proxy"] = any("tick" in item.lower() for item in volume_sources)
         volume["indicator_periods"] = {"mfi": 14, "cmf": 20, "vwap": 20}
