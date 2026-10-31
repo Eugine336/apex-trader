@@ -62,6 +62,8 @@ class CalibrationArtifact:
             "calibration_side": self.direction,
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
+            "calibration_scope": "unconditional_symbol_side_horizon_base_rate",
+            "expected_return_method": "development_sample_mean_r",
             "favourable_horizon_probability": self.favourable_probability,
             "probability_semantics": "favourable_directional_return_at_fixed_horizon",
             "expected_return_r": self.expected_return_r,
@@ -128,9 +130,9 @@ class CalibrationProducer:
     """Build simple, auditable base-rate calibrations from the full candidate ledger.
 
     This is deliberately not a feature-search or model-fitting system. It emits
-    only symbol/side/horizon base-rate probabilities after chronological
-    walk-forward checks and a final untouched holdout. It cannot establish a
-    predictive edge; it only supplies a validated probability baseline.
+    symbol/side/horizon favourable-return base rates and development-sample mean
+    R after chronological walk-forward checks and a final untouched holdout.
+    It cannot establish a predictive edge or current-regime conditionality.
     """
 
     def __init__(
