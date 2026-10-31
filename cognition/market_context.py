@@ -183,7 +183,7 @@ def analyze_market_context(evidence: Iterable[Any], symbol: str) -> dict:
             "calibration_id", "calibration_artifact_id", "calibration_horizon_seconds",
             "dataset_digest", "walk_forward_folds",
             "selection_coverage", "producer_attested", "producer_version",
-            "validation_protocol", "source_timestamp_epoch", "data_basis",
+            "validation_protocol", "source_timestamp_epoch", "source_timestamp_verified", "data_basis",
             "independence_group", "lineage_ids", "measurement_version",
             "sma", "sma_10", "sma_20", "sma_50", "sma_100", "sma_200",
             "ema", "ema_12", "ema_20", "ema_26", "ema_50", "ema_100", "ema_200",
