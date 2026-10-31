@@ -230,7 +230,7 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc. It implement
 | 1. Canonical identity and contracts | **Foundation present; audit required** | Canonical identity and contract code exist; current whole-repository conformance still requires a fresh executed audit. |
 | 2. Market intelligence and evidence integrity | **IN PROGRESS — NOT ACCEPTED** | PR #793 merged; durable entry/outcome provenance and exact-ticket recovery are on main. Full acceptance remains open: inherited silent-exception audit, broker-agnostic calendar/connector capabilities, verified financing and independent historical validation. |
 | 3. Native market reasoning | **IMPLEMENTED AND MERGED — ACCEPTANCE GATES TRACKED** | PR #796 merged at 94a01c7. Python 3.11/3.12 each reported 3,963 passed and the same inherited 180-handler audit failure as the pre-merge baseline. No new test regression in the baseline comparison. |
-| 4. Opportunity discovery and payoff geometry | **IN PROGRESS — NOT ACCEPTED** | PR #797 draft. Geometry now requires exact symbol, timeframe/temporal consistency, current structural activation and verified reclaim for sweep reversals; every directional candidate receives independent geometry. Directional action now requires verified direction-specific out-of-sample probability calibration in addition to fresh costs. Full CI and adversarial scenario validation are pending. |
+| 4. Opportunity discovery and payoff geometry | **IMPLEMENTATION MERGED — NOT ACCEPTED** | PR #797 merged to `main` at `b141881`. Geometry and qualification changes are integrated. Lint and Gold desk Python 3.11/3.12 pass; full suites each report 3,990 passed and one inherited failure: 180 unclassified silent exception handlers, identical to the pre-merge `main` baseline. Acceptance remains blocked on the durable selection-aware outcome/calibration producer, producer attestation, and full identity/adversarial audit. |
 | 5. Compliance and portfolio allocation | **NOT STARTED — gated on System 4** | No acceptance evidence recorded. Existing code must be audited when reached. |
 | 6. Execution integrity and broker adapters | **NOT STARTED — gated on System 5** | Some shared executor protections already exist; system-wide acceptance is not recorded. |
 | 7. Position operations and trade lifecycle | **NOT STARTED — gated on System 6** | No end-to-end lifecycle acceptance evidence recorded. |
@@ -308,7 +308,7 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 
 ## System 4 implementation record — 2026-10-30
 
-**Status: IN PROGRESS — NOT ACCEPTED.** Branch `redesign/system4-opportunity-qualification`; draft PR #797.
+**Status: IMPLEMENTATION MERGED — NOT ACCEPTED.** PR #797 was merged by the repository owner into `main` at `b141881641746f9f64e94cbe246d59684bb3c3f5` on 2026-10-31. Merge is integration, not System 4 acceptance.
 
 ### Existing architecture audit
 - `cognition/opportunity_geometry.py` already derived entry/stop/target from fresh market-lens structural observations and supported breakout, trend/momentum, range rotation and sweep/reclaim activation. The audit found activation could be borrowed from any still-fresh older structure, momentum was not timeframe-aligned, missing evidence symbols inherited the state symbol, sweep-side labels could qualify without a measured reclaim, and same-time structural conflicts could be resolved by arrival order.
@@ -336,7 +336,7 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 
 ### Outstanding acceptance gates
 - The runtime calibration producer is not yet demonstrated end-to-end from durable decision/outcome history into direction-specific, symbol-scoped calibration evidence. Until that producer and its provenance are integrated, new directional exposure remains blocked by design.
-- Full Python 3.11/3.12 CI, focused Gold desk workflow after the latest scenario tests, canonical identity audit and adversarial trend/range/reversal/low-liquidity/conflict/unfamiliar scenarios must pass.
+- Focused Gold desk tests and lint pass on Python 3.11/3.12. Full Python 3.11/3.12 suites each report 3,990 passed and one failure: the repository-wide silent-exception audit finds 180 unclassified handlers. The pre-merge `main` baseline had the same 180-handler failure; this is inherited, not introduced by PR #797. The full identity audit did not run after the test step failed; adversarial trend/range/reversal/low-liquidity/conflict/unfamiliar coverage still requires a separate full audit.
 - Verify every opportunity's stable identity, lifecycle, geometry lineage and qualification status through the canonical decision and downstream campaign record.
 - Verify opportunity discovery across brokers and instruments without broker-specific assumptions; this remains dependent on System 2 connector capability gates.
 
