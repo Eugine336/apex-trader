@@ -116,6 +116,14 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
             relevance_horizon_seconds=60.0,
         ))
     for e in extras:
+        if (
+            getattr(e, "domain", None) == EvidenceDomain.EXECUTION_QUALITY
+            and getattr(e, "source_timestamp_epoch", None) is None
+        ):
+            # Test-only cost fixtures model a quote whose source time is known.
+            e.timestamp_epoch = stamp
+            e.source_timestamp_epoch = stamp
+            e.source_timestamp_verified = True
         ms.add(e)
     # EV/origination tests use activated long opportunities, so provide the
     # fresh completed-bar structure required to derive and validate payoff geometry.
