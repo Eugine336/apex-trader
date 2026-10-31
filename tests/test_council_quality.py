@@ -29,6 +29,7 @@ def _decide(opinion, uncertainty=0.1):
     if not getattr(opinion, "opportunities", None) and opinion.direction in ("LONG", "SHORT"):
         opinion.opportunities = [{
             "id": "auto", "direction": opinion.direction, "state": "ACTIVE",
+            "candidate_family": "test_family",
             "horizon": "M5",
             "quality": opinion.confidence, "asymmetry": opinion.confidence,
             "evidence_strength": opinion.confidence,
