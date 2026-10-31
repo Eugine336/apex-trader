@@ -275,13 +275,15 @@ def test_market_lenses_emit_causal_indicator_families_with_volume_provenance():
     assert {"technical_momentum", "technical_volatility", "technical_volume"} <= set(technical)
 
     momentum = technical["technical_momentum"].measurements
-    assert {"rsi", "macd", "macd_signal", "macd_histogram", "adx",
-            "plus_di", "minus_di", "sma_20", "ema_20", "ema_50",
-            "stochastic_k", "cci", "williams_r", "roc_10"} <= set(momentum)
+    assert {"rsi", "rsi_fast", "rsi_slow", "stoch_rsi", "macd",
+            "macd_signal", "macd_histogram", "adx", "plus_di", "minus_di",
+            "sma_20", "ema_20", "ema_50", "wma", "hma", "stochastic_k",
+            "cci", "williams_r", "roc", "roc_10", "trend_strength"} <= set(momentum)
     volatility = technical["technical_volatility"].measurements
-    assert {"atr", "atr_percentile", "bollinger_upper", "bollinger_lower",
-            "bollinger_width", "keltner_upper", "keltner_lower",
-            "donchian_high", "donchian_low", "rolling_zscore"} <= set(volatility)
+    assert {"atr", "atr_percentile", "parkinson_volatility",
+            "bollinger_upper", "bollinger_lower", "bollinger_width",
+            "keltner", "keltner_upper", "keltner_lower", "donchian_high",
+            "donchian_low", "rolling_zscore", "mean_distance"} <= set(volatility)
     volume = technical["technical_volume"].measurements
     assert {"obv", "mfi", "cmf", "vwap", "volume_source",
             "volume_is_tick_proxy"} <= set(volume)
