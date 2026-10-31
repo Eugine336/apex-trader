@@ -365,12 +365,11 @@ class BrainReasoner:
                 "domain": domain,
                 "source_module": str(getattr(item, "source_module", "") or ""),
                 "independence_group": str(getattr(item, "independence_group", "") or ""),
-                "domain": str(getattr(getattr(item, "domain", ""), "value", getattr(item, "domain", ""))),
                 "symbol": str(getattr(item, "symbol", "") or ""),
                 "timeframe": str(
                     (getattr(item, "measurements", {}) or {}).get("timeframe", "")
                     if isinstance(getattr(item, "measurements", {}), dict) else ""
-                ),
+                ).upper(),
                 "source_timestamp_epoch": _num(getattr(
                     item, "source_timestamp_epoch", None
                 )),
@@ -380,9 +379,6 @@ class BrainReasoner:
                 "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
                 "confidence": _clamp01(getattr(item, "confidence", 0.0)),
                 "uncertainty": _clamp01(getattr(item, "uncertainty", 1.0), 1.0),
-                "timeframe": str(
-                    getattr(item, "measurements", {}).get("timeframe", "") or ""
-                ).upper(),
                 "opportunity_horizon": str(
                     getattr(item, "measurements", {}).get("opportunity_horizon", "") or ""
                 ),
