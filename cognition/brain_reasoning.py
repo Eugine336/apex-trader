@@ -37,6 +37,7 @@ from cognition.identity import IDENTITY_VERSION
 from cognition.market_context import analyze_market_context
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
+from cognition.analytical_knowledge import assess_analytical_knowledge, knowledge_coverage
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -96,6 +97,10 @@ class EvidenceAnalysis:
 
     # Context-sensitive analytical lenses. These are not trade signals.
     strategy_lenses: list[dict] = field(default_factory=list)
+    # Broad evidence-grounded knowledge registry coverage. This is analytical
+    # context only; it cannot create direction, probability or execution authority.
+    analytical_knowledge: list[dict] = field(default_factory=list)
+    knowledge_coverage: dict = field(default_factory=dict)
     # Instrument economics, sessions, cross-market associations, historical
     # validation status, unfamiliar observations and epistemic limits.
     market_context: dict = field(default_factory=dict)
@@ -142,6 +147,8 @@ class EvidenceAnalysis:
             "missing_information": list(self.missing_information),
             "evidence_uncertainty": round(self.evidence_uncertainty, 4),
             "strategy_lenses": [dict(item) for item in self.strategy_lenses],
+            "analytical_knowledge": [dict(item) for item in self.analytical_knowledge],
+            "knowledge_coverage": dict(self.knowledge_coverage),
             "market_context": dict(self.market_context),
             "evidence_index": [dict(item) for item in self.evidence_index],
             "pattern_evidence_ids": {
@@ -394,6 +401,8 @@ class BrainReasoner:
         missing = self._missing(domain_coverage, informative_domains)
         agreement = self._agreement(names, contradictions, regime)
         strategy_lenses = assess_strategy_lenses(fresh, names, regime)
+        analytical_knowledge = assess_analytical_knowledge(fresh, regime)
+        knowledge_coverage_record = knowledge_coverage(analytical_knowledge)
         # Preserve explicit unknowns and epistemic limits. This context is
         # descriptive evidence, not a strategy selector or action authority.
         market_context = analyze_market_context(fresh, getattr(market_state, "symbol", ""))
@@ -431,6 +440,8 @@ class BrainReasoner:
             missing_information=missing,
             evidence_uncertainty=ev_unc,
             strategy_lenses=strategy_lenses,
+            analytical_knowledge=analytical_knowledge,
+            knowledge_coverage=knowledge_coverage_record,
             market_context=market_context,
             evidence_index=evidence_index,
             pattern_evidence_ids=pattern_evidence_ids,
