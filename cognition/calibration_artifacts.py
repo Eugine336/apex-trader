@@ -34,6 +34,7 @@ class CalibrationArtifact:
     artifact_id: str
     symbol: str
     direction: str
+    candidate_family: str
     horizon_seconds: int
     # Probability of a favourable directional return at the declared horizon;
     # this is not the probability of hitting a target before a stop.
@@ -60,6 +61,7 @@ class CalibrationArtifact:
             "calibration_artifact_id": self.artifact_id,
             "calibration_id": self.artifact_id,
             "calibration_side": self.direction,
+            "candidate_family": self.candidate_family,
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
             "calibration_scope": "unconditional_symbol_side_horizon_base_rate",
@@ -100,6 +102,7 @@ def _register_artifact(artifact: CalibrationArtifact) -> None:
             if (
                 current.symbol == artifact.symbol
                 and current.direction == artifact.direction
+                and current.candidate_family == artifact.candidate_family
                 and current.horizon_seconds == artifact.horizon_seconds
             ):
                 _REGISTRY.pop(key, None)
@@ -110,6 +113,7 @@ def resolve_calibration_artifact(
     artifact_id: str,
     symbol: str,
     direction: str,
+    candidate_family: str,
     horizon_seconds: int,
     *,
     now: Optional[float] = None,
@@ -126,6 +130,7 @@ def resolve_calibration_artifact(
     if (
         artifact.symbol != str(symbol or "").strip().upper()
         or artifact.direction != str(direction or "").strip().upper()
+        or artifact.candidate_family != str(candidate_family or "").strip().lower()
         or artifact.horizon_seconds != int(horizon_seconds)
         or current < artifact.issued_at_epoch
         or current > artifact.expires_at_epoch
@@ -266,7 +271,7 @@ class CalibrationProducer:
                 if candidate_id:
                     disposition_map[candidate_id] = payload
 
-            groups: dict[tuple[str, str], list[dict]] = {}
+            groups: dict[tuple[str, str, str], list[dict]] = {}
             invalid_directional_candidates = 0
             for candidate_id, payload in candidate_map.items():
                 candidate = payload.get("candidate") or {}
@@ -279,6 +284,15 @@ class CalibrationProducer:
                 if direction not in {"LONG", "SHORT"}:
                     continue
                 candidate_kind = str(payload.get("candidate_kind", "") or "")
+                candidate_family = str(
+                    candidate.get("candidate_family")
+                    or candidate.get("hypothesis_kind")
+                    or candidate.get("opportunity_type")
+                    or candidate.get("strategy_family")
+                    or "unclassified"
+                ).strip().lower()
+                if candidate_family in {"", "unclassified", "unknown"}:
+                    continue
                 if candidate_kind != "opportunity" and not (
                     candidate_kind == "hypothesis"
                     and candidate.get("calibration_candidate") is True
@@ -328,6 +342,7 @@ class CalibrationProducer:
                     "decision_id": decision_id,
                     "decision_epoch": decision_epoch,
                     "direction": direction,
+                    "candidate_family": candidate_family,
                     "candidate": candidate,
                     "payload": payload,
                     "quote_valid": quote_valid,
@@ -335,7 +350,7 @@ class CalibrationProducer:
                     "provenance_valid": self._valid_point_in_time(payload),
                     "disposition_valid": candidate_id in disposition_map,
                 }
-                groups.setdefault((decision_id, direction), []).append(row)
+                groups.setdefault((decision_id, direction, candidate_family), []).append(row)
             artifacts: list[CalibrationArtifact] = []
             for direction in ("LONG", "SHORT"):
                 for horizon in (300, 900, 3600, 14400, 86400):
@@ -343,7 +358,7 @@ class CalibrationProducer:
                     total_matured = 0
                     observed_groups = 0
                     missed_groups = 0
-                    for (decision_id, side), members in groups.items():
+                    for (decision_id, side, family), members in groups.items():
                         if side != direction:
                             continue
                         decision_epoch = min(item["decision_epoch"] for item in members)
@@ -490,12 +505,13 @@ class CalibrationProducer:
                         json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
                     ).hexdigest()
                     artifact_id = hashlib.sha256(
-                        f"{sym}|{direction}|{horizon}|{digest}|chronological_base_rate_fixed_horizon_v1".encode("utf-8")
+                        f"{sym}|{direction}|{family}|{horizon}|{digest}|conditional_family_fixed_horizon_v1".encode("utf-8")
                     ).hexdigest()
                     artifact = CalibrationArtifact(
                         artifact_id=artifact_id,
                         symbol=sym,
                         direction=direction,
+                        candidate_family=family,
                         horizon_seconds=horizon,
                         favourable_probability=base_probability,
                         expected_return_r=expected_return_r,
@@ -533,8 +549,8 @@ class CalibrationProducer:
                 domain=EvidenceDomain.HISTORICAL_ANALOGUE,
                 symbol=sym,
                 observation=(
-                    f"Producer-attested chronological fixed-horizon calibration "
-                    f"for {item.direction}, horizon={item.horizon_seconds}s."
+                    f"Producer-attested family-conditional fixed-horizon calibration "
+                    f"for {item.direction}/{item.candidate_family}, horizon={item.horizon_seconds}s."
                 ),
                 confidence=0.0,
                 uncertainty=0.0,
@@ -543,7 +559,7 @@ class CalibrationProducer:
                 source_timestamp_epoch=item.issued_at_epoch,
                 relevance_horizon_seconds=self.artifact_ttl,
                 data_basis="durable_selection_aware_candidate_outcomes",
-                independence_group=f"calibration:{sym}:{item.direction}:{item.horizon_seconds}",
+                independence_group=f"calibration:{sym}:{item.direction}:{item.candidate_family}:{item.horizon_seconds}",
                 measurement_version=item.producer_version,
             )
             for item in artifacts
