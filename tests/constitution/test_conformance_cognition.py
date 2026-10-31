@@ -184,7 +184,7 @@ def _opinion(direction: str = "LONG", confidence: float = 0.8, **overrides):
         # conformance tests exercise the EV / act gate, not the legacy-scalar path.
         opportunities=(
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "candidate_family": "test_family",
+              "candidate_family": "continuation",
               "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
