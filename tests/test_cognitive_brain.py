@@ -142,7 +142,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
     # Test-only calibration record; production evidence must come from durable outcomes.
     ms.add(Evidence(
         source_module="validation.test_out_of_sample_calibration",
-        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="symbol",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
         observation="verified test-only direction-specific calibration",
         confidence=0.9, uncertainty=0.1,
         measurements={
