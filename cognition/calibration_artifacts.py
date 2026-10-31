@@ -442,6 +442,34 @@ class CalibrationProducer:
                             ):
                                 outcomes_match = False
                                 break
+                            outcome_quote = outcome.get("outcome_quote") or {}
+                            try:
+                                outcome_quote_mid = float(outcome_quote.get("mid"))
+                                outcome_quote_bid = float(outcome_quote.get("bid"))
+                                outcome_quote_ask = float(outcome_quote.get("ask"))
+                                outcome_quote_epoch = float(
+                                    outcome_quote.get("source_timestamp_epoch")
+                                )
+                            except (TypeError, ValueError, OverflowError):
+                                outcomes_match = False
+                                break
+                            if (
+                                outcome_quote.get("source_timestamp_verified") is not True
+                                or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
+                                or str(outcome_quote.get("evidence_id", "") or "")
+                                    != str(outcome.get("outcome_evidence_id", "") or "")
+                                or not math.isfinite(outcome_quote_mid)
+                                or not math.isfinite(outcome_quote_bid)
+                                or not math.isfinite(outcome_quote_ask)
+                                or not math.isfinite(outcome_quote_epoch)
+                                or outcome_quote_bid <= 0.0
+                                or outcome_quote_ask < outcome_quote_bid
+                                or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0))
+                                    > max(1e-10, outcome_quote_mid * 1e-8)
+                                or abs(outcome_quote_epoch - observed_at) > 1e-6
+                            ):
+                                outcomes_match = False
+                                break
                             if status == "OBSERVED":
                                 try:
                                     observed_price = float(outcome.get("observed_price"))
