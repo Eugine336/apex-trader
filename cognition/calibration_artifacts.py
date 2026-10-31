@@ -269,7 +269,11 @@ class CalibrationProducer:
                 ).strip().upper()
                 if direction not in {"LONG", "SHORT"}:
                     continue
-                if str(payload.get("candidate_kind", "") or "") != "opportunity":
+                candidate_kind = str(payload.get("candidate_kind", "") or "")
+                if candidate_kind != "opportunity" and not (
+                    candidate_kind == "hypothesis"
+                    and candidate.get("calibration_candidate") is True
+                ):
                     continue
                 try:
                     decision_epoch = float(payload.get("decision_epoch"))
