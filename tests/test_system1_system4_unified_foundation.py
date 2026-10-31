@@ -135,6 +135,97 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
     assert payload["point_in_time_evidence"][0]["data_basis"] == "completed_ohlc"
 
 
+def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_sources():
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, severity, **kwargs):
+            self.events.append((event_type, kwargs))
+            return "event-source-time"
+
+    store = Store()
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: ["EURUSD"],
+        candidate_event_store=store,
+    )
+    stamp = time.time()
+    market = MarketState(symbol="EURUSD", created_epoch=stamp)
+
+    feature = Evidence(
+        source_module="test.completed_structure",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=stamp - 1.0,
+        source_timestamp_epoch=stamp - 1.0,
+        measurements={"timeframe": "H1", "trend_state": "uptrend"},
+        relevance_horizon_seconds=60.0,
+    )
+    market.add(feature)
+
+    def quote_evidence(symbol, evidence_id, source_epoch, *, verified=True, provisional=False, mid=1.1):
+        measurements = {
+            "price": {
+                "bid": mid - 0.0001,
+                "ask": mid + 0.0001,
+                "mid": mid,
+                "timestamp_epoch": source_epoch,
+                "source_timestamp_verified": verified,
+                "symbol": symbol,
+            },
+        }
+        return Evidence(
+            source_module="market.price_action",
+            domain=EvidenceDomain.MULTI_TIMEFRAME,
+            symbol=symbol,
+            evidence_id=evidence_id,
+            timestamp_epoch=stamp,
+            source_timestamp_epoch=source_epoch if verified else None,
+            source_timestamp_verified=verified,
+            relevance_horizon_seconds=60.0,
+            provisional=provisional,
+            measurements=measurements,
+        )
+
+    # Newer but foreign, provisional, future and unverified quotes must not
+    # displace the valid EURUSD quote.
+    market.add(quote_evidence("GBPUSD", "foreign-quote", stamp - 0.05, mid=9.0))
+    market.add(quote_evidence("EURUSD", "provisional-quote", stamp - 0.02,
+                              provisional=True, mid=8.0))
+    market.add(quote_evidence("EURUSD", "future-quote", stamp + 5.0, mid=7.0))
+    market.add(quote_evidence("EURUSD", "unverified-quote", stamp - 0.01,
+                              verified=False, mid=6.0))
+    valid_quote = quote_evidence("EURUSD", "valid-quote", stamp - 0.5, mid=1.1)
+    market.add(valid_quote)
+
+    opportunity = Opportunity(
+        opportunity_id="source-time-opportunity",
+        direction="LONG",
+        state=OpportunityState.FORMING,
+        thesis="candidate with attributable geometry",
+        entry_price=1.1,
+        stop_price=1.09,
+        target_price=1.13,
+        geometry_evidence_ids=[feature.evidence_id],
+    )
+    decision = DecisionPackage(
+        symbol="EURUSD",
+        decision_type=DecisionType.OPPORTUNITY_FORMING,
+        opportunities=[opportunity],
+        created_epoch=stamp,
+    )
+    loop._record_candidate_snapshot(SimpleNamespace(decision=decision), market)
+
+    payload = store.events[0][1]["payload"]
+    assert payload["reference_quote"]["evidence_id"] == "valid-quote"
+    assert payload["reference_quote"]["symbol"] == "EURUSD"
+    assert payload["point_in_time_complete"] is True
+    point_ids = {row["evidence_id"] for row in payload["point_in_time_evidence"]}
+    assert point_ids == {feature.evidence_id, "valid-quote"}
+
+
 def test_no_opportunity_decision_is_also_recorded_in_candidate_universe():
     class Store:
         def __init__(self):
@@ -206,7 +297,11 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         source_timestamp_epoch=1000.0,
         confidence=0.9,
         uncertainty=0.1,
-        measurements={"price": {"bid": 1.099, "ask": 1.101, "mid": 1.1}},
+        measurements={"price": {
+            "bid": 1.099, "ask": 1.101, "mid": 1.1,
+            "timestamp_epoch": 1000.0, "source_timestamp_verified": True,
+            "symbol": "EURUSD",
+        }},
     ))
     opportunity = Opportunity(
         opportunity_id="opp-horizon",
@@ -236,7 +331,51 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         source_timestamp_epoch=1301.0,
         confidence=0.9,
         uncertainty=0.1,
-        measurements={"price": {"bid": 1.109, "ask": 1.111, "mid": 1.11}},
+        measurements={"price": {
+            "bid": 1.109, "ask": 1.111, "mid": 1.11,
+            "timestamp_epoch": 1300.9, "source_timestamp_verified": True,
+            "symbol": "EURUSD",
+        }},
+    ))
+    # These newer-looking records are not valid EURUSD, point-in-time quotes.
+    later_market.add(Evidence(
+        source_module="market.price_action",
+        domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="GBPUSD",
+        timestamp_epoch=1301.0,
+        source_timestamp_epoch=1301.0,
+        source_timestamp_verified=True,
+        measurements={"price": {
+            "bid": 8.999, "ask": 9.001, "mid": 9.0,
+            "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "symbol": "GBPUSD",
+        }},
+    ))
+    later_market.add(Evidence(
+        source_module="market.price_action",
+        domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="EURUSD",
+        timestamp_epoch=1301.0,
+        source_timestamp_epoch=1301.0,
+        source_timestamp_verified=True,
+        provisional=True,
+        measurements={"price": {
+            "bid": 7.999, "ask": 8.001, "mid": 8.0,
+            "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "symbol": "EURUSD",
+        }},
+    ))
+    later_market.add(Evidence(
+        source_module="market.price_action",
+        domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="EURUSD",
+        timestamp_epoch=1301.0,
+        source_timestamp_verified=False,
+        measurements={"price": {
+            "bid": 5.999, "ask": 6.001, "mid": 6.0,
+            "timestamp_epoch": 1301.0, "source_timestamp_verified": False,
+            "symbol": "EURUSD",
+        }},
     ))
     loop._label_due_candidate_horizons(later_market)
 
@@ -252,6 +391,9 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     assert payload["predictive_validity"] == "DESCRIPTIVE_ONLY_UNVALIDATED"
     assert payload["calibration_authority"] is False
     assert payload["directional_return_r"] > 0
+    assert payload["outcome_evidence_id"] == later_market.evidence[0].evidence_id
+    assert payload["outcome_quote"]["symbol"] == "EURUSD"
+    assert payload["observed_price"] == 1.11
 
 
 
@@ -462,6 +604,27 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
 
+
+
+def test_developing_world_model_generation_time_is_not_source_time():
+    from cognition.evidence_adapters import evidence_from_developing_bias
+
+    generated_at = 1_900_000_000.0
+    evidence = evidence_from_developing_bias("EURUSD", {
+        "alignment_degree": 0.8,
+        "trend_strength": 0.7,
+        "conflict_score": 0.1,
+        "model_generated_at_epoch": generated_at,
+        "source_timestamp_verified": False,
+        "provisional": True,
+        "data_basis": "developing_world_model",
+    })
+
+    assert len(evidence) == 1
+    assert evidence[0].source_timestamp_verified is False
+    assert evidence[0].source_timestamp_epoch is None
+    assert evidence[0].provisional is True
+    assert evidence[0].measurements["model_generated_at_epoch"] == generated_at
 
 
 def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time():
