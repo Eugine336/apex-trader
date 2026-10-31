@@ -43,7 +43,10 @@ def _make_adapter(symbols, results):
             holder[0]._running = False
         behavior = results[i] if i < total else "conn"
         if behavior == "ok":
-            return SimpleNamespace(bid=1.1000, ask=1.1002)
+            from datetime import datetime, timezone
+            return SimpleNamespace(
+                bid=1.1000, ask=1.1002, time=datetime.now(timezone.utc),
+            )
         if behavior == "none":
             return None
         raise Exception(f"Deriv not connected for {sym}")
