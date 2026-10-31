@@ -1411,6 +1411,7 @@ class CognitionLoop:
                         "horizon_seconds": horizon,
                         "due_at_epoch": due_epoch,
                         "observed_at_epoch": observed_epoch,
+                        "outcome_source_timestamp_verified": True,
                         "actual_elapsed_seconds": observed_epoch - decision_epoch,
                         "observation_window_tolerance_seconds": tolerance,
                         "observation_status": status,
