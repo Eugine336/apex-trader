@@ -261,6 +261,14 @@ class Evidence:
     timestamp_iso: str = ""
     timestamp_epoch: float = 0.0
     identity_version: str = IDENTITY_VERSION
+    # Source-time and semantic metadata are first-class contract fields. Ingest
+    # time alone cannot prove that cached broker data describes the decision time.
+    source_timestamp_epoch: Optional[float] = None
+    data_basis: str = ""
+    provisional: bool = False
+    independence_group: str = ""
+    lineage_ids: list[str] = field(default_factory=list)
+    measurement_version: str = ""
 
     def __post_init__(self) -> None:
         if not self.evidence_id:
@@ -273,6 +281,17 @@ class Evidence:
         self.confidence = _clamp01(self.confidence)
         self.uncertainty = _clamp01(self.uncertainty)
         self.polarity = _clamp_signed(self.polarity)
+        if self.source_timestamp_epoch is not None:
+            try:
+                source_epoch = float(self.source_timestamp_epoch)
+                self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch == source_epoch else None
+            except (TypeError, ValueError, OverflowError):
+                self.source_timestamp_epoch = None
+        self.data_basis = str(self.data_basis or "").strip().lower()
+        self.provisional = bool(self.provisional)
+        self.independence_group = str(self.independence_group or "").strip()
+        self.lineage_ids = list(dict.fromkeys(str(item) for item in (self.lineage_ids or []) if item))
+        self.measurement_version = str(self.measurement_version or "").strip()
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         """True if within its relevance horizon (Part XXXV).
@@ -287,7 +306,10 @@ class Evidence:
         if horizon is None:
             horizon = DEFAULT_EVIDENCE_HORIZON_SECONDS
         t = _now_epoch() if now is None else float(now)
-        age = t - self.timestamp_epoch
+        # Prefer the original source timestamp when available. A freshly
+        # ingested stale cache must not acquire a new freshness lifetime.
+        observed_epoch = self.source_timestamp_epoch or self.timestamp_epoch
+        age = t - observed_epoch
         # Future-dated evidence can indicate clock skew or bad timestamp
         # normalization. It must not pass freshness merely because its age is
         # negative and therefore below the maximum age horizon.
@@ -302,6 +324,12 @@ class Evidence:
             "identity_version": self.identity_version,
             "evidence_id": self.evidence_id,
             "timestamp": self.timestamp_iso,
+            "source_timestamp_epoch": self.source_timestamp_epoch,
+            "data_basis": self.data_basis,
+            "provisional": self.provisional,
+            "independence_group": self.independence_group,
+            "lineage_ids": list(self.lineage_ids),
+            "measurement_version": self.measurement_version,
             "source_module": self.source_module,
             "domain": self.domain.value,
             "symbol": self.symbol,
