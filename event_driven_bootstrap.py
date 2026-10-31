@@ -2820,12 +2820,16 @@ class EventDrivenSystem:
                 return {}
             alignment = wm.multi_tf_alignment_dict()
             try:
-                alignment["source_timestamp_epoch"] = wm.timestamp.timestamp()
-                alignment["source_timestamp_verified"] = True
-                alignment["provisional"] = True
-                alignment["data_basis"] = "developing_world_model"
+                # This is when the WorldModel was published, not the broker
+                # timestamp of every underlying forming candle. Keep it as
+                # generation metadata; it cannot establish source-time authority.
+                alignment["model_generated_at_epoch"] = wm.timestamp.timestamp()
             except (AttributeError, TypeError, ValueError, OverflowError, OSError):
-                alignment["source_timestamp_verified"] = False
+                alignment["model_generated_at_epoch"] = None
+            alignment.pop("source_timestamp_epoch", None)
+            alignment["source_timestamp_verified"] = False
+            alignment["provisional"] = True
+            alignment["data_basis"] = "developing_world_model"
             return alignment
         except Exception as exc:  # noqa: BLE001 — never break the cognition loop
             logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
