@@ -2435,6 +2435,12 @@ class CognitiveBrain:
                                      getattr(item, "domain", "")) or "").lower()
                 if domain != "historical_analogue":
                     continue
+                source_epoch = getattr(item, "source_timestamp_epoch", None)
+                if (
+                    getattr(item, "source_timestamp_verified", False) is not True
+                    or source_epoch is None
+                ):
+                    continue
                 if str(getattr(item, "symbol", "") or "").strip().upper() != str(
                     getattr(market_state, "symbol", "") or ""
                 ).strip().upper():
@@ -2473,10 +2479,7 @@ class CognitiveBrain:
                     or not artifact.dataset_digest
                 ):
                     continue
-                stamp = self._cost_value(
-                    getattr(item, "source_timestamp_epoch", None)
-                    or getattr(item, "timestamp_epoch", None)
-                ) or 0.0
+                stamp = self._cost_value(source_epoch) or 0.0
                 candidates.append((
                     stamp, expected_return,
                     f"{artifact.protocol}:{artifact.artifact_id} "
@@ -2519,7 +2522,13 @@ class CognitiveBrain:
                 measurements = getattr(item, "measurements", None)
                 if not isinstance(measurements, dict):
                     continue
-                timestamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+                source_epoch = getattr(item, "source_timestamp_epoch", None)
+                if (
+                    getattr(item, "source_timestamp_verified", False) is not True
+                    or source_epoch is None
+                ):
+                    continue
+                timestamp = self._cost_value(source_epoch) or 0.0
 
                 # A numerical fallback is not verified execution evidence.
                 # Only measurements explicitly marked verified can authorize an
