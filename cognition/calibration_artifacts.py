@@ -417,6 +417,31 @@ class CalibrationProducer:
                         ]
                         if any(item is None for item in member_outcomes):
                             continue
+                        outcomes_match = True
+                        for member, outcome in zip(members, member_outcomes):
+                            try:
+                                observed_at = float(outcome.get("observed_at_epoch"))
+                                due_at = member["decision_epoch"] + horizon
+                            except (TypeError, ValueError, OverflowError):
+                                outcomes_match = False
+                                break
+                            if (
+                                str(outcome.get("candidate_id", "") or "") != member["candidate_id"]
+                                or str(outcome.get("decision_id", "") or "") != decision_id
+                                or str(outcome.get("symbol", "") or "").strip().upper() != sym
+                                or str(outcome.get("direction", "") or "").upper() != direction
+                                or str(outcome.get("candidate_family", "") or "").strip().lower() != family
+                                or int(outcome.get("horizon_seconds", 0) or 0) != horizon
+                                or outcome.get("outcome_source_timestamp_verified") is not True
+                                or not math.isfinite(observed_at)
+                                or observed_at < due_at
+                                or str(outcome.get("reference_evidence_id", "") or "")
+                                    != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
+                            ):
+                                outcomes_match = False
+                                break
+                        if not outcomes_match:
+                            continue
                         if any(item.get("observation_status") == "MISSED_WINDOW" for item in member_outcomes):
                             missed_groups += 1
                             continue
