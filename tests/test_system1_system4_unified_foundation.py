@@ -542,6 +542,12 @@ def test_all_cognitive_contracts_force_the_single_canonical_identity():
         assert contract.identity == IDENTITY_STATEMENT
     assert state.to_dict()["identity"] == IDENTITY_STATEMENT
     assert state.to_dict()["identity_version"] == IDENTITY_VERSION
+    assert Opportunity.from_reply({
+        "id": "known-family", "candidate_family": "continuation",
+    }).candidate_family == "continuation"
+    assert Opportunity.from_reply({
+        "id": "unknown-family", "candidate_family": "invented_style",
+    }).candidate_family == "unclassified"
 
 
 
