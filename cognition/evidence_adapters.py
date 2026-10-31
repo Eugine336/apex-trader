@@ -223,6 +223,8 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
     try:
         if cost is None:
             return out
+        source_epoch = None
+        source_verified = False
         if isinstance(cost, dict):
             spread_r = _num(cost.get("estimated_spread_r"))
             slippage_r = _num(cost.get("estimated_slippage_r"))
@@ -230,6 +232,11 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
                 total_r = _num(cost.get("estimated_total_cost_r"))
             else:
                 total_r = spread_r + slippage_r
+            source_epoch = _num(cost.get("source_timestamp_epoch"))
+            source_verified = (
+                cost.get("source_timestamp_verified") is True
+                and source_epoch is not None and source_epoch > 0.0
+            )
         else:
             total_r = _num(cost)
             spread_r = total_r
@@ -256,6 +263,9 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
                 "cost_source": str(cost.get("cost_source", "unverified estimate"))
                 if isinstance(cost, dict) else "unverified estimate",
             },
+            timestamp_epoch=time.time(),
+            source_timestamp_epoch=source_epoch if source_verified else None,
+            source_timestamp_verified=source_verified,
             relevance_horizon_seconds=300.0,
         ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
