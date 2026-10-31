@@ -971,7 +971,12 @@ class CognitionLoop:
             )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_rows = []
-            decision_epoch = float(getattr(decision, "created_epoch", 0.0) or 0.0)
+            try:
+                decision_epoch = float(getattr(decision, "created_epoch", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                decision_epoch = 0.0
+            if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+                decision_epoch = 0.0
             target_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
             decision_symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
             if decision_symbol and decision_symbol != target_symbol:
@@ -1038,7 +1043,6 @@ class CognitionLoop:
                         evidence_id in point_in_time_evidence_ids
                         and evidence_symbol == target_symbol
                         and quote_symbol == target_symbol
-                        and getattr(quote, "source_timestamp_verified", True) is not False
                         and quote.get("source_timestamp_verified") is True
                         and math.isfinite(bid) and math.isfinite(ask)
                         and bid > 0.0 and ask >= bid
@@ -1239,7 +1243,12 @@ class CognitionLoop:
             if not symbol:
                 return
             quote_rows = []
-            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            try:
+                cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                cutoff = 0.0
+            if not math.isfinite(cutoff) or cutoff <= 0.0:
+                return
             for evidence in market_state.fresh_evidence(now=cutoff):
                 measurements = getattr(evidence, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
