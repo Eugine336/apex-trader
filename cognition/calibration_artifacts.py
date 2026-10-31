@@ -78,6 +78,14 @@ class CalibrationArtifact:
         }
 
 
+def _register_artifact(artifact: CalibrationArtifact) -> None:
+    """Internal registration primitive; production callers are CalibrationProducer."""
+    if not isinstance(artifact, CalibrationArtifact) or not artifact.producer_attested:
+        raise TypeError("only producer-issued CalibrationArtifact instances may be registered")
+    with _REGISTRY_LOCK:
+        _REGISTRY[artifact.artifact_id] = artifact
+
+
 def resolve_calibration_artifact(
     artifact_id: str,
     symbol: str,
@@ -422,8 +430,7 @@ class CalibrationProducer:
                         walk_forward_folds=len(folds),
                         selection_coverage=coverage,
                     )
-                    with _REGISTRY_LOCK:
-                        _REGISTRY[artifact_id] = artifact
+                    _register_artifact(artifact)
                     artifacts.append(artifact)
             return artifacts
         except Exception:
