@@ -403,6 +403,16 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "observed_at_epoch": decision_epoch + 300.0,
             "outcome_source_timestamp_verified": True,
             "reference_evidence_id": f"quote-{index}",
+            "outcome_evidence_id": f"outcome-{index}",
+            "outcome_quote": {
+                "mid": 100.0 + return_r,
+                "bid": 99.99 + return_r,
+                "ask": 100.01 + return_r,
+                "source_timestamp_epoch": decision_epoch + 300.0,
+                "source_timestamp_verified": True,
+                "symbol": "EURUSD",
+                "evidence_id": f"outcome-{index}",
+            },
         }
         disposition = {
             "candidate_id": candidate_id,
