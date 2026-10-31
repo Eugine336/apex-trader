@@ -355,6 +355,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "entry_price": 100.0,
             "stop_price": 99.0,
             "target_price": 102.0,
+            "geometry_evidence_ids": [f"feature-{index}"],
         }
         snapshot = {
             "candidate_id": candidate_id,
@@ -369,13 +370,22 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "bid": 99.99,
                 "ask": 100.01,
                 "source_timestamp_epoch": decision_epoch,
+                "source_timestamp_verified": True,
+                "symbol": "EURUSD",
                 "evidence_id": f"quote-{index}",
             },
-            "point_in_time_evidence": [{
-                "evidence_id": f"feature-{index}",
-                "source_timestamp_epoch": decision_epoch,
-                "source_timestamp_verified": True,
-            }],
+            "point_in_time_evidence": [
+                {
+                    "evidence_id": f"feature-{index}",
+                    "source_timestamp_epoch": decision_epoch,
+                    "source_timestamp_verified": True,
+                },
+                {
+                    "evidence_id": f"quote-{index}",
+                    "source_timestamp_epoch": decision_epoch,
+                    "source_timestamp_verified": True,
+                },
+            ],
         }
         label = "FAVOURABLE" if index % 2 == 0 else "UNFAVOURABLE"
         return_r = 0.2 if index % 2 == 0 else -0.1
