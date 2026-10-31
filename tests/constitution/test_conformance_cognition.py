@@ -78,7 +78,13 @@ _DOMAINS = (
 )
 
 
-def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, target_high: float = 1.110) -> MarketState:
+def _rich_state(
+    symbol: str = "XAUUSD",
+    conf: float = 0.9,
+    unc: float = 0.1,
+    target_high: float = 1.110,
+    expected_return_r: float = 0.25,
+) -> MarketState:
     """A well-covered, low-uncertainty MarketState (so the Brain can act)."""
     ms = MarketState(symbol=symbol)
     stamp = time.time()
@@ -143,7 +149,11 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
     from test_support.calibration import register_test_calibration
-    artifact = register_test_calibration(symbol, "LONG", horizon_seconds=300, probability=conf)
+    artifact = register_test_calibration(
+        symbol, "LONG", horizon_seconds=300, probability=conf,
+        expected_return_r=expected_return_r,
+        holdout_expected_return_r=expected_return_r,
+    )
     ms.add(Evidence(
         source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
@@ -261,7 +271,7 @@ def test_confident_opinion_opens_campaign():
 )
 def test_expected_value_is_not_a_confidence_proxy():
     brain = CognitiveBrain(reasoner=_Reasoner(_opinion("LONG", 0.8)), reward_r_default=2.0)
-    out = brain.reason(_rich_state())
+    out = brain.reason(_rich_state(expected_return_r=1.7))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     ev = out.decision.expected_value
     # EV_R = p_win*reward_r - (1-p_win)*risk_r - verified_cost_r
@@ -311,7 +321,7 @@ def test_negative_ev_opportunity_is_declined():
         reasoner=_Reasoner(_opinion("LONG", 0.6)),
         reward_r_default=0.5, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state(conf=0.6, target_high=1.1025))
+    out = brain.reason(_rich_state(conf=0.6, target_high=1.1025, expected_return_r=0.01))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
     assert out.decision.expected_value < 0.0
