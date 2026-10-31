@@ -74,19 +74,30 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
     # Test-only artifact is registered through the producer registry. Raw
     # evidence flags alone are deliberately insufficient in the production Brain.
     from test_support.calibration import register_test_calibration
-    artifact = register_test_calibration(symbol, side, horizon_seconds=300)
-    market_state.add(Evidence(
-        source_module="calibration_producer.test_fixture",
-        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
-        symbol=symbol,
-        observation="producer-registered test calibration artifact",
-        confidence=0.0,
-        uncertainty=0.0,
-        measurements=artifact.to_measurements(),
-        timestamp_epoch=artifact.issued_at_epoch,
-        source_timestamp_epoch=artifact.issued_at_epoch,
-        relevance_horizon_seconds=3600.0,
-        data_basis="test_fixture",
-        independence_group=f"test_calibration:{symbol}:{side}:300",
-    ))
+    # Register the exact horizons used by the M5 native fixtures and the
+    # MTF advisor fixtures. Each artifact remains independently scoped by
+    # symbol, side, family and horizon in the producer registry.
+    for horizon_seconds in (300, 3600):
+        artifact = register_test_calibration(
+            symbol, side, horizon_seconds=horizon_seconds,
+        )
+        market_state.add(Evidence(
+            source_module="calibration_producer.test_fixture",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            symbol=symbol,
+            observation=(
+                "producer-registered test calibration artifact "
+                f"for {horizon_seconds}s"
+            ),
+            confidence=0.0,
+            uncertainty=0.0,
+            measurements=artifact.to_measurements(),
+            timestamp_epoch=artifact.issued_at_epoch,
+            source_timestamp_epoch=artifact.issued_at_epoch,
+            relevance_horizon_seconds=3600.0,
+            data_basis="test_fixture",
+            independence_group=(
+                f"test_calibration:{symbol}:{side}:{horizon_seconds}"
+            ),
+        ))
     return market_state
