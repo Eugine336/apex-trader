@@ -54,6 +54,7 @@ class _Opinion:
         if "opportunities" not in kw:
             self.opportunities = (
                 [{"id": "auto", "direction": direction, "state": "ACTIVE",
+                  "horizon": "M5",
                   "quality": confidence, "asymmetry": confidence,
                   "evidence_strength": confidence}]
                 if str(direction).upper() in ("LONG", "SHORT") else []
@@ -144,23 +145,20 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         relevance_horizon_seconds=900.0,
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(
+        symbol, "LONG", horizon_seconds=300, probability=calibrated_probability,
+    )
     ms.add(Evidence(
-        source_module="cognition.probability_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
-    ))
-    return ms
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
+    ))    return ms
 
 
 # ── V2 — a directionless-but-rich reply is parsed (direction ⇒ FLAT) ──────────
