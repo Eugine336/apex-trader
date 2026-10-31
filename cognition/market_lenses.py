@@ -225,7 +225,6 @@ def _technical_indicator_evidence(
     closes = [float(row["close"]) for row in bars]
     highs = [float(row["high"]) for row in bars]
     lows = [float(row["low"]) for row in bars]
-    opens = [float(row["open"]) for row in bars]
     true_range = _true_ranges(highs, lows, closes)
     atr14 = _sma(true_range, 14)
     atr20 = _sma(true_range, 20)
