@@ -12,7 +12,12 @@ from typing import Any
 from cognition.contracts import Evidence, EvidenceDomain
 
 
-def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
+def add_market_geometry(
+    market_state: Any,
+    direction: str = "LONG",
+    *,
+    expected_return_r: float = 0.25,
+) -> Any:
     """Attach fresh, timestamped structural and momentum evidence for one side."""
     side = str(direction or "").strip().upper()
     if side in {"BUY", "LONG"}:
@@ -79,7 +84,11 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
     # symbol, side, family and horizon in the producer registry.
     for horizon_seconds in (300, 3600):
         artifact = register_test_calibration(
-            symbol, side, horizon_seconds=horizon_seconds,
+            symbol,
+            side,
+            horizon_seconds=horizon_seconds,
+            expected_return_r=expected_return_r,
+            holdout_expected_return_r=expected_return_r,
         )
         market_state.add(Evidence(
             source_module="calibration_producer.test_fixture",
