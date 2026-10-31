@@ -374,6 +374,7 @@ class BrainReasoner:
                 "source_timestamp_epoch": _num(getattr(
                     item, "source_timestamp_epoch", None
                 )),
+                "source_timestamp_verified": bool(getattr(item, "source_timestamp_verified", False)),
                 "data_basis": str(getattr(item, "data_basis", "") or ""),
                 "provisional": bool(getattr(item, "provisional", False)),
                 "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
