@@ -513,8 +513,6 @@ def test_all_cognitive_contracts_force_the_single_canonical_identity():
 
 
 def test_native_directional_hypotheses_are_ledgered_when_decision_stands_down():
-    import json
-
     class Store:
         def __init__(self):
             self.events = []
