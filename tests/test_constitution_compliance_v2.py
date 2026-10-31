@@ -49,9 +49,16 @@ class _Opinion:
         # opportunity so origination flows through a structured object; these
         # tests exercise the quorum / coverage / degradation gates.
         self.opportunities = (
-            [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "quality": confidence, "asymmetry": confidence,
-              "evidence_strength": confidence}]
+            [{
+                "id": "auto",
+                "direction": direction,
+                "state": "ACTIVE",
+                "candidate_family": "continuation",
+                "horizon": "M5",
+                "quality": confidence,
+                "asymmetry": confidence,
+                "evidence_strength": confidence,
+            }]
             if str(direction).upper() in ("LONG", "SHORT") else []
         )
         self.preferred_opportunity_id = "auto"
