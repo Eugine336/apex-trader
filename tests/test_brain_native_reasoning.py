@@ -107,6 +107,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": entry,
             "prior_range_high": high,
@@ -129,11 +131,31 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "close_change": change,
         },
         timestamp_epoch=stamp,
         relevance_horizon_seconds=900.0,
+    ))
+    ms.add(Evidence(
+        source_module="validation.out_of_sample_probability_calibration.test_fixture",
+        domain="historical_analogue", symbol=ms.symbol,
+        observation="synthetic direction-specific calibration for admission tests",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True,
+            "source_verified": True, "out_of_sample": True,
+            "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": side,
+            "win_probability": 0.72, "sample_count": 240,
+            "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "synthetic_isotonic",
+            "calibration_id": "unit-test-holdout",
+        },
+        timestamp_epoch=stamp, relevance_horizon_seconds=900.0,
     ))
     return ms
 
@@ -440,6 +462,18 @@ def test_native_fallback_requires_explicit_verified_execution_cost():
     assert out.campaign is None
 
 # ── Article X: independent origination when the advisor is unavailable ────────
+
+
+def test_native_only_origination_requires_verified_probability_calibration():
+    brain = CognitiveBrain(reasoner=None, min_expected_value=0.0)
+    state = _strong_long_state()
+    state.evidence = [
+        item for item in state.evidence
+        if getattr(item.domain, "value", item.domain) != "historical_analogue"
+    ]
+    out = brain.reason(state)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
 
 
 def test_native_campaign_uses_the_observed_entry_stop_and_target_geometry():

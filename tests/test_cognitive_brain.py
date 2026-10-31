@@ -1,3 +1,4 @@
+import time
 """Tests for the AI Cognitive Brain (Single Reasoner) — Constitution Parts I/II/IV."""
 
 import pytest
@@ -70,6 +71,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": entry,
             "prior_range_high": high,
@@ -92,6 +95,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "close_change": change,
         },
@@ -101,7 +106,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
     return ms
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
+def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_probability=0.8):
     ms = MarketState(symbol=symbol)
     # Two distinct evidence domains so the Brain's minimum-coverage gate
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
@@ -134,6 +139,23 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
         relevance_horizon_seconds=60.0,
     ))
     _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
+    # Test-only calibration record; production evidence must come from durable outcomes.
+    ms.add(Evidence(
+        source_module="cognition.probability_calibration",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
+        observation="verified test-only direction-specific calibration",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True, "source_verified": True,
+            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": "LONG",
+            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "isotonic",
+            "calibration_id": "test-holdout-fixture",
+        },
+        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
@@ -163,7 +185,7 @@ def test_confident_long_opens_campaign():
 
 def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
-    out = brain.reason(_confident_state())
+    out = brain.reason(_confident_state(calibrated_probability=0.3))
     # Negative expected value is a defensible rejection, not merely a wait.
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
@@ -238,16 +260,16 @@ class _RichOpinion:
 
 
 def test_sizing_is_lesser_of_confidence_and_ev_normalized():
-    # confidence 0.8, default reward 2.0R → EV = 0.8*2 - 0.2*1 = 1.4R;
-    # ev_normalized = 1.4/2.0 = 0.7. Sizing takes the lesser of ev_normalized and
-    # the reasoning-quality-weighted confidence (Art XIX): a bare opinion (quality
-    # 0.1) weights to 0.8*0.1 + 0.9*0.55 = 0.575, so exposure = min(0.575, 0.7).
+    # Market geometry supplies the reward distance. Sizing takes the lesser of
+    # EV-normalized payoff and quality-weighted confidence. This bare opinion has
+    # quality 0.1, so 0.8 effective confidence is scaled by 0.55 to 0.44.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.575)
+    assert out.campaign.desired_exposure == pytest.approx(0.44)
     assert out.campaign.desired_exposure < out.campaign.confidence
     assert "sizing_rationale" in out.decision.questions_answered
+
 
 
 def test_high_confidence_poor_market_derived_payoff_is_sized_down():

@@ -35,6 +35,8 @@ def _state(
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "current_close": close,
             "prior_range_high": high,
@@ -58,6 +60,8 @@ def _state(
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "close_change": momentum,
         },
@@ -121,6 +125,8 @@ def test_other_symbol_evidence_cannot_contaminate_geometry():
         measurements={
             "source_kind": "market_lens",
             "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5",
             "current_close": 1.2,
             "prior_range_high": 1.25,
@@ -183,3 +189,160 @@ def test_opportunity_serializes_explicit_geometry():
     assert payload["target_price"] == 1.105
     assert payload["reward_r"] == 1.0
     assert payload["geometry_evidence_ids"] == ["e1", "e2"]
+
+
+
+def test_old_breakout_on_same_timeframe_cannot_activate_newer_non_breakout():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    old = Evidence(
+        source_module="market_lenses.m5.structure.old",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="SYNTHETIC",
+        observation="older completed structural breakout",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time() - 30,
+            "timeframe": "M5",
+            "current_close": 1.100,
+            "prior_range_high": 1.105,
+            "prior_range_low": 1.095,
+            "breakout_direction": "up",
+            "trend_state": "range",
+            "trend_strength": 0.0,
+        },
+        timestamp_epoch=time.time() - 30,
+        relevance_horizon_seconds=900,
+    )
+    state.add(old)
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_momentum_from_another_timeframe_cannot_activate_trend():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    for item in state.evidence:
+        if item.domain == EvidenceDomain.MOMENTUM:
+            item.measurements["timeframe"] = "M1"
+    state.evidence[0].measurements["trend_state"] = "uptrend"
+    state.evidence[0].measurements["trend_strength"] = 0.5
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_conflicting_same_time_same_timeframe_structure_fails_closed():
+    state = _state()
+    original = state.evidence[0]
+    conflicting = Evidence(
+        source_module="market_lenses.m5.structure.conflict",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="SYNTHETIC",
+        observation="conflicting structural close",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            **original.measurements,
+            "current_close": 1.101,
+            "breakout_direction": "none",
+        },
+        timestamp_epoch=original.timestamp_epoch,
+        relevance_horizon_seconds=900,
+    )
+    state.add(conflicting)
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_missing_evidence_symbol_cannot_be_inherited_from_market_state():
+    state = _state()
+    state.evidence[0].symbol = ""
+    state.evidence[1].symbol = ""
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+
+def test_counter_side_sweep_requires_measured_reclaim_for_reversal_candidate():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    stamp = state.evidence[0].measurements["source_bar_epoch"]
+    state.add(Evidence(
+        source_module="market_lenses.m5.liquidity",
+        domain=EvidenceDomain.LIQUIDITY,
+        symbol="SYNTHETIC",
+        observation="completed sell-side sweep and reclaim",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": stamp,
+            "timeframe": "M5",
+            "sweep_side": "sell",
+            "swept_level": 1.095,
+            "sweep_reclaimed": True,
+            "current_close": 1.100,
+        },
+        timestamp_epoch=stamp,
+        relevance_horizon_seconds=900,
+    ))
+    geometry = derive_opportunity_geometry(state, "LONG")
+    assert geometry is not None
+    assert geometry.activated is True
+    assert "sweep/reclaim" in geometry.activation_reason
+
+
+def test_sweep_side_without_reclaim_does_not_activate_reversal():
+    state = _state(breakout="none", trend="range", momentum=0.0)
+    state.add(Evidence(
+        source_module="market_lenses.m5.liquidity",
+        domain=EvidenceDomain.LIQUIDITY,
+        symbol="SYNTHETIC",
+        observation="sweep observed but reclaim not confirmed",
+        confidence=0.8,
+        uncertainty=0.2,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
+            "timeframe": "M5",
+            "sweep_side": "sell",
+            "swept_level": 1.095,
+            "sweep_reclaimed": False,
+            "current_close": 1.090,
+        },
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_low_liquidity_or_unfamiliar_only_market_state_has_no_geometry():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(Evidence(
+        source_module="unknown_adapter",
+        domain=EvidenceDomain.OTHER,
+        symbol="SYNTHETIC",
+        observation="unfamiliar market measurement",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"unknown_microstructure_metric": 0.73},
+        timestamp_epoch=time.time(),
+        relevance_horizon_seconds=900,
+    ))
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+
+def test_recently_arrived_but_old_source_bar_cannot_define_geometry():
+    state = _state(timestamp=time.time())
+    for item in state.evidence:
+        item.measurements["source_bar_epoch"] = time.time() - 2000
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_future_source_bar_cannot_define_geometry():
+    state = _state(timestamp=time.time())
+    for item in state.evidence:
+        item.measurements["source_bar_epoch"] = time.time() + 30
+    assert derive_opportunity_geometry(state, "LONG") is None

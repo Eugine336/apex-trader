@@ -638,7 +638,6 @@ class CognitiveBrain:
         opp_horizon = str(getattr(opinion, "opportunity_horizon", "") or "")
         efe = str(getattr(opinion, "expected_favorable_excursion", "") or "")
         eae = str(getattr(opinion, "expected_adverse_excursion", "") or "")
-        ev_txt = str(getattr(opinion, "expected_value", "") or "")
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
@@ -770,14 +769,54 @@ class CognitiveBrain:
         # Build the first-class opportunity set before qualifying payoff
         # geometry, so the selected object receives the market-derived levels.
         opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        # Resolve geometry independently for every directional candidate. A
+        # preferred opportunity cannot borrow another candidate's stop/target,
+        # and conditional alternatives retain their own market evidence lineage.
+        opportunity_geometries = {}
+        for candidate in opportunity_set:
+            if not candidate.is_directional:
+                continue
+            candidate_geometry = derive_opportunity_geometry(
+                market_state, candidate.direction, now=now,
+            )
+            if candidate_geometry is None:
+                continue
+            opportunity_geometries[id(candidate)] = candidate_geometry
+            candidate.entry_price = candidate_geometry.entry_price
+            candidate.stop_price = candidate_geometry.stop_price
+            candidate.target_price = candidate_geometry.target_price
+            candidate.risk_distance = candidate_geometry.risk_distance
+            candidate.reward_distance = candidate_geometry.reward_distance
+            candidate.reward_r = candidate_geometry.reward_r
+            candidate.geometry_evidence_ids = list(candidate_geometry.evidence_ids)
+            candidate.target_logic = (
+                f"Market-derived target {candidate_geometry.target_price:.10g}; "
+                f"entry {candidate_geometry.entry_price:.10g}; "
+                f"stop {candidate_geometry.stop_price:.10g}; "
+                f"payoff geometry {candidate_geometry.reward_r:.4f}R"
+            )
+            candidate.invalidation_conditions = list(dict.fromkeys(
+                list(candidate.invalidation_conditions)
+                + [candidate_geometry.invalidation_reason]
+            ))
         driving_opp = self._select_driving_opportunity(
             opportunity_set, preferred_opp_id, direction,
         )
         geometry = (
-            derive_opportunity_geometry(market_state, direction, now=now)
-            if direction in (LONG, SHORT) else None
+            opportunity_geometries.get(id(driving_opp))
+            if driving_opp is not None else (
+                derive_opportunity_geometry(market_state, direction, now=now)
+                if direction in (LONG, SHORT) else None
+            )
         )
-        geometry_qualified = direction not in (LONG, SHORT) or geometry is not None
+        geometry_qualified = (
+            direction not in (LONG, SHORT)
+            or (
+                geometry is not None
+                and geometry.direction == direction
+                and (driving_opp is None or driving_opp.direction == direction)
+            )
+        )
         # For a directional view, advisor-reported excursions cannot stand in for
         # market structure. If geometry is unavailable, set no favourable payoff
         # and keep the opportunity fail-closed at the shared EV/admission gates.
@@ -805,7 +844,21 @@ class CognitiveBrain:
         cost_verified, cost_r, cost_source = self._execution_cost_estimate(
             market_state, now=now,
         )
-        expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
+        probability_verified, win_probability, probability_source = (
+            self._calibrated_win_probability(market_state, direction, now=now)
+            if direction in (LONG, SHORT) else (False, 0.0, "not directional")
+        )
+        # Effective confidence is retained for diagnostics only. It is not a
+        # substitute for an empirically calibrated win probability.
+        diagnostic_expected_value = expected_value_r(
+            eff_conf, reward_r, risk_r, cost_r=cost_r,
+        )
+        # DecisionPackage.expected_value has calibrated probability semantics.
+        # Never place an uncalibrated diagnostic estimate in that field.
+        expected_value = (
+            expected_value_r(win_probability, reward_r, risk_r, cost_r=cost_r)
+            if probability_verified else 0.0
+        )
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
             if cost_verified else
@@ -836,9 +889,18 @@ class CognitiveBrain:
             else (key_uncertainty or "none reported"),
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
-            "expected_value": ev_txt or (
-                f"{expected_value:.4f}R (native: conviction {eff_conf:.2f} x market geometry)"
-                if direction in (LONG, SHORT) else "not established"
+            "expected_value": (
+                f"{expected_value:.4f}R (calibrated p={win_probability:.4f}; {probability_source})"
+                if probability_verified else (
+                    f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
+                    "no calibrated win probability; DecisionPackage EV is zero"
+                    if direction in (LONG, SHORT) else "not established"
+                )
+            ),
+            "win_probability_verification": (
+                f"VERIFIED: {probability_source}; p={win_probability:.4f}"
+                if probability_verified else
+                f"UNVERIFIED: {probability_source}; confidence is not probability"
             ),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
@@ -1045,6 +1107,7 @@ class CognitiveBrain:
             and quorum_ok
             and domain_ok
             and cost_verified
+            and probability_verified
             and has_actionable_opportunity
             and geometry_qualified
         )
@@ -1134,6 +1197,17 @@ class CognitiveBrain:
                 do_nothing_txt = (
                     "evaluated: doing nothing is correct — evidence coverage is "
                     f"insufficient or unconfirmed ({coverage_status})"
+                )
+            elif directional and not probability_verified:
+                reason_txt = (
+                    "win probability is uncalibrated — reasoning confidence and "
+                    "diagnostic EV cannot authorize exposure; preserve the thesis "
+                    "and continue collecting verified outcome evidence"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no fresh, verified, "
+                    "direction-specific out-of-sample probability calibration exists"
                 )
             elif directional and not cost_verified:
                 reason_txt = (
@@ -1301,13 +1375,18 @@ class CognitiveBrain:
         # Article XIX — a shallow advisor reply is sized down: the effective
         # conviction is pulled toward the act threshold in proportion to how thin
         # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
+        # Reasoning quality may reduce exposure, never lift it above the
+        # effective confidence. In particular, weak execution confidence must
+        # not be floored back up to the global minimum action threshold.
         weighted_confidence = _clamp01(
-            eff_conf * quality_score + (1.0 - quality_score) * self.min_confidence_to_act)
+            eff_conf * (0.5 + 0.5 * quality_score)
+        )
         desired_exposure = round(min(weighted_confidence, ev_normalized), 4)
         questions["sizing_rationale"] = (
             f"exposure {desired_exposure:.4f} = min(quality-weighted confidence "
             f"{weighted_confidence:.2f}, ev_normalized {ev_normalized:.2f}) — "
-            f"effective confidence {eff_conf:.2f} x reasoning quality {quality_score:.2f}, "
+            f"effective confidence {eff_conf:.2f} x quality scale "
+            f"{(0.5 + 0.5 * quality_score):.2f}, "
             f"EV {expected_value:.4f}R on {reward_r:.1f}R reward"
         )
         campaign = CampaignSpecification(
@@ -2293,6 +2372,70 @@ class CognitiveBrain:
             return None
         return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
+    def _calibrated_win_probability(
+        self, market_state: MarketState, direction: str, *, now: Optional[float] = None,
+    ) -> tuple[bool, float, str]:
+        """Return only an independently validated, direction-specific win probability.
+
+        Raw Brain/advisor confidence is reasoning strength, not a calibrated
+        probability. Without an explicit out-of-sample calibration record the
+        returned numeric value is diagnostic only and cannot authorize exposure.
+        """
+        side = str(direction or "").strip().upper()
+        if side not in (LONG, SHORT):
+            return False, 0.0, "not directional"
+        candidates: list[tuple[float, float, str]] = []
+        try:
+            for item in market_state.fresh_evidence(now):
+                domain = str(getattr(getattr(item, "domain", None), "value",
+                                     getattr(item, "domain", "")) or "").lower()
+                if domain != "historical_analogue":
+                    continue
+                if str(getattr(item, "symbol", "") or "").strip().upper() != str(
+                    getattr(market_state, "symbol", "") or ""
+                ).strip().upper():
+                    continue
+                m = getattr(item, "measurements", None)
+                if not isinstance(m, dict):
+                    continue
+                if (
+                    m.get("probability_calibration_verified") is not True
+                    or m.get("source_verified") is not True
+                    or m.get("out_of_sample") is not True
+                    or m.get("walk_forward") is not True
+                    or m.get("untouched_holdout") is not True
+                    or m.get("data_leakage_checked") is not True
+                    or m.get("selection_bias_checked") is not True
+                    or m.get("overfitting_checked") is not True
+                    or str(m.get("calibration_side", "")).strip().upper() != side
+                    or not str(m.get("calibration_method", "")).strip()
+                    or not str(m.get("calibration_id", "")).strip()
+                ):
+                    continue
+                probability = self._cost_value(m.get("win_probability"))
+                sample_count = self._cost_value(m.get("sample_count"))
+                brier_score = self._cost_value(m.get("brier_score"))
+                reliability_gap = self._cost_value(m.get("reliability_gap"))
+                if (
+                    probability is None or probability > 1.0
+                    or sample_count is None or sample_count < 30
+                    or brier_score is None or brier_score > 1.0
+                    or reliability_gap is None or reliability_gap > 0.25
+                ):
+                    continue
+                stamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+                candidates.append((
+                    stamp, probability,
+                    f"{m['calibration_method']}:{m['calibration_id']} "
+                    f"(n={int(sample_count)}, Brier={brier_score:.4f})",
+                ))
+        except Exception:
+            return False, 0.0, "calibration evidence unavailable"
+        if not candidates:
+            return False, 0.0, "no fresh verified out-of-sample probability calibration"
+        _, probability, source = max(candidates, key=lambda row: row[0])
+        return True, probability, source
+
     def _execution_cost_estimate(
         self, market_state: MarketState, *, now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
@@ -2306,8 +2449,14 @@ class CognitiveBrain:
         """
         try:
             candidates: list[tuple[float, float, str]] = []
+            state_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
             for item in market_state.fresh_evidence(now):
                 if getattr(item, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
+                    continue
+                # Cost in R is instrument-specific. Missing or cross-symbol
+                # execution quotes cannot authorize a different instrument.
+                item_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                if not state_symbol or item_symbol != state_symbol:
                     continue
                 measurements = getattr(item, "measurements", None)
                 if not isinstance(measurements, dict):
@@ -2320,13 +2469,20 @@ class CognitiveBrain:
                 # Legacy/test evidence without an explicit verification field
                 # is treated as unverified. It can inform diagnostics but cannot
                 # authorize new exposure.
-                if measurements.get("cost_verified") is not True:
+                cost_source = str(measurements.get("cost_source") or "").strip()
+                if (
+                    measurements.get("cost_verified") is not True
+                    or not cost_source
+                    or any(token in cost_source.lower() for token in (
+                        "fallback", "unverified", "configured default",
+                    ))
+                ):
                     continue
                 total = self._cost_value(measurements.get("estimated_total_cost_r"))
                 if total is not None:
                     candidates.append((
                         timestamp, total,
-                        str(measurements.get("cost_source") or "verified execution cost"),
+                        cost_source,
                     ))
                     continue
 
@@ -2336,8 +2492,7 @@ class CognitiveBrain:
                     candidates.append((
                         timestamp,
                         spread + slippage,
-                        str(measurements.get("cost_source") or
-                            "verified spread + slippage"),
+                        cost_source,
                     ))
             if candidates:
                 _, cost, source = max(candidates, key=lambda item: item[0])
@@ -2657,8 +2812,7 @@ class CognitiveBrain:
                 if str(getattr(getattr(item, "domain", None), "value",
                                getattr(item, "domain", ""))).lower()
                 in {"structure", "liquidity", "momentum", "volatility", "volume",
-                    "order_flow", "multi_timeframe", "correlation", "session", "macro",
-                    "historical_analogue"}
+                    "order_flow", "multi_timeframe", "correlation", "session", "macro"}
             ]
             if analysis.evidence_index:
                 informative_evidence_ids = {
@@ -2706,6 +2860,14 @@ class CognitiveBrain:
                 return None
 
             direction = lead.direction_implication
+            probability_verified, win_probability, probability_source = (
+                self._calibrated_win_probability(
+                    market_state, direction, now=now,
+                )
+            )
+            if not probability_verified:
+                return None
+
             # A native opportunity needs a real, activated market-structure
             # geometry. Missing stop/target levels or activation evidence means
             # observe; never manufacture the previous configured reward multiple.
@@ -2729,7 +2891,9 @@ class CognitiveBrain:
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
             cost_r = self._execution_cost_r(market_state, now=now)
-            expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
+            expected_value = expected_value_r(
+                win_probability, reward_r, risk_r, cost_r=cost_r,
+            )
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
                 return None
@@ -2822,7 +2986,12 @@ class CognitiveBrain:
                 "evidence_contradicts": "; ".join(analysis.contradictions) or "none detected",
                 "information_missing": "; ".join(analysis.missing_information) or "none",
                 "what_would_change_my_mind": lead.invalidation,
-                "expected_value": f"{expected_value:.4f}R (native)",
+                "expected_value": (
+                    f"{expected_value:.4f}R (native calibrated p={win_probability:.4f})"
+                ),
+                "win_probability_verification": (
+                    f"VERIFIED: {probability_source}; p={win_probability:.4f}"
+                ),
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (

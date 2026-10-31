@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 # Make the repo root importable whether this file is collected by pytest (the
@@ -117,6 +118,8 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         observation="completed-bar structural range", confidence=conf, uncertainty=unc,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "current_close": 1.100,
             "prior_range_high": target_high, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
@@ -130,9 +133,28 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         observation="completed-bar momentum", confidence=conf, uncertainty=unc,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
+    ))
+    # Test-only calibration record; production evidence must come from durable outcomes.
+    ms.add(Evidence(
+        source_module="cognition.probability_calibration",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
+        observation="verified test-only direction-specific calibration",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True, "source_verified": True,
+            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": "LONG",
+            "win_probability": conf, "sample_count": 240, "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "isotonic",
+            "calibration_id": "test-holdout-fixture",
+        },
+        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
     ))
     return ms
 
@@ -243,9 +265,9 @@ def test_expected_value_is_not_a_confidence_proxy():
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     ev = out.decision.expected_value
     # EV_R = p_win*reward_r - (1-p_win)*risk_r - verified_cost_r
-    # = 0.8*2 - 0.2*1 - 0.05 = 1.35. The rich fixture deliberately
+    # = 0.8*2.375 - 0.2*1 - 0.05 = 1.65. The rich fixture deliberately
     # supplies fresh execution-cost evidence, so cognition must account for it.
-    assert abs(ev - 1.35) < 1e-9, f"expected 1.35 after verified cost, got {ev}"
+    assert abs(ev - 1.65) < 1e-9, f"expected 1.65 after verified cost, got {ev}"
     assert ev != out.decision.confidence
 
 
@@ -289,7 +311,7 @@ def test_negative_ev_opportunity_is_declined():
         reasoner=_Reasoner(_opinion("LONG", 0.6)),
         reward_r_default=0.5, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state(target_high=1.1025))
+    out = brain.reason(_rich_state(conf=0.6, target_high=1.1025))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
     assert out.decision.expected_value < 0.0
@@ -301,7 +323,7 @@ def test_positive_ev_opportunity_opens():
         reasoner=_Reasoner(_opinion("LONG", 0.8)),
         reward_r_default=2.0, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state())
+    out = brain.reason(_rich_state(conf=0.8))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.expected_value >= 0.0
 

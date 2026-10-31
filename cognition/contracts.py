@@ -327,7 +327,7 @@ class Evidence:
 _DIRECTIONAL_MEASUREMENT_KEYS = frozenset({
     "directional_lean", "lean", "direction", "bias", "sentiment",
     "long_probability", "short_probability", "long_ev", "short_ev", "flat_ev",
-    "dominant", "score", "signed_score", "vote", "signal",
+    "dominant", "score", "signed_score", "vote", "signal", "calibration_side",
 })
 
 
@@ -347,9 +347,16 @@ def scrub_directional(ev: "Evidence") -> "Evidence":
         ev.polarity = 0.0
         m = getattr(ev, "measurements", None)
         if isinstance(m, dict) and m:
+            domain = str(getattr(
+                getattr(ev, "domain", None), "value", getattr(ev, "domain", ""),
+            ) or "").lower()
             stripped = [
                 k for k in list(m.keys())
                 if str(k).strip().lower() in _DIRECTIONAL_MEASUREMENT_KEYS
+                and not (
+                    str(k).strip().lower() == "calibration_side"
+                    and domain == EvidenceDomain.HISTORICAL_ANALOGUE.value
+                )
             ]
             for k in stripped:
                 m.pop(k, None)
@@ -416,6 +423,7 @@ class MarketState:
             EvidenceDomain.EXECUTION_QUALITY.value,
             EvidenceDomain.REASONING.value,
             EvidenceDomain.PORTFOLIO.value,
+            EvidenceDomain.HISTORICAL_ANALOGUE.value,
             EvidenceDomain.OTHER.value,
         }
         # These OHLC observers can retain an unknown-time reading for qualitative

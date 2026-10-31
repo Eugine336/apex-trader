@@ -16,6 +16,7 @@ Executable assertions for the six violations fixed in this session:
 Pure standard library (no third-party deps) so these run in a minimal sandbox.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -74,7 +75,7 @@ class _Reasoner:
         return self._op
 
 
-def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110):
+def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110, calibrated_probability=0.8):
     ms = MarketState(symbol=symbol)
     domains = [EvidenceDomain.STRUCTURE, EvidenceDomain.LIQUIDITY,
                EvidenceDomain.MOMENTUM, EvidenceDomain.VOLUME,
@@ -120,6 +121,8 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         uncertainty=1.0 - conf,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "current_close": 1.100,
             "prior_range_high": target_high, "prior_range_low": 1.095,
             "range_position": 0.5, "breakout_direction": "up",
@@ -134,9 +137,28 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         uncertainty=1.0 - conf,
         measurements={
             "source_kind": "market_lens", "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "source_bar_epoch": time.time(),
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
+    ))
+    # Test-only calibration record; production evidence must come from durable outcomes.
+    ms.add(Evidence(
+        source_module="cognition.probability_calibration",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
+        observation="verified test-only direction-specific calibration",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True, "source_verified": True,
+            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": "LONG",
+            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "isotonic",
+            "calibration_id": "test-holdout-fixture",
+        },
+        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
     ))
     return ms
 
@@ -210,8 +232,12 @@ def test_v7_do_nothing_reasoning_on_reject():
     assert txt.startswith("evaluated: doing nothing is correct")
 
 
-def test_v7_do_nothing_reasoning_on_low_confidence():
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(_evidence_state())
+def test_v7_do_nothing_reasoning_on_low_calibrated_probability():
+    # Low reasoning confidence is not itself a probability; supply a matching
+    # low calibrated probability to test the no-action explanation.
+    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(
+        _evidence_state(calibrated_probability=0.3)
+    )
     txt = out.decision.questions_answered["should_i_do_nothing"]
     assert txt.startswith("evaluated: doing nothing is correct")
     assert "ev" in txt.lower() or "expected value" in txt.lower()
@@ -243,7 +269,7 @@ def test_v9_execution_cost_can_flip_ev_negative():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.5, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev], target_high=1.1025)
+    ms = _evidence_state(extra=[cost_ev], target_high=1.1025, calibrated_probability=0.6)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.6)),
                          reward_r_default=0.6, min_expected_value=0.0).reason(ms)
     # EV = 0.6*0.6 - 0.4*1 - 0.5 = 0.36 - 0.4 - 0.5 = -0.54 < 0 ⇒ declined.
