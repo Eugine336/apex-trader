@@ -515,6 +515,7 @@ class CognitionLoop:
         reallocation_concentration_limit: float = 0.6,
         reallocation_trim_fraction: float = 0.5,
         pattern_tracker: Optional[Any] = None,
+        candidate_event_store: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -628,6 +629,8 @@ class CognitionLoop:
         # drives execution. ``_origination_patterns`` remembers which patterns a
         # symbol's open campaign rested on, so the close can attribute the outcome.
         self._pattern_tracker = pattern_tracker
+        # Durable candidate provenance is observational and cannot authorize action.
+        self._candidate_event_store = candidate_event_store
         self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
@@ -900,6 +903,94 @@ class CognitionLoop:
         self._cycle_offset = (off + cap) % n
         return batch
 
+    def _record_candidate_snapshot(self, output: Any, market_state: MarketState) -> None:
+        """Durably record the complete considered candidate universe at decision time.
+
+        This is observational provenance, not a qualification or execution gate.
+        It records forming, active, rejected/deferred decision states and the
+        no-opportunity result, together with the exact point-in-time evidence.
+        It deliberately does not label predictive success or train probabilities.
+        """
+        try:
+            decision = getattr(output, "decision", None)
+            if decision is None:
+                return
+            decision_id = str(getattr(decision, "decision_id", "") or "")
+            if not decision_id:
+                raise ValueError("candidate snapshot requires canonical decision_id")
+            from persistence.event_store import get_event_store
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            decision_data = decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
+            evidence_data = [
+                item.to_dict() for item in list(getattr(market_state, "evidence", []) or [])
+                if callable(getattr(item, "to_dict", None))
+            ]
+            opportunities = list(getattr(decision, "opportunities", []) or [])
+            hypotheses = list(getattr(decision, "hypotheses", []) or [])
+            records: list[tuple[str, str, dict]] = []
+            for opportunity in opportunities:
+                data = opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
+                oid = str(data.get("id", "") or getattr(opportunity, "opportunity_id", "") or "")
+                if not oid:
+                    raise ValueError("opportunity candidate omitted opportunity_id")
+                records.append(("opportunity", oid, data))
+            for hypothesis in hypotheses:
+                data = hypothesis.to_dict() if callable(getattr(hypothesis, "to_dict", None)) else {}
+                hid = str(data.get("hypothesis_id", "") or getattr(hypothesis, "hypothesis_id", "") or "")
+                if not hid:
+                    continue
+                records.append(("hypothesis", hid, data))
+            if not records:
+                dtype = getattr(getattr(decision, "decision_type", None), "value",
+                                getattr(decision, "decision_type", "unknown"))
+                records.append(("decision_outcome", decision_id, {
+                    "decision_type": str(dtype),
+                    "thesis": str(getattr(decision, "thesis", "") or ""),
+                    "do_nothing_considered": bool(getattr(decision, "do_nothing_considered", False)),
+                }))
+            for candidate_kind, candidate_ref, candidate_data in records:
+                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                state = str(candidate_data.get("state", "") or candidate_data.get("hypothesis_kind", "") or "considered")
+                payload = {
+                    "schema_version": "1.0.0",
+                    "candidate_id": candidate_id,
+                    "candidate_kind": candidate_kind,
+                    "candidate_ref": candidate_ref,
+                    "candidate_state_at_decision": state,
+                    "decision_id": decision_id,
+                    "decision_type": str(
+                        getattr(getattr(decision, "decision_type", None), "value",
+                                getattr(decision, "decision_type", "unknown"))
+                    ),
+                    "symbol": str(getattr(market_state, "symbol", "") or ""),
+                    "decision_epoch": float(getattr(decision, "created_epoch", 0.0) or 0.0),
+                    "market_snapshot_epoch": float(getattr(market_state, "created_epoch", 0.0) or 0.0),
+                    "identity_version": str(getattr(decision, "identity_version", "") or ""),
+                    "candidate": candidate_data,
+                    "decision_snapshot": decision_data,
+                    "point_in_time_evidence": evidence_data,
+                    "predictive_label_status": "UNLABELLED",
+                    "predictive_validity": "NOT_ESTABLISHED",
+                    "selection_population": "ALL_RECORDED_BRAIN_CONSIDERED_CANDIDATES",
+                }
+                store.emit(
+                    "COGNITIVE_CANDIDATE_SNAPSHOT",
+                    "DEBUG",
+                    symbol=payload["symbol"],
+                    correlation_id=decision_id,
+                    parent_id=decision_id,
+                    source_module="cognition.loop.candidate_ledger",
+                    payload=payload,
+                    durable=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — preserve failure visibility; never invent a durable acknowledgement
+            logger.error(
+                "[cognition-loop] durable candidate snapshot failed for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
@@ -924,6 +1015,7 @@ class CognitionLoop:
         try:
             ms = self._consolidator.build(symbol, now=now)
             output = self._brain.reason(ms, now=now)
+            self._record_candidate_snapshot(output, ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
             # so the Brain's live reasoning is observable in the logs — not just
             # when it originates a trade.
