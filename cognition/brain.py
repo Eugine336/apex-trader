@@ -44,6 +44,7 @@ from cognition.contracts import (
     Hypothesis,
     MarketState,
     Opportunity,
+    OpportunityState,
 )
 from cognition.expected_value import expected_value_r
 from cognition.opportunity_geometry import derive_opportunity_geometry
