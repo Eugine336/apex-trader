@@ -54,6 +54,7 @@ class _Opinion:
         if "opportunities" not in kw:
             self.opportunities = (
                 [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "candidate_family": "test_family",
                   "horizon": "M5",
                   "quality": confidence, "asymmetry": confidence,
                   "evidence_strength": confidence}]
