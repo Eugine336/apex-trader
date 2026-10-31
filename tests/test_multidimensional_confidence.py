@@ -67,7 +67,10 @@ def _decide(opinion, uncertainty=0.1):
         source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
-    add_market_geometry(ms, opinion.direction)
+    # These sizing scenarios need enough calibrated EV headroom above the
+    # 0.10 minimum structural payoff from this synthetic geometry, otherwise
+    # both strong and weak profiles are correctly capped at the same EV size.
+    add_market_geometry(ms, opinion.direction, expected_return_r=0.8)
     consolidation = ms.consolidation()
     consolidation["aggregate_uncertainty"] = uncertainty
     return _brain()._from_opinion(
