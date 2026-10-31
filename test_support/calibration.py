@@ -12,7 +12,7 @@ def register_test_calibration(
     symbol: str,
     direction: str = "LONG",
     *,
-    candidate_family: str = "test_family",
+    candidate_family: str = "continuation",
     horizon_seconds: int = 300,
     probability: float = 0.72,
     sample_count: int = 240,
