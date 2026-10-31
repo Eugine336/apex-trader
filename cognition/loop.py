@@ -1196,15 +1196,23 @@ class CognitionLoop:
                         or float(reference.get("source_timestamp_epoch") or 0.0) <= 0.0
                     ):
                         continue
-                    geometry_risk = candidate.get("risk_distance")
-                    if geometry_risk is None and candidate.get("entry_price") is not None and candidate.get("stop_price") is not None:
-                        geometry_risk = abs(float(candidate["entry_price"]) - float(candidate["stop_price"]))
-                    try:
-                        risk_distance = float(geometry_risk) if geometry_risk is not None else None
-                    except (TypeError, ValueError, OverflowError):
-                        risk_distance = None
-                    if risk_distance is not None and (
+                    entry_price = float(candidate.get("entry_price"))
+                    stop_price = float(candidate.get("stop_price"))
+                    # Normalize the fixed-horizon move by risk from the actual
+                    # decision-time quote to the candidate invalidation level.
+                    # A distant unfilled limit entry is not treated as a market fill.
+                    risk_distance = (
+                        reference_price - stop_price if direction == "LONG"
+                        else stop_price - reference_price
+                    )
+                    entry_deviation_r = (
+                        abs(entry_price - reference_price) / risk_distance
+                        if risk_distance > 0.0 else float("inf")
+                    )
+                    if (
                         not math.isfinite(risk_distance) or risk_distance <= 0.0
+                        or not math.isfinite(entry_deviation_r)
+                        or entry_deviation_r > 0.25
                     ):
                         risk_distance = None
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -1261,6 +1269,10 @@ class CognitionLoop:
                         "observation_status": status,
                         "outcome_label": label,
                         "reference_price": reference_price,
+                        "entry_price": entry_price,
+                        "stop_price": stop_price,
+                        "risk_distance_from_decision_quote": risk_distance,
+                        "entry_deviation_r": entry_deviation_r,
                         "observed_price": observed_price if within_window else None,
                         "directional_return_fraction": signed_return_value,
                         "directional_return_r": r_multiple,
