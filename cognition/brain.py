@@ -852,7 +852,15 @@ class CognitiveBrain:
             market_state, now=now,
         )
         probability_verified, win_probability, probability_source = (
-            self._calibrated_win_probability(market_state, direction, now=now)
+            self._calibrated_win_probability(
+                market_state,
+                direction,
+                horizon_seconds=self._calibration_horizon_seconds(
+                    getattr(driving_opp, "horizon", None)
+                    or getattr(opinion, "expected_holding_horizon_seconds", None)
+                ),
+                now=now,
+            )
             if direction in (LONG, SHORT) else (False, 0.0, "not directional")
         )
         # Effective confidence is retained for diagnostics only. It is not a
@@ -2379,8 +2387,28 @@ class CognitiveBrain:
             return None
         return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
+    @staticmethod
+    def _calibration_horizon_seconds(value: Any) -> Optional[int]:
+        """Map explicit opportunity horizons to the producer's fixed horizons."""
+        if isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value) > 0:
+            return int(float(value))
+        token = str(value or "").strip().upper()
+        aliases = {
+            "MICRO": 300, "M1": 300, "M5": 300,
+            "LTF": 900, "M15": 900,
+            "MTF": 3600, "H1": 3600,
+            "HTF": 14400, "H4": 14400,
+            "D1": 86400,
+        }
+        return aliases.get(token)
+
     def _calibrated_win_probability(
-        self, market_state: MarketState, direction: str, *, now: Optional[float] = None,
+        self,
+        market_state: MarketState,
+        direction: str,
+        *,
+        horizon_seconds: Optional[int] = None,
+        now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
         """Return only an independently validated, direction-specific win probability.
 
@@ -2391,6 +2419,12 @@ class CognitiveBrain:
         side = str(direction or "").strip().upper()
         if side not in (LONG, SHORT):
             return False, 0.0, "not directional"
+        if horizon_seconds is None or int(horizon_seconds) <= 0:
+            return False, 0.0, "explicit opportunity horizon unavailable"
+        try:
+            from cognition.calibration_artifacts import resolve_calibration_artifact
+        except Exception:
+            return False, 0.0, "producer calibration verifier unavailable"
         candidates: list[tuple[float, float, str]] = []
         try:
             for item in market_state.fresh_evidence(now):
@@ -2869,7 +2903,12 @@ class CognitiveBrain:
             direction = lead.direction_implication
             probability_verified, win_probability, probability_source = (
                 self._calibrated_win_probability(
-                    market_state, direction, now=now,
+                    market_state,
+                    direction,
+                    horizon_seconds=self._calibration_horizon_seconds(
+                        getattr(lead, "horizon", None)
+                    ),
+                    now=now,
                 )
             )
             if not probability_verified:
