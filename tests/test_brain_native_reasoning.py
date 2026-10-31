@@ -46,6 +46,7 @@ class _Opinion:
         # tests exercise native/advisor integration, not the legacy-scalar path).
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "candidate_family": "test_family",
               "horizon": "M5", "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
