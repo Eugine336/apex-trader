@@ -170,6 +170,21 @@ class DecisionType(Enum):
         return self.value
 
 
+CANDIDATE_FAMILIES = frozenset({
+    "continuation", "liquidity_reversal", "trend_exhaustion",
+    "range_rotation", "mean_reversion", "order_flow_reaction",
+    "m1_context", "trend_context", "volatility_regime",
+    "breakout", "failed_breakout", "reversal", "pullback",
+    "momentum_continuation", "trend_transition",
+})
+
+
+def candidate_family_from(value: Any) -> str:
+    """Normalize only explicit controlled family labels; never infer from prose."""
+    family = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return family if family in CANDIDATE_FAMILIES else "unclassified"
+
+
 class OpportunityState(Enum):
     """The lifecycle state of a single opportunity (Part XXV — harvesting).
 
@@ -704,7 +719,7 @@ class Opportunity:
 
     def __post_init__(self) -> None:
         self.identity_version = IDENTITY_VERSION
-        self.candidate_family = str(self.candidate_family or "unclassified").strip().lower()[:64]
+        self.candidate_family = candidate_family_from(self.candidate_family)
         d = str(self.direction or "FLAT").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else "FLAT"
         self.state = opportunity_state_from(self.state)
@@ -791,12 +806,11 @@ class Opportunity:
             evidence_strength=_clamp01(data.get("evidence_strength")),
             competing_opportunities=_lst("competing_opportunities"),
             is_preferred=bool(oid) and oid == str(preferred_id or ""),
-            candidate_family=str(
+            candidate_family=candidate_family_from(
                 data.get("candidate_family")
                 or data.get("hypothesis_kind")
                 or data.get("opportunity_type")
                 or data.get("strategy_family")
-                or "unclassified"
             ),
         )
 
@@ -1069,6 +1083,8 @@ __all__ = [
     "DecisionType",
     "OpportunityState",
     "opportunity_state_from",
+    "CANDIDATE_FAMILIES",
+    "candidate_family_from",
     "Hypothesis",
     "Opportunity",
     "DecisionPackage",
