@@ -101,7 +101,7 @@ def _decide(opinion, uncertainty=0.1):
         relevance_horizon_seconds=900.0,
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
-    ms.add(Evidence(
+    state.add(Evidence(
         source_module="validation.test_out_of_sample_calibration",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="BTCUSD",
         observation="verified test-only direction-specific calibration",
