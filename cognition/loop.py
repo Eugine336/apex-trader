@@ -971,12 +971,36 @@ class CognitionLoop:
             )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_rows = []
-            fresh_evidence_ids = {
-                str(getattr(item, "evidence_id", "") or "")
-                for item in market_state.fresh_evidence(
-                    now=float(getattr(decision, "created_epoch", 0.0) or 0.0)
-                )
-            }
+            decision_epoch = float(getattr(decision, "created_epoch", 0.0) or 0.0)
+            target_symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
+            decision_symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
+            if decision_symbol and decision_symbol != target_symbol:
+                target_symbol = ""
+            fresh_items = (
+                market_state.fresh_evidence(now=decision_epoch)
+                if math.isfinite(decision_epoch) and decision_epoch > 0.0 else []
+            )
+            # Point-in-time evidence is stricter than ordinary freshness:
+            # source time must be broker-verified, at/before this decision,
+            # same-instrument, and not a provisional forming-bar estimate.
+            point_in_time_evidence_ids = set()
+            for item in fresh_items:
+                try:
+                    source_epoch = float(getattr(item, "source_timestamp_epoch", None))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                if (
+                    evidence_id
+                    and target_symbol
+                    and evidence_symbol == target_symbol
+                    and getattr(item, "source_timestamp_verified", False) is True
+                    and getattr(item, "provisional", False) is not True
+                    and math.isfinite(source_epoch)
+                    and 0.0 < source_epoch <= decision_epoch
+                ):
+                    point_in_time_evidence_ids.add(evidence_id)
             for item in evidence_items:
                 to_dict = getattr(item, "to_dict", None)
                 if not callable(to_dict):
@@ -998,31 +1022,42 @@ class CognitionLoop:
                 for row in evidence_rows if row.get("evidence_id")
             }
             quote_candidates = []
-            for item in evidence_items:
+            for item in fresh_items:
                 measurements = getattr(item, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
                     continue
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
+                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
                 try:
                     bid, ask = float(quote.get("bid")), float(quote.get("ask"))
-                    source_epoch = float(
-                        getattr(item, "source_timestamp_epoch", None) or 0.0
-                    )
+                    source_epoch = float(getattr(item, "source_timestamp_epoch", None))
+                    quote_epoch = float(quote.get("timestamp_epoch"))
                     if (
-                        bid > 0.0 and ask >= bid and source_epoch > 0.0
+                        evidence_id in point_in_time_evidence_ids
+                        and evidence_symbol == target_symbol
+                        and quote_symbol == target_symbol
+                        and getattr(quote, "source_timestamp_verified", True) is not False
+                        and quote.get("source_timestamp_verified") is True
+                        and math.isfinite(bid) and math.isfinite(ask)
+                        and bid > 0.0 and ask >= bid
+                        and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
+                        and 0.0 < source_epoch <= decision_epoch
+                        and abs(source_epoch - quote_epoch) <= 1e-6
                         and getattr(item, "source_timestamp_verified", False) is True
+                        and getattr(item, "provisional", False) is not True
                     ):
                         quote_candidates.append({
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
                             "ask": ask,
+                            "timestamp_epoch": quote_epoch,
                             "source_timestamp_epoch": source_epoch,
-                            "source_timestamp_verified": (
-                                getattr(item, "source_timestamp_verified", False) is True
-                            ),
-                            "symbol": str(getattr(item, "symbol", "") or ""),
+                            "source_timestamp_verified": True,
+                            "symbol": target_symbol,
                             "source_module": str(getattr(item, "source_module", "") or ""),
-                            "evidence_id": str(getattr(item, "evidence_id", "") or ""),
+                            "evidence_id": evidence_id,
                         })
                 except (TypeError, ValueError, OverflowError):
                     continue
@@ -1135,11 +1170,12 @@ class CognitionLoop:
                 candidate_point_in_time_rows = [
                     evidence_by_id[evidence_id]
                     for evidence_id in sorted(required_evidence_ids)
-                    if evidence_id in evidence_by_id and evidence_id in fresh_evidence_ids
+                    if evidence_id in evidence_by_id
+                    and evidence_id in point_in_time_evidence_ids
                 ]
                 point_in_time_complete = (
                     bool(required_evidence_ids)
-                    and required_evidence_ids <= fresh_evidence_ids
+                    and required_evidence_ids <= point_in_time_evidence_ids
                     and required_evidence_ids <= set(evidence_by_id)
                 )
                 payload = {
@@ -1154,7 +1190,7 @@ class CognitionLoop:
                                 getattr(decision, "decision_type", "unknown"))
                     ),
                     "symbol": str(getattr(market_state, "symbol", "") or ""),
-                    "decision_epoch": float(getattr(decision, "created_epoch", 0.0) or 0.0),
+                    "decision_epoch": decision_epoch,
                     "market_snapshot_epoch": float(getattr(market_state, "created_epoch", 0.0) or 0.0),
                     "reference_quote": _json_safe(reference_quote),
                     "identity_version": str(getattr(decision, "identity_version", "") or ""),
@@ -1199,7 +1235,7 @@ class CognitionLoop:
                 COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
             )
 
-            symbol = str(getattr(market_state, "symbol", "") or "")
+            symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
             if not symbol:
                 return
             quote_rows = []
@@ -1209,15 +1245,27 @@ class CognitionLoop:
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
                     continue
+                evidence_symbol = str(getattr(evidence, "symbol", "") or "").strip().upper()
+                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                if (
+                    evidence_symbol != symbol
+                    or quote_symbol != symbol
+                    or getattr(evidence, "source_timestamp_verified", False) is not True
+                    or getattr(evidence, "provisional", False) is True
+                    or quote.get("source_timestamp_verified") is not True
+                ):
+                    continue
                 try:
                     bid = float(quote.get("bid"))
                     ask = float(quote.get("ask"))
-                    source_epoch = float(getattr(evidence, "source_timestamp_epoch", None) or 0.0)
+                    source_epoch = float(getattr(evidence, "source_timestamp_epoch", None))
+                    quote_epoch = float(quote.get("timestamp_epoch"))
                     if (
                         math.isfinite(bid) and math.isfinite(ask)
-                        and math.isfinite(source_epoch)
-                        and bid > 0.0 and ask >= bid and source_epoch > 0.0
-                        and source_epoch <= cutoff
+                        and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
+                        and bid > 0.0 and ask >= bid
+                        and 0.0 < source_epoch <= cutoff
+                        and abs(source_epoch - quote_epoch) <= 1e-6
                     ):
                         quote_rows.append({
                             "mid": (bid + ask) / 2.0,
