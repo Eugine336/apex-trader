@@ -122,7 +122,11 @@ def test_v3_brain_declines_when_only_one_advisor_responded():
 def test_v3_brain_acts_when_two_advisors_responded():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                            min_advisors_for_action=2)
-    out = brain.reason(_state_with_advisors(2, 2, 3))
+    state = _state_with_advisors(2, 2, 3)
+    out = brain.reason(state)
+    assert out.decision.questions_answered.get("expected_return_verification", "").startswith(
+        "VERIFIED"
+    ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.campaign is not None and out.campaign.direction == "LONG"
     assert out.decision.questions_answered.get("advisor_quorum", "").startswith("MET")
