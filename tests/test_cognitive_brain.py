@@ -20,7 +20,7 @@ class _Opinion:
         # tests exercise sizing/EV/observability, not the legacy-scalar path.
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "candidate_family": "test_family",
+              "candidate_family": "continuation",
               "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
@@ -258,7 +258,7 @@ class _RichOpinion:
         # through a structured object (EV/sizing still derive from the excursions).
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "candidate_family": "test_family",
+              "candidate_family": "continuation",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
