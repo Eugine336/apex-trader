@@ -139,9 +139,13 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
                     ),
                     "unknown_volume",
                 )
+                declared_volume_source = raw_value("volume_source")
                 row_data["volume_source"] = (
-                    "tick_volume_proxy" if volume_source == "tick_volume"
-                    else "provider_volume"
+                    str(declared_volume_source).strip().lower()
+                    if declared_volume_source is not None else (
+                        "tick_volume_proxy" if volume_source == "tick_volume"
+                        else "provider_volume"
+                    )
                 )
             result.append(row_data)
         return result
