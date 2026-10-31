@@ -2255,10 +2255,22 @@ class CognitiveBrain:
             if not is_harvesting:
                 return [], "", False
             preferred_id = str(getattr(opinion, "preferred_opportunity_id", "") or "")
-            opps = [
-                Opportunity.from_reply(o, preferred_id=preferred_id)
-                for o in raw if isinstance(o, dict)
-            ]
+            opps = []
+            for index, raw_item in enumerate(raw):
+                if not isinstance(raw_item, dict):
+                    continue
+                candidate = Opportunity.from_reply(
+                    raw_item, preferred_id=preferred_id,
+                )
+                if not candidate.opportunity_id:
+                    # Keep malformed-but-considered candidates visible instead
+                    # of dropping the entire ledger. The generated ID is scoped
+                    # to this decision; UNKNOWN state and unclassified family
+                    # prevent it from authorizing action or calibration.
+                    candidate.opportunity_id = f"malformed:{index}"
+                    candidate.state = OpportunityState.UNKNOWN
+                    candidate.candidate_family = "unclassified"
+                opps.append(candidate)
             return opps, preferred_id, True
         except Exception:  # noqa: BLE001 — building the set must never break reasoning
             return [], "", False
