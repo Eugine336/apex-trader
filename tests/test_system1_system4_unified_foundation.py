@@ -17,6 +17,7 @@ from cognition.contracts import (
     Opportunity,
     OpportunityState,
 )
+from cognition.brain import CognitiveBrain
 from cognition.loop import CognitionLoop, EvidenceConsolidator
 
 
@@ -607,3 +608,24 @@ def test_native_directional_hypotheses_are_ledgered_when_decision_stands_down():
     assert snapshots[0]["predictive_validity"] == "NOT_ESTABLISHED"
     assert len(dispositions) == 1
     assert dispositions[0]["candidate_id"] == snapshots[0]["candidate_id"]
+
+
+
+def test_malformed_considered_opportunity_is_retained_as_non_actionable():
+    opinion = SimpleNamespace(
+        opportunities=[{
+            "direction": "LONG",
+            "state": "ACTIVE",
+            "candidate_family": "continuation",
+        }],
+        market_is_untradeable=False,
+        market_state={"regime": "trending"},
+        preferred_opportunity_id="",
+    )
+    opportunities, _, harvesting = CognitiveBrain._build_opportunity_set(opinion)
+    assert harvesting is True
+    assert len(opportunities) == 1
+    assert opportunities[0].opportunity_id == "malformed:0"
+    assert opportunities[0].state == OpportunityState.UNKNOWN
+    assert opportunities[0].candidate_family == "unclassified"
+    assert opportunities[0].is_actionable is False
