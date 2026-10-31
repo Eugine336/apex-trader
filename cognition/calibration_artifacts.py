@@ -371,7 +371,15 @@ class CalibrationProducer:
                     str(disposition.get("decision_id", "") or "") == decision_id
                     and str(disposition.get("symbol", "") or "").strip().upper()
                         == str(payload.get("symbol", "") or "").strip().upper()
-                    and bool(disposition.get("disposition"))
+                    and str(disposition.get("disposition", "") or "") in {
+                        "PASSED_PORTFOLIO_REVIEW_PENDING_EXECUTION_ADMISSION",
+                        "REJECTED_BY_BRAIN",
+                        "NO_OPPORTUNITY",
+                        "DEFERRED_FORMING",
+                        "BLOCKED_OR_DEFERRED_BY_ADMISSION",
+                        "OBSERVE",
+                        "NON_ORIGINATION_DECISION",
+                    }
                 )
                 row = {
                     "candidate_id": candidate_id,
