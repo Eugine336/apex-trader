@@ -18,6 +18,7 @@ Pure standard library.
 """
 
 import pytest
+import time
 
 from cognition.brain import CognitiveBrain
 from cognition.brain_reasoning import (
@@ -74,6 +75,8 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
         confidence=conf,
         uncertainty=1.0 - conf,
         measurements=dict(measurements),
+        timestamp_epoch=time.time(),
+        source_timestamp_epoch=time.time(),
         relevance_horizon_seconds=900.0,
     )
 
@@ -150,10 +153,12 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
         relevance_horizon_seconds=3600.0,
-    ))    return ms
+    ))
+    return ms
 
 
 def _with_verified_council(ms, *, responded=2, available=2, total=2):
+    stamp = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol=ms.symbol, observation="fresh test cost estimate",
@@ -163,6 +168,7 @@ def _with_verified_council(ms, *, responded=2, available=2, total=2):
             "cost_verified": True,
             "cost_source": "simulated live quote for test",
         },
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     ms.add(Evidence(
