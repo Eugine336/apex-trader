@@ -1204,7 +1204,14 @@ class CognitionLoop:
                     ):
                         quote_rows.append({
                             "mid": (bid + ask) / 2.0,
+                            "bid": bid,
+                            "ask": ask,
                             "source_timestamp_epoch": source_epoch,
+                            "source_timestamp_verified": (
+                                getattr(evidence, "source_timestamp_verified", False) is True
+                            ),
+                            "symbol": str(getattr(evidence, "symbol", "") or ""),
+                            "source_module": str(getattr(evidence, "source_module", "") or ""),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
                 except (TypeError, ValueError, OverflowError):
@@ -1426,6 +1433,7 @@ class CognitionLoop:
                         "directional_return_r": r_multiple,
                         "reference_evidence_id": str(reference.get("evidence_id", "") or ""),
                         "outcome_evidence_id": quote.get("evidence_id", ""),
+                        "outcome_quote": dict(quote),
                         "predictive_validity": "DESCRIPTIVE_ONLY_UNVALIDATED",
                         "calibration_authority": False,
                     }
