@@ -349,6 +349,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         candidate_id = f"{decision_id}:opportunity:opp-{index}"
         candidate = {
             "opportunity_id": f"opp-{index}",
+            "candidate_family": "continuation",
             "direction": "LONG",
             "state": "active",
             "entry_price": 100.0,
@@ -424,11 +425,15 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert artifact.expected_return_r == 0.05
     assert artifact.holdout_expected_return_r == 0.05
     assert artifact.brier_score == 0.25
+    assert artifact.candidate_family == "continuation"
     assert resolve_calibration_artifact(
-        artifact.artifact_id, "EURUSD", "LONG", 300, now=now,
+        artifact.artifact_id, "EURUSD", "LONG", "continuation", 300, now=now,
     ) is artifact
     assert resolve_calibration_artifact(
-        artifact.artifact_id, "EURUSD", "SHORT", 300, now=now,
+        artifact.artifact_id, "EURUSD", "LONG", "mean_reversion", 300, now=now,
+    ) is None
+    assert resolve_calibration_artifact(
+        artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
 
 
