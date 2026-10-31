@@ -424,3 +424,34 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "SHORT", 300, now=now,
     ) is None
+
+
+
+def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time():
+    explicit = Evidence(
+        source_module="test.explicit_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_000.0,
+    )
+    assert explicit.source_timestamp_verified is True
+    assert explicit.source_timestamp_epoch == 1_900_000_000.0
+
+    unknown = Evidence(
+        source_module="test.unknown_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+    )
+    assert unknown.timestamp_epoch > 0
+    assert unknown.source_timestamp_verified is False
+    assert unknown.source_timestamp_epoch is None
+
+    explicitly_unknown = Evidence(
+        source_module="test.explicitly_unknown_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_000.0,
+        source_timestamp_verified=False,
+    )
+    assert explicitly_unknown.source_timestamp_verified is False
+    assert explicitly_unknown.source_timestamp_epoch is None
