@@ -976,15 +976,13 @@ class CognitionLoop:
                 row = to_dict()
                 measurements = getattr(item, "measurements", {})
                 measurements = measurements if isinstance(measurements, dict) else {}
-                source_epoch = (
-                    getattr(item, "source_timestamp_epoch", None)
-                    or getattr(item, "timestamp_epoch", None)
-                )
-                row["source_timestamp_epoch"] = source_epoch
-                row["source_timestamp_verified"] = bool(
+                source_epoch = getattr(item, "source_timestamp_epoch", None)
+                source_verified = (
                     getattr(item, "source_timestamp_verified", False) is True
-                    or measurements.get("source_timestamp_known") is True
+                    and source_epoch is not None
                 )
+                row["source_timestamp_epoch"] = source_epoch if source_verified else None
+                row["source_timestamp_verified"] = source_verified
                 evidence_rows.append(row)
             evidence_data = _json_safe(evidence_rows)
             quote_candidates = []
