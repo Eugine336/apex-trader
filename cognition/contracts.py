@@ -281,17 +281,33 @@ class Evidence:
         self.confidence = _clamp01(self.confidence)
         self.uncertainty = _clamp01(self.uncertainty)
         self.polarity = _clamp_signed(self.polarity)
+        measurements = self.measurements if isinstance(self.measurements, dict) else {}
+        if self.source_timestamp_epoch is None:
+            for key in ("source_timestamp_epoch", "source_bar_epoch"):
+                candidate = measurements.get(key)
+                if candidate is not None:
+                    try:
+                        self.source_timestamp_epoch = float(candidate)
+                    except (TypeError, ValueError, OverflowError):
+                        self.source_timestamp_epoch = None
+                    if self.source_timestamp_epoch is not None:
+                        break
         if self.source_timestamp_epoch is not None:
             try:
                 source_epoch = float(self.source_timestamp_epoch)
                 self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch == source_epoch else None
             except (TypeError, ValueError, OverflowError):
                 self.source_timestamp_epoch = None
-        self.data_basis = str(self.data_basis or "").strip().lower()
-        self.provisional = bool(self.provisional)
-        self.independence_group = str(self.independence_group or "").strip()
-        self.lineage_ids = list(dict.fromkeys(str(item) for item in (self.lineage_ids or []) if item))
-        self.measurement_version = str(self.measurement_version or "").strip()
+        self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
+        self.provisional = bool(self.provisional or measurements.get("provisional", False))
+        self.independence_group = str(
+            self.independence_group or measurements.get("independence_group", "") or ""
+        ).strip()
+        raw_lineage = self.lineage_ids or measurements.get("lineage_ids", []) or []
+        self.lineage_ids = list(dict.fromkeys(str(item) for item in raw_lineage if item))
+        self.measurement_version = str(
+            self.measurement_version or measurements.get("measurement_version", "") or ""
+        ).strip()
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
         """True if within its relevance horizon (Part XXXV).
