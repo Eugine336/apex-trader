@@ -342,12 +342,12 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 
 No broker orders, runtime database changes, credential changes, `.env` access or destructive cleanup were performed in this implementation pass.
 
-### Calibration-producer audit — why existing history cannot certify probability
+### Calibration-producer baseline audit — 2026-10-30 (superseded by the 2026-10-31 branch record below)
 - `CampaignMemoryStore.find_analogues()` queries only completed campaigns (`closed=1`), so it is a selected-execution sample. It excludes rejected, deferred and conditional opportunities. Turning its win ratio into a calibrated probability would preserve the selection bias that the calibration gate explicitly requires us to test for.
 - The durable `DECISION_TRADE_ENTRY_SNAPSHOT` / `DECISION_TRADE_OUTCOME` pair records opened trades and realized P&L, but the outcome currently marks predictive validity as unvalidated and false. It does not provide outcomes for the full candidate universe or a verified independent holdout.
 - The existing `CalibrationEngine` learns instrument characteristics (ATR, spread, zone/structure outcomes); it is not a direction-specific win-probability calibrator and does not establish walk-forward/untouched-holdout predictive validity.
-- Therefore no existing production dataset can honestly satisfy the new probability contract. A producer must first persist every eligible candidate before selection, preserve decision-time feature snapshots and direction, resolve each candidate at a fixed horizon (including non-traded candidates), prevent overlap/leakage across chronological train/calibration/holdout windows, and emit a signed/traceable calibration artifact with sample counts, Brier score and reliability diagnostics. Until then, keep directional origination blocked; do not infer probability from executed-trade win rate or confidence.
-- The current Brain validates declared calibration metadata but does not yet have a structurally enforced producer/attestation boundary. A caller-supplied `source_verified` flag is not itself independent proof. The dedicated producer must own issuance and bind its artifact to the dataset, split protocol, instrument, direction and validation results before this gate can be considered production-trustworthy.
+- At the time of this baseline audit, no production dataset or complete producer existed to satisfy the calibration contract. The concurrent implementation record below documents the subsequent durable candidate ledger, fixed-horizon outcome producer, family-scoped artifacts and producer-owned registry. That implementation remains unaccepted until runtime validation proves the full path.
+- At the time of this baseline audit, the Brain still relied on caller-declared calibration metadata. The branch implementation below replaces that path with exact producer-registry resolution bound to symbol, side, candidate family, horizon and validation metadata. A source-verification boolean alone remains insufficient.
 
 
 
