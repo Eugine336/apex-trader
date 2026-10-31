@@ -2507,7 +2507,15 @@ class EventDrivenSystem:
         except Exception:  # noqa: BLE001
             return 0.0
 
-    def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
+    def _estimate_round_trip_cost(
+        self,
+        symbol: str,
+        lots: float,
+        *,
+        spread_pips_override: Optional[float] = None,
+        pip_size_override: Optional[float] = None,
+        money_per_price_override: Optional[float] = None,
+    ) -> float:
         """Estimate round-trip cost in account currency (Part XIX Art 7).
 
         Requires broker tick-value/tick-size conversion, a successful positive
@@ -2518,18 +2526,29 @@ class EventDrivenSystem:
         """
         try:
             lots = float(lots or 0.0)
-            mpp = self._money_per_price(symbol, lots)
+            mpp = (
+                float(money_per_price_override)
+                if money_per_price_override is not None
+                else self._money_per_price(symbol, lots)
+            )
             if not math.isfinite(mpp) or mpp <= 0.0 or not math.isfinite(lots) or lots <= 0.0:
                 return 0.0
-            pip = float(self._safe_pip_size(symbol))
+            pip = (
+                float(pip_size_override)
+                if pip_size_override is not None
+                else float(self._safe_pip_size(symbol))
+            )
             if not math.isfinite(pip) or pip <= 0.0:
                 return 0.0
-            # Read the underlying provider value directly. _get_spread_pips()
-            # has a convenience fallback, which must not turn a failed quote
-            # into apparently observed transaction-cost evidence.
-            if self._pm is None or not callable(getattr(self._pm, "get_spread", None)):
-                return 0.0
-            spread_pips = float(self._pm.get_spread(symbol))
+            # Evidence construction may supply the exact spread calculated from
+            # the source-verified Tick used in the same cognition snapshot. Legacy
+            # risk consumers retain the strict direct-provider spread lookup.
+            if spread_pips_override is None:
+                if self._pm is None or not callable(getattr(self._pm, "get_spread", None)):
+                    return 0.0
+                spread_pips = float(self._pm.get_spread(symbol))
+            else:
+                spread_pips = float(spread_pips_override)
             if not math.isfinite(spread_pips) or spread_pips <= 0.0:
                 return 0.0
             cog = getattr(self._config, "cognition", None)
@@ -2976,6 +2995,77 @@ class EventDrivenSystem:
         except Exception as exc:  # noqa: BLE001 — relationships are optional context
             logger.debug("[cognition] cross-asset association failed for {}: {}", symbol, exc)
             return []
+
+    def _cognition_execution_cost(self, symbol: str) -> Optional[dict]:
+        """Return broker-time, broker-spec and operator-attested round-trip cost inputs.
+
+        The same source-verified Tick used by the cognition price snapshot supplies
+        bid/ask and source time. Monetary value conversion requires the verified
+        broker contract specification. Commission and financing remain unknown
+        unless their existing explicit config attestations are present.
+        """
+        try:
+            if self._tick_store is None or self._pm is None:
+                return None
+            tick = self._tick_store.get_latest(symbol)
+            if tick is None or getattr(tick, "source_timestamp_verified", False) is not True:
+                return None
+            source_time = getattr(tick, "timestamp", None)
+            if (
+                not isinstance(source_time, datetime)
+                or source_time.tzinfo is None
+                or source_time.utcoffset() is None
+            ):
+                return None
+            source_epoch = source_time.timestamp()
+            age = time.time() - source_epoch
+            if not math.isfinite(source_epoch) or source_epoch <= 0.0 or age < -1.0 or age > 5.0:
+                return None
+            bid, ask = float(getattr(tick, "bid", 0.0)), float(getattr(tick, "ask", 0.0))
+            if (
+                not math.isfinite(bid) or not math.isfinite(ask)
+                or bid <= 0.0 or ask <= bid
+            ):
+                return None
+            pip_size = float(self._safe_pip_size(symbol))
+            money_per_price = float(self._money_per_price(symbol, 1.0))
+            if (
+                not math.isfinite(pip_size) or pip_size <= 0.0
+                or not math.isfinite(money_per_price) or money_per_price <= 0.0
+            ):
+                return None
+            spread_pips = (ask - bid) / pip_size
+            total_cost = self._estimate_round_trip_cost(
+                symbol,
+                1.0,
+                spread_pips_override=spread_pips,
+                pip_size_override=pip_size,
+                money_per_price_override=money_per_price,
+            )
+            if not math.isfinite(total_cost) or total_cost <= 0.0:
+                return None
+            return {
+                "estimated_total_cost_account_ccy_per_lot": total_cost,
+                "money_per_price_account_ccy_per_lot": money_per_price,
+                "cost_verified": True,
+                "cost_source": (
+                    "source-verified broker tick and specification; "
+                    "operator-attested round-trip commission and financing; "
+                    "explicit conservative 1-pip slippage buffer"
+                ),
+                "source_timestamp_epoch": source_epoch,
+                "source_timestamp_verified": True,
+                "quote": {
+                    "symbol": str(symbol or "").strip().upper(),
+                    "bid": bid,
+                    "ask": ask,
+                    "spread": ask - bid,
+                    "source_timestamp_epoch": source_epoch,
+                },
+            }
+        except Exception as exc:  # noqa: BLE001 — unknown monetary cost must remain unverified
+            logger.debug("[cognition] execution-cost evidence unavailable for {}: {}", symbol, exc)
+            return None
 
     def _cognition_price_snapshot(self, symbol: str) -> list:
         """Reconstruct the live chart for one symbol as Evidence (Part XIX Art 2).
@@ -3769,6 +3859,12 @@ class EventDrivenSystem:
                     _cog_loop.set_developing_source(self._cognition_developing_bias)
                 except Exception as exc:
                     logger.debug("[event-driven] developing-source wiring failed: {}", exc)
+                # Verified round-trip cost evidence is a mandatory input to net EV.
+                try:
+                    _cog_loop.set_execution_cost_source(self._cognition_execution_cost)
+                except Exception as exc:
+                    logger.debug("[event-driven] execution-cost source wiring failed: {}", exc)
+
                 # Part XIX Art 2 — let the Brain observe the actual chart: recent
                 # multi-timeframe OHLC + live price/spread + the open position,
                 # reconstructed as one compact price-action Evidence per symbol.
