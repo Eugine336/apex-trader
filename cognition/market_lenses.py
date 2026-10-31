@@ -564,6 +564,7 @@ def _record(
         timestamp_iso=timestamp_iso,
         relevance_horizon_seconds=max(3 * seconds, 180.0),
         source_timestamp_epoch=source_epoch if known_source_time else None,
+        source_timestamp_verified=known_source_time,
         data_basis="completed_ohlc",
         provisional=False,
         independence_group=f"ohlc:{str(symbol or '').upper()}:{timeframe}",
