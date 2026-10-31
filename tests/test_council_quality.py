@@ -107,7 +107,10 @@ def _decide(opinion, uncertainty=0.1):
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
     from test_support.calibration import register_test_calibration
-    artifact = register_test_calibration("BTCUSD", opinion.direction, horizon_seconds=300, probability=0.9)
+    artifact = register_test_calibration(
+        "BTCUSD", opinion.direction, horizon_seconds=300, probability=0.9,
+        expected_return_r=1.4, holdout_expected_return_r=1.4,
+    )
     state.add(Evidence(
         source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="BTCUSD",
