@@ -171,6 +171,11 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
         b = dict(bias or {})
         if not b:
             return out
+        source_epoch = _num(b.get("source_timestamp_epoch"))
+        source_verified = (
+            b.get("source_timestamp_verified") is True
+            and source_epoch is not None and source_epoch > 0.0
+        )
         conflict = _clamp01(b.get("conflict_score", 0.0))
         # Observation certainty = the NON-directional clarity of the forming-bar
         # structural read: how strongly/aligned the developing structure reads,
@@ -195,13 +200,19 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
             polarity=0.0,
             measurements={
                 "developing": True,
+                "source_timestamp_epoch": source_epoch if source_verified else None,
                 "conflict_score": round(conflict, 4),
                 "alignment_degree": round(alignment, 4),
                 "trend_strength": round(strength, 4),
                 "strength": str(b.get("strength", "") or "")[:32],
                 "tradeable": bool(b.get("tradeable", False)),
             },
+            timestamp_epoch=time.time(),
+            source_timestamp_epoch=source_epoch if source_verified else None,
+            source_timestamp_verified=source_verified,
             relevance_horizon_seconds=60.0,
+            data_basis=str(b.get("data_basis", "") or "developing_world_model"),
+            provisional=True,
         ))
     except Exception:  # noqa: BLE001
         return out
