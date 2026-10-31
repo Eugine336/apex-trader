@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Optional
 
-from cognition.contracts import Evidence, EvidenceDomain
+from cognition.contracts import (
+    CANDIDATE_FAMILIES, Evidence, EvidenceDomain, candidate_family_from,
+)
 
 _REGISTRY: dict[str, "CalibrationArtifact"] = {}
 _REGISTRY_LOCK = threading.RLock()
@@ -291,14 +293,14 @@ class CalibrationProducer:
                 if direction not in {"LONG", "SHORT"}:
                     continue
                 candidate_kind = str(payload.get("candidate_kind", "") or "")
-                candidate_family = str(
+                candidate_family = candidate_family_from(
                     candidate.get("candidate_family")
                     or candidate.get("hypothesis_kind")
                     or candidate.get("opportunity_type")
                     or candidate.get("strategy_family")
-                    or "unclassified"
-                ).strip().lower()
-                if candidate_family in {"", "unclassified", "unknown"}:
+                )
+                if candidate_family not in CANDIDATE_FAMILIES:
+                    invalid_directional_candidates += 1
                     continue
                 if candidate_kind != "opportunity" and not (
                     candidate_kind == "hypothesis"
