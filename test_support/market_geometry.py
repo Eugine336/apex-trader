@@ -37,6 +37,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "data_basis": "completed_ohlc",
             "source_bar_epoch": now,
             "timeframe": "M5",
+            "opportunity_horizon": "M5",
             "current_close": 1.100,
             # The synthetic structure is oriented to provide positive payoff
             # geometry for whichever side a scenario is explicitly testing.
@@ -64,6 +65,7 @@ def add_market_geometry(market_state: Any, direction: str = "LONG") -> Any:
             "data_basis": "completed_ohlc",
             "source_bar_epoch": now,
             "timeframe": "M5",
+            "opportunity_horizon": "M5",
             "close_change": change,
         },
         timestamp_epoch=now,
