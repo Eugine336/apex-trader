@@ -37,7 +37,7 @@ class CalibrationArtifact:
     horizon_seconds: int
     # Probability of a favourable directional return at the declared horizon;
     # this is not the probability of hitting a target before a stop.
-    win_probability: float
+    favourable_probability: float
     expected_return_r: float
     holdout_expected_return_r: float
     expected_return_gap: float
@@ -62,8 +62,7 @@ class CalibrationArtifact:
             "calibration_side": self.direction,
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
-            "win_probability": self.win_probability,
-            "favourable_horizon_probability": self.win_probability,
+            "favourable_horizon_probability": self.favourable_probability,
             "probability_semantics": "favourable_directional_return_at_fixed_horizon",
             "expected_return_r": self.expected_return_r,
             "holdout_expected_return_r": self.holdout_expected_return_r,
@@ -465,7 +464,7 @@ class CalibrationProducer:
                         symbol=sym,
                         direction=direction,
                         horizon_seconds=horizon,
-                        win_probability=base_probability,
+                        favourable_probability=base_probability,
                         expected_return_r=expected_return_r,
                         holdout_expected_return_r=holdout_expected_return_r,
                         expected_return_gap=expected_return_gap,
