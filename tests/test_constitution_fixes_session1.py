@@ -171,7 +171,8 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
         relevance_horizon_seconds=3600.0,
-    ))    return ms
+    ))
+    return ms
 
 
 # ── V2 — a directionless-but-rich reply is parsed (direction ⇒ FLAT) ──────────
