@@ -47,7 +47,9 @@ def _make_position(
 def _mock_platform_manager(positions=None):
     pm = MagicMock()
     pm.get_all_open_positions.return_value = positions or []
-    pm.get_price.return_value = SimpleNamespace(bid=1.1000, ask=1.1002)
+    pm.get_price.return_value = SimpleNamespace(
+        bid=1.1000, ask=1.1002, time=datetime.now(timezone.utc),
+    )
     pm.get_spread.return_value = 1.2
     pm.fetch_market_data.return_value = {}
     pm.modify_trade.return_value = True
