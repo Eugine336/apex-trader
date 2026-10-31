@@ -382,7 +382,7 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 
 ## System 4 — opportunity discovery and payoff qualification (2026-10-30)
 
-**Draft implementation:** PR #797, branch `redesign/system4-opportunity-qualification`. Not accepted; full validation is pending.
+**Implementation merged:** PR #797 merged to `main` at `b141881641746f9f64e94cbe246d59684bb3c3f5` on 2026-10-31. System 4 remains **NOT ACCEPTED**.
 
 - Audited the existing market-derived geometry resolver and found stale-but-fresh older breakout activation, cross-timeframe momentum confirmation, missing-symbol inheritance, unverified sweep reclaim and arrival-order structural conflict weaknesses.
 - Geometry now uses exact symbol identity, declared timeframe, `data_basis=completed_ohlc`, original `source_bar_epoch` age at the decision cutoff, latest structural activation, timeframe-aligned momentum/range response, explicit sweep reclaim and fail-closed same-time structural conflict handling.
@@ -393,7 +393,7 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc; its implemen
 
 New tests cover temporal/timeframe activation, conflicting structures, exact symbol matching, reversal reclaim, no-reclaim rejection, unfamiliar/low-liquidity states, calibrated-probability provenance and quality, and calibration-domain isolation.
 
-**Not yet verified:** final Python 3.11/3.12 full-suite results, latest focused Gold workflow, full identity audit, adversarial scenario matrix, and end-to-end durable outcome-to-calibration producer integration. No live orders or destructive/runtime changes were performed.
+**Validation:** lint passed; focused Gold desk tests passed on Python 3.11 and 3.12. Full Python 3.11 and 3.12 suites each reported 3,990 passed and one failure in `test_no_silent_exception_handlers`: 180 unclassified handlers. The pre-merge `main` run reported the same 180-handler failure, so it is inherited. The full identity audit did not execute after the failing test step. System 4 remains blocked on a selection-aware durable candidate/outcome ledger, independently validated calibration and a structurally enforced producer-attestation boundary. No live orders, runtime database changes or destructive cleanup were performed.
 
 ### Calibration data-integrity finding
 The current durable campaign memory is not a valid probability-training corpus: it stores completed campaigns only, which are selected by the existing entry gates and omit rejected/deferred candidates. The decision-provenance event pair is valuable exact-ticket lineage for opened trades, but it explicitly records predictive validity as unvalidated and false; it does not resolve the full candidate universe or supply independent holdout labels. The existing instrument CalibrationEngine learns ATR/spread/zone/structure statistics, not direction-specific win probabilities. Consequently, the calibration producer cannot be completed honestly by simply wiring one of these existing stores into the Brain. The missing dependency is a selection-aware candidate/outcome ledger with fixed-horizon labels and chronological leakage-safe validation. Until that exists, the directional calibration gate remains fail-closed. In addition, the Brain currently validates declared calibration flags but has no structurally enforced producer/attestation boundary; `source_verified=true` is not independent proof. A dedicated producer must own issuance and bind the artifact to its dataset, split protocol, symbol, direction and validation results before production trust can be claimed.
