@@ -509,3 +509,64 @@ def test_all_cognitive_contracts_force_the_single_canonical_identity():
         assert contract.identity == IDENTITY_STATEMENT
     assert state.to_dict()["identity"] == IDENTITY_STATEMENT
     assert state.to_dict()["identity_version"] == IDENTITY_VERSION
+
+
+
+def test_native_directional_hypotheses_are_ledgered_when_decision_stands_down():
+    import json
+
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, severity, **kwargs):
+            self.events.append((event_type, kwargs))
+            return "event-native-hypothesis"
+
+    store = Store()
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: [],
+        candidate_event_store=store,
+    )
+    decision = DecisionPackage(
+        symbol="EURUSD",
+        decision_type=DecisionType.CONTINUE_OBSERVING,
+        thesis="no candidate qualified this cycle",
+        questions_answered={
+            "native_hypothesis_records": [{
+                "hypothesis_id": "hypothesis-mean-reversion",
+                "hypothesis_kind": "mean_reversion",
+                "direction_implication": "SHORT",
+                "statement": "positive statistical displacement may revert",
+                "horizon": "M15",
+                "confidence_semantics": "uncalibrated_reasoning_strength",
+            }],
+        },
+    )
+    loop._record_candidate_snapshot(
+        SimpleNamespace(decision=decision),
+        MarketState(symbol="EURUSD"),
+    )
+    loop._record_candidate_disposition(
+        SimpleNamespace(decision=decision, campaign=None),
+        stage="brain",
+    )
+
+    snapshots = [
+        payload for event_type, kwargs in store.events
+        if event_type == "COGNITIVE_CANDIDATE_SNAPSHOT"
+        for payload in [kwargs["payload"]]
+    ]
+    dispositions = [
+        kwargs["payload"] for event_type, kwargs in store.events
+        if event_type == "COGNITIVE_CANDIDATE_DISPOSITION"
+    ]
+    assert len(snapshots) == 1
+    assert snapshots[0]["candidate_kind"] == "hypothesis"
+    assert snapshots[0]["candidate_id"].endswith(":hypothesis:hypothesis-mean-reversion")
+    assert snapshots[0]["candidate"]["direction_implication"] == "SHORT"
+    assert snapshots[0]["predictive_validity"] == "NOT_ESTABLISHED"
+    assert len(dispositions) == 1
+    assert dispositions[0]["candidate_id"] == snapshots[0]["candidate_id"]
