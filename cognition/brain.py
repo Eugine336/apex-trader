@@ -2410,11 +2410,11 @@ class CognitiveBrain:
         horizon_seconds: Optional[int] = None,
         now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
-        """Return only an independently validated, direction-specific win probability.
+        """Return producer-validated expected directional return in R.
 
-        Raw Brain/advisor confidence is reasoning strength, not a calibrated
-        probability. Without an explicit out-of-sample calibration record the
-        returned numeric value is diagnostic only and cannot authorize exposure.
+        The artifact separately reports favourable-return probability, but that
+        probability is not a target-before-stop win probability. EV therefore
+        uses the validated fixed-horizon expected return directly, less costs.
         """
         side = str(direction or "").strip().upper()
         if side not in (LONG, SHORT):
@@ -2450,10 +2450,18 @@ class CognitiveBrain:
                     # Self-declared flags or IDs cannot attest calibration.
                     # Only an artifact registered by the native producer verifies.
                     continue
-                probability = self._cost_value(artifact.win_probability)
+                favourable_probability = self._cost_value(artifact.win_probability)
+                try:
+                    expected_return = float(artifact.expected_return_r)
+                    expected_return_gap = float(artifact.expected_return_gap)
+                except (TypeError, ValueError, OverflowError):
+                    continue
                 if (
-                    probability is None or probability > 1.0
-                    or probability < 0.0
+                    favourable_probability is None or favourable_probability > 1.0
+                    or favourable_probability < 0.0
+                    or not math.isfinite(expected_return)
+                    or not math.isfinite(expected_return_gap)
+                    or expected_return_gap > 0.50
                     or int(artifact.sample_count) < 30
                     or float(artifact.brier_score) > 0.25
                     or float(artifact.reliability_gap) > 0.15
@@ -2467,17 +2475,21 @@ class CognitiveBrain:
                     or getattr(item, "timestamp_epoch", None)
                 ) or 0.0
                 candidates.append((
-                    stamp, probability,
+                    stamp, expected_return,
                     f"{artifact.protocol}:{artifact.artifact_id} "
                     f"(h={artifact.horizon_seconds}s, n={artifact.sample_count}, "
-                    f"Brier={artifact.brier_score:.4f}, gap={artifact.reliability_gap:.4f})",
+                    f"expected_R={expected_return:.4f}, "
+                    f"holdout_R={artifact.holdout_expected_return_r:.4f}, "
+                    f"favourable_p={favourable_probability:.4f}, "
+                    f"Brier={artifact.brier_score:.4f}, "
+                    f"gap={artifact.reliability_gap:.4f})",
                 ))
         except Exception:
             return False, 0.0, "calibration evidence unavailable"
         if not candidates:
-            return False, 0.0, "no fresh verified out-of-sample probability calibration"
-        _, probability, source = max(candidates, key=lambda row: row[0])
-        return True, probability, source
+            return False, 0.0, "no fresh producer-verified fixed-horizon expected-return artifact"
+        _, expected_return, source = max(candidates, key=lambda row: row[0])
+        return True, expected_return, source
 
     def _execution_cost_estimate(
         self, market_state: MarketState, *, now: Optional[float] = None,
