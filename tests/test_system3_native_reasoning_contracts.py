@@ -17,6 +17,38 @@ def _evidence(domain, measurements, *, confidence=0.9, source="test"):
     )
 
 
+def test_monetary_execution_cost_requires_candidate_risk_distance():
+    from cognition.brain import CognitiveBrain
+
+    state = MarketState(symbol="SYNTHETIC")
+    cost = _evidence(
+        "execution_quality",
+        {
+            "estimated_total_cost_account_ccy_per_lot": 10.0,
+            "money_per_price_account_ccy_per_lot": 1000.0,
+            "cost_verified": True,
+            "cost_source": "verified broker quote, symbol specification and operator cost models",
+        },
+        source="execution.cost_model",
+    )
+    cost.source_timestamp_epoch = 95.0
+    cost.source_timestamp_verified = True
+    state.add(cost)
+
+    brain = CognitiveBrain(reasoner=None)
+    # A currency amount cannot be mistaken for R when candidate geometry is absent.
+    verified_without_geometry, _, _ = brain._execution_cost_estimate(
+        state, now=100.0,
+    )
+    assert verified_without_geometry is False
+
+    verified, cost_r, _ = brain._execution_cost_estimate(
+        state, now=100.0, risk_distance=0.01,
+    )
+    assert verified is True
+    assert cost_r == 1.0
+
+
 def test_native_analysis_preserves_evidence_lineage_and_epistemic_categories():
     state = MarketState(symbol="SYNTHETIC")
     structure = _evidence(
