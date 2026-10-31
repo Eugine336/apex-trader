@@ -333,7 +333,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         uncertainty=0.1,
         measurements={"price": {
             "bid": 1.109, "ask": 1.111, "mid": 1.11,
-            "timestamp_epoch": 1300.9, "source_timestamp_verified": True,
+            "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
             "symbol": "EURUSD",
         }},
     ))
@@ -513,6 +513,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "bid": 99.99,
                 "ask": 100.01,
                 "source_timestamp_epoch": decision_epoch,
+                "timestamp_epoch": decision_epoch,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
                 "evidence_id": f"quote-{index}",
@@ -553,6 +554,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "bid": 99.99 + return_r,
                 "ask": 100.01 + return_r,
                 "source_timestamp_epoch": decision_epoch + 300.0,
+                "timestamp_epoch": decision_epoch + 300.0,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
                 "evidence_id": f"outcome-{index}",
