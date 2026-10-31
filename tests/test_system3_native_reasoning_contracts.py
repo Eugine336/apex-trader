@@ -418,6 +418,8 @@ def test_verified_execution_cost_uses_decision_time_cutoff():
         source="cost.prior",
     )
     old_cost.timestamp_epoch = 95.0
+    old_cost.source_timestamp_epoch = 95.0
+    old_cost.source_timestamp_verified = True
     future_cost = _evidence(
         "execution_quality",
         {"cost_verified": True, "estimated_total_cost_r": 0.001,
@@ -425,6 +427,8 @@ def test_verified_execution_cost_uses_decision_time_cutoff():
         source="cost.future",
     )
     future_cost.timestamp_epoch = 101.0
+    future_cost.source_timestamp_epoch = 101.0
+    future_cost.source_timestamp_verified = True
     state.add(old_cost)
     state.add(future_cost)
 
