@@ -8,6 +8,7 @@ unchanged (every dimension resolves to it) — zero regression.
 """
 
 from types import SimpleNamespace
+import time
 
 from cognition.brain import CognitiveBrain
 from test_support.market_geometry import add_market_geometry
@@ -55,11 +56,15 @@ def _decide(opinion, uncertainty=0.1):
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain="execution_quality",
         symbol="BTCUSD", observation="verified test execution cost",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     add_market_geometry(ms, opinion.direction)
