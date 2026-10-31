@@ -546,11 +546,18 @@ class CognitiveBrain:
                 native_analysis["strategy_lenses"] = [
                     lens for lens in native_analysis.get("strategy_lenses", [])
                     if isinstance(lens, dict) and lens.get("status") in ("relevant", "watch")
-                ][:8]
+                ]
+                # Include every evidence-relevant registered analytical method.
+                # The catalogue is context, not an instruction list; unavailable
+                # methods remain in the coverage summary rather than being invented.
+                native_analysis["analytical_knowledge"] = [
+                    item for item in native_analysis.get("analytical_knowledge", [])
+                    if isinstance(item, dict) and item.get("status") in ("relevant", "watch")
+                ]
                 advisor_payload["native_analysis"] = native_analysis
             if hypotheses:
                 advisor_payload["native_hypotheses"] = [
-                    item.to_dict() for item in hypotheses[:8]
+                    item.to_dict() for item in hypotheses
                 ]
             opinion = self._reasoner.reason(
                 symbol, advisor_payload, now=now,
