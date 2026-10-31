@@ -272,7 +272,6 @@ class Evidence:
     measurement_version: str = ""
 
     def __post_init__(self) -> None:
-        timestamp_was_explicit = bool(self.timestamp_epoch)
         if not self.evidence_id:
             self.evidence_id = uuid.uuid4().hex[:12]
         if not self.timestamp_epoch:
@@ -294,14 +293,10 @@ class Evidence:
                         self.source_timestamp_epoch = None
                     if self.source_timestamp_epoch is not None:
                         break
-        if (
-            self.source_timestamp_epoch is None
-            and timestamp_was_explicit
-            and self.source_timestamp_verified is not False
-        ):
-            # Historical contract: an explicitly supplied timestamp_epoch is
-            # the observation's source time unless the producer marks it unknown.
-            self.source_timestamp_epoch = self.timestamp_epoch
+        # timestamp_epoch is ingestion/observation time. It is never promoted
+        # to verified source time: a producer must supply source_timestamp_epoch
+        # (or an explicit source timestamp in measurements). This prevents a
+        # newly ingested stale cache from acquiring false source-time authority.
         if self.source_timestamp_epoch is not None:
             try:
                 source_epoch = float(self.source_timestamp_epoch)
@@ -311,7 +306,10 @@ class Evidence:
         if self.source_timestamp_verified is None:
             self.source_timestamp_verified = self.source_timestamp_epoch is not None
         else:
-            self.source_timestamp_verified = bool(self.source_timestamp_verified)
+            self.source_timestamp_verified = (
+                bool(self.source_timestamp_verified)
+                and self.source_timestamp_epoch is not None
+            )
         if not self.source_timestamp_verified:
             self.source_timestamp_epoch = None
         self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
