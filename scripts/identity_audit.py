@@ -93,6 +93,18 @@ def _single_assignment(path: Path, name: str) -> bool:
     return definitions == [Path("cognition/identity.py")]
 
 
+def _class_has_field(tree: ast.AST, class_name: str, field_name: str) -> bool:
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return any(
+                isinstance(member, ast.AnnAssign)
+                and isinstance(member.target, ast.Name)
+                and member.target.id == field_name
+                for member in node.body
+            )
+    return False
+
+
 def _contains_name(node: ast.AST, name: str) -> bool:
     return any(isinstance(child, ast.Name) and child.id == name for child in ast.walk(node))
 
@@ -205,6 +217,26 @@ def audit_repository() -> list[str]:
                     f"{relative}:{node.lineno} calls broker mutation "
                     f"{node.func.attr} outside the ActionExecutor/platform boundary"
                 )
+
+    contracts_path = ROOT / "cognition" / "contracts.py"
+    try:
+        contracts_tree = ast.parse(contracts_path.read_text(encoding="utf-8"))
+        required_identity_fields = {
+            "Evidence": ("identity_version",),
+            "MarketState": ("identity_version", "identity"),
+            "Hypothesis": ("identity_version",),
+            "Opportunity": ("identity_version", "identity"),
+            "DecisionPackage": ("identity_version", "identity"),
+            "CampaignSpecification": ("identity_version", "identity"),
+        }
+        for class_name, fields in required_identity_fields.items():
+            for field_name in fields:
+                if not _class_has_field(contracts_tree, class_name, field_name):
+                    violations.append(
+                        f"{class_name} must carry canonical identity field {field_name}"
+                    )
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        violations.append("cognition/contracts.py could not be audited")
 
     intents_path = ROOT / "execution" / "intents.py"
     try:
