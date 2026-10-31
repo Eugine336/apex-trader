@@ -311,7 +311,7 @@ def test_negative_ev_opportunity_is_declined():
         reasoner=_Reasoner(_opinion("LONG", 0.6)),
         reward_r_default=0.5, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state(target_high=1.1025))
+    out = brain.reason(_rich_state(conf=0.6, target_high=1.1025))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
     assert out.decision.expected_value < 0.0
@@ -323,7 +323,7 @@ def test_positive_ev_opportunity_opens():
         reasoner=_Reasoner(_opinion("LONG", 0.8)),
         reward_r_default=2.0, min_expected_value=0.0,
     )
-    out = brain.reason(_rich_state())
+    out = brain.reason(_rich_state(conf=0.8))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.expected_value >= 0.0
 
