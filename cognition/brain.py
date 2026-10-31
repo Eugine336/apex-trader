@@ -1216,11 +1216,11 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — evidence coverage is "
                     f"insufficient or unconfirmed ({coverage_status})"
                 )
-            elif directional and not probability_verified:
+            elif directional and not return_verified:
                 reason_txt = (
-                    "win probability is uncalibrated — reasoning confidence and "
+                    "fixed-horizon expected return is unverified — reasoning confidence and "
                     "diagnostic EV cannot authorize exposure; preserve the thesis "
-                    "and continue collecting verified outcome evidence"
+                    "and continue collecting producer-verified candidate outcome evidence"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
@@ -2919,7 +2919,7 @@ class CognitiveBrain:
 
             direction = lead.direction_implication
             return_verified, expected_return_r, return_source = (
-                self._calibrated_win_probability(
+                self._calibrated_expected_return(
                     market_state,
                     direction,
                     horizon_seconds=self._calibration_horizon_seconds(
