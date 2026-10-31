@@ -1020,6 +1020,10 @@ class CognitionLoop:
                             "bid": bid,
                             "ask": ask,
                             "source_timestamp_epoch": source_epoch,
+                            "source_timestamp_verified": (
+                                getattr(item, "source_timestamp_verified", False) is True
+                            ),
+                            "symbol": str(getattr(item, "symbol", "") or ""),
                             "source_module": str(getattr(item, "source_module", "") or ""),
                             "evidence_id": str(getattr(item, "evidence_id", "") or ""),
                         })
