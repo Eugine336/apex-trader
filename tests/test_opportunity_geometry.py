@@ -263,6 +263,7 @@ def test_missing_evidence_symbol_cannot_be_inherited_from_market_state():
 
 def test_counter_side_sweep_requires_measured_reclaim_for_reversal_candidate():
     state = _state(breakout="none", trend="range", momentum=0.0)
+    stamp = state.evidence[0].measurements["source_bar_epoch"]
     state.add(Evidence(
         source_module="market_lenses.m5.liquidity",
         domain=EvidenceDomain.LIQUIDITY,
@@ -274,14 +275,14 @@ def test_counter_side_sweep_requires_measured_reclaim_for_reversal_candidate():
             "source_kind": "market_lens",
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
-            "source_bar_epoch": time.time(),
+            "source_bar_epoch": stamp,
             "timeframe": "M5",
             "sweep_side": "sell",
             "swept_level": 1.095,
             "sweep_reclaimed": True,
             "current_close": 1.100,
         },
-        timestamp_epoch=time.time(),
+        timestamp_epoch=stamp,
         relevance_horizon_seconds=900,
     ))
     geometry = derive_opportunity_geometry(state, "LONG")
