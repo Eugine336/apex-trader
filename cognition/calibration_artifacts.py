@@ -51,7 +51,7 @@ class CalibrationArtifact:
     walk_forward_folds: int
     selection_coverage: float
     producer_version: str = "candidate-calibration-v1"
-    protocol: str = "chronological_base_rate_fixed_horizon_v1"
+    protocol: str = "chronological_family_conditional_fixed_horizon_v1"
     producer_attested: bool = True
 
     def to_measurements(self) -> dict[str, Any]:
@@ -64,7 +64,7 @@ class CalibrationArtifact:
             "candidate_family": self.candidate_family,
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
-            "calibration_scope": "unconditional_symbol_side_horizon_base_rate",
+            "calibration_scope": "conditional_candidate_family_symbol_side_horizon",
             "expected_return_method": "development_sample_mean_r",
             "favourable_horizon_probability": self.favourable_probability,
             "probability_semantics": "favourable_directional_return_at_fixed_horizon",
@@ -141,12 +141,11 @@ def resolve_calibration_artifact(
 
 
 class CalibrationProducer:
-    """Build simple, auditable base-rate calibrations from the full candidate ledger.
+    """Build auditable candidate-family-conditional outcomes from the full ledger.
 
-    This is deliberately not a feature-search or model-fitting system. It emits
-    symbol/side/horizon favourable-return base rates and development-sample mean
-    R after chronological walk-forward checks and a final untouched holdout.
-    It cannot establish a predictive edge or current-regime conditionality.
+    The artifact is scoped to an explicit, pre-outcome candidate family, symbol,
+    side and horizon. It uses chronological walk-forward checks and an untouched
+    holdout. It does not claim current-regime conditionality or profitability.
     """
 
     def __init__(
