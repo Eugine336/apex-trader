@@ -190,7 +190,8 @@ class CalibrationProducer:
                 return False
             if not math.isfinite(stamp) or stamp <= 0.0 or stamp > decision_epoch:
                 return False
-            known += 1
+            if item.get("source_timestamp_verified") is True:
+                known += 1
         return known / max(1, len(evidence)) >= 0.95
 
     def refresh(self, symbol: str, *, now: Optional[float] = None) -> list[CalibrationArtifact]:
@@ -289,6 +290,16 @@ class CalibrationProducer:
                         if decision_epoch + horizon > current:
                             continue
                         total_matured += 1
+                        # A candidate only enters the calibration sample when
+                        # its quote, feature timestamps and final disposition are
+                        # all attributable. Missing members remain in the
+                        # denominator and therefore reduce selection coverage.
+                        if not all(
+                            item["quote_valid"] and item["provenance_valid"]
+                            and item["disposition_valid"]
+                            for item in members
+                        ):
+                            continue
                         member_outcomes = [
                             outcome_map.get((item["candidate_id"], horizon))
                             for item in members
@@ -306,7 +317,6 @@ class CalibrationProducer:
                         }
                         if len(labels) != 1:
                             continue
-                        first = members[0]
                         observed_groups += 1
                         eligible_groups.append({
                             "decision_id": decision_id,
@@ -320,7 +330,8 @@ class CalibrationProducer:
                     )
                     missed_rate = missed_groups / max(1, total_matured)
                     if (
-                        total_matured == 0
+                        invalid_directional_candidates > 0
+                        or total_matured == 0
                         or coverage < 0.95
                         or missed_rate > 0.05
                         or len(eligible_groups) < self.min_samples * 5
@@ -329,9 +340,17 @@ class CalibrationProducer:
                     eligible_groups.sort(key=lambda item: item["decision_epoch"])
                     n = len(eligible_groups)
                     holdout_start = int(n * 0.80)
-                    development = eligible_groups[:holdout_start]
                     holdout = eligible_groups[holdout_start:]
                     if len(holdout) < self.min_samples:
+                        continue
+                    holdout_start_epoch = holdout[0]["decision_epoch"]
+                    # Purge development rows whose fixed-horizon outcome could
+                    # overlap the untouched holdout decision window.
+                    development = [
+                        item for item in eligible_groups[:holdout_start]
+                        if item["decision_epoch"] + horizon < holdout_start_epoch
+                    ]
+                    if len(development) < self.min_samples * 3:
                         continue
 
                     # Three expanding chronological folds. Each training sample
