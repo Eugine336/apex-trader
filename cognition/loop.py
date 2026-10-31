@@ -1162,7 +1162,17 @@ class CognitionLoop:
                             continue
                         if event_type == COGNITIVE_CANDIDATE_SNAPSHOT:
                             reference_quote = event_payload.get("reference_quote") or {}
-                            if isinstance(reference_quote, dict) and reference_quote.get("mid") is not None:
+                            candidate_data = event_payload.get("candidate") or {}
+                            candidate_direction = str(
+                                candidate_data.get("direction")
+                                or candidate_data.get("direction_implication")
+                                or ""
+                            ).upper()
+                            if (
+                                candidate_direction in {"LONG", "SHORT"}
+                                and isinstance(reference_quote, dict)
+                                and reference_quote.get("mid") is not None
+                            ):
                                 pending[event_candidate_id] = event_payload
                         elif event_type == COGNITIVE_CANDIDATE_HORIZON_OUTCOME:
                             recorded.add((
@@ -1344,6 +1354,8 @@ class CognitionLoop:
                         durable=True,
                     )
                     recorded.add(key)
+                if all((candidate_id, horizon) in recorded for horizon in horizons):
+                    pending.pop(candidate_id, None)
         except Exception as exc:  # noqa: BLE001 — outcome recording must never fabricate a label
             logger.warning(
                 "[cognition-loop] fixed-horizon candidate labelling unavailable for %s: %s",
