@@ -852,7 +852,7 @@ class CognitiveBrain:
             market_state, now=now,
         )
         return_verified, expected_return_r, return_source = (
-            self._calibrated_win_probability(
+            self._calibrated_expected_return(
                 market_state,
                 direction,
                 horizon_seconds=self._calibration_horizon_seconds(
@@ -2405,7 +2405,7 @@ class CognitiveBrain:
         }
         return aliases.get(token)
 
-    def _calibrated_win_probability(
+    def _calibrated_expected_return(
         self,
         market_state: MarketState,
         direction: str,
@@ -2453,7 +2453,7 @@ class CognitiveBrain:
                     # Self-declared flags or IDs cannot attest calibration.
                     # Only an artifact registered by the native producer verifies.
                     continue
-                favourable_probability = self._cost_value(artifact.win_probability)
+                favourable_probability = self._cost_value(artifact.favourable_probability)
                 try:
                     expected_return = float(artifact.expected_return_r)
                     expected_return_gap = float(artifact.expected_return_gap)
