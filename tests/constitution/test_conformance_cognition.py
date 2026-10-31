@@ -153,7 +153,8 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
         relevance_horizon_seconds=3600.0,
-    ))    return ms
+    ))
+    return ms
 
 
 
