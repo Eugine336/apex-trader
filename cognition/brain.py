@@ -2463,7 +2463,13 @@ class CognitiveBrain:
                     int(horizon_seconds),
                     now=now,
                 )
-                if artifact is None:
+                if (
+                    artifact is None
+                    or str(m.get("candidate_family", "") or "").strip().lower() != family
+                    or m.get("calibration_scope")
+                        != "conditional_candidate_family_symbol_side_horizon"
+                    or m.get("calibration_method") != artifact.protocol
+                ):
                     # Self-declared flags or IDs cannot attest calibration.
                     # Only an artifact registered by the native producer verifies.
                     continue
