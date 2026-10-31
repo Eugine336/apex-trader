@@ -661,6 +661,10 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
                 _timestamp_epoch((snap.get("price") or {}).get("timestamp_epoch"))
                 if isinstance(snap.get("price"), dict) else None
             ),
+            source_timestamp_verified=bool(
+                isinstance(snap.get("price"), dict)
+                and _timestamp_epoch((snap.get("price") or {}).get("timestamp_epoch")) is not None
+            ),
             data_basis="live_quote_and_market_snapshot",
             provisional=False,
             independence_group=f"live_quote:{str(symbol or '').upper()}",
