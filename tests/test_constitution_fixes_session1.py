@@ -267,7 +267,7 @@ def test_v9_execution_cost_reduces_ev():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.3, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev])
+    ms = _evidence_state(extra=[cost_ev], expected_return_r=1.4)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                          reward_r_default=2.0, min_expected_value=0.0).reason(ms)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
@@ -282,7 +282,7 @@ def test_v9_execution_cost_can_flip_ev_negative():
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
         measurements={"estimated_total_cost_r": 0.5, "cost_verified": True, "cost_source": "test live quote"}, relevance_horizon_seconds=300.0,
     )
-    ms = _evidence_state(extra=[cost_ev], target_high=1.1025, expected_return_r=0.6)
+    ms = _evidence_state(extra=[cost_ev], target_high=1.1025, expected_return_r=0.4)
     out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.6)),
                          reward_r_default=0.6, min_expected_value=0.0).reason(ms)
     # EV = 0.6*0.6 - 0.4*1 - 0.5 = 0.36 - 0.4 - 0.5 = -0.54 < 0 ⇒ declined.
