@@ -232,8 +232,8 @@ def test_v7_do_nothing_reasoning_on_reject():
     assert txt.startswith("evaluated: doing nothing is correct")
 
 
-def test_v7_do_nothing_reasoning_on_low_confidence():
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(_evidence_state())
+def test_v7_do_nothing_reasoning_on_low_calibrated_probability():
+    # Low reasoning confidence is not itself a probability; supply a matching\n    # low calibrated probability to test the no-action explanation.\n    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3))).reason(\n        _evidence_state(calibrated_probability=0.3)\n    )
     txt = out.decision.questions_answered["should_i_do_nothing"]
     assert txt.startswith("evaluated: doing nothing is correct")
     assert "ev" in txt.lower() or "expected value" in txt.lower()
