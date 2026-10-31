@@ -267,7 +267,15 @@ class CalibrationProducer:
             for row in dispositions:
                 payload = self._payload(row)
                 candidate_id = str(payload.get("candidate_id", "") or "")
-                if candidate_id:
+                if not candidate_id:
+                    continue
+                try:
+                    event_seq = int(row.get("seq", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    event_seq = 0
+                current = disposition_map.get(candidate_id)
+                if current is None or event_seq > current.get("_event_seq", -1):
+                    payload["_event_seq"] = event_seq
                     disposition_map[candidate_id] = payload
 
             groups: dict[tuple[str, str, str], list[dict]] = {}
@@ -305,9 +313,21 @@ class CalibrationProducer:
                 if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
                     invalid_directional_candidates += 1
                     continue
+                point_in_time_rows = payload.get("point_in_time_evidence") or []
+                point_in_time_ids = {
+                    str(item.get("evidence_id", "") or "")
+                    for item in point_in_time_rows if isinstance(item, dict)
+                }
+                geometry_ids = {
+                    str(item) for item in (candidate.get("geometry_evidence_ids") or [])
+                    if str(item)
+                }
+                quote_evidence_id = str(quote.get("evidence_id", "") or "")
                 try:
                     reference_epoch = float(quote.get("source_timestamp_epoch"))
                     reference_price = float(quote.get("mid"))
+                    bid = float(quote.get("bid"))
+                    ask = float(quote.get("ask"))
                     entry_price = float(candidate.get("entry_price"))
                     stop_price = float(candidate.get("stop_price"))
                     risk_distance = (
@@ -321,11 +341,21 @@ class CalibrationProducer:
                     quote_valid = (
                         math.isfinite(reference_epoch)
                         and math.isfinite(reference_price)
+                        and math.isfinite(bid)
+                        and math.isfinite(ask)
                         and math.isfinite(entry_price)
                         and math.isfinite(stop_price)
                         and math.isfinite(risk_distance)
                         and math.isfinite(entry_deviation_r)
                         and 0.0 < reference_epoch <= decision_epoch
+                        and quote.get("source_timestamp_verified") is True
+                        and str(quote.get("symbol", "") or "").strip().upper()
+                            == str(payload.get("symbol", "") or "").strip().upper()
+                        and quote_evidence_id in point_in_time_ids
+                        and bool(geometry_ids) and geometry_ids <= point_in_time_ids
+                        and bid > 0.0 and ask >= bid
+                        and abs(reference_price - ((bid + ask) / 2.0))
+                            <= max(1e-10, reference_price * 1e-8)
                         and reference_price > 0.0
                         and risk_distance > 0.0
                         and entry_deviation_r <= 0.25
@@ -333,9 +363,16 @@ class CalibrationProducer:
                 except (TypeError, ValueError, OverflowError):
                     quote_valid = False
                 decision_id = str(payload.get("decision_id", "") or "")
-                if not decision_id:
+                if not decision_id or not candidate_id.startswith(decision_id + ":"):
                     invalid_directional_candidates += 1
                     continue
+                disposition = disposition_map.get(candidate_id) or {}
+                disposition_valid = (
+                    str(disposition.get("decision_id", "") or "") == decision_id
+                    and str(disposition.get("symbol", "") or "").strip().upper()
+                        == str(payload.get("symbol", "") or "").strip().upper()
+                    and bool(disposition.get("disposition"))
+                )
                 row = {
                     "candidate_id": candidate_id,
                     "decision_id": decision_id,
@@ -347,7 +384,7 @@ class CalibrationProducer:
                     "quote_valid": quote_valid,
                     "risk_distance": risk_distance if quote_valid else None,
                     "provenance_valid": self._valid_point_in_time(payload),
-                    "disposition_valid": candidate_id in disposition_map,
+                    "disposition_valid": disposition_valid,
                 }
                 groups.setdefault((decision_id, direction, candidate_family), []).append(row)
             artifacts: list[CalibrationArtifact] = []
