@@ -746,6 +746,9 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             relevance_horizon_seconds=15.0,
             timestamp_iso=timestamp_iso,
             timestamp_epoch=observed_epoch,
+            source_timestamp_epoch=observed_epoch,
+            source_timestamp_verified=True,
+            data_basis="broker_market_desk_snapshot",
         )]
 
         # Give the SAME Brain the structured dimensions its native pattern rules
@@ -817,6 +820,9 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                 relevance_horizon_seconds=15.0,
                 timestamp_iso=timestamp_iso,
                 timestamp_epoch=observed_epoch,
+            source_timestamp_epoch=observed_epoch,
+            source_timestamp_verified=True,
+            data_basis="broker_market_desk_snapshot",
             ))
 
             # Some detectors observe two separate facts at once (e.g. CRT =
@@ -854,6 +860,9 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                     relevance_horizon_seconds=15.0,
                     timestamp_iso=timestamp_iso,
                     timestamp_epoch=observed_epoch,
+            source_timestamp_epoch=observed_epoch,
+            source_timestamp_verified=True,
+            data_basis="broker_market_desk_snapshot",
                 ))
         return evidence
     except Exception:  # noqa: BLE001 — evidence conversion must never break cognition
