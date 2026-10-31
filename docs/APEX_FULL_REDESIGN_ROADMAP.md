@@ -348,3 +348,37 @@ No broker orders, runtime database changes, credential changes, `.env` access or
 - The existing `CalibrationEngine` learns instrument characteristics (ATR, spread, zone/structure outcomes); it is not a direction-specific win-probability calibrator and does not establish walk-forward/untouched-holdout predictive validity.
 - Therefore no existing production dataset can honestly satisfy the new probability contract. A producer must first persist every eligible candidate before selection, preserve decision-time feature snapshots and direction, resolve each candidate at a fixed horizon (including non-traded candidates), prevent overlap/leakage across chronological train/calibration/holdout windows, and emit a signed/traceable calibration artifact with sample counts, Brier score and reliability diagnostics. Until then, keep directional origination blocked; do not infer probability from executed-trade win rate or confidence.
 - The current Brain validates declared calibration metadata but does not yet have a structurally enforced producer/attestation boundary. A caller-supplied `source_verified` flag is not itself independent proof. The dedicated producer must own issuance and bind its artifact to the dataset, split protocol, instrument, direction and validation results before this gate can be considered production-trustworthy.
+
+
+
+## Concurrent System 1 + System 4 implementation record — 2026-10-31
+
+**Working branch:** `redesign/system1-system4-unified-intelligence`  
+**Pull request:** [#798](https://github.com/Eugine336/apex-trader/pull/798) — draft, not merged.  
+**Status:** substantial implementation in progress; **neither system is accepted**.
+
+### System 1 — canonical contracts and authority enforcement
+- The canonical identity statement, version and non-negotiable principles remain defined only in `cognition/identity.py`. Cognitive contract constructors normalize their identity metadata to that source, including Evidence, MarketState, Hypothesis, Opportunity, DecisionPackage and CampaignSpecification.
+- MarketState now exposes the canonical identity at its top-level serialization boundary.
+- `scripts/identity_audit.py` now checks the single-definition rule for all three identity constants, identity fields on cognitive contracts, Brain-only construction of DecisionPackage/CampaignSpecification, pure-analyst import boundaries, the existing broker-mutation boundary, Intent identity propagation and the canonical advisor-prompt composition.
+- `timestamp_epoch` is ingestion/observation time only. It is no longer promoted to verified source time. Producers must supply `source_timestamp_epoch`; decision snapshots, calibration and execution-cost qualification require that source-time field to be explicitly verified.
+- Decision feature snapshots no longer substitute ingestion time for missing source timestamps. The shared execution boundary therefore rejects an incomplete or unverified point-in-time feature snapshot instead of treating a newly ingested stale cache as decision-time evidence.
+- The full evidence inventory is retained for audit. The calibration feature lineage is a separate list containing only fresh market-domain evidence at the exact decision cutoff.
+
+### System 4 — complete candidate lineage and conditional payoff validation
+- Durable candidate snapshots include opportunities and native hypotheses retained in observe/reject decisions, including serialized native hypothesis records that are not stored in the DecisionPackage's typed hypothesis list.
+- Candidate dispositions are recorded for each opportunity/hypothesis. The producer selects the latest durable disposition by event sequence rather than allowing an older Brain-stage disposition to overwrite a later portfolio-stage disposition.
+- Fixed-horizon outcome records retain the exact reference quote, outcome quote, source timestamps, evidence IDs, symbol, direction, candidate family, risk distance and realized return. The producer recomputes the return and label from the two verified prices and rejects mismatched lineage, family, direction, symbol, horizon, timing or quote values.
+- Candidate geometry must be attributable to point-in-time market evidence. A distant/unfilled entry, missing stop, mismatched quote, missing geometry evidence ID or incomplete source-time record cannot enter calibration.
+- Native directional hypotheses are added to the candidate ledger with their own market-derived geometry where available, even when they were not the lead hypothesis or did not pass admission. This reduces the prior bias toward only the single selected native opportunity.
+- Calibration is scoped by exact symbol, side, explicit candidate family and fixed horizon. The controlled family vocabulary is defined in the contracts; unclassified families remain observable but cannot consume calibration. The advisor prompt now requires an explicit family field.
+- The producer requires complete durable snapshot/outcome/disposition queries, verified fresh non-provisional market evidence, exact quote lineage, at least 150 eligible decision groups, at least 30 untouched holdout samples, three chronological walk-forward folds, at least 95% selection coverage, no more than 5% missed observation windows, Brier score no greater than 0.25, reliability gap no greater than 0.15, and a bounded development/holdout expected-return gap.
+- Brain EV uses the conservative lower of development and untouched-holdout expected return, less verified round-trip cost. It does not reinterpret favourable-direction probability as target-before-stop probability, and it does not use an unconditional symbol-side base rate as a candidate edge. A missing family-specific artifact or verified cost keeps directional origination blocked.
+- Producer-issued artifacts are held in a process-owned registry and must resolve against the exact symbol, side, family and horizon. Self-declared booleans or caller-supplied artifact IDs are insufficient.
+
+### Validation and release status
+- Deterministic tests were added/updated for canonical contract identity, source-time semantics, native hypothesis candidate capture, family-specific calibration, cross-family rejection, exact quote/outcome lineage, and fixed-horizon expected return.
+- These tests have **not** been executed in this work session. The PR head has no GitHub Actions workflow runs or commit status checks reported. A local checkout could not be obtained in this environment, so syntax, lint and runtime behavior remain unverified.
+- Do not mark System 1 or System 4 accepted and do not merge PR #798 until the repository owner has run the focused tests, supported Python matrix, lint and the repository-wide identity audit, then reviewed the actual failures and corrected them without weakening controls.
+- The new producer is an auditable family-conditional historical estimator, not proof of profitability or universal conditional prediction. Any predictive claim still requires sufficient untouched data and external statistical review.
+- No live broker orders were sent. No `.env` file, runtime database, credentials or broker configuration was modified.
