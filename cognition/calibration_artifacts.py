@@ -208,7 +208,10 @@ class CalibrationProducer:
         for item in evidence:
             if not isinstance(item, dict):
                 return False
-            if item.get("source_timestamp_verified") is not True:
+            if (
+                item.get("source_timestamp_verified") is not True
+                or item.get("provisional") is True
+            ):
                 return False
             stamp = item.get("source_timestamp_epoch")
             try:
@@ -216,6 +219,15 @@ class CalibrationProducer:
             except (TypeError, ValueError, OverflowError):
                 return False
             if not math.isfinite(stamp) or stamp <= 0.0 or stamp > decision_epoch:
+                return False
+            raw_horizon = item.get("relevance_horizon_seconds")
+            try:
+                horizon = 900.0 if raw_horizon is None else float(raw_horizon)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(horizon):
+                return False
+            if horizon > 0.0 and decision_epoch - stamp > horizon:
                 return False
         return True
 
