@@ -497,7 +497,14 @@ class CalibrationProducer:
                     ):
                         continue
                     digest_input = [
-                        (item["decision_id"], item["decision_epoch"], item["label"])
+                        (
+                            family,
+                            item["decision_id"],
+                            item["decision_epoch"],
+                            item["label"],
+                            item["return_r"],
+                            item["candidate_ids"],
+                        )
                         for item in eligible_groups
                     ]
                     digest = hashlib.sha256(
