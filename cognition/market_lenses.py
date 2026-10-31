@@ -392,7 +392,7 @@ def _technical_indicator_evidence(
         if volume_sum > 0:
             volume["vwap"] = sum(typical[i] * volumes[i] for i in range(len(bars) - 20, len(bars))) / volume_sum
         volume["volume_source"] = source_label
-        volume["volume_is_tick_proxy"] = "tick" in source_label.lower()
+        volume["volume_is_tick_proxy"] = any("tick" in item.lower() for item in volume_sources)
         volume["indicator_periods"] = {"mfi": 14, "cmf": 20, "vwap": 20}
         volume["calculation_method"] = "causal_completed_ohlc_v1"
 
