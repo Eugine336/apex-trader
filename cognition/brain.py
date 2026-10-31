@@ -2439,36 +2439,38 @@ class CognitiveBrain:
                 m = getattr(item, "measurements", None)
                 if not isinstance(m, dict):
                     continue
-                if (
-                    m.get("probability_calibration_verified") is not True
-                    or m.get("source_verified") is not True
-                    or m.get("out_of_sample") is not True
-                    or m.get("walk_forward") is not True
-                    or m.get("untouched_holdout") is not True
-                    or m.get("data_leakage_checked") is not True
-                    or m.get("selection_bias_checked") is not True
-                    or m.get("overfitting_checked") is not True
-                    or str(m.get("calibration_side", "")).strip().upper() != side
-                    or not str(m.get("calibration_method", "")).strip()
-                    or not str(m.get("calibration_id", "")).strip()
-                ):
+                artifact = resolve_calibration_artifact(
+                    str(m.get("calibration_artifact_id", "") or ""),
+                    str(getattr(market_state, "symbol", "") or ""),
+                    side,
+                    int(horizon_seconds),
+                    now=now,
+                )
+                if artifact is None:
+                    # Self-declared flags or IDs cannot attest calibration.
+                    # Only an artifact registered by the native producer verifies.
                     continue
-                probability = self._cost_value(m.get("win_probability"))
-                sample_count = self._cost_value(m.get("sample_count"))
-                brier_score = self._cost_value(m.get("brier_score"))
-                reliability_gap = self._cost_value(m.get("reliability_gap"))
+                probability = self._cost_value(artifact.win_probability)
                 if (
                     probability is None or probability > 1.0
-                    or sample_count is None or sample_count < 30
-                    or brier_score is None or brier_score > 1.0
-                    or reliability_gap is None or reliability_gap > 0.25
+                    or probability < 0.0
+                    or int(artifact.sample_count) < 30
+                    or float(artifact.brier_score) > 0.25
+                    or float(artifact.reliability_gap) > 0.15
+                    or int(artifact.walk_forward_folds) < 3
+                    or float(artifact.selection_coverage) < 0.95
+                    or not artifact.dataset_digest
                 ):
                     continue
-                stamp = self._cost_value(getattr(item, "timestamp_epoch", None)) or 0.0
+                stamp = self._cost_value(
+                    getattr(item, "source_timestamp_epoch", None)
+                    or getattr(item, "timestamp_epoch", None)
+                ) or 0.0
                 candidates.append((
                     stamp, probability,
-                    f"{m['calibration_method']}:{m['calibration_id']} "
-                    f"(n={int(sample_count)}, Brier={brier_score:.4f})",
+                    f"{artifact.protocol}:{artifact.artifact_id} "
+                    f"(h={artifact.horizon_seconds}s, n={artifact.sample_count}, "
+                    f"Brier={artifact.brier_score:.4f}, gap={artifact.reliability_gap:.4f})",
                 ))
         except Exception:
             return False, 0.0, "calibration evidence unavailable"
