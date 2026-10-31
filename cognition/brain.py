@@ -851,7 +851,7 @@ class CognitiveBrain:
         cost_verified, cost_r, cost_source = self._execution_cost_estimate(
             market_state, now=now,
         )
-        probability_verified, win_probability, probability_source = (
+        return_verified, expected_return_r, return_source = (
             self._calibrated_win_probability(
                 market_state,
                 direction,
@@ -864,15 +864,17 @@ class CognitiveBrain:
             if direction in (LONG, SHORT) else (False, 0.0, "not directional")
         )
         # Effective confidence is retained for diagnostics only. It is not a
-        # substitute for an empirically calibrated win probability.
+        # substitute for producer-validated, fixed-horizon expected return.
         diagnostic_expected_value = expected_value_r(
             eff_conf, reward_r, risk_r, cost_r=cost_r,
         )
         # DecisionPackage.expected_value has calibrated probability semantics.
         # Never place an uncalibrated diagnostic estimate in that field.
+        # The producer's fixed-horizon outcome is an empirical directional
+        # return in R. It is not a target-hit probability, so do not multiply it
+        # by the opportunity's target multiple a second time.
         expected_value = (
-            expected_value_r(win_probability, reward_r, risk_r, cost_r=cost_r)
-            if probability_verified else 0.0
+            expected_return_r - cost_r if return_verified else 0.0
         )
         questions_cost_verification = (
             f"VERIFIED: {cost_source} = {cost_r:.4f}R"
@@ -905,17 +907,18 @@ class CognitiveBrain:
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
             "expected_value": (
-                f"{expected_value:.4f}R (calibrated p={win_probability:.4f}; {probability_source})"
-                if probability_verified else (
+                f"{expected_value:.4f}R net (fixed-horizon expected return {expected_return_r:.4f}R "
+                f"less verified cost {cost_r:.4f}R; {return_source})"
+                if return_verified else (
                     f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
-                    "no calibrated win probability; DecisionPackage EV is zero"
+                    "no producer-verified fixed-horizon expected return; DecisionPackage EV is zero"
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
             "win_probability_verification": (
-                f"VERIFIED: {probability_source}; p={win_probability:.4f}"
-                if probability_verified else
-                f"UNVERIFIED: {probability_source}; confidence is not probability"
+                f"VERIFIED expected directional return in R: {return_source}"
+                if return_verified else
+                f"UNVERIFIED: {return_source}; reasoning confidence is not expected return"
             ),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
@@ -2915,7 +2918,7 @@ class CognitiveBrain:
                 return None
 
             direction = lead.direction_implication
-            probability_verified, win_probability, probability_source = (
+            return_verified, expected_return_r, return_source = (
                 self._calibrated_win_probability(
                     market_state,
                     direction,
@@ -2925,7 +2928,7 @@ class CognitiveBrain:
                     now=now,
                 )
             )
-            if not probability_verified:
+            if not return_verified:
                 return None
 
             # A native opportunity needs a real, activated market-structure
@@ -2951,9 +2954,7 @@ class CognitiveBrain:
                 uncertainty_adjusted_conf, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
             cost_r = self._execution_cost_r(market_state, now=now)
-            expected_value = expected_value_r(
-                win_probability, reward_r, risk_r, cost_r=cost_r,
-            )
+            expected_value = expected_return_r - cost_r
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
                 return None
@@ -3047,10 +3048,11 @@ class CognitiveBrain:
                 "information_missing": "; ".join(analysis.missing_information) or "none",
                 "what_would_change_my_mind": lead.invalidation,
                 "expected_value": (
-                    f"{expected_value:.4f}R (native calibrated p={win_probability:.4f})"
+                    f"{expected_value:.4f}R (native fixed-horizon expected return "
+                    f"{expected_return_r:.4f}R less cost {cost_r:.4f}R)"
                 ),
                 "win_probability_verification": (
-                    f"VERIFIED: {probability_source}; p={win_probability:.4f}"
+                    f"VERIFIED expected directional return in R: {return_source}"
                 ),
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
