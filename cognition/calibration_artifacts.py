@@ -67,7 +67,7 @@ class CalibrationArtifact:
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
             "calibration_scope": "conditional_candidate_family_symbol_side_horizon",
-            "expected_return_method": "development_sample_mean_r",
+            "expected_return_method": "minimum_of_development_and_untouched_holdout_mean_r",
             "favourable_horizon_probability": self.favourable_probability,
             "probability_semantics": "favourable_directional_return_at_fixed_horizon",
             "expected_return_r": self.expected_return_r,
