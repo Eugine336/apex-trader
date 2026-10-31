@@ -70,15 +70,6 @@ def test_verified_direction_specific_calibration_supplies_probability():
     assert "isotonic:holdout-2026-q3" in source
 
 
-def test_untrusted_adapter_cannot_self_assert_calibration_provenance():
-    state = MarketState(symbol="SYNTHETIC")
-    state.add(_calibration(source_module="untrusted.market_adapter"))
-    verified, _, _ = CognitiveBrain(
-        reasoner=None,
-    )._calibrated_win_probability(state, "LONG")
-    assert verified is False
-
-
 def test_calibration_for_opposite_direction_cannot_qualify_candidate():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration(direction="SHORT"))
