@@ -108,7 +108,13 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
     return ms
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_probability=0.8):
+def _confident_state(
+    symbol="EURUSD",
+    polarity=0.8,
+    target_r=2.0,
+    calibrated_probability=0.8,
+    expected_return_r=0.25,
+):
     ms = MarketState(symbol=symbol)
     stamp = time.time()
     # Two distinct evidence domains so the Brain's minimum-coverage gate
@@ -151,6 +157,8 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_pro
     side = "LONG" if polarity >= 0 else "SHORT"
     artifact = register_test_calibration(
         symbol, side, horizon_seconds=300, probability=calibrated_probability,
+        expected_return_r=expected_return_r,
+        holdout_expected_return_r=expected_return_r,
     )
     ms.add(Evidence(
         source_module="calibration_producer.test_fixture",
@@ -191,7 +199,7 @@ def test_confident_long_opens_campaign():
 
 def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
-    out = brain.reason(_confident_state(calibrated_probability=0.3))
+    out = brain.reason(_confident_state(calibrated_probability=0.3, expected_return_r=0.01))
     # Negative expected value is a defensible rejection, not merely a wait.
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
@@ -271,7 +279,7 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     # EV-normalized payoff and quality-weighted confidence. This bare opinion has
     # quality 0.1, so 0.8 effective confidence is scaled by 0.55 to 0.44.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
+    out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
     assert out.campaign.desired_exposure == pytest.approx(0.44)
     assert out.campaign.desired_exposure < out.campaign.confidence
@@ -297,7 +305,7 @@ def test_high_confidence_poor_market_derived_payoff_is_sized_down():
 
 def test_campaign_carries_expected_value_field():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8))
+    out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
     assert out.campaign.expected_value == pytest.approx(1.35)
     assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)
