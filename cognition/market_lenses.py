@@ -258,7 +258,7 @@ def _technical_indicator_evidence(
         half_period = 10
         root_period = 4
         hull_inputs = []
-        for end in range(max(19, len(closes) - root_period + 1), len(closes)):
+        for end in range(max(19, len(closes) - root_period), len(closes)):
             half = _wma(closes[:end + 1], half_period)
             full = _wma(closes[:end + 1], 20)
             if half is not None and full is not None:
