@@ -106,7 +106,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
     return ms
 
 
-def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
+def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_probability=0.8):
     ms = MarketState(symbol=symbol)
     # Two distinct evidence domains so the Brain's minimum-coverage gate
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
@@ -150,7 +150,7 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0):
             "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
             "data_leakage_checked": True, "selection_bias_checked": True,
             "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": 0.8, "sample_count": 240, "brier_score": 0.17,
+            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
             "reliability_gap": 0.08, "calibration_method": "isotonic",
             "calibration_id": "test-holdout-fixture",
         },
@@ -185,7 +185,7 @@ def test_confident_long_opens_campaign():
 
 def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
-    out = brain.reason(_confident_state())
+    out = brain.reason(_confident_state(calibrated_probability=0.3))
     # Negative expected value is a defensible rejection, not merely a wait.
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.campaign is None
