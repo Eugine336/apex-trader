@@ -139,6 +139,23 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         },
         relevance_horizon_seconds=900.0,
     ))
+    # Test-only calibration record; production evidence must come from durable outcomes.
+    ms.add(Evidence(
+        source_module="validation.test_out_of_sample_calibration",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="symbol",
+        observation="verified test-only direction-specific calibration",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True, "source_verified": True,
+            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": "LONG",
+            "win_probability": conf, "sample_count": 240, "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "isotonic",
+            "calibration_id": "test-holdout-fixture",
+        },
+        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+    ))
     return ms
 
 
