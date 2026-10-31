@@ -98,7 +98,7 @@ def test_calibration_from_another_symbol_cannot_qualify_candidate():
     state.add(_calibration(symbol="OTHER"))
     verified, _, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_win_probability(state, "LONG")
+    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
     assert verified is False
 
 
