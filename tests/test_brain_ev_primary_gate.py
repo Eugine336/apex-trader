@@ -34,7 +34,7 @@ class _Opinion:
         # tests exercise the EV / act gate, not the legacy-scalar path.
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "candidate_family": "test_family",
+              "candidate_family": "continuation",
               "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
