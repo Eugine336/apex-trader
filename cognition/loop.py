@@ -982,7 +982,7 @@ class CognitionLoop:
                 )
                 row["source_timestamp_epoch"] = source_epoch
                 row["source_timestamp_verified"] = bool(
-                    getattr(item, "source_timestamp_epoch", None) is not None
+                    getattr(item, "source_timestamp_verified", False) is True
                     or measurements.get("source_timestamp_known") is True
                 )
                 evidence_rows.append(row)
