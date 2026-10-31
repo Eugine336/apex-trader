@@ -632,6 +632,9 @@ class CognitionLoop:
         self._pattern_tracker = pattern_tracker
         # Durable candidate provenance is observational and cannot authorize action.
         self._candidate_event_store = candidate_event_store
+        self._candidate_label_after_seq = 0
+        self._candidate_label_pending: dict[str, dict] = {}
+        self._candidate_label_recorded: set[tuple[str, int]] = set()
         self._calibration_provider = calibration_provider
         self._origination_patterns: dict = {}
 
@@ -1132,54 +1135,100 @@ class CognitionLoop:
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
-            query_events = getattr(store, "query_events", None)
-            if callable(query_events):
-                # The operational store returns newest rows first; this avoids
-                # starving recent candidates behind an old 10k-row history.
-                snapshots = query_events(
-                    severity_min="DEBUG",
-                    event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
-                    symbol=symbol,
-                    limit=10000,
-                    offset=0,
-                ) or []
-                outcomes = query_events(
-                    severity_min="DEBUG",
-                    event_types=[COGNITIVE_CANDIDATE_HORIZON_OUTCOME],
-                    symbol=symbol,
-                    limit=10000,
-                    offset=0,
-                ) or []
+            recorded = self._candidate_label_recorded
+            pending = self._candidate_label_pending
+            replay = getattr(store, "replay", None)
+            if callable(replay):
+                # Reconstruct pending candidates after restart, then consume only
+                # newly committed events. This prevents old records from starving.
+                for _page_number in range(20):
+                    page = replay(after_seq=self._candidate_label_after_seq, limit=10000) or []
+                    if not page:
+                        break
+                    for event in page:
+                        seq = int(event.get("seq") or 0)
+                        self._candidate_label_after_seq = max(
+                            self._candidate_label_after_seq, seq,
+                        )
+                        event_type = str(event.get("event_type", "") or "")
+                        try:
+                            event_payload = json.loads(event.get("payload_json") or "{}")
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        if not isinstance(event_payload, dict):
+                            continue
+                        event_candidate_id = str(event_payload.get("candidate_id", "") or "")
+                        if not event_candidate_id:
+                            continue
+                        if event_type == COGNITIVE_CANDIDATE_SNAPSHOT:
+                            reference_quote = event_payload.get("reference_quote") or {}
+                            if isinstance(reference_quote, dict) and reference_quote.get("mid") is not None:
+                                pending[event_candidate_id] = event_payload
+                        elif event_type == COGNITIVE_CANDIDATE_HORIZON_OUTCOME:
+                            recorded.add((
+                                event_candidate_id,
+                                int(event_payload.get("horizon_seconds", 0) or 0),
+                            ))
+                    if len(page) < 10000:
+                        break
+                snapshots = [
+                    (event_candidate_id, event_payload)
+                    for event_candidate_id, event_payload in pending.items()
+                    if str(event_payload.get("symbol", "") or "") == symbol
+                ]
             else:
-                query = getattr(store, "query", None)
-                if not callable(query):
-                    return
-                snapshots = query(
-                    event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
-                    symbol=symbol,
-                    limit=10000,
-                ) or []
-                outcomes = query(
-                    event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
-                    symbol=symbol,
-                    limit=10000,
-                ) or []
-            recorded = set()
-            for row in outcomes:
-                try:
-                    payload = json.loads(row.get("payload_json") or "{}")
-                    recorded.add((
-                        str(payload.get("candidate_id", "")),
-                        int(payload.get("horizon_seconds", 0)),
-                    ))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
+                query_events = getattr(store, "query_events", None)
+                if callable(query_events):
+                    snapshot_rows = query_events(
+                        severity_min="DEBUG",
+                        event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
+                        symbol=symbol,
+                        limit=10000,
+                        offset=0,
+                    ) or []
+                    outcome_rows = query_events(
+                        severity_min="DEBUG",
+                        event_types=[COGNITIVE_CANDIDATE_HORIZON_OUTCOME],
+                        symbol=symbol,
+                        limit=10000,
+                        offset=0,
+                    ) or []
+                else:
+                    query = getattr(store, "query", None)
+                    if not callable(query):
+                        return
+                    snapshot_rows = query(
+                        event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
+                        symbol=symbol,
+                        limit=10000,
+                    ) or []
+                    outcome_rows = query(
+                        event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                        symbol=symbol,
+                        limit=10000,
+                    ) or []
+                snapshots = []
+                for row in snapshot_rows:
+                    try:
+                        event_payload = json.loads(row.get("payload_json") or "{}")
+                        event_candidate_id = str(event_payload.get("candidate_id", "") or "")
+                        if event_candidate_id:
+                            snapshots.append((event_candidate_id, event_payload))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                for row in outcome_rows:
+                    try:
+                        event_payload = json.loads(row.get("payload_json") or "{}")
+                        recorded.add((
+                            str(event_payload.get("candidate_id", "")),
+                            int(event_payload.get("horizon_seconds", 0) or 0),
+                        ))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
 
             horizons = (300, 900, 3600, 14400, 86400)
-            for row in snapshots:
+            for candidate_id, payload in snapshots:
                 try:
-                    payload = json.loads(row.get("payload_json") or "{}")
-                    candidate_id = str(payload.get("candidate_id", "") or "")
                     candidate = payload.get("candidate") or {}
                     reference = payload.get("reference_quote") or {}
                     reference_price = float(reference.get("mid"))
