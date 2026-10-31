@@ -75,7 +75,7 @@ def test_verified_direction_specific_calibration_supplies_expected_return():
     )._calibrated_expected_return(state, "LONG", candidate_family="continuation", horizon_seconds=300)
     assert verified is True
     assert expected_return == 0.25
-    assert "chronological_base_rate_fixed_horizon_v1" in source
+    assert "chronological_family_conditional_fixed_horizon_v1" in source
 
 def test_calibration_for_different_candidate_family_cannot_qualify_candidate():
     state = MarketState(symbol="SYNTHETIC")
