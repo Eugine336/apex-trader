@@ -484,7 +484,9 @@ def _technical_indicator_evidence(
             volume["cmf"] = sum(flow_window) / volume_sum
         volume["obv"] = obv
         volume["mfi"] = mfi
-        volume["accumulation_distribution"] = sum(flow_window)
+        volume["accumulation_distribution"] = sum(
+            mf_multiplier[i] * volumes[i] for i in range(len(bars))
+        )
         if len(volumes) >= 11 and volumes[-11] > 0:
             volume["volume_roc"] = (volumes[-1] / volumes[-11] - 1.0) * 100.0
         if volume_sum > 0:
