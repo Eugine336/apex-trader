@@ -970,6 +970,12 @@ class CognitionLoop:
             evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_rows = []
             point_in_time_rows = []
+            fresh_evidence_ids = {
+                str(getattr(item, "evidence_id", "") or "")
+                for item in market_state.fresh_evidence(
+                    now=float(getattr(decision, "created_epoch", 0.0) or 0.0)
+                )
+            }
             market_domains = {
                 "structure", "liquidity", "momentum", "volatility", "volume",
                 "order_flow", "multi_timeframe", "correlation", "session", "macro",
@@ -993,7 +999,7 @@ class CognitionLoop:
                     getattr(getattr(item, "domain", None), "value", getattr(item, "domain", ""))
                     or ""
                 ).lower()
-                if domain in market_domains:
+                if domain in market_domains and str(row.get("evidence_id", "") or "") in fresh_evidence_ids:
                     point_in_time_rows.append(row)
             evidence_data = _json_safe(evidence_rows)
             point_in_time_data = _json_safe(point_in_time_rows)
