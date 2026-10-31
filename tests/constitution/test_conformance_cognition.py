@@ -81,6 +81,7 @@ _DOMAINS = (
 def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, target_high: float = 1.110) -> MarketState:
     """A well-covered, low-uncertainty MarketState (so the Brain can act)."""
     ms = MarketState(symbol=symbol)
+    stamp = time.time()
     for i, dom in enumerate(_DOMAINS):
         ms.add(Evidence(
             source_module=f"module_{i}", domain=dom, symbol=symbol,
@@ -108,6 +109,7 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         confidence=conf,
         uncertainty=unc,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     # Activated-opportunity tests need fresh, market-derived payoff geometry;
