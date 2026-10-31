@@ -868,7 +868,7 @@ class CognitiveBrain:
         diagnostic_expected_value = expected_value_r(
             eff_conf, reward_r, risk_r, cost_r=cost_r,
         )
-        # DecisionPackage.expected_value has calibrated probability semantics.
+        # DecisionPackage.expected_value stores producer-validated net expected R.
         # Never place an uncalibrated diagnostic estimate in that field.
         # The producer's fixed-horizon outcome is an empirical directional
         # return in R. It is not a target-hit probability, so do not multiply it
@@ -1125,7 +1125,7 @@ class CognitiveBrain:
             and quorum_ok
             and domain_ok
             and cost_verified
-            and probability_verified
+            and return_verified
             and has_actionable_opportunity
             and geometry_qualified
         )
