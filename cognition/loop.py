@@ -969,6 +969,11 @@ class CognitionLoop:
             )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_rows = []
+            point_in_time_rows = []
+            market_domains = {
+                "structure", "liquidity", "momentum", "volatility", "volume",
+                "order_flow", "multi_timeframe", "correlation", "session", "macro",
+            }
             for item in evidence_items:
                 to_dict = getattr(item, "to_dict", None)
                 if not callable(to_dict):
@@ -984,7 +989,14 @@ class CognitionLoop:
                 row["source_timestamp_epoch"] = source_epoch if source_verified else None
                 row["source_timestamp_verified"] = source_verified
                 evidence_rows.append(row)
+                domain = str(
+                    getattr(getattr(item, "domain", None), "value", getattr(item, "domain", ""))
+                    or ""
+                ).lower()
+                if domain in market_domains:
+                    point_in_time_rows.append(row)
             evidence_data = _json_safe(evidence_rows)
+            point_in_time_data = _json_safe(point_in_time_rows)
             quote_candidates = []
             for item in evidence_items:
                 measurements = getattr(item, "measurements", {})
@@ -1115,7 +1127,8 @@ class CognitionLoop:
                     "identity_version": str(getattr(decision, "identity_version", "") or ""),
                     "candidate": candidate_data,
                     "decision_snapshot": decision_data,
-                    "point_in_time_evidence": evidence_data,
+                    "evidence_inventory": evidence_data,
+                    "point_in_time_evidence": point_in_time_data,
                     "predictive_label_status": "UNLABELLED",
                     "predictive_validity": "NOT_ESTABLISHED",
                     "selection_population": "ALL_RECORDED_BRAIN_CONSIDERED_CANDIDATES",
