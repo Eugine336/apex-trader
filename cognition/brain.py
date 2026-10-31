@@ -915,7 +915,7 @@ class CognitiveBrain:
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
-            "win_probability_verification": (
+            "expected_return_verification": (
                 f"VERIFIED expected directional return in R: {return_source}"
                 if return_verified else
                 f"UNVERIFIED: {return_source}; reasoning confidence is not expected return"
@@ -3051,7 +3051,7 @@ class CognitiveBrain:
                     f"{expected_value:.4f}R (native fixed-horizon expected return "
                     f"{expected_return_r:.4f}R less cost {cost_r:.4f}R)"
                 ),
-                "win_probability_verification": (
+                "expected_return_verification": (
                     f"VERIFIED expected directional return in R: {return_source}"
                 ),
                 "downside": "bounded by invalidation conditions",
