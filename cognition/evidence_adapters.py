@@ -224,64 +224,127 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
 
 
 def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
-    """Convert an estimated round-trip execution cost into EXECUTION_QUALITY
-    Evidence (Violation V9 — Part XXIV/XXV).
+    """Convert a broker-derived round-trip cost model into neutral Evidence.
 
-    ``cost`` may be a plain float (total cost in R) or a dict carrying
-    ``estimated_spread_r`` / ``estimated_slippage_r`` / ``estimated_total_cost_r``.
-    The Brain reads the ``estimated_total_cost_r`` measurement and subtracts it
-    from the strategic EV so a theoretical thesis that cannot clear its execution
-    cost is declined at the EV gate. It is a cost *context*, never a directional
-    instruction (``polarity`` 0). Fail-safe: ``[]`` on empty/any fault.
+    The adapter preserves either an already risk-normalized estimate (R) or a
+    monetary estimate per lot plus its verified account-currency value-per-price
+    conversion. Monetary costs cannot be converted to R here because only the
+    Brain has the selected opportunity's market-derived stop distance.
     """
     out: list[Evidence] = []
     try:
         if cost is None:
             return out
-        source_epoch = None
-        source_verified = False
+
+        def optional_finite(value: Any) -> float | None:
+            if isinstance(value, bool):
+                return None
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return value_f if math.isfinite(value_f) and value_f >= 0.0 else None
+
+        source_epoch = optional_finite(
+            cost.get("source_timestamp_epoch")
+        ) if isinstance(cost, dict) else None
+        source_verified = bool(
+            isinstance(cost, dict)
+            and cost.get("source_timestamp_verified") is True
+            and source_epoch is not None
+            and source_epoch > 0.0
+        )
+
+        total_r = None
+        spread_r = None
+        slippage_r = None
+        total_ccy_per_lot = None
+        money_per_price_ccy_per_lot = None
+        cost_verified = False
+        cost_source = "unverified estimate"
+        extra_measurements: dict[str, Any] = {}
+
         if isinstance(cost, dict):
-            spread_r = _num(cost.get("estimated_spread_r"))
-            slippage_r = _num(cost.get("estimated_slippage_r"))
-            if "estimated_total_cost_r" in cost:
-                total_r = _num(cost.get("estimated_total_cost_r"))
-            else:
+            total_r = optional_finite(cost.get("estimated_total_cost_r"))
+            spread_r = optional_finite(cost.get("estimated_spread_r"))
+            slippage_r = optional_finite(cost.get("estimated_slippage_r"))
+            if total_r is None and spread_r is not None and slippage_r is not None:
                 total_r = spread_r + slippage_r
-            source_epoch = _num(cost.get("source_timestamp_epoch"))
-            source_verified = (
-                cost.get("source_timestamp_verified") is True
-                and source_epoch is not None and source_epoch > 0.0
+            total_ccy_per_lot = optional_finite(
+                cost.get("estimated_total_cost_account_ccy_per_lot")
             )
+            money_per_price_ccy_per_lot = optional_finite(
+                cost.get("money_per_price_account_ccy_per_lot")
+            )
+            cost_verified = cost.get("cost_verified") is True
+            cost_source = str(cost.get("cost_source", "unverified estimate") or "").strip()
+            quote = cost.get("quote")
+            if isinstance(quote, dict):
+                extra_measurements["cost_quote"] = {
+                    key: quote.get(key)
+                    for key in ("bid", "ask", "spread", "symbol", "source_timestamp_epoch")
+                    if quote.get(key) is not None
+                }
         else:
-            total_r = _num(cost)
+            total_r = optional_finite(cost)
             spread_r = total_r
             slippage_r = 0.0
-        # A round-trip cost is bounded and non-negative in R.
-        total_r = max(0.0, min(5.0, total_r))
-        spread_r = max(0.0, min(5.0, spread_r))
-        slippage_r = max(0.0, min(5.0, slippage_r))
+
+        if total_r is not None:
+            extra_measurements.update({
+                "estimated_total_cost_r": round(total_r, 8),
+            })
+            if spread_r is not None:
+                extra_measurements["estimated_spread_r"] = round(spread_r, 8)
+            if slippage_r is not None:
+                extra_measurements["estimated_slippage_r"] = round(slippage_r, 8)
+
+        if total_ccy_per_lot is not None and money_per_price_ccy_per_lot is not None:
+            if total_ccy_per_lot > 0.0 and money_per_price_ccy_per_lot > 0.0:
+                extra_measurements.update({
+                    "estimated_total_cost_account_ccy_per_lot": round(total_ccy_per_lot, 8),
+                    "money_per_price_account_ccy_per_lot": round(
+                        money_per_price_ccy_per_lot, 8
+                    ),
+                    "cost_currency_basis": "broker_account_currency_per_lot",
+                })
+
+        if not extra_measurements:
+            return out
+
+        if total_r is not None:
+            observation = f"estimated round-trip execution cost {total_r:.4f}R"
+        elif total_ccy_per_lot is not None:
+            observation = (
+                "estimated round-trip execution cost "
+                f"{total_ccy_per_lot:.4f} account-currency/lot; "
+                "Brain must normalize using the candidate's verified risk distance"
+            )
+        else:
+            observation = "execution-cost components available; total cost not yet normalized"
+
         out.append(Evidence(
             source_module="execution.cost_model",
-            domain=EvidenceDomain.EXECUTION_QUALITY, symbol=str(symbol or ""),
-            observation=(
-                f"estimated round-trip execution cost {total_r:.4f}R "
-                f"(spread {spread_r:.4f}R, slippage {slippage_r:.4f}R)"
-            ),
-            # The cost model's certainty in its OWN estimate, not a direction.
-            confidence=0.8, uncertainty=0.2, polarity=0.0,
+            domain=EvidenceDomain.EXECUTION_QUALITY,
+            symbol=str(symbol or ""),
+            observation=observation,
+            confidence=0.8,
+            uncertainty=0.2,
+            polarity=0.0,
             measurements={
-                "estimated_spread_r": round(spread_r, 6),
-                "estimated_slippage_r": round(slippage_r, 6),
-                "estimated_total_cost_r": round(total_r, 6),
-                "cost_verified": bool(cost.get("cost_verified", False))
-                if isinstance(cost, dict) else False,
-                "cost_source": str(cost.get("cost_source", "unverified estimate"))
-                if isinstance(cost, dict) else "unverified estimate",
+                **extra_measurements,
+                "cost_verified": cost_verified,
+                "cost_source": cost_source or "unverified estimate",
+                "source_timestamp_epoch": source_epoch if source_verified else None,
+                "source_timestamp_verified": source_verified,
             },
             timestamp_epoch=time.time(),
             source_timestamp_epoch=source_epoch if source_verified else None,
             source_timestamp_verified=source_verified,
-            relevance_horizon_seconds=300.0,
+            relevance_horizon_seconds=10.0,
+            data_basis="broker_quote_and_verified_execution_cost_model",
+            independence_group=f"execution_cost:{str(symbol or '').strip().upper()}",
+            measurement_version="execution-cost-v2",
         ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
