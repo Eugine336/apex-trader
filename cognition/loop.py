@@ -963,10 +963,25 @@ class CognitionLoop:
                 decision.to_dict() if callable(getattr(decision, "to_dict", None)) else {}
             )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
-            evidence_data = _json_safe([
-                item.to_dict() for item in evidence_items
-                if callable(getattr(item, "to_dict", None))
-            ])
+            evidence_rows = []
+            for item in evidence_items:
+                to_dict = getattr(item, "to_dict", None)
+                if not callable(to_dict):
+                    continue
+                row = to_dict()
+                measurements = getattr(item, "measurements", {})
+                measurements = measurements if isinstance(measurements, dict) else {}
+                source_epoch = (
+                    getattr(item, "source_timestamp_epoch", None)
+                    or getattr(item, "timestamp_epoch", None)
+                )
+                row["source_timestamp_epoch"] = source_epoch
+                row["source_timestamp_verified"] = bool(
+                    getattr(item, "source_timestamp_epoch", None) is not None
+                    or measurements.get("source_timestamp_known") is True
+                )
+                evidence_rows.append(row)
+            evidence_data = _json_safe(evidence_rows)
             quote_candidates = []
             for item in evidence_items:
                 measurements = getattr(item, "measurements", {})
