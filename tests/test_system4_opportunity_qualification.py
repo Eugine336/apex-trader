@@ -98,6 +98,61 @@ def test_calibration_from_another_symbol_cannot_qualify_candidate():
 
 
 
+def test_valid_short_calibration_is_direction_specific():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_calibration(direction="SHORT"))
+    verified, probability, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "SHORT")
+    assert verified is True
+    assert probability == 0.61
+
+
+def test_stale_calibration_cannot_supply_probability():
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration()
+    evidence.timestamp_epoch = time.time() - 1200.0
+    evidence.relevance_horizon_seconds = 60.0
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
+
+
+def test_future_calibration_cannot_supply_probability():
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration()
+    evidence.timestamp_epoch = time.time() + 60.0
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
+
+
+def test_insufficient_calibration_sample_count_cannot_supply_probability():
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration()
+    evidence.measurements["sample_count"] = 29
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
+
+
+def test_invalid_brier_score_cannot_supply_probability():
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration()
+    evidence.measurements["brier_score"] = 1.01
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
+
+
 def test_historical_calibration_metadata_does_not_pad_market_domain_coverage():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration())
