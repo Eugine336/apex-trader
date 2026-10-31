@@ -2818,7 +2818,15 @@ class EventDrivenSystem:
             wm = store.get(symbol)
             if wm is None:
                 return {}
-            return wm.multi_tf_alignment_dict()
+            alignment = wm.multi_tf_alignment_dict()
+            try:
+                alignment["source_timestamp_epoch"] = wm.timestamp.timestamp()
+                alignment["source_timestamp_verified"] = True
+                alignment["provisional"] = True
+                alignment["data_basis"] = "developing_world_model"
+            except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+                alignment["source_timestamp_verified"] = False
+            return alignment
         except Exception as exc:  # noqa: BLE001 — never break the cognition loop
             logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
             return {}
