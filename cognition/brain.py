@@ -3154,7 +3154,9 @@ class CognitiveBrain:
                 for evidence in market_state.fresh_evidence(now=decision_epoch):
                     row = evidence.to_dict()
                     row["source_timestamp_epoch"] = float(
-                        getattr(evidence, "timestamp_epoch", 0.0) or 0.0
+                        getattr(evidence, "source_timestamp_epoch", None)
+                        or getattr(evidence, "timestamp_epoch", 0.0)
+                        or 0.0
                     )
                     rows.append(copy.deepcopy(json_safe(row)))
         except Exception:
