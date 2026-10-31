@@ -375,6 +375,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "symbol": "EURUSD",
                 "evidence_id": f"quote-{index}",
             },
+            "point_in_time_complete": True,
             "point_in_time_evidence": [
                 {
                     "evidence_id": f"feature-{index}",
