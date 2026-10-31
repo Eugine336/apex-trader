@@ -97,6 +97,9 @@ def test_to_dict_resolves_dims_and_effective():
 
 def test_single_scalar_opinion_opens_campaign_unchanged():
     out = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8))
+    assert out.decision.questions_answered.get("expected_return_verification", "").startswith(
+        "VERIFIED"
+    ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert abs(out.decision.confidence - 0.8) < 1e-9
     # Sizing now reflects EV and reasoning quality (Art XIX/XXVIII): a shallow
