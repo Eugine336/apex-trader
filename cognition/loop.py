@@ -919,6 +919,7 @@ class CognitionLoop:
             if not decision_id:
                 raise ValueError("candidate snapshot requires canonical decision_id")
             from persistence.event_store import get_event_store
+            from persistence.domain_events import COGNITIVE_CANDIDATE_SNAPSHOT
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
@@ -976,7 +977,7 @@ class CognitionLoop:
                     "selection_population": "ALL_RECORDED_BRAIN_CONSIDERED_CANDIDATES",
                 }
                 store.emit(
-                    "COGNITIVE_CANDIDATE_SNAPSHOT",
+                    COGNITIVE_CANDIDATE_SNAPSHOT,
                     "DEBUG",
                     symbol=payload["symbol"],
                     correlation_id=decision_id,
