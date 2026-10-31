@@ -516,6 +516,7 @@ class CognitionLoop:
         reallocation_trim_fraction: float = 0.5,
         pattern_tracker: Optional[Any] = None,
         candidate_event_store: Optional[Any] = None,
+        calibration_provider: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -631,6 +632,7 @@ class CognitionLoop:
         self._pattern_tracker = pattern_tracker
         # Durable candidate provenance is observational and cannot authorize action.
         self._candidate_event_store = candidate_event_store
+        self._calibration_provider = calibration_provider
         self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
@@ -1365,6 +1367,27 @@ class CognitionLoop:
                 "[cognition-loop] candidate disposition persistence failed: %s", exc,
             )
 
+    def _inject_calibration_evidence(self, market_state: MarketState) -> None:
+        """Supply only producer-registered calibration artifacts to the Brain."""
+        try:
+            provider = self._calibration_provider
+            if provider is None:
+                from cognition.calibration_artifacts import get_default_calibration_producer
+                provider = get_default_calibration_producer()
+                self._calibration_provider = provider
+            evidence_for = getattr(provider, "evidence_for", None)
+            if not callable(evidence_for):
+                return
+            symbol = str(getattr(market_state, "symbol", "") or "")
+            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            for evidence in evidence_for(symbol, now=cutoff) or []:
+                market_state.add(evidence)
+        except Exception as exc:  # noqa: BLE001 — missing calibration must remain missing
+            logger.warning(
+                "[cognition-loop] producer calibration evidence unavailable for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
@@ -1388,6 +1411,7 @@ class CognitionLoop:
                 logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
         try:
             ms = self._consolidator.build(symbol, now=now)
+            self._inject_calibration_evidence(ms)
             output = self._brain.reason(ms, now=now)
             self._record_candidate_snapshot(output, ms)
             self._label_due_candidate_horizons(ms)
