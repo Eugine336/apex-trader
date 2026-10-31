@@ -3160,8 +3160,8 @@ class CognitiveBrain:
         """Capture immutable-by-convention point-in-time features used by a decision.
 
         This is an evidence ledger, not a reconstructed market snapshot. Each
-        feature retains its source timestamp and evidence ID. Empty or stale
-        evidence is not backfilled from current prices after the decision.
+        feature retains an explicitly verified source timestamp and evidence ID.
+        Ingestion time is never substituted for missing source-time provenance.
         """
         import copy
         import math
@@ -3208,11 +3208,15 @@ class CognitiveBrain:
             if market_state is not None and decision_epoch > 0.0:
                 for evidence in market_state.fresh_evidence(now=decision_epoch):
                     row = evidence.to_dict()
-                    row["source_timestamp_epoch"] = float(
-                        getattr(evidence, "source_timestamp_epoch", None)
-                        or getattr(evidence, "timestamp_epoch", 0.0)
-                        or 0.0
+                    source_epoch = getattr(evidence, "source_timestamp_epoch", None)
+                    source_verified = (
+                        getattr(evidence, "source_timestamp_verified", False) is True
+                        and source_epoch is not None
                     )
+                    row["source_timestamp_epoch"] = (
+                        float(source_epoch) if source_verified else None
+                    )
+                    row["source_timestamp_verified"] = source_verified
                     rows.append(copy.deepcopy(json_safe(row)))
         except Exception:
             # An incomplete snapshot must remain visibly incomplete; do not
@@ -3227,7 +3231,8 @@ class CognitiveBrain:
             and len(evidence_ids) == len(rows)
             and len(evidence_ids) == len(set(evidence_ids))
             and all(
-                isinstance(row.get("source_timestamp_epoch"), (int, float))
+                row.get("source_timestamp_verified") is True
+                and isinstance(row.get("source_timestamp_epoch"), (int, float))
                 and math.isfinite(float(row["source_timestamp_epoch"]))
                 and 0.0 < float(row["source_timestamp_epoch"]) <= decision_epoch
                 for row in rows
