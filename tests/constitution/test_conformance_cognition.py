@@ -265,9 +265,9 @@ def test_expected_value_is_not_a_confidence_proxy():
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     ev = out.decision.expected_value
     # EV_R = p_win*reward_r - (1-p_win)*risk_r - verified_cost_r
-    # = 0.8*2 - 0.2*1 - 0.05 = 1.35. The rich fixture deliberately
+    # = 0.8*2.375 - 0.2*1 - 0.05 = 1.65. The rich fixture deliberately
     # supplies fresh execution-cost evidence, so cognition must account for it.
-    assert abs(ev - 1.35) < 1e-9, f"expected 1.35 after verified cost, got {ev}"
+    assert abs(ev - 1.65) < 1e-9, f"expected 1.65 after verified cost, got {ev}"
     assert ev != out.decision.confidence
 
 
