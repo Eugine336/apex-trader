@@ -272,6 +272,8 @@ class Evidence:
     measurement_version: str = ""
 
     def __post_init__(self) -> None:
+        # Caller-supplied identity metadata is never authoritative.
+        self.identity_version = IDENTITY_VERSION
         if not self.evidence_id:
             self.evidence_id = uuid.uuid4().hex[:12]
         if not self.timestamp_epoch:
@@ -447,8 +449,12 @@ class MarketState:
     # weights each evidence's contribution by its source's learned influence.
     # ``None`` ⇒ unweighted (every source counts equally) — the default.
     influence_weights: Optional[dict] = None
+    identity_version: str = IDENTITY_VERSION
+    identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.created_epoch:
             self.created_epoch = _now_epoch()
         if not self.created_iso:
@@ -574,6 +580,8 @@ class MarketState:
 
     def to_dict(self, *, include_evidence: bool = True) -> dict:
         out = {
+            "identity_version": IDENTITY_VERSION,
+            "identity": IDENTITY_STATEMENT,
             "symbol": self.symbol,
             "created": self.created_iso,
             "consolidation": self.consolidation(),
@@ -625,6 +633,7 @@ class Hypothesis:
     identity_version: str = IDENTITY_VERSION
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
         self.probability = _clamp01(self.probability)
         d = str(self.direction or "").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else ""
@@ -691,6 +700,7 @@ class Opportunity:
     identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
         d = str(self.direction or "FLAT").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else "FLAT"
         self.state = opportunity_state_from(self.state)
@@ -856,6 +866,8 @@ class DecisionPackage:
     created_epoch: float = 0.0
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.decision_id:
             self.decision_id = uuid.uuid4().hex[:12]
         if not self.created_iso:
@@ -1003,6 +1015,8 @@ class CampaignSpecification:
     identity: str = IDENTITY_STATEMENT
 
     def __post_init__(self) -> None:
+        self.identity_version = IDENTITY_VERSION
+        self.identity = IDENTITY_STATEMENT
         if not self.campaign_id:
             self.campaign_id = uuid.uuid4().hex[:12]
         if not self.created_iso:
