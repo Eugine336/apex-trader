@@ -280,6 +280,10 @@ def _technical_indicator_evidence(
         rsi_value = _rsi_value(closes, period)
         if rsi_value is not None:
             momentum["rsi" if period == 14 else f"rsi_{period}"] = rsi_value
+            if period == 2:
+                momentum["rsi_fast"] = rsi_value
+            elif period == 21:
+                momentum["rsi_slow"] = rsi_value
     rsi_history = [
         _rsi_value(closes[:index + 1], 14)
         for index in range(14, len(closes))
@@ -346,6 +350,10 @@ def _technical_indicator_evidence(
             momentum["roc_5"] = (closes[-1] / closes[-6] - 1.0) * 100.0
         if len(closes) >= 11 and closes[-11] != 0:
             momentum["roc_10"] = (closes[-1] / closes[-11] - 1.0) * 100.0
+            momentum["roc"] = momentum["roc_10"]
+            momentum["momentum_rate"] = momentum["roc_10"]
+        if "roc_5" in momentum and "roc_10" in momentum:
+            momentum["momentum_acceleration"] = momentum["roc_5"] - momentum["roc_10"]
 
     # ADX / directional movement using rolling 14-bar directional movement and
     # true-range sums. The smoothing convention is explicitly versioned below.
@@ -371,6 +379,7 @@ def _technical_indicator_evidence(
                 dx_values.append(100.0 * abs(plus_di - minus_di) / denom)
         if dx_values:
             momentum["adx"] = _mean(dx_values[-14:])
+            momentum["trend_strength"] = momentum["adx"]
             momentum["plus_di"] = plus_di
             momentum["minus_di"] = minus_di
 
@@ -398,6 +407,15 @@ def _technical_indicator_evidence(
             for i in range(max(1, len(closes) - 20), len(closes))
             if closes[i - 1] > 0
         ])
+        parkinson_values = [
+            math.log(highs[i] / lows[i]) ** 2
+            for i in range(max(0, len(bars) - 20), len(bars))
+            if highs[i] > 0.0 and lows[i] > 0.0 and highs[i] >= lows[i]
+        ]
+        if parkinson_values:
+            volatility["parkinson_volatility"] = math.sqrt(
+                _mean(parkinson_values) / (4.0 * math.log(2.0))
+            )
     if len(closes) >= 20:
         mean20 = _mean(closes[-20:])
         std20 = _stddev(closes[-20:])
@@ -411,10 +429,17 @@ def _technical_indicator_evidence(
                 "bollinger_percent_b": (closes[-1] - lower) / max(upper - lower, 1e-12),
                 "rolling_zscore": (closes[-1] - mean20) / std20,
                 "zscore": (closes[-1] - mean20) / std20,
+                "mean_distance": (
+                    (closes[-1] - mean20) / atr14 if atr14 and atr14 > 0 else 0.0
+                ),
             })
         if atr20 is not None and ema20:
             volatility["keltner_upper"] = ema20[-1] + 2.0 * atr20
             volatility["keltner_lower"] = ema20[-1] - 2.0 * atr20
+            volatility["keltner"] = (
+                (volatility["keltner_upper"] - volatility["keltner_lower"])
+                / max(abs(closes[-1]), 1e-12)
+            )
         volatility["donchian_high"] = max(highs[-21:-1]) if len(highs) >= 21 else max(highs[-20:])
         volatility["donchian_low"] = min(lows[-21:-1]) if len(lows) >= 21 else min(lows[-20:])
     if volatility:
