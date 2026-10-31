@@ -406,6 +406,21 @@ class BrainReasoner:
 
         regime = self._classify_regime(fresh, names)
         observations = self._observations(fresh, detected, regime)
+        indicator_panels = regime.get("technical_indicators", {})
+        if indicator_panels:
+            indicator_counts = {
+                timeframe: len(values)
+                for timeframe, values in indicator_panels.items()
+                if isinstance(values, dict)
+            }
+            observations.append(
+                "Completed-bar technical indicator panel available by timeframe: "
+                + ", ".join(
+                    f"{timeframe} ({count} measurements)"
+                    for timeframe, count in sorted(indicator_counts.items())
+                )
+                + "; indicators are descriptive measurements, not standalone entry rules."
+            )
         contradictions = self._contradictions(fresh, names, regime)
         missing = self._missing(domain_coverage, informative_domains)
         agreement = self._agreement(
