@@ -208,7 +208,10 @@ class CalibrationProducer:
     @staticmethod
     def _valid_point_in_time(payload: dict) -> bool:
         evidence = payload.get("point_in_time_evidence")
-        if not isinstance(evidence, list) or not evidence:
+        if (
+            payload.get("point_in_time_complete") is not True
+            or not isinstance(evidence, list) or not evidence
+        ):
             return False
         decision_epoch = float(payload.get("decision_epoch") or 0.0)
         for item in evidence:
