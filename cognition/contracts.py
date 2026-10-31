@@ -295,7 +295,7 @@ class Evidence:
         if self.source_timestamp_epoch is not None:
             try:
                 source_epoch = float(self.source_timestamp_epoch)
-                self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch == source_epoch else None
+                self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch < float("inf") and source_epoch == source_epoch else None
             except (TypeError, ValueError, OverflowError):
                 self.source_timestamp_epoch = None
         self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
