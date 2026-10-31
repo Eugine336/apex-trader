@@ -3024,6 +3024,8 @@ class CognitiveBrain:
             native_opportunity = Opportunity.from_reply(
                 {
                     "id": native_opportunity_id,
+                    "candidate_family": str(getattr(lead, "hypothesis_kind", "") or "unclassified"),
+                    "horizon": str(getattr(lead, "horizon", "") or ""),
                     "direction": direction,
                     # This path has validated the current hypothesis and net EV;
                     # the shared execution admission rechecks activation and live
