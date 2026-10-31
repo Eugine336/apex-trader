@@ -8,9 +8,9 @@ from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketSt
 from test_support.market_geometry import add_market_geometry
 
 
-def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC"):
+def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC", source_module="cognition.probability_calibration"):
     return Evidence(
-        source_module="validation.out_of_sample_probability_calibration",
+        source_module=source_module,
         domain=EvidenceDomain.HISTORICAL_ANALOGUE,
         symbol=symbol,
         observation="direction-specific out-of-sample calibration record",
@@ -68,6 +68,15 @@ def test_verified_direction_specific_calibration_supplies_probability():
     assert verified is True
     assert probability == 0.61
     assert "isotonic:holdout-2026-q3" in source
+
+
+def test_untrusted_adapter_cannot_self_assert_calibration_provenance():
+    state = MarketState(symbol="SYNTHETIC")
+    state.add(_calibration(source_module="untrusted.market_adapter"))
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG")
+    assert verified is False
 
 
 def test_calibration_for_opposite_direction_cannot_qualify_candidate():
