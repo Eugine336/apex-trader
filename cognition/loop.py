@@ -1207,14 +1207,17 @@ class CognitionLoop:
                     )
                     entry_deviation_r = (
                         abs(entry_price - reference_price) / risk_distance
-                        if risk_distance > 0.0 else float("inf")
+                        if risk_distance > 0.0 else None
                     )
                     if (
                         not math.isfinite(risk_distance) or risk_distance <= 0.0
+                        or entry_deviation_r is None
                         or not math.isfinite(entry_deviation_r)
                         or entry_deviation_r > 0.25
                     ):
                         risk_distance = None
+                        if entry_deviation_r is not None and not math.isfinite(entry_deviation_r):
+                            entry_deviation_r = None
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
 
