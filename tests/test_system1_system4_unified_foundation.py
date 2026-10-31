@@ -109,7 +109,7 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         entry_price=1.1,
         stop_price=1.09,
         target_price=1.13,
-        geometry_evidence_ids=["evidence-1"],
+        geometry_evidence_ids=[market.evidence[0].evidence_id],
     )
     decision = DecisionPackage(
         symbol="EURUSD",
