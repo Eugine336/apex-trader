@@ -94,6 +94,15 @@ def _register_artifact(artifact: CalibrationArtifact) -> None:
     if not isinstance(artifact, CalibrationArtifact) or not artifact.producer_attested:
         raise TypeError("only producer-issued CalibrationArtifact instances may be registered")
     with _REGISTRY_LOCK:
+        # Keep one active artifact per exact calibration scope. Old artifacts
+        # must not accumulate or remain eligible after the producer refreshes.
+        for key, current in list(_REGISTRY.items()):
+            if (
+                current.symbol == artifact.symbol
+                and current.direction == artifact.direction
+                and current.horizon_seconds == artifact.horizon_seconds
+            ):
+                _REGISTRY.pop(key, None)
         _REGISTRY[artifact.artifact_id] = artifact
 
 
@@ -349,10 +358,6 @@ class CalibrationProducer:
                             continue
                         if not all(item.get("observation_status") == "OBSERVED" for item in member_outcomes):
                             continue
-                        labels = {
-                            1 if item.get("outcome_label") == "FAVOURABLE" else 0
-                            for item in member_outcomes
-                        }
                         returns = []
                         for item in member_outcomes:
                             try:
@@ -361,14 +366,27 @@ class CalibrationProducer:
                                 value = float("nan")
                             if math.isfinite(value):
                                 returns.append(value)
-                        if len(labels) != 1 or len(returns) != len(member_outcomes):
+                        if len(returns) != len(member_outcomes):
                             continue
+                        # Multiple opportunities can coexist for the same
+                        # decision and side. Their labels may legitimately
+                        # differ; aggregate their outcomes at the decision level
+                        # instead of discarding the entire decision.
+                        ordered_returns = sorted(returns)
+                        median_return = (
+                            ordered_returns[len(ordered_returns) // 2]
+                            if len(ordered_returns) % 2
+                            else (
+                                ordered_returns[len(ordered_returns) // 2 - 1]
+                                + ordered_returns[len(ordered_returns) // 2]
+                            ) / 2.0
+                        )
                         observed_groups += 1
                         eligible_groups.append({
                             "decision_id": decision_id,
                             "decision_epoch": decision_epoch,
-                            "label": next(iter(labels)),
-                            "return_r": float(sorted(returns)[len(returns) // 2]),
+                            "label": 1 if median_return > 0.0 else 0,
+                            "return_r": median_return,
                             "candidate_ids": sorted(item["candidate_id"] for item in members),
                         })
                     coverage = (
