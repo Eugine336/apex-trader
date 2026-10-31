@@ -170,6 +170,27 @@ def _sma(values: list[float], period: int) -> float | None:
     return _mean(values[-period:])
 
 
+def _wma(values: list[float], period: int) -> float | None:
+    if period <= 0 or len(values) < period:
+        return None
+    window = values[-period:]
+    denominator = period * (period + 1) / 2.0
+    return sum(value * weight for weight, value in enumerate(window, 1)) / denominator
+
+
+def _rsi_value(values: list[float], period: int) -> float | None:
+    if period <= 0 or len(values) < period + 1:
+        return None
+    changes = [values[index] - values[index - 1] for index in range(len(values) - period, len(values))]
+    gain = _mean([max(value, 0.0) for value in changes])
+    loss = _mean([max(-value, 0.0) for value in changes])
+    if gain == 0.0 and loss == 0.0:
+        return 50.0
+    if loss == 0.0:
+        return 100.0
+    return 100.0 - (100.0 / (1.0 + gain / loss))
+
+
 def _ema_series(values: list[float], period: int) -> list[float | None]:
     if period <= 0 or len(values) < period:
         return []
@@ -229,17 +250,38 @@ def _technical_indicator_evidence(
         momentum["ema_spread_atr"] = (ema20[-1] - ema50[-1]) / atr14
     if ema20 and len(ema20) >= 6 and ema20[-6] is not None:
         momentum["ema_slope"] = (ema20[-1] - ema20[-6]) / 5.0
+    for period in (20, 50):
+        weighted = _wma(closes, period)
+        if weighted is not None:
+            momentum[f"wma_{period}"] = weighted
+    if len(closes) >= 20:
+        half_period = 10
+        root_period = 4
+        hull_inputs = []
+        for end in range(max(19, len(closes) - root_period + 1), len(closes)):
+            half = _wma(closes[:end + 1], half_period)
+            full = _wma(closes[:end + 1], 20)
+            if half is not None and full is not None:
+                hull_inputs.append(2.0 * half - full)
+        hull = _wma(hull_inputs, root_period)
+        if hull is not None:
+            momentum["hma_20"] = hull
 
-    if len(closes) >= 15:
-        changes = [closes[i] - closes[i - 1] for i in range(len(closes) - 14, len(closes))]
-        gains = [max(change, 0.0) for change in changes]
-        losses = [max(-change, 0.0) for change in changes]
-        average_gain = _mean(gains)
-        average_loss = _mean(losses)
-        momentum["rsi"] = (
-            50.0 if average_gain == 0.0 and average_loss == 0.0
-            else 100.0 if average_loss == 0.0
-            else 100.0 - (100.0 / (1.0 + average_gain / average_loss))
+    for period in (2, 14, 21):
+        rsi_value = _rsi_value(closes, period)
+        if rsi_value is not None:
+            momentum["rsi" if period == 14 else f"rsi_{period}"] = rsi_value
+    rsi_history = [
+        _rsi_value(closes[:index + 1], 14)
+        for index in range(14, len(closes))
+    ]
+    valid_rsi = [value for value in rsi_history if value is not None]
+    if len(valid_rsi) >= 14:
+        recent_rsi = valid_rsi[-14:]
+        rsi_min, rsi_max = min(recent_rsi), max(recent_rsi)
+        momentum["stoch_rsi"] = (
+            50.0 if rsi_max == rsi_min
+            else 100.0 * (valid_rsi[-1] - rsi_min) / (rsi_max - rsi_min)
         )
 
     if ema12 and ema26 and len(closes) >= 35:
@@ -265,6 +307,21 @@ def _technical_indicator_evidence(
             ]
             momentum["stochastic_k"] = k_values[-1]
             momentum["stochastic_d"] = _mean(k_values)
+
+    if len(bars) >= 25:
+        window = 25
+        recent_highs = highs[-window:]
+        recent_lows = lows[-window:]
+        momentum["aroon_up"] = 100.0 * (recent_highs.index(max(recent_highs)) + 1) / window
+        momentum["aroon_down"] = 100.0 * (recent_lows.index(min(recent_lows)) + 1) / window
+    if len(bars) >= 45:
+        ema15 = _ema_series(closes, 15)
+        ema15_values = [value for value in ema15 if value is not None]
+        ema2 = _ema_series(ema15_values, 15)
+        ema2_values = [value for value in ema2 if value is not None]
+        ema3 = _ema_series(ema2_values, 15)
+        if len(ema3) >= 2 and ema3[-2] not in (None, 0.0):
+            momentum["trix"] = (ema3[-1] / ema3[-2] - 1.0) * 100.0
 
     if len(bars) >= 20:
         typical = [(highs[i] + lows[i] + closes[i]) / 3.0 for i in range(len(bars))]
@@ -395,6 +452,9 @@ def _technical_indicator_evidence(
             volume["volume_roc"] = (volumes[-1] / volumes[-11] - 1.0) * 100.0
         if volume_sum > 0:
             volume["vwap"] = sum(typical[i] * volumes[i] for i in range(len(bars) - 20, len(bars))) / volume_sum
+            volume["vwma_20"] = sum(
+                closes[i] * volumes[i] for i in range(len(bars) - 20, len(bars))
+            ) / volume_sum
         volume["volume_source"] = source_label
         volume["volume_is_tick_proxy"] = any("tick" in item.lower() for item in volume_sources)
         volume["indicator_periods"] = {"mfi": 14, "cmf": 20, "vwap": 20}
