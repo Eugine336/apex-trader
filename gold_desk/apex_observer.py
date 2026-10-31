@@ -37,8 +37,10 @@ def _as_utc_datetime(value: Any) -> datetime | None:
         if hasattr(value, "to_pydatetime"):
             value = value.to_pydatetime()
         if isinstance(value, datetime):
+            # A naive provider timestamp has no timezone provenance. Do not
+            # silently reinterpret it as UTC or give it source-time authority.
             if value.tzinfo is None or value.utcoffset() is None:
-                value = value.replace(tzinfo=timezone.utc)
+                return None
             return value.astimezone(timezone.utc)
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(float(value), tz=timezone.utc)
@@ -435,6 +437,9 @@ class ApexMarketObserver:
 
     def _evaluate_tick(self, tick: Any) -> None:
         received_at = datetime.now(timezone.utc)
+        if getattr(tick, "source_timestamp_verified", False) is not True:
+            self.stale_ticks += 1
+            return
         observed_at = _as_utc_datetime(getattr(tick, "timestamp", None))
         if observed_at is None:
             self.stale_ticks += 1
