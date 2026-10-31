@@ -157,3 +157,91 @@ def test_no_opportunity_decision_is_also_recorded_in_candidate_universe():
     assert payload["candidate_kind"] == "decision_outcome"
     assert payload["decision_type"] == DecisionType.NO_OPPORTUNITY.value
     assert payload["predictive_validity"] == "NOT_ESTABLISHED"
+
+
+
+def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_calibration():
+    import json
+
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, severity, **kwargs):
+            self.events.append({
+                "event_type": event_type,
+                "severity": severity,
+                "payload_json": json.dumps(kwargs["payload"]),
+                **kwargs,
+            })
+            return f"event-{len(self.events)}"
+
+        def query(self, *, event_type, symbol, limit=200):
+            return [
+                row for row in self.events
+                if row["event_type"] == event_type
+                and row.get("symbol") == symbol
+            ][:limit]
+
+    store = Store()
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: [],
+        candidate_event_store=store,
+    )
+    initial_market = MarketState(symbol="EURUSD", created_epoch=1000.0)
+    initial_market.add(Evidence(
+        source_module="market.price_action",
+        domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="EURUSD",
+        timestamp_epoch=1000.0,
+        source_timestamp_epoch=1000.0,
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"price": {"bid": 1.099, "ask": 1.101, "mid": 1.1}},
+    ))
+    opportunity = Opportunity(
+        opportunity_id="opp-horizon",
+        direction="LONG",
+        state=OpportunityState.FORMING,
+        thesis="forming candidate",
+        entry_price=1.1,
+        stop_price=1.09,
+        target_price=1.12,
+        risk_distance=0.01,
+    )
+    decision = DecisionPackage(
+        symbol="EURUSD",
+        decision_type=DecisionType.OPPORTUNITY_FORMING,
+        created_epoch=1000.0,
+        opportunities=[opportunity],
+    )
+    output = SimpleNamespace(decision=decision)
+    loop._record_candidate_snapshot(output, initial_market)
+
+    later_market = MarketState(symbol="EURUSD", created_epoch=1301.0)
+    later_market.add(Evidence(
+        source_module="market.price_action",
+        domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="EURUSD",
+        timestamp_epoch=1301.0,
+        source_timestamp_epoch=1301.0,
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={"price": {"bid": 1.109, "ask": 1.111, "mid": 1.11}},
+    ))
+    loop._label_due_candidate_horizons(later_market)
+
+    labelled = [
+        row for row in store.events
+        if row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
+    ]
+    assert len(labelled) == 1
+    payload = json.loads(labelled[0]["payload_json"])
+    assert payload["horizon_seconds"] == 300
+    assert payload["observation_status"] == "OBSERVED"
+    assert payload["outcome_label"] == "FAVOURABLE"
+    assert payload["predictive_validity"] == "DESCRIPTIVE_ONLY_UNVALIDATED"
+    assert payload["calibration_authority"] is False
+    assert payload["directional_return_r"] > 0
