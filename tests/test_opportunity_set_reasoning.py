@@ -71,7 +71,7 @@ class _PassThroughReasoner:
 
 def _opp(**kw):
     base = {
-        "id": "opp_1", "horizon": "M5", "direction": "LONG", "state": "ACTIVE",
+        "id": "opp_1", "horizon": "MTF", "direction": "LONG", "state": "ACTIVE",
         "candidate_family": "continuation",
         "thesis": "pullback into demand", "why_now": "reclaim",
         "entry_conditions": ["reclaim M15"], "confirmation_conditions": ["HL"],
