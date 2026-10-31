@@ -59,7 +59,7 @@ def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
         timestamp_epoch=time.time(),
         relevance_horizon_seconds=900,
     ))
-    verified, probability, source = CognitiveBrain(
+    verified, expected_return, source = CognitiveBrain(
         reasoner=None,
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
@@ -74,7 +74,7 @@ def test_verified_direction_specific_calibration_supplies_probability():
         reasoner=None,
     )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
     assert verified is True
-    assert probability == 0.61
+    assert expected_return == 0.25
     assert "chronological_base_rate_fixed_horizon_v1" in source
 
 def test_calibration_for_opposite_direction_cannot_qualify_candidate():
@@ -106,11 +106,11 @@ def test_calibration_from_another_symbol_cannot_qualify_candidate():
 def test_valid_short_calibration_is_direction_specific():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration(direction="SHORT"))
-    verified, probability, _ = CognitiveBrain(
+    verified, expected_return, _ = CognitiveBrain(
         reasoner=None,
     )._calibrated_win_probability(state, "SHORT", horizon_seconds=300)
     assert verified is True
-    assert probability == 0.61
+    assert expected_return == 0.25
 
 
 def test_stale_calibration_cannot_supply_probability():
