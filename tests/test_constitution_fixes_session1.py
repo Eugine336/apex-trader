@@ -75,7 +75,7 @@ class _Reasoner:
         return self._op
 
 
-def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110):
+def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.110, calibrated_probability=0.8):
     ms = MarketState(symbol=symbol)
     domains = [EvidenceDomain.STRUCTURE, EvidenceDomain.LIQUIDITY,
                EvidenceDomain.MOMENTUM, EvidenceDomain.VOLUME,
@@ -142,6 +142,23 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
             "timeframe": "M5", "close_change": 0.001,
         },
         relevance_horizon_seconds=900.0,
+    ))
+    # Test-only calibration record; production evidence must come from durable outcomes.
+    ms.add(Evidence(
+        source_module="validation.test_out_of_sample_calibration",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol="symbol",
+        observation="verified test-only direction-specific calibration",
+        confidence=0.9, uncertainty=0.1,
+        measurements={
+            "probability_calibration_verified": True, "source_verified": True,
+            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
+            "data_leakage_checked": True, "selection_bias_checked": True,
+            "overfitting_checked": True, "calibration_side": "LONG",
+            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
+            "reliability_gap": 0.08, "calibration_method": "isotonic",
+            "calibration_id": "test-holdout-fixture",
+        },
+        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
     ))
     return ms
 
