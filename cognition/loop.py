@@ -1021,6 +1021,193 @@ class CognitionLoop:
                 getattr(market_state, "symbol", "?"), exc,
             )
 
+    def _label_due_candidate_horizons(self, market_state: MarketState) -> None:
+        """Record descriptive fixed-horizon outcomes for the unselected candidate universe.
+
+        Labels use the first source-timestamped broker quote observed inside a
+        bounded horizon window. Missing windows are recorded as missing, never
+        backfilled with a later price. These labels are not calibrated forecasts.
+        """
+        try:
+            import json
+            import math
+            from persistence.event_store import get_event_store
+            from persistence.domain_events import (
+                COGNITIVE_CANDIDATE_SNAPSHOT,
+                COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+            )
+
+            symbol = str(getattr(market_state, "symbol", "") or "")
+            if not symbol:
+                return
+            quote_rows = []
+            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            for evidence in market_state.fresh_evidence(now=cutoff):
+                measurements = getattr(evidence, "measurements", {})
+                quote = measurements.get("price") if isinstance(measurements, dict) else None
+                if not isinstance(quote, dict):
+                    continue
+                try:
+                    bid = float(quote.get("bid"))
+                    ask = float(quote.get("ask"))
+                    source_epoch = float(getattr(evidence, "source_timestamp_epoch", None) or 0.0)
+                    if (
+                        math.isfinite(bid) and math.isfinite(ask)
+                        and math.isfinite(source_epoch)
+                        and bid > 0.0 and ask >= bid and source_epoch > 0.0
+                        and source_epoch <= cutoff
+                    ):
+                        quote_rows.append({
+                            "mid": (bid + ask) / 2.0,
+                            "source_timestamp_epoch": source_epoch,
+                            "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
+                        })
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            if not quote_rows:
+                return
+            quote = max(quote_rows, key=lambda item: item["source_timestamp_epoch"])
+            observed_price = float(quote["mid"])
+            observed_epoch = float(quote["source_timestamp_epoch"])
+
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            query = getattr(store, "query", None)
+            if not callable(query):
+                return
+            snapshots = query(
+                event_type=COGNITIVE_CANDIDATE_SNAPSHOT,
+                symbol=symbol,
+                limit=10000,
+            ) or []
+            outcomes = query(
+                event_type=COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                symbol=symbol,
+                limit=10000,
+            ) or []
+            recorded = set()
+            for row in outcomes:
+                try:
+                    payload = json.loads(row.get("payload_json") or "{}")
+                    recorded.add((
+                        str(payload.get("candidate_id", "")),
+                        int(payload.get("horizon_seconds", 0)),
+                    ))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+            horizons = (300, 900, 3600, 14400, 86400)
+            for row in snapshots:
+                try:
+                    payload = json.loads(row.get("payload_json") or "{}")
+                    candidate_id = str(payload.get("candidate_id", "") or "")
+                    candidate = payload.get("candidate") or {}
+                    reference = payload.get("reference_quote") or {}
+                    reference_price = float(reference.get("mid"))
+                    decision_epoch = float(payload.get("decision_epoch"))
+                    direction = str(
+                        candidate.get("direction")
+                        or candidate.get("direction_implication")
+                        or ""
+                    ).upper()
+                    if (
+                        not candidate_id or direction not in {"LONG", "SHORT"}
+                        or not math.isfinite(reference_price) or reference_price <= 0.0
+                        or not math.isfinite(decision_epoch) or decision_epoch <= 0.0
+                        or float(reference.get("source_timestamp_epoch") or 0.0) <= 0.0
+                    ):
+                        continue
+                    geometry_risk = candidate.get("risk_distance")
+                    if geometry_risk is None and candidate.get("entry_price") is not None and candidate.get("stop_price") is not None:
+                        geometry_risk = abs(float(candidate["entry_price"]) - float(candidate["stop_price"]))
+                    try:
+                        risk_distance = float(geometry_risk) if geometry_risk is not None else None
+                    except (TypeError, ValueError, OverflowError):
+                        risk_distance = None
+                    if risk_distance is not None and (
+                        not math.isfinite(risk_distance) or risk_distance <= 0.0
+                    ):
+                        risk_distance = None
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+
+                for horizon in horizons:
+                    key = (candidate_id, horizon)
+                    if key in recorded:
+                        continue
+                    due_epoch = decision_epoch + horizon
+                    if observed_epoch < due_epoch:
+                        continue
+                    tolerance = max(60.0, horizon * 0.10)
+                    within_window = observed_epoch <= due_epoch + tolerance
+                    signed_return = (
+                        (observed_price / reference_price - 1.0)
+                        * (1.0 if direction == "LONG" else -1.0)
+                    )
+                    if not within_window:
+                        status = "MISSED_WINDOW"
+                        label = "UNOBSERVED"
+                        signed_return_value = None
+                        r_multiple = None
+                    else:
+                        status = "OBSERVED"
+                        signed_return_value = signed_return
+                        label = (
+                            "FAVOURABLE" if signed_return > 0.0
+                            else "UNFAVOURABLE" if signed_return < 0.0
+                            else "FLAT"
+                        )
+                        signed_move = (
+                            (observed_price - reference_price)
+                            * (1.0 if direction == "LONG" else -1.0)
+                        )
+                        r_multiple = (
+                            signed_move / risk_distance if risk_distance else None
+                        )
+                    outcome_payload = {
+                        "schema_version": "1.0.0",
+                        "candidate_id": candidate_id,
+                        "decision_id": str(payload.get("decision_id", "") or ""),
+                        "symbol": symbol,
+                        "direction": direction,
+                        "candidate_kind": str(payload.get("candidate_kind", "") or ""),
+                        "candidate_state_at_decision": str(
+                            payload.get("candidate_state_at_decision", "") or ""
+                        ),
+                        "horizon_seconds": horizon,
+                        "due_at_epoch": due_epoch,
+                        "observed_at_epoch": observed_epoch,
+                        "actual_elapsed_seconds": observed_epoch - decision_epoch,
+                        "observation_window_tolerance_seconds": tolerance,
+                        "observation_status": status,
+                        "outcome_label": label,
+                        "reference_price": reference_price,
+                        "observed_price": observed_price if within_window else None,
+                        "directional_return_fraction": signed_return_value,
+                        "directional_return_r": r_multiple,
+                        "reference_evidence_id": str(reference.get("evidence_id", "") or ""),
+                        "outcome_evidence_id": quote.get("evidence_id", ""),
+                        "predictive_validity": "DESCRIPTIVE_ONLY_UNVALIDATED",
+                        "calibration_authority": False,
+                    }
+                    store.emit(
+                        COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                        "DEBUG",
+                        symbol=symbol,
+                        correlation_id=str(payload.get("decision_id", "") or ""),
+                        parent_id=candidate_id,
+                        source_module="cognition.loop.candidate_outcome_labeler",
+                        payload=outcome_payload,
+                        durable=True,
+                    )
+                    recorded.add(key)
+        except Exception as exc:  # noqa: BLE001 — outcome recording must never fabricate a label
+            logger.warning(
+                "[cognition-loop] fixed-horizon candidate labelling unavailable for %s: %s",
+                getattr(market_state, "symbol", "?"), exc,
+            )
+
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
@@ -1046,6 +1233,7 @@ class CognitionLoop:
             ms = self._consolidator.build(symbol, now=now)
             output = self._brain.reason(ms, now=now)
             self._record_candidate_snapshot(output, ms)
+            self._label_due_candidate_horizons(ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
             # so the Brain's live reasoning is observable in the logs — not just
             # when it originates a trade.
