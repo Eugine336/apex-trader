@@ -312,7 +312,7 @@ class CognitiveBrain:
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
-        # Violation V9 (Part XXIV/XXV) — a per-symbol fallback round-trip
+        # A per-symbol fallback round-trip
         # execution cost in R, subtracted from the strategic EV so a theoretical
         # thesis that cannot clear spread/slippage is correctly rejected. When
         # the MarketState carries fresh EXECUTION_QUALITY evidence with an
@@ -1224,8 +1224,8 @@ class CognitiveBrain:
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — no fresh, verified, "
-                    "direction-specific out-of-sample probability calibration exists"
+                    "evaluated: doing nothing is correct — no fresh producer-verified "
+                    "fixed-horizon expected-return artifact exists"
                 )
             elif directional and not cost_verified:
                 reason_txt = (
