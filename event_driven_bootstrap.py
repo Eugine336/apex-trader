@@ -3018,7 +3018,7 @@ class EventDrivenSystem:
             ):
                 return None
             source_epoch = source_time.timestamp()
-            age = time.time() - source_epoch
+            age = _time.time() - source_epoch
             if not math.isfinite(source_epoch) or source_epoch <= 0.0 or age < -1.0 or age > 5.0:
                 return None
             bid, ask = float(getattr(tick, "bid", 0.0)), float(getattr(tick, "ask", 0.0))
