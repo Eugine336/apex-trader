@@ -61,7 +61,7 @@ def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
     ))
     verified, probability, source = CognitiveBrain(
         reasoner=None,
-    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
+    )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
     assert probability == 0.0
     assert "no fresh verified" in source
