@@ -17,6 +17,7 @@ Executable assertions for the six violations addressed in this session:
 """
 
 import json
+import time
 from types import SimpleNamespace
 
 from cognition.brain import CognitiveBrain
@@ -94,11 +95,15 @@ def _state_with_advisors(responded, available, total, *, symbol="XAUUSD",
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution_cost.test_quote", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol=symbol, observation="fresh test execution-cost estimate",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     add_market_geometry(ms, "LONG")
