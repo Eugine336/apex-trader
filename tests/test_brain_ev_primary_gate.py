@@ -15,6 +15,8 @@ market state are faked) and are pure stdlib (no pytest/numpy).
 
 from __future__ import annotations
 
+import time
+
 from cognition.brain import CognitiveBrain
 from cognition.contracts import DecisionType, Evidence, MarketState
 from test_support.market_geometry import add_market_geometry
@@ -58,16 +60,21 @@ def _state(
     # Two market-analysis domains plus explicit reasoning/council metadata. Tests
     # should not accidentally rely on missing coverage being treated as healthy.
     ms = MarketState(symbol=symbol)
+    stamp = time.time()
     ms.add(Evidence(source_module="s", domain="momentum",
-                    confidence=0.9, uncertainty=0.1, polarity=polarity))
+                    confidence=0.9, uncertainty=0.1, polarity=polarity,
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
     ms.add(Evidence(source_module="s2", domain="structure",
-                    confidence=0.9, uncertainty=0.1, polarity=polarity))
+                    confidence=0.9, uncertainty=0.1, polarity=polarity,
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
     ms.add(Evidence(source_module="s3", domain="liquidity",
-                    confidence=0.85, uncertainty=0.15, polarity=0.0))
+                    confidence=0.85, uncertainty=0.15, polarity=0.0,
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
     ms.add(Evidence(
         source_module="reasoning_engine.test_council", domain="reasoning",
         symbol=symbol, observation="verified test council coverage",
         confidence=0.9, uncertainty=0.1,
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         measurements={
             "advisors_responded": 2,
             "advisors_available": 2,
@@ -80,6 +87,7 @@ def _state(
         symbol=symbol, observation="fresh test spread and slippage quote",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
+        timestamp_epoch=stamp, source_timestamp_epoch=stamp,
         relevance_horizon_seconds=60.0,
     ))
     side = "LONG" if polarity >= 0 else "SHORT"
