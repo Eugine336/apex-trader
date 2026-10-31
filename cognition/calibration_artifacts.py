@@ -229,6 +229,7 @@ class CalibrationProducer:
                     disposition_map[candidate_id] = payload
 
             groups: dict[tuple[str, str], list[dict]] = {}
+            invalid_directional_candidates = 0
             for candidate_id, payload in candidate_map.items():
                 candidate = payload.get("candidate") or {}
                 quote = payload.get("reference_quote") or {}
@@ -241,21 +242,26 @@ class CalibrationProducer:
                     continue
                 try:
                     decision_epoch = float(payload.get("decision_epoch"))
+                except (TypeError, ValueError, OverflowError):
+                    invalid_directional_candidates += 1
+                    continue
+                if not math.isfinite(decision_epoch) or decision_epoch <= 0.0:
+                    invalid_directional_candidates += 1
+                    continue
+                try:
                     reference_epoch = float(quote.get("source_timestamp_epoch"))
                     reference_price = float(quote.get("mid"))
+                    quote_valid = (
+                        math.isfinite(reference_epoch)
+                        and math.isfinite(reference_price)
+                        and 0.0 < reference_epoch <= decision_epoch
+                        and reference_price > 0.0
+                    )
                 except (TypeError, ValueError, OverflowError):
-                    continue
-                if (
-                    not all(math.isfinite(value) and value > 0.0 for value in (
-                        decision_epoch, reference_epoch, reference_price,
-                    ))
-                    or reference_epoch > decision_epoch
-                    or not self._valid_point_in_time(payload)
-                    or candidate_id not in disposition_map
-                ):
-                    continue
+                    quote_valid = False
                 decision_id = str(payload.get("decision_id", "") or "")
                 if not decision_id:
+                    invalid_directional_candidates += 1
                     continue
                 row = {
                     "candidate_id": candidate_id,
@@ -264,9 +270,11 @@ class CalibrationProducer:
                     "direction": direction,
                     "candidate": candidate,
                     "payload": payload,
+                    "quote_valid": quote_valid,
+                    "provenance_valid": self._valid_point_in_time(payload),
+                    "disposition_valid": candidate_id in disposition_map,
                 }
                 groups.setdefault((decision_id, direction), []).append(row)
-
             artifacts: list[CalibrationArtifact] = []
             for direction in ("LONG", "SHORT"):
                 for horizon in (300, 900, 3600, 14400, 86400):
