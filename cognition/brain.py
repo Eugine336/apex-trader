@@ -1198,6 +1198,17 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — evidence coverage is "
                     f"insufficient or unconfirmed ({coverage_status})"
                 )
+            elif directional and not probability_verified:
+                reason_txt = (
+                    "win probability is uncalibrated — reasoning confidence and "
+                    "diagnostic EV cannot authorize exposure; preserve the thesis "
+                    "and continue collecting verified outcome evidence"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no fresh, verified, "
+                    "direction-specific out-of-sample probability calibration exists"
+                )
             elif directional and not cost_verified:
                 reason_txt = (
                     "execution costs are unverified — configured defaults are "
