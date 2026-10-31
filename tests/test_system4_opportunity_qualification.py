@@ -63,8 +63,8 @@ def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
         reasoner=None,
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
-    assert probability == 0.0
-    assert "no fresh verified" in source
+    assert expected_return == 0.0
+    assert "no fresh producer-verified" in source
 
 
 def test_verified_direction_specific_calibration_supplies_expected_return():
@@ -85,7 +85,7 @@ def test_calibration_for_opposite_direction_cannot_qualify_candidate():
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
 
-def test_unverified_calibration_record_cannot_supply_probability():
+def test_unregistered_calibration_record_cannot_supply_expected_return():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration(verified=False))
     verified, _, _ = CognitiveBrain(
@@ -113,7 +113,7 @@ def test_valid_short_calibration_is_direction_specific():
     assert expected_return == 0.25
 
 
-def test_stale_calibration_cannot_supply_probability():
+def test_stale_calibration_cannot_supply_expected_return():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
     evidence.timestamp_epoch = time.time() - 1200.0
@@ -125,7 +125,7 @@ def test_stale_calibration_cannot_supply_probability():
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
 
-def test_future_calibration_cannot_supply_probability():
+def test_future_calibration_cannot_supply_expected_return():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
     evidence.timestamp_epoch = time.time() + 60.0
@@ -136,7 +136,7 @@ def test_future_calibration_cannot_supply_probability():
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
 
-def test_insufficient_calibration_sample_count_cannot_supply_probability():
+def test_insufficient_calibration_sample_count_cannot_supply_expected_return():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration(sample_count=29))
     verified, _, _ = CognitiveBrain(
@@ -144,7 +144,7 @@ def test_insufficient_calibration_sample_count_cannot_supply_probability():
     )._calibrated_expected_return(state, "LONG", horizon_seconds=300)
     assert verified is False
 
-def test_invalid_brier_score_cannot_supply_probability():
+def test_invalid_brier_score_cannot_supply_expected_return():
     state = MarketState(symbol="SYNTHETIC")
     state.add(_calibration(brier_score=0.30))
     verified, _, _ = CognitiveBrain(
