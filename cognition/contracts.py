@@ -264,6 +264,7 @@ class Evidence:
     # Source-time and semantic metadata are first-class contract fields. Ingest
     # time alone cannot prove that cached broker data describes the decision time.
     source_timestamp_epoch: Optional[float] = None
+    source_timestamp_verified: Optional[bool] = None
     data_basis: str = ""
     provisional: bool = False
     independence_group: str = ""
@@ -271,6 +272,7 @@ class Evidence:
     measurement_version: str = ""
 
     def __post_init__(self) -> None:
+        timestamp_was_explicit = bool(self.timestamp_epoch)
         if not self.evidence_id:
             self.evidence_id = uuid.uuid4().hex[:12]
         if not self.timestamp_epoch:
@@ -292,12 +294,26 @@ class Evidence:
                         self.source_timestamp_epoch = None
                     if self.source_timestamp_epoch is not None:
                         break
+        if (
+            self.source_timestamp_epoch is None
+            and timestamp_was_explicit
+            and self.source_timestamp_verified is not False
+        ):
+            # Historical contract: an explicitly supplied timestamp_epoch is
+            # the observation's source time unless the producer marks it unknown.
+            self.source_timestamp_epoch = self.timestamp_epoch
         if self.source_timestamp_epoch is not None:
             try:
                 source_epoch = float(self.source_timestamp_epoch)
                 self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch < float("inf") and source_epoch == source_epoch else None
             except (TypeError, ValueError, OverflowError):
                 self.source_timestamp_epoch = None
+        if self.source_timestamp_verified is None:
+            self.source_timestamp_verified = self.source_timestamp_epoch is not None
+        else:
+            self.source_timestamp_verified = bool(self.source_timestamp_verified)
+        if not self.source_timestamp_verified:
+            self.source_timestamp_epoch = None
         self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
         self.provisional = bool(self.provisional or measurements.get("provisional", False))
         self.independence_group = str(
@@ -341,6 +357,7 @@ class Evidence:
             "evidence_id": self.evidence_id,
             "timestamp": self.timestamp_iso,
             "source_timestamp_epoch": self.source_timestamp_epoch,
+            "source_timestamp_verified": self.source_timestamp_verified,
             "data_basis": self.data_basis,
             "provisional": self.provisional,
             "independence_group": self.independence_group,
