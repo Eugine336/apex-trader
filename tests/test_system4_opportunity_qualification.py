@@ -241,8 +241,8 @@ def test_uncalibrated_directional_opinion_cannot_create_campaign_or_claim_positi
     assert out.campaign is None
     assert out.decision.expected_value == 0.0
     assert "DIAGNOSTIC ONLY" in out.decision.questions_answered["expected_value"]
-    assert "confidence is not probability" in out.decision.questions_answered[
-        "win_probability_verification"
+    assert "confidence is not expected return" in out.decision.questions_answered[
+        "expected_return_verification"
     ]
 
 
