@@ -428,14 +428,25 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
 
 def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time():
-    explicit = Evidence(
-        source_module="test.explicit_source",
+    ingestion_only = Evidence(
+        source_module="test.ingestion_only",
         domain=EvidenceDomain.STRUCTURE,
         symbol="EURUSD",
         timestamp_epoch=1_900_000_000.0,
     )
-    assert explicit.source_timestamp_verified is True
-    assert explicit.source_timestamp_epoch == 1_900_000_000.0
+    assert ingestion_only.timestamp_epoch == 1_900_000_000.0
+    assert ingestion_only.source_timestamp_verified is False
+    assert ingestion_only.source_timestamp_epoch is None
+
+    explicit_source = Evidence(
+        source_module="test.explicit_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        source_timestamp_epoch=1_900_000_000.0,
+    )
+    assert explicit_source.source_timestamp_verified is True
+    assert explicit_source.source_timestamp_epoch == 1_900_000_000.0
 
     unknown = Evidence(
         source_module="test.unknown_source",
