@@ -35,7 +35,12 @@ class CalibrationArtifact:
     symbol: str
     direction: str
     horizon_seconds: int
+    # Probability of a favourable directional return at the declared horizon;
+    # this is not the probability of hitting a target before a stop.
     win_probability: float
+    expected_return_r: float
+    holdout_expected_return_r: float
+    expected_return_gap: float
     sample_count: int
     brier_score: float
     reliability_gap: float
@@ -58,6 +63,11 @@ class CalibrationArtifact:
             "calibration_horizon_seconds": self.horizon_seconds,
             "calibration_method": self.protocol,
             "win_probability": self.win_probability,
+            "favourable_horizon_probability": self.win_probability,
+            "probability_semantics": "favourable_directional_return_at_fixed_horizon",
+            "expected_return_r": self.expected_return_r,
+            "holdout_expected_return_r": self.holdout_expected_return_r,
+            "expected_return_gap": self.expected_return_gap,
             "sample_count": self.sample_count,
             "brier_score": self.brier_score,
             "reliability_gap": self.reliability_gap,
@@ -249,6 +259,8 @@ class CalibrationProducer:
                 ).strip().upper()
                 if direction not in {"LONG", "SHORT"}:
                     continue
+                if str(payload.get("candidate_kind", "") or "") != "opportunity":
+                    continue
                 try:
                     decision_epoch = float(payload.get("decision_epoch"))
                 except (TypeError, ValueError, OverflowError):
@@ -260,11 +272,27 @@ class CalibrationProducer:
                 try:
                     reference_epoch = float(quote.get("source_timestamp_epoch"))
                     reference_price = float(quote.get("mid"))
+                    entry_price = float(candidate.get("entry_price"))
+                    stop_price = float(candidate.get("stop_price"))
+                    risk_distance = (
+                        reference_price - stop_price if direction == "LONG"
+                        else stop_price - reference_price
+                    )
+                    entry_deviation_r = (
+                        abs(entry_price - reference_price) / risk_distance
+                        if risk_distance > 0.0 else float("inf")
+                    )
                     quote_valid = (
                         math.isfinite(reference_epoch)
                         and math.isfinite(reference_price)
+                        and math.isfinite(entry_price)
+                        and math.isfinite(stop_price)
+                        and math.isfinite(risk_distance)
+                        and math.isfinite(entry_deviation_r)
                         and 0.0 < reference_epoch <= decision_epoch
                         and reference_price > 0.0
+                        and risk_distance > 0.0
+                        and entry_deviation_r <= 0.25
                     )
                 except (TypeError, ValueError, OverflowError):
                     quote_valid = False
@@ -280,6 +308,7 @@ class CalibrationProducer:
                     "candidate": candidate,
                     "payload": payload,
                     "quote_valid": quote_valid,
+                    "risk_distance": risk_distance if quote_valid else None,
                     "provenance_valid": self._valid_point_in_time(payload),
                     "disposition_valid": candidate_id in disposition_map,
                 }
@@ -323,13 +352,22 @@ class CalibrationProducer:
                             1 if item.get("outcome_label") == "FAVOURABLE" else 0
                             for item in member_outcomes
                         }
-                        if len(labels) != 1:
+                        returns = []
+                        for item in member_outcomes:
+                            try:
+                                value = float(item.get("directional_return_r"))
+                            except (TypeError, ValueError, OverflowError):
+                                value = float("nan")
+                            if math.isfinite(value):
+                                returns.append(value)
+                        if len(labels) != 1 or len(returns) != len(member_outcomes):
                             continue
                         observed_groups += 1
                         eligible_groups.append({
                             "decision_id": decision_id,
                             "decision_epoch": decision_epoch,
                             "label": next(iter(labels)),
+                            "return_r": float(sorted(returns)[len(returns) // 2]),
                             "candidate_ids": sorted(item["candidate_id"] for item in members),
                         })
                     coverage = (
@@ -393,6 +431,9 @@ class CalibrationProducer:
 
                     base_probability = mean(item["label"] for item in development)
                     holdout_rate = mean(item["label"] for item in holdout)
+                    expected_return_r = mean(item["return_r"] for item in development)
+                    holdout_expected_return_r = mean(item["return_r"] for item in holdout)
+                    expected_return_gap = abs(expected_return_r - holdout_expected_return_r)
                     holdout_brier = mean(
                         (base_probability - item["label"]) ** 2 for item in holdout
                     )
@@ -401,8 +442,12 @@ class CalibrationProducer:
                         not math.isfinite(base_probability)
                         or not math.isfinite(holdout_brier)
                         or not math.isfinite(reliability_gap)
+                        or not math.isfinite(expected_return_r)
+                        or not math.isfinite(holdout_expected_return_r)
+                        or not math.isfinite(expected_return_gap)
                         or holdout_brier > 0.25
                         or reliability_gap > 0.15
+                        or expected_return_gap > 0.50
                     ):
                         continue
                     digest_input = [
@@ -421,6 +466,9 @@ class CalibrationProducer:
                         direction=direction,
                         horizon_seconds=horizon,
                         win_probability=base_probability,
+                        expected_return_r=expected_return_r,
+                        holdout_expected_return_r=holdout_expected_return_r,
+                        expected_return_gap=expected_return_gap,
                         sample_count=len(holdout),
                         brier_score=holdout_brier,
                         reliability_gap=reliability_gap,
