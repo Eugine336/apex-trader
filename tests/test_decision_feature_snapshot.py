@@ -21,6 +21,8 @@ def test_decision_feature_snapshot_preserves_source_timestamps_and_ids():
         confidence=0.8,
         uncertainty=0.2,
         measurements={"range": 12.5, "nested": {"confirmed": True}},
+        timestamp_epoch=time.time(),
+        source_timestamp_epoch=time.time(),
     )
     state.add(evidence)
     decision = SimpleNamespace(decision_id="decision-test-1", symbol="XAUUSD", created_epoch=time.time())
@@ -33,7 +35,8 @@ def test_decision_feature_snapshot_preserves_source_timestamps_and_ids():
     assert snapshot["decision_id"] == "decision-test-1"
     assert snapshot["evidence_ids"] == [evidence.evidence_id]
     feature = snapshot["features"][0]
-    assert feature["source_timestamp_epoch"] == evidence.timestamp_epoch
+    assert feature["source_timestamp_epoch"] == evidence.source_timestamp_epoch
+    assert feature["source_timestamp_verified"] is True
     assert feature["measurements"]["range"] == 12.5
     assert feature["measurements"]["nested"]["confirmed"] is True
     assert snapshot["predictive_ability_demonstrated"] is False
