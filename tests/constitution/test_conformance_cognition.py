@@ -140,23 +140,18 @@ def _rich_state(symbol: str = "XAUUSD", conf: float = 0.9, unc: float = 0.1, tar
         relevance_horizon_seconds=900.0,
     ))
     # Test-only calibration record; production evidence must come from durable outcomes.
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(symbol, "LONG", horizon_seconds=300, probability=conf)
     ms.add(Evidence(
-        source_module="cognition.probability_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": conf, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
-    ))
-    return ms
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
+    ))    return ms
 
 
 
@@ -186,6 +181,7 @@ def _opinion(direction: str = "LONG", confidence: float = 0.8, **overrides):
         # conformance tests exercise the EV / act gate, not the legacy-scalar path.
         opportunities=(
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
