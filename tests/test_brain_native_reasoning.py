@@ -139,25 +139,18 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         timestamp_epoch=stamp,
         relevance_horizon_seconds=900.0,
     ))
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(ms.symbol, side, horizon_seconds=300)
     ms.add(Evidence(
-        source_module="validation.out_of_sample_probability_calibration.test_fixture",
+        source_module="calibration_producer.test_fixture",
         domain="historical_analogue", symbol=ms.symbol,
-        observation="synthetic direction-specific calibration for admission tests",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True,
-            "source_verified": True, "out_of_sample": True,
-            "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": side,
-            "win_probability": 0.72, "sample_count": 240,
-            "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "synthetic_isotonic",
-            "calibration_id": "unit-test-holdout",
-        },
-        timestamp_epoch=stamp, relevance_horizon_seconds=900.0,
-    ))
-    return ms
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
+    ))    return ms
 
 
 def _with_verified_council(ms, *, responded=2, available=2, total=2):
