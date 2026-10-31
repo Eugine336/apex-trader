@@ -1039,8 +1039,14 @@ class CampaignSpecification:
     identity_version: str = IDENTITY_VERSION
     # Explicit identity text is validated by the translator before execution.
     identity: str = IDENTITY_STATEMENT
+    # Preserve caller conformance before public identity fields are normalized.
+    _identity_input_valid: bool = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        self._identity_input_valid = (
+            str(self.identity_version or "") == IDENTITY_VERSION
+            and str(self.identity or "") == IDENTITY_STATEMENT
+        )
         self.identity_version = IDENTITY_VERSION
         self.identity = IDENTITY_STATEMENT
         if not self.campaign_id:
