@@ -8,35 +8,43 @@ from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketSt
 from test_support.market_geometry import add_market_geometry
 
 
-def _calibration(*, direction="LONG", verified=True, symbol="SYNTHETIC", source_module="cognition.probability_calibration"):
-    return Evidence(
-        source_module=source_module,
-        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
-        symbol=symbol,
-        observation="direction-specific out-of-sample calibration record",
-        confidence=0.9,
-        uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": verified,
-            "source_verified": True,
-            "out_of_sample": True,
-            "walk_forward": True,
-            "untouched_holdout": True,
-            "data_leakage_checked": True,
-            "selection_bias_checked": True,
-            "overfitting_checked": True,
+def _calibration(
+    *, direction="LONG", verified=True, symbol="SYNTHETIC",
+    sample_count=240, brier_score=0.17, reliability_gap=0.08,
+):
+    from test_support.calibration import register_test_calibration
+
+    now = time.time()
+    if verified:
+        artifact = register_test_calibration(
+            symbol, direction, horizon_seconds=300,
+            probability=0.61, sample_count=sample_count,
+            brier_score=brier_score, reliability_gap=reliability_gap,
+        )
+        measurements = artifact.to_measurements()
+        stamp = artifact.issued_at_epoch
+    else:
+        measurements = {
+            "calibration_artifact_id": "forged-unregistered-artifact",
             "calibration_side": direction,
             "win_probability": 0.61,
-            "sample_count": 240,
-            "brier_score": 0.17,
-            "reliability_gap": 0.08,
-            "calibration_method": "isotonic",
-            "calibration_id": "holdout-2026-q3",
-        },
-        timestamp_epoch=time.time(),
-        relevance_horizon_seconds=900,
+            "sample_count": sample_count,
+            "brier_score": brier_score,
+            "reliability_gap": reliability_gap,
+        }
+        stamp = now
+    return Evidence(
+        source_module="calibration_producer.test_fixture",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+        symbol=symbol,
+        observation="direction-specific test calibration artifact",
+        confidence=0.0,
+        uncertainty=0.0,
+        measurements=measurements,
+        timestamp_epoch=stamp,
+        source_timestamp_epoch=stamp,
+        relevance_horizon_seconds=3600,
     )
-
 
 def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
     state = MarketState(symbol="SYNTHETIC")
@@ -53,7 +61,7 @@ def test_uncalibrated_reasoning_confidence_is_not_a_win_probability():
     ))
     verified, probability, source = CognitiveBrain(
         reasoner=None,
-    )._calibrated_win_probability(state, "LONG")
+    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
     assert verified is False
     assert probability == 0.0
     assert "no fresh verified" in source
@@ -67,7 +75,7 @@ def test_verified_direction_specific_calibration_supplies_probability():
     )._calibrated_win_probability(state, "LONG")
     assert verified is True
     assert probability == 0.61
-    assert "isotonic:holdout-2026-q3" in source
+    assert "chronological_base_rate_fixed_horizon_v1" in source
 
 
 def test_calibration_for_opposite_direction_cannot_qualify_candidate():
@@ -103,7 +111,7 @@ def test_valid_short_calibration_is_direction_specific():
     state.add(_calibration(direction="SHORT"))
     verified, probability, _ = CognitiveBrain(
         reasoner=None,
-    )._calibrated_win_probability(state, "SHORT")
+    )._calibrated_win_probability(state, "SHORT", horizon_seconds=300)
     assert verified is True
     assert probability == 0.61
 
@@ -112,6 +120,7 @@ def test_stale_calibration_cannot_supply_probability():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
     evidence.timestamp_epoch = time.time() - 1200.0
+    evidence.source_timestamp_epoch = evidence.timestamp_epoch
     evidence.relevance_horizon_seconds = 60.0
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
@@ -124,6 +133,7 @@ def test_future_calibration_cannot_supply_probability():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
     evidence.timestamp_epoch = time.time() + 60.0
+    evidence.source_timestamp_epoch = evidence.timestamp_epoch
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
@@ -134,7 +144,14 @@ def test_future_calibration_cannot_supply_probability():
 def test_insufficient_calibration_sample_count_cannot_supply_probability():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
-    evidence.measurements["sample_count"] = 29
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration(sample_count=29)
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
+    assert verified is False
+    return
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
@@ -145,7 +162,14 @@ def test_insufficient_calibration_sample_count_cannot_supply_probability():
 def test_invalid_brier_score_cannot_supply_probability():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
-    evidence.measurements["brier_score"] = 1.01
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration(brier_score=0.30)
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
+    assert verified is False
+    return
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
@@ -164,7 +188,14 @@ def test_historical_calibration_metadata_does_not_pad_market_domain_coverage():
 def test_poor_reliability_gap_cannot_qualify_calibration():
     state = MarketState(symbol="SYNTHETIC")
     evidence = _calibration()
-    evidence.measurements["reliability_gap"] = 0.26
+    state = MarketState(symbol="SYNTHETIC")
+    evidence = _calibration(reliability_gap=0.26)
+    state.add(evidence)
+    verified, _, _ = CognitiveBrain(
+        reasoner=None,
+    )._calibrated_win_probability(state, "LONG", horizon_seconds=300)
+    assert verified is False
+    return
     state.add(evidence)
     verified, _, _ = CognitiveBrain(
         reasoner=None,
