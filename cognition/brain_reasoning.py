@@ -364,6 +364,15 @@ class BrainReasoner:
                 "evidence_id": evidence_id,
                 "domain": domain,
                 "source_module": str(getattr(item, "source_module", "") or ""),
+                "independence_group": str(
+                    getattr(item, "independence_group", "") or
+                    getattr(item, "source_module", "") or ""
+                ),
+                "source_timestamp_epoch": _num(getattr(
+                    item, "source_timestamp_epoch", None
+                )),
+                "data_basis": str(getattr(item, "data_basis", "") or ""),
+                "provisional": bool(getattr(item, "provisional", False)),
                 "timestamp_epoch": _num(getattr(item, "timestamp_epoch", None)),
                 "confidence": _clamp01(getattr(item, "confidence", 0.0)),
                 "uncertainty": _clamp01(getattr(item, "uncertainty", 1.0), 1.0),
@@ -399,7 +408,11 @@ class BrainReasoner:
         observations = self._observations(fresh, detected, regime)
         contradictions = self._contradictions(fresh, names, regime)
         missing = self._missing(domain_coverage, informative_domains)
-        agreement = self._agreement(names, contradictions, regime)
+        agreement = self._agreement(
+            names, contradictions, regime,
+            pattern_evidence_ids=pattern_evidence_ids,
+            evidence_index=evidence_index,
+        )
         strategy_lenses = assess_strategy_lenses(fresh, names, regime)
         analytical_knowledge = assess_analytical_knowledge(fresh, regime)
         knowledge_coverage_record = knowledge_coverage(analytical_knowledge)
@@ -735,9 +748,35 @@ class BrainReasoner:
         return missing
 
     @staticmethod
-    def _agreement(names: "list[str]", contradictions: "list[str]", regime: dict) -> float:
+    def _agreement(
+        names: "list[str]", contradictions: "list[str]", regime: dict,
+        *, pattern_evidence_ids: Optional[dict] = None,
+        evidence_index: Optional[list[dict]] = None,
+    ) -> float:
         score = 0.6
-        score += 0.12 * sum(1 for n in names if n in _CONTINUATION_PATTERNS)
+        continuation = {n for n in names if n in _CONTINUATION_PATTERNS}
+        # Multiple patterns derived from the same underlying feed/bar are not
+        # independent confirmations. Count distinct provenance groups, not
+        # the number of labels emitted by correlated observers.
+        group_by_id = {
+            str(item.get("evidence_id", "")): str(
+                item.get("independence_group", "") or item.get("source_module", "")
+            )
+            for item in (evidence_index or [])
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        independent_groups = {
+            group_by_id.get(str(evidence_id), "")
+            for name in continuation
+            for evidence_id in (pattern_evidence_ids or {}).get(name, [])
+            if group_by_id.get(str(evidence_id), "")
+        }
+        support_count = (
+            len(independent_groups)
+            if independent_groups
+            else len(continuation)
+        )
+        score += 0.12 * min(3, support_count)
         score -= 0.2 * len(contradictions)
         # Reward a COHERENT directional read that EMERGES from the independent
         # structured dimensions (structure displacement sign agreeing with the
