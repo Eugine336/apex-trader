@@ -1255,28 +1255,25 @@ class CognitionLoop:
                         or float(reference.get("source_timestamp_epoch") or 0.0) <= 0.0
                     ):
                         continue
-                    entry_price = float(candidate.get("entry_price"))
-                    stop_price = float(candidate.get("stop_price"))
-                    # Normalize the fixed-horizon move by risk from the actual
-                    # decision-time quote to the candidate invalidation level.
-                    # A distant unfilled limit entry is not treated as a market fill.
-                    risk_distance = (
-                        reference_price - stop_price if direction == "LONG"
-                        else stop_price - reference_price
-                    )
-                    entry_deviation_r = (
-                        abs(entry_price - reference_price) / risk_distance
-                        if risk_distance > 0.0 else None
-                    )
-                    if (
-                        not math.isfinite(risk_distance) or risk_distance <= 0.0
-                        or entry_deviation_r is None
-                        or not math.isfinite(entry_deviation_r)
-                        or entry_deviation_r > 0.25
-                    ):
-                        risk_distance = None
-                        if entry_deviation_r is not None and not math.isfinite(entry_deviation_r):
-                            entry_deviation_r = None
+                    raw_entry = candidate.get("entry_price")
+                    raw_stop = candidate.get("stop_price")
+                    entry_price = float(raw_entry) if raw_entry is not None else None
+                    stop_price = float(raw_stop) if raw_stop is not None else None
+                    risk_distance = None
+                    entry_deviation_r = None
+                    if entry_price is not None and stop_price is not None:
+                        # Normalize the fixed-horizon move by risk from the actual
+                        # decision-time quote to the candidate invalidation level.
+                        # A distant unfilled limit entry is not treated as a market fill.
+                        candidate_risk = (
+                            reference_price - stop_price if direction == "LONG"
+                            else stop_price - reference_price
+                        )
+                        if math.isfinite(candidate_risk) and candidate_risk > 0.0:
+                            candidate_deviation = abs(entry_price - reference_price) / candidate_risk
+                            if math.isfinite(candidate_deviation) and candidate_deviation <= 0.25:
+                                risk_distance = candidate_risk
+                                entry_deviation_r = candidate_deviation
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
 
