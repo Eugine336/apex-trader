@@ -1039,13 +1039,17 @@ class CognitionLoop:
             opportunities = list(getattr(decision, "opportunities", []) or [])
             hypotheses = list(getattr(decision, "hypotheses", []) or [])
             records: list[tuple[str, str, dict]] = []
-            for opportunity in opportunities:
+            for index, opportunity in enumerate(opportunities):
                 data = _json_safe(
                     opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
                 )
                 oid = str(data.get("id", "") or getattr(opportunity, "opportunity_id", "") or "")
                 if not oid:
-                    raise ValueError("opportunity candidate omitted opportunity_id")
+                    oid = f"malformed:{index}"
+                    data["id"] = oid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "MISSING_STABLE_ID"
                 records.append(("opportunity", oid, data))
             def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
                 data = _json_safe(data)
