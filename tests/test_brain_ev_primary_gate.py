@@ -32,6 +32,7 @@ class _Opinion:
         # tests exercise the EV / act gate, not the legacy-scalar path.
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -52,7 +53,7 @@ class _Reasoner:
 
 
 def _state(
-    symbol: str = "EURUSD", polarity: float = 0.8, win_probability: float = 0.8,
+    symbol: str = "EURUSD", polarity: float = 0.8, expected_return_r: float = 0.8,
 ) -> MarketState:
     # Two market-analysis domains plus explicit reasoning/council metadata. Tests
     # should not accidentally rely on missing coverage being treated as healthy.
@@ -81,10 +82,31 @@ def _state(
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
         relevance_horizon_seconds=60.0,
     ))
-    add_market_geometry(ms, "LONG" if polarity >= 0 else "SHORT")
-    for item in ms.evidence:
-        if getattr(item.domain, "value", item.domain) == "historical_analogue":
-            item.measurements["win_probability"] = win_probability
+    side = "LONG" if polarity >= 0 else "SHORT"
+    add_market_geometry(ms, side)
+    ms.evidence = [
+        item for item in ms.evidence
+        if getattr(item.domain, "value", item.domain) != "historical_analogue"
+    ]
+    from test_support.calibration import register_test_calibration
+    artifact = register_test_calibration(
+        symbol, side, horizon_seconds=300,
+        probability=0.7, expected_return_r=expected_return_r,
+        holdout_expected_return_r=expected_return_r,
+        expected_return_gap=0.0,
+    )
+    ms.add(Evidence(
+        source_module="calibration_producer.test_fixture",
+        domain="historical_analogue",
+        symbol=symbol,
+        observation="registered fixed-horizon expected-return artifact",
+        confidence=0.0,
+        uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
+    ))
     return ms
 
 
@@ -101,7 +123,7 @@ def _brain(confidence, *, ev_primary=True, threshold=0.0, direction="LONG"):
 def test_explicit_legacy_gate_request_cannot_veto_positive_net_ev():
     # The caller explicitly requests the old gate. The Brain must ignore it:
     # positive net EV qualifies the active opportunity, even below confidence 0.55.
-    out = _brain(0.45, ev_primary=False).reason(_state(win_probability=0.45))
+    out = _brain(0.45, ev_primary=False).reason(_state(expected_return_r=0.45))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.expected_value > 0.0
     assert out.campaign is not None
@@ -118,7 +140,7 @@ def test_ev_primary_acts_on_positive_ev_below_floor():
 def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
     # conf 0.30 → EV negative → REJECT_OPPORTUNITY (a real EV verdict, not a
     # confidence-floor "observe").
-    out = _brain(0.30, ev_primary=True).reason(_state(win_probability=0.30))
+    out = _brain(0.30, ev_primary=True).reason(_state(expected_return_r=-0.30))
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
@@ -129,7 +151,7 @@ def test_ev_primary_threshold_declines_thin_edge():
     thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state(win_probability=0.45))
     assert thin.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     # … while a fatter +0.50R edge (conf 0.50) clears it.
-    fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state(win_probability=0.50))
+    fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state(expected_return_r=0.55))
     assert fat.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
 
