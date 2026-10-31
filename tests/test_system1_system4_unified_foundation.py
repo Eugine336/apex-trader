@@ -245,3 +245,68 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     assert payload["predictive_validity"] == "DESCRIPTIVE_ONLY_UNVALIDATED"
     assert payload["calibration_authority"] is False
     assert payload["directional_return_r"] > 0
+
+
+
+def test_market_lenses_emit_causal_indicator_families_with_volume_provenance():
+    from cognition.market_lenses import analyze_market_frames
+
+    bars = []
+    for index in range(240):
+        close = 1.0 + index * 0.001 + (0.0004 if index % 3 == 0 else 0.0)
+        bars.append({
+            "timestamp_epoch": 1_700_000_000.0 + index * 300,
+            "open": close - 0.0002,
+            "high": close + 0.0008,
+            "low": close - 0.0007,
+            "close": close,
+            "volume": 1000.0 + index * 2,
+            "volume_source": "tick_volume_proxy",
+        })
+
+    evidence = analyze_market_frames(
+        "EURUSD", {"M5": bars}, source_includes_forming_bar=False,
+    )
+    technical = {
+        item.source_module.rsplit(".", 1)[-1]: item
+        for item in evidence
+        if item.source_module.startswith("market_lenses.m5.technical_")
+    }
+    assert {"technical_momentum", "technical_volatility", "technical_volume"} <= set(technical)
+
+    momentum = technical["technical_momentum"].measurements
+    assert {"rsi", "macd", "macd_signal", "macd_histogram", "adx",
+            "plus_di", "minus_di", "sma_20", "ema_20", "ema_50",
+            "stochastic_k", "cci", "williams_r", "roc_10"} <= set(momentum)
+    volatility = technical["technical_volatility"].measurements
+    assert {"atr", "atr_percentile", "bollinger_upper", "bollinger_lower",
+            "bollinger_width", "keltner_upper", "keltner_lower",
+            "donchian_high", "donchian_low", "rolling_zscore"} <= set(volatility)
+    volume = technical["technical_volume"].measurements
+    assert {"obv", "mfi", "cmf", "vwap", "volume_source",
+            "volume_is_tick_proxy"} <= set(volume)
+    assert volume["volume_is_tick_proxy"] is True
+    assert technical["technical_momentum"].independence_group == "ohlc:EURUSD:M5"
+    assert technical["technical_momentum"].data_basis == "completed_ohlc"
+
+
+def test_market_lenses_do_not_invent_volume_indicators_without_volume():
+    from cognition.market_lenses import analyze_market_frames
+
+    bars = []
+    for index in range(80):
+        close = 10.0 + index * 0.01
+        bars.append({
+            "timestamp_epoch": 1_700_000_000.0 + index * 60,
+            "open": close - 0.005,
+            "high": close + 0.01,
+            "low": close - 0.01,
+            "close": close,
+        })
+    evidence = analyze_market_frames(
+        "SYNTHETIC", {"M1": bars}, source_includes_forming_bar=False,
+    )
+    assert not any(
+        item.source_module.endswith(".technical_volume")
+        for item in evidence
+    )
