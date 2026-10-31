@@ -46,7 +46,7 @@ class _Opinion:
         # tests exercise native/advisor integration, not the legacy-scalar path).
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
-              "candidate_family": "test_family",
+              "candidate_family": "continuation",
               "horizon": "M5", "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -439,7 +439,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
         contradicting_patterns=[],
         invalidation="A completed structural close breaks below the continuation origin",
         opportunity_implication="continuation after pullback",
-        hypothesis_kind="test_family",
+        hypothesis_kind="continuation",
     )
     brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)
