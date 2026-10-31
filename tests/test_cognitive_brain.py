@@ -1,3 +1,4 @@
+import time
 """Tests for the AI Cognitive Brain (Single Reasoner) — Constitution Parts I/II/IV."""
 
 import pytest
