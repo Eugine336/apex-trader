@@ -190,6 +190,11 @@ def _record(
         timestamp_epoch=sampled_at,
         timestamp_iso=timestamp_iso,
         relevance_horizon_seconds=max(3 * seconds, 180.0),
+        source_timestamp_epoch=source_epoch if known_source_time else None,
+        data_basis="completed_ohlc",
+        provisional=False,
+        independence_group=f"ohlc:{str(symbol or '').upper()}:{timeframe}",
+        measurement_version="market-lens-v1",
     )
 
 
