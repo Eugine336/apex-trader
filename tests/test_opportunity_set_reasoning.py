@@ -21,6 +21,7 @@ behaviour:
 """
 
 import json
+import time
 
 from test_support.market_geometry import add_market_geometry
 
@@ -115,11 +116,15 @@ def _confident_state(symbol="ETHUSD", polarity=0.8):
         },
         relevance_horizon_seconds=600.0,
     ))
+    cost_epoch = time.time()
     ms.add(Evidence(
         source_module="execution.test_cost", domain="execution_quality",
         symbol=symbol, observation="measured test round-trip execution cost",
         confidence=0.9, uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
+        timestamp_epoch=cost_epoch,
+        source_timestamp_epoch=cost_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=300.0,
     ))
     side = "LONG" if polarity >= 0 else "SHORT"
