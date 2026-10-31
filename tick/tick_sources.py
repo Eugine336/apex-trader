@@ -111,8 +111,9 @@ class MT5TickPoller:
                             symbol=sym,
                             bid=td.bid,
                             ask=td.ask,
-                            timestamp=datetime.now(timezone.utc),
+                            timestamp=td.time,
                             source="mt5",
+                            source_timestamp_verified=True,
                         )
                         self._router.on_tick(tick)
                         error_counts[sym] = 0
@@ -238,8 +239,9 @@ class DerivTickAdapter:
                             symbol=sym,
                             bid=td.bid,
                             ask=td.ask,
-                            timestamp=datetime.now(timezone.utc),
+                            timestamp=td.time,
                             source="deriv",
+                            source_timestamp_verified=True,
                         )
                         # Route immediately — ticks must keep flowing regardless
                         # of connection-state bookkeeping.
