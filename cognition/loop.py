@@ -1032,6 +1032,39 @@ class CognitionLoop:
                 hid = str(data.get("hypothesis_id", "") or getattr(hypothesis, "hypothesis_id", "") or "")
                 if not hid:
                     continue
+                direction = str(
+                    data.get("direction_implication")
+                    or getattr(hypothesis, "direction_implication", "")
+                    or ""
+                ).upper()
+                data["calibration_candidate"] = False
+                if direction in {"LONG", "SHORT"}:
+                    # Preserve every native directional hypothesis in the
+                    # candidate ledger. When the shared market geometry resolver
+                    # can produce a point-in-time stop/entry, it becomes eligible
+                    # for outcome-normalised calibration even if it was not the
+                    # lead hypothesis or never passed activation/admission.
+                    try:
+                        from cognition.opportunity_geometry import derive_opportunity_geometry
+                        geometry = derive_opportunity_geometry(
+                            market_state, direction,
+                            now=float(getattr(decision, "created_epoch", 0.0) or 0.0),
+                        )
+                    except Exception:
+                        geometry = None
+                    if geometry is not None:
+                        data.update({
+                            "direction": direction,
+                            "entry_price": geometry.entry_price,
+                            "stop_price": geometry.stop_price,
+                            "target_price": geometry.target_price,
+                            "risk_distance": geometry.risk_distance,
+                            "reward_distance": geometry.reward_distance,
+                            "reward_r": geometry.reward_r,
+                            "geometry_evidence_ids": list(geometry.evidence_ids),
+                            "calibration_candidate": True,
+                            "calibration_geometry_activated": bool(geometry.activated),
+                        })
                 records.append(("hypothesis", hid, data))
             if not records:
                 dtype = getattr(getattr(decision, "decision_type", None), "value",
