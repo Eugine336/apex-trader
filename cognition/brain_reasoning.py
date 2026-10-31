@@ -821,7 +821,10 @@ class BrainReasoner:
                 timeframe = str(item.get("timeframe", "") or "unknown")
                 symbol = str(item.get("symbol", "") or "unknown")
                 domain = str(item.get("domain", "") or "other")
-                group = f"{domain}:{symbol}:{timeframe}"
+                if str(item.get("data_basis", "")).lower() == "completed_ohlc":
+                    group = f"ohlc:{symbol}:{timeframe}"
+                else:
+                    group = f"{domain}:{symbol}:{timeframe}"
             group_by_id[str(item["evidence_id"])] = group
         independent_groups = {
             group_by_id.get(str(evidence_id), "")
