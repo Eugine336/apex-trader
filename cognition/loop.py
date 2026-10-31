@@ -1058,6 +1058,13 @@ class CognitionLoop:
                     or getattr(hypothesis, "direction_implication", "")
                     or ""
                 ).upper()
+                data["candidate_family"] = str(
+                    data.get("candidate_family")
+                    or data.get("hypothesis_kind")
+                    or data.get("opportunity_type")
+                    or data.get("strategy_family")
+                    or "unclassified"
+                ).strip().lower()
                 data["calibration_candidate"] = False
                 if direction in {"LONG", "SHORT"}:
                     # Preserve every native directional hypothesis in the
@@ -1389,6 +1396,11 @@ class CognitionLoop:
                         "symbol": symbol,
                         "direction": direction,
                         "candidate_kind": str(payload.get("candidate_kind", "") or ""),
+                        "candidate_family": str(
+                            candidate.get("candidate_family")
+                            or candidate.get("hypothesis_kind")
+                            or "unclassified"
+                        ),
                         "candidate_state_at_decision": str(
                             payload.get("candidate_state_at_decision", "") or ""
                         ),
