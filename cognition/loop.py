@@ -971,16 +971,11 @@ class CognitionLoop:
             )
             evidence_items = list(getattr(market_state, "evidence", []) or [])
             evidence_rows = []
-            point_in_time_rows = []
             fresh_evidence_ids = {
                 str(getattr(item, "evidence_id", "") or "")
                 for item in market_state.fresh_evidence(
                     now=float(getattr(decision, "created_epoch", 0.0) or 0.0)
                 )
-            }
-            market_domains = {
-                "structure", "liquidity", "momentum", "volatility", "volume",
-                "order_flow", "multi_timeframe", "correlation", "session", "macro",
             }
             for item in evidence_items:
                 to_dict = getattr(item, "to_dict", None)
@@ -997,14 +992,11 @@ class CognitionLoop:
                 row["source_timestamp_epoch"] = source_epoch if source_verified else None
                 row["source_timestamp_verified"] = source_verified
                 evidence_rows.append(row)
-                domain = str(
-                    getattr(getattr(item, "domain", None), "value", getattr(item, "domain", ""))
-                    or ""
-                ).lower()
-                if domain in market_domains and str(row.get("evidence_id", "") or "") in fresh_evidence_ids:
-                    point_in_time_rows.append(row)
             evidence_data = _json_safe(evidence_rows)
-            point_in_time_data = _json_safe(point_in_time_rows)
+            evidence_by_id = {
+                str(row.get("evidence_id", "") or ""): row
+                for row in evidence_rows if row.get("evidence_id")
+            }
             quote_candidates = []
             for item in evidence_items:
                 measurements = getattr(item, "measurements", {})
@@ -1016,7 +1008,10 @@ class CognitionLoop:
                     source_epoch = float(
                         getattr(item, "source_timestamp_epoch", None) or 0.0
                     )
-                    if bid > 0.0 and ask >= bid and source_epoch > 0.0:
+                    if (
+                        bid > 0.0 and ask >= bid and source_epoch > 0.0
+                        and getattr(item, "source_timestamp_verified", False) is True
+                    ):
                         quote_candidates.append({
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
@@ -1131,6 +1126,22 @@ class CognitionLoop:
             for candidate_kind, candidate_ref, candidate_data in records:
                 candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
                 state = str(candidate_data.get("state", "") or candidate_data.get("hypothesis_kind", "") or "considered")
+                required_evidence_ids = {
+                    str(item) for item in (candidate_data.get("geometry_evidence_ids") or [])
+                    if str(item)
+                }
+                if reference_quote and reference_quote.get("evidence_id"):
+                    required_evidence_ids.add(str(reference_quote["evidence_id"]))
+                candidate_point_in_time_rows = [
+                    evidence_by_id[evidence_id]
+                    for evidence_id in sorted(required_evidence_ids)
+                    if evidence_id in evidence_by_id and evidence_id in fresh_evidence_ids
+                ]
+                point_in_time_complete = (
+                    bool(required_evidence_ids)
+                    and required_evidence_ids <= fresh_evidence_ids
+                    and required_evidence_ids <= set(evidence_by_id)
+                )
                 payload = {
                     "schema_version": "1.0.0",
                     "candidate_id": candidate_id,
@@ -1150,7 +1161,8 @@ class CognitionLoop:
                     "candidate": candidate_data,
                     "decision_snapshot": decision_data,
                     "evidence_inventory": evidence_data,
-                    "point_in_time_evidence": point_in_time_data,
+                    "point_in_time_evidence": _json_safe(candidate_point_in_time_rows),
+                    "point_in_time_complete": point_in_time_complete,
                     "predictive_label_status": "UNLABELLED",
                     "predictive_validity": "NOT_ESTABLISHED",
                     "selection_population": "ALL_RECORDED_BRAIN_CONSIDERED_CANDIDATES",
