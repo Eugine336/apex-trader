@@ -20,6 +20,7 @@ class _Opinion:
         # tests exercise sizing/EV/observability, not the legacy-scalar path.
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -139,22 +140,21 @@ def _confident_state(symbol="EURUSD", polarity=0.8, target_r=2.0, calibrated_pro
         relevance_horizon_seconds=60.0,
     ))
     _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
-    # Test-only calibration record; production evidence must come from durable outcomes.
+    # Test-only calibration is registered by the test issuer, not by flags.
+    from test_support.calibration import register_test_calibration
+    side = "LONG" if polarity >= 0 else "SHORT"
+    artifact = register_test_calibration(
+        symbol, side, horizon_seconds=300, probability=calibrated_probability,
+    )
     ms.add(Evidence(
-        source_module="cognition.probability_calibration",
+        source_module="calibration_producer.test_fixture",
         domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=symbol,
-        observation="verified test-only direction-specific calibration",
-        confidence=0.9, uncertainty=0.1,
-        measurements={
-            "probability_calibration_verified": True, "source_verified": True,
-            "out_of_sample": True, "walk_forward": True, "untouched_holdout": True,
-            "data_leakage_checked": True, "selection_bias_checked": True,
-            "overfitting_checked": True, "calibration_side": "LONG",
-            "win_probability": calibrated_probability, "sample_count": 240, "brier_score": 0.17,
-            "reliability_gap": 0.08, "calibration_method": "isotonic",
-            "calibration_id": "test-holdout-fixture",
-        },
-        timestamp_epoch=time.time(), relevance_horizon_seconds=900.0,
+        observation="producer-registered test calibration artifact",
+        confidence=0.0, uncertainty=0.0,
+        measurements=artifact.to_measurements(),
+        timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_epoch=artifact.issued_at_epoch,
+        relevance_horizon_seconds=3600.0,
     ))
     return ms
 
