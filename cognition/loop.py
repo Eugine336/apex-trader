@@ -770,6 +770,10 @@ class CognitionLoop:
                     self._demote_unreviewed_campaign(
                         candidate, "broker position book unverified — new exposure suppressed",
                     )
+        for output in portfolio_outputs:
+            self._record_candidate_disposition(
+                output, stage="portfolio_review_complete",
+            )
         if self.origination_mode != "off" and book_verified:
             for output in portfolio_outputs:
                 self._maybe_originate(output, now=now)
@@ -1246,6 +1250,87 @@ class CognitionLoop:
                 getattr(market_state, "symbol", "?"), exc,
             )
 
+    def _record_candidate_disposition(self, output: Any, *, stage: str) -> None:
+        """Record the final Brain/portfolio disposition without changing authority."""
+        try:
+            from persistence.event_store import get_event_store
+            from persistence.domain_events import COGNITIVE_CANDIDATE_DISPOSITION
+
+            decision = getattr(output, "decision", None)
+            if decision is None:
+                return
+            decision_id = str(getattr(decision, "decision_id", "") or "")
+            if not decision_id:
+                return
+            decision_type = str(
+                getattr(getattr(decision, "decision_type", None), "value",
+                        getattr(decision, "decision_type", "unknown"))
+            ).lower()
+            campaign_present = getattr(output, "campaign", None) is not None
+            if decision_type == "open_campaign" and campaign_present:
+                disposition = "PASSED_PORTFOLIO_REVIEW_PENDING_EXECUTION_ADMISSION"
+            elif decision_type == "reject_opportunity":
+                disposition = "REJECTED_BY_BRAIN"
+            elif decision_type == "no_opportunity":
+                disposition = "NO_OPPORTUNITY"
+            elif decision_type == "opportunity_forming":
+                disposition = "DEFERRED_FORMING"
+            elif decision_type == "continue_observing":
+                rationale = str(getattr(decision, "risk_rationale", "") or "").lower()
+                disposition = (
+                    "BLOCKED_OR_DEFERRED_BY_ADMISSION"
+                    if any(token in rationale for token in ("portfolio", "broker", "unverified", "suppressed"))
+                    else "OBSERVE"
+                )
+            else:
+                disposition = "NON_ORIGINATION_DECISION"
+
+            store = self._candidate_event_store
+            if store is None:
+                store = get_event_store()
+            opportunities = list(getattr(decision, "opportunities", []) or [])
+            hypotheses = list(getattr(decision, "hypotheses", []) or [])
+            records: list[tuple[str, str]] = []
+            for item in opportunities:
+                candidate_ref = str(getattr(item, "opportunity_id", "") or "")
+                if candidate_ref:
+                    records.append(("opportunity", candidate_ref))
+            for item in hypotheses:
+                candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
+                if candidate_ref:
+                    records.append(("hypothesis", candidate_ref))
+            if not records:
+                records.append(("decision_outcome", decision_id))
+            questions = getattr(decision, "questions_answered", {}) or {}
+            for candidate_kind, candidate_ref in records:
+                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                store.emit(
+                    COGNITIVE_CANDIDATE_DISPOSITION,
+                    "DEBUG",
+                    symbol=str(getattr(decision, "symbol", "") or ""),
+                    correlation_id=decision_id,
+                    parent_id=candidate_id,
+                    source_module="cognition.loop.candidate_disposition",
+                    payload={
+                        "schema_version": "1.0.0",
+                        "candidate_id": candidate_id,
+                        "decision_id": decision_id,
+                        "symbol": str(getattr(decision, "symbol", "") or ""),
+                        "stage": str(stage or "unknown"),
+                        "disposition": disposition,
+                        "decision_type": decision_type,
+                        "campaign_present": campaign_present,
+                        "portfolio_decision": str(questions.get("portfolio_decision", "") or ""),
+                        "risk_rationale": str(getattr(decision, "risk_rationale", "") or ""),
+                        "predictive_validity": "NOT_ESTABLISHED",
+                    },
+                    durable=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — disposition logging cannot authorize or suppress action
+            logger.error(
+                "[cognition-loop] candidate disposition persistence failed: %s", exc,
+            )
+
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
@@ -1356,6 +1441,9 @@ class CognitionLoop:
                 self._demote_unreviewed_campaign(
                     output, "broker position book unverified — new exposure suppressed",
                 )
+                self._record_candidate_disposition(
+                    output, stage="broker_book_unverified",
+                )
             self._decisions += 1 if output is not None else 0
             self._event_reasons += 1 if output is not None else 0
             return 1 if output is not None else 0
@@ -1367,7 +1455,14 @@ class CognitionLoop:
         if output is not None and self.origination_mode != "off":
             reviewed = self._reason_portfolio([output])
             for candidate in reviewed:
+                self._record_candidate_disposition(
+                    candidate, stage="event_driven_portfolio_review_complete",
+                )
                 self._maybe_originate(candidate, now=now)
+        elif output is not None:
+            self._record_candidate_disposition(
+                output, stage="event_driven_observation_only",
+            )
         self._decisions += made
         self._event_reasons += made
         return made
