@@ -629,6 +629,40 @@ class BrainReasoner:
             "sell" if has_sell_sweep else ("buy" if has_buy_sweep else "none")
         )
 
+        # Preserve the complete per-timeframe indicator panel for native
+        # reasoning. These are measurements, not votes or precomputed direction.
+        technical_indicators: dict[str, dict[str, Any]] = {}
+        technical_evidence_ids: dict[str, list[str]] = {}
+        for item in fresh:
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict):
+                continue
+            if measurements.get("source_kind") != "market_lens":
+                continue
+            source = str(getattr(item, "source_module", "") or "")
+            if ".technical_" not in source:
+                continue
+            timeframe = str(measurements.get("timeframe", "") or "").upper()
+            if not timeframe:
+                continue
+            panel = technical_indicators.setdefault(timeframe, {})
+            for key, value in measurements.items():
+                if key in {
+                    "source_kind", "timeframe", "provisional", "data_basis",
+                    "source_timestamp_known", "source_bar_epoch", "source_timestamp_epoch",
+                    "measurement_version", "calculation_method", "indicator_periods",
+                }:
+                    continue
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    parsed = _num(value)
+                    if parsed is not None:
+                        panel[str(key)] = parsed
+                elif isinstance(value, (str, bool)):
+                    panel[str(key)] = value
+            evidence_id = str(getattr(item, "evidence_id", "") or "")
+            if evidence_id:
+                technical_evidence_ids.setdefault(timeframe, []).append(evidence_id)
+
         # The regime is a set of INDEPENDENT structured observations — a
         # displacement magnitude+direction, an order-flow reading, a sweep event,
         # plus the volatility/momentum regimes. It deliberately does NOT collapse
@@ -667,6 +701,8 @@ class BrainReasoner:
             "trend_conflicted_timeframes": conflicted_trend_timeframes,
             "range_timeframes": len(ranged_timeframes),
             "m1_price_action": m1_price_action,
+            "technical_indicators": technical_indicators,
+            "technical_indicator_evidence_ids": technical_evidence_ids,
         }
 
     @staticmethod
