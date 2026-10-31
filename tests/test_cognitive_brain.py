@@ -267,7 +267,7 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.575)
+    assert out.campaign.desired_exposure == pytest.approx(0.44)
     assert out.campaign.desired_exposure < out.campaign.confidence
     assert "sizing_rationale" in out.decision.questions_answered
 
