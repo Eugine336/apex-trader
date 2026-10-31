@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 from cognition.analytical_knowledge import (
@@ -84,7 +85,8 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         symbols_provider=lambda: ["EURUSD"],
         candidate_event_store=store,
     )
-    market = MarketState(symbol="EURUSD")
+    stamp = time.time()
+    market = MarketState(symbol="EURUSD", created_epoch=stamp)
     market.add(Evidence(
         source_module="test.market_lens",
         domain=EvidenceDomain.STRUCTURE,
@@ -93,7 +95,8 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         confidence=0.8,
         uncertainty=0.2,
         measurements={"source_kind": "market_lens", "timeframe": "H1", "trend_state": "uptrend"},
-        source_timestamp_epoch=1_900_000_000.0,
+        timestamp_epoch=stamp,
+        source_timestamp_epoch=stamp,
         data_basis="completed_ohlc",
         independence_group="price_structure:H1",
     ))
@@ -113,6 +116,7 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         thesis="monitor conditional continuation",
         opportunities=[opportunity],
         preferred_opportunity_id="opp-1",
+        created_epoch=stamp,
     )
     loop._record_candidate_snapshot(SimpleNamespace(decision=decision), market)
 
