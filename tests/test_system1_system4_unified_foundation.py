@@ -877,3 +877,74 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
         "quote": {**payload["quote"], "symbol": "GBPUSD"},
     }
     assert evidence_from_market_desk("EURUSD", mismatched_quote_symbol) == []
+
+
+
+def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportunity_ids():
+    from types import SimpleNamespace
+
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, severity, **kwargs):
+            self.events.append(kwargs["payload"])
+            return f"event-{len(self.events)}"
+
+    store = Store()
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: [],
+        candidate_event_store=store,
+    )
+    stamp = time.time()
+    first = Opportunity(
+        opportunity_id="duplicate-opportunity",
+        direction="LONG",
+        state=OpportunityState.FORMING,
+        thesis="first representation",
+    )
+    second = Opportunity(
+        opportunity_id="duplicate-opportunity",
+        direction="SHORT",
+        state=OpportunityState.ACTIVE,
+        thesis="conflicting duplicate representation",
+    )
+
+    class MissingIdHypothesis:
+        direction_implication = "LONG"
+        hypothesis_kind = "continuation"
+
+        def to_dict(self):
+            return {
+                "direction_implication": "LONG",
+                "hypothesis_kind": "continuation",
+                "thesis": "native hypothesis without stable identity",
+            }
+
+    decision = SimpleNamespace(
+        decision_id="decision-malformed-ledger",
+        symbol="EURUSD",
+        created_epoch=stamp,
+        decision_type=DecisionType.OPPORTUNITY_FORMING,
+        opportunities=[first, second],
+        hypotheses=[MissingIdHypothesis()],
+        questions_answered={},
+    )
+    market = MarketState(symbol="EURUSD", created_epoch=stamp)
+    loop._record_candidate_snapshot(SimpleNamespace(decision=decision), market)
+
+    assert len(store.events) == 3
+    by_kind = {}
+    for payload in store.events:
+        by_kind.setdefault(payload["candidate_kind"], []).append(payload)
+    assert len(by_kind["opportunity"]) == 2
+    duplicate = by_kind["opportunity"][1]
+    assert duplicate["candidate_ref"] == "malformed:duplicate-opportunity:1"
+    assert duplicate["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+    malformed = by_kind["hypothesis"][0]
+    assert malformed["candidate_ref"] == "malformed-hypothesis:0"
+    assert malformed["candidate"]["candidate_parse_status"] == "MISSING_STABLE_ID"
+    assert malformed["candidate"]["candidate_family"] == "unclassified"
+    assert malformed["candidate"]["calibration_candidate"] is False
