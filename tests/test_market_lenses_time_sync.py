@@ -94,3 +94,31 @@ def test_timestamp_parser_rejects_naive_datetime_values():
 
     assert _timestamp_epoch(datetime(2026, 1, 1, 12, 0, 0)) is None
     assert _timestamp_epoch(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)) is not None
+
+
+
+def test_parseable_candle_timestamp_is_not_verified_without_broker_attestation():
+    unverified = _frame(60)
+    unverified.attrs.clear()
+    evidence = analyze_market_frames(
+        "XAUUSD", {"M1": unverified}, source_includes_forming_bar=True,
+    )
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure.measurements["source_timestamp_known"] is False
+    assert structure.source_timestamp_verified is False
+    assert structure.source_timestamp_epoch is None
+
+    wrong_symbol = _frame(60)
+    wrong_symbol.attrs["source_symbol"] = "EURUSD"
+    mismatched = analyze_market_frames(
+        "XAUUSD", {"M1": wrong_symbol}, source_includes_forming_bar=True,
+    )
+    mismatched_structure = next(
+        item for item in mismatched
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert mismatched_structure.source_timestamp_verified is False
+    assert mismatched_structure.source_timestamp_epoch is None
