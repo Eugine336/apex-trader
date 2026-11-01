@@ -279,7 +279,7 @@ class Evidence:
     # Source-time and semantic metadata are first-class contract fields. Ingest
     # time alone cannot prove that cached broker data describes the decision time.
     source_timestamp_epoch: Optional[float] = None
-    source_timestamp_verified: Optional[bool] = None
+    source_timestamp_verified: bool = False
     data_basis: str = ""
     provisional: bool = False
     independence_group: str = ""
@@ -320,13 +320,12 @@ class Evidence:
                 self.source_timestamp_epoch = source_epoch if source_epoch > 0 and source_epoch < float("inf") and source_epoch == source_epoch else None
             except (TypeError, ValueError, OverflowError):
                 self.source_timestamp_epoch = None
-        if self.source_timestamp_verified is None:
-            self.source_timestamp_verified = self.source_timestamp_epoch is not None
-        else:
-            self.source_timestamp_verified = (
-                bool(self.source_timestamp_verified)
-                and self.source_timestamp_epoch is not None
-            )
+        # A timestamp is data, not proof of provenance. Only the producer may
+        # explicitly attest that this is the original source timestamp.
+        self.source_timestamp_verified = (
+            self.source_timestamp_verified is True
+            and self.source_timestamp_epoch is not None
+        )
         if not self.source_timestamp_verified:
             self.source_timestamp_epoch = None
         self.data_basis = str(self.data_basis or measurements.get("data_basis", "") or "").strip().lower()
