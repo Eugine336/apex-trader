@@ -33,9 +33,9 @@ class Tick:
 
     def __post_init__(self) -> None:
         timestamp = self.timestamp
-        timezone = getattr(timestamp, "tzinfo", None)
+        tzinfo = getattr(timestamp, "tzinfo", None)
         try:
-            aware = timezone is not None and timestamp.utcoffset() is not None
+            aware = tzinfo is not None and timestamp.utcoffset() is not None
         except (AttributeError, TypeError, ValueError, OverflowError):
             aware = False
         if aware:
