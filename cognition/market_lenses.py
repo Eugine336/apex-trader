@@ -164,6 +164,22 @@ def _rows(
                     )
                 )
             result.append(row_data)
+        if source_attested:
+            source_epochs = [row.get("timestamp_epoch") for row in result]
+            ordered = (
+                len(source_epochs) == len(result)
+                and all(
+                    isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
+                    for epoch in source_epochs
+                )
+                and all(
+                    float(right) > float(left)
+                    for left, right in zip(source_epochs, source_epochs[1:])
+                )
+            )
+            if not ordered:
+                for row in result:
+                    row["source_timestamp_verified"] = False
         return result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
         return []
