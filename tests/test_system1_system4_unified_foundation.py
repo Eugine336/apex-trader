@@ -878,6 +878,12 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
     }
     assert evidence_from_market_desk("EURUSD", mismatched_quote_symbol) == []
 
+    inconsistent_spread = {
+        **payload,
+        "quote": {**payload["quote"], "spread": 0.5},
+    }
+    assert evidence_from_market_desk("EURUSD", inconsistent_spread) == []
+
 
 
 def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportunity_ids():
