@@ -43,6 +43,7 @@ def _calibration(
         measurements=measurements,
         timestamp_epoch=stamp,
         source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=3600,
     )
 
