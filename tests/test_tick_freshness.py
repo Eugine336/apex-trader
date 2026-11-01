@@ -87,6 +87,9 @@ class TestMT5FreshTick:
         assert isinstance(result, TickData)
         assert result.bid == 1.1000
         assert result.ask == 1.1002
+        assert result.source_timestamp_verified is True
+        assert result.quote_kind == "bid_ask"
+        assert result.symbol == "EURUSD"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -194,6 +197,9 @@ class TestDerivFreshTick:
         c._sync_send.return_value = _deriv_tick_response(quote=1500.0)
         result = c.get_price("R_75")
         assert isinstance(result, TickData)
+        assert result.source_timestamp_verified is True
+        assert result.quote_kind == "mid_only"
+        assert result.symbol == "R_75"
         assert result.bid == 1500.0
         assert result.ask == 1500.0
         assert result.spread == 0.0
