@@ -440,6 +440,8 @@ class CalibrationProducer:
                             or geometry_measurements.get("source_kind") != "market_lens"
                             or geometry_measurements.get("source_timestamp_known") is not True
                             or geometry_measurements.get("data_basis") != "completed_ohlc"
+                            or geometry_measurements.get("source_timestamp_origin") != "broker_ohlcv"
+                            or not str(geometry_measurements.get("source_broker", "") or "").strip()
                             or geometry_measurements.get("provisional") is True
                         ):
                             geometry_rows_valid = False
