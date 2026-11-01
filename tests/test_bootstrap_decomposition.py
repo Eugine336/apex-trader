@@ -84,13 +84,16 @@ tick_sources = _load("_tick_sources_uut", "tick/tick_sources.py",
 
 
 class _Px:
-    def __init__(self, bid, ask, *, source_timestamp_verified=True, quote_kind="bid_ask"):
+    def __init__(
+        self, bid, ask, *, source_timestamp_verified=True,
+        quote_kind="bid_ask", symbol="EURUSD",
+    ):
         self.bid = bid
         self.ask = ask
         self.time = datetime.now(timezone.utc)
         self.source_timestamp_verified = source_timestamp_verified
         self.quote_kind = quote_kind
-        self.symbol = None
+        self.symbol = symbol
 
 
 class _PM:
@@ -295,3 +298,12 @@ def test_tick_pollers_do_not_promote_unattested_provider_timestamps():
     )
     assert router.ticks
     assert router.ticks[0].source_timestamp_verified is False
+
+
+
+def test_tick_poller_rejects_missing_provider_symbol():
+    router = _run_poller(
+        tick_sources.MT5TickPoller,
+        _Px(1.2345, 1.2347, symbol=""),
+    )
+    assert router.ticks == []
