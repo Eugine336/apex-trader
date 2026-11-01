@@ -123,6 +123,20 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
     assert evidence.is_fresh(now.timestamp()) is False
 
 
+def test_m1_price_action_does_not_trust_parseable_timestamp_without_adapter_attestation():
+    frame = _m1_frame()
+    frame["time"] = pd.date_range(
+        end=datetime.now(timezone.utc),
+        periods=len(frame),
+        freq="min",
+    )
+    evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
+    assert evidence is not None
+    assert evidence.measurements["source_timestamp_known"] is False
+    assert evidence.source_timestamp_verified is False
+    assert evidence.source_timestamp_epoch is None
+
+
 def test_m1_price_action_with_unknown_source_time_is_explicitly_uncertain():
     evidence = evidence_from_m1_candles("XAUUSD", _m1_frame(), provisional=True)
     assert evidence is not None
