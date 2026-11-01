@@ -215,6 +215,33 @@ class CalibrationProducer:
             return {}
 
     @staticmethod
+    def _non_overlapping_decision_groups(
+        groups: list[dict], horizon_seconds: int,
+    ) -> list[dict]:
+        """Keep one decision sample per non-overlapping fixed-horizon window.
+
+        Selection depends only on decision timestamps, never on outcomes. This
+        prevents a high-frequency observer from turning one market move into
+        many nominally independent calibration samples.
+        """
+        ordered = sorted(
+            groups,
+            key=lambda item: (
+                float(item["decision_epoch"]),
+                str(item["decision_id"]),
+            ),
+        )
+        selected: list[dict] = []
+        last_window_end: Optional[float] = None
+        for item in ordered:
+            decision_epoch = float(item["decision_epoch"])
+            if last_window_end is not None and decision_epoch <= last_window_end:
+                continue
+            selected.append(item)
+            last_window_end = decision_epoch + float(horizon_seconds)
+        return selected
+
+    @staticmethod
     def _valid_point_in_time(payload: dict) -> bool:
         evidence = payload.get("point_in_time_evidence")
         symbol = str(payload.get("symbol", "") or "").strip().upper()
@@ -494,7 +521,11 @@ class CalibrationProducer:
                     for (decision_id, side, family), members in groups.items():
                         if side != direction:
                             continue
-                        decision_epoch = min(item["decision_epoch"] for item in members)
+                        decision_epochs = {item["decision_epoch"] for item in members}
+                        if len(decision_epochs) != 1:
+                            invalid_directional_candidates += 1
+                            continue
+                        decision_epoch = next(iter(decision_epochs))
                         if decision_epoch + horizon > current:
                             continue
                         total_matured += 1
@@ -663,10 +694,13 @@ class CalibrationProducer:
                         or total_matured == 0
                         or coverage < 0.95
                         or missed_rate > 0.05
-                        or len(eligible_groups) < self.min_samples * 5
                     ):
                         continue
-                    eligible_groups.sort(key=lambda item: item["decision_epoch"])
+                    eligible_groups = self._non_overlapping_decision_groups(
+                        eligible_groups, horizon,
+                    )
+                    if len(eligible_groups) < self.min_samples * 5:
+                        continue
                     n = len(eligible_groups)
                     holdout_start = int(n * 0.80)
                     holdout = eligible_groups[holdout_start:]
