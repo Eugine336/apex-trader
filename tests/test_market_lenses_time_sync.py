@@ -122,3 +122,18 @@ def test_parseable_candle_timestamp_is_not_verified_without_broker_attestation()
     )
     assert mismatched_structure.source_timestamp_verified is False
     assert mismatched_structure.source_timestamp_epoch is None
+
+
+
+def test_broker_attestation_does_not_verify_unordered_candle_rows():
+    frame = _frame(60).iloc[::-1].copy()
+    evidence = analyze_market_frames(
+        "XAUUSD", {"M1": frame}, source_includes_forming_bar=True,
+    )
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure.measurements["source_timestamp_known"] is False
+    assert structure.source_timestamp_verified is False
+    assert structure.source_timestamp_epoch is None
