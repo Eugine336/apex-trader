@@ -710,6 +710,7 @@ class CalibrationProducer:
                 measurements=item.to_measurements(),
                 timestamp_epoch=item.issued_at_epoch,
                 source_timestamp_epoch=item.issued_at_epoch,
+                source_timestamp_verified=True,
                 relevance_horizon_seconds=self.artifact_ttl,
                 data_basis="durable_selection_aware_candidate_outcomes",
                 independence_group=f"calibration:{sym}:{item.direction}:{item.candidate_family}:{item.horizon_seconds}",
