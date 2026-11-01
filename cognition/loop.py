@@ -1044,6 +1044,12 @@ class CognitionLoop:
                         and evidence_symbol == target_symbol
                         and quote_symbol == target_symbol
                         and quote.get("source_timestamp_verified") is True
+                        and str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            in {"bid_ask", "mid_only"}
+                        and (
+                            str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            != "mid_only" or ask == bid
+                        )
                         and math.isfinite(bid) and math.isfinite(ask)
                         and bid > 0.0 and ask >= bid
                         and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
@@ -1056,6 +1062,7 @@ class CognitionLoop:
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
                             "ask": ask,
+                            "quote_kind": str(quote.get("quote_kind", "unknown") or "unknown").strip().lower(),
                             "timestamp_epoch": quote_epoch,
                             "source_timestamp_epoch": source_epoch,
                             "source_timestamp_verified": True,
