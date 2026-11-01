@@ -24,14 +24,21 @@ class _FakePlatformManager:
         return {"H1": self.related_frame}
 
 
-def _frame(start, closes, *, naive=False):
+def _frame(start, closes, *, symbol, naive=False):
     rows = []
     for index, close in enumerate(closes):
         stamp = start + timedelta(hours=index)
         if naive:
             stamp = stamp.replace(tzinfo=None)
         rows.append({"time": stamp, "close": float(close)})
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": symbol,
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+    })
+    return frame
 
 
 def _system(related_frame):
@@ -42,10 +49,10 @@ def _system(related_frame):
 
 
 def test_cross_asset_evidence_uses_exact_common_closed_utc_bars():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)])
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
+    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)], symbol="XAUUSD")
     # A related leg with the same UTC timestamps and a non-constant return series.
-    usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)])
+    usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)], symbol="USDJPY")
     result = _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau})
     assert len(result) == 1
     evidence = result[0]
@@ -58,16 +65,16 @@ def test_cross_asset_evidence_uses_exact_common_closed_utc_bars():
 
 
 def test_cross_asset_evidence_rejects_naive_timestamps():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    xau = _frame(start, [2000 + i for i in range(32)])
-    usd_jpy = _frame(start, [140 + i * (1 + (i % 2) * 0.1) for i in range(32)], naive=True)
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
+    xau = _frame(start, [2000 + i for i in range(32)], symbol="XAUUSD")
+    usd_jpy = _frame(start, [140 + i * (1 + (i % 2) * 0.1) for i in range(32)], symbol="USDJPY", naive=True)
     assert _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau}) == []
 
 
 def test_cross_asset_evidence_rejects_insufficient_common_timestamps():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)])
-    usd_jpy = _frame(start + timedelta(hours=15), [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)])
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
+    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)], symbol="XAUUSD")
+    usd_jpy = _frame(start + timedelta(hours=15), [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)], symbol="USDJPY")
     assert _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau}) == []
 
 
@@ -103,9 +110,9 @@ def test_round_trip_cost_fails_closed_when_spread_is_zero_or_unknown():
 
 
 def test_measured_cross_asset_evidence_is_classified_as_verified_association():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)])
-    usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)])
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
+    xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)], symbol="XAUUSD")
+    usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)], symbol="USDJPY")
     evidence = _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau})
     result = analyze_market_context(evidence, "XAUUSD")
     relationships = result["cross_market_relationships"]
