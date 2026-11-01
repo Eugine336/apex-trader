@@ -1024,7 +1024,7 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
     assert root.source_timestamp_epoch is None
     assert root.timestamp_epoch >= time.time() - 5.0
     assert quote_evidence.source_timestamp_verified is True
-    assert quote_evidence.source_timestamp_epoch == pytest.approx(now, abs=1e-6)
+    assert abs(quote_evidence.source_timestamp_epoch - now) < 1e-6
     assert quote_evidence.timestamp_epoch >= time.time() - 5.0
     assert quote_evidence.timestamp_epoch != quote_evidence.source_timestamp_epoch
 
