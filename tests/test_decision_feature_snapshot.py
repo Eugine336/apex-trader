@@ -23,6 +23,7 @@ def test_decision_feature_snapshot_preserves_source_timestamps_and_ids():
         measurements={"range": 12.5, "nested": {"confirmed": True}},
         timestamp_epoch=time.time(),
         source_timestamp_epoch=time.time(),
+        source_timestamp_verified=True,
     )
     state.add(evidence)
     decision = SimpleNamespace(decision_id="decision-test-1", symbol="XAUUSD", created_epoch=time.time())
