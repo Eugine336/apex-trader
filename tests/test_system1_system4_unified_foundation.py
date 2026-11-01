@@ -666,6 +666,27 @@ def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time()
     assert verified_source.source_timestamp_verified is True
     assert verified_source.source_timestamp_epoch == 1_900_000_000.0
 
+    measurement_timestamp_only = Evidence(
+        source_module="test.measurement_timestamp_only",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        measurements={"source_timestamp_epoch": 1_900_000_000.0},
+    )
+    assert measurement_timestamp_only.source_timestamp_verified is False
+    assert measurement_timestamp_only.source_timestamp_epoch is None
+
+    forged_truthy_flag = Evidence(
+        source_module="test.forged_truthy_flag",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        source_timestamp_epoch=1_900_000_000.0,
+        source_timestamp_verified="true",
+    )
+    assert forged_truthy_flag.source_timestamp_verified is False
+    assert forged_truthy_flag.source_timestamp_epoch is None
+
     unknown = Evidence(
         source_module="test.unknown_source",
         domain=EvidenceDomain.STRUCTURE,
