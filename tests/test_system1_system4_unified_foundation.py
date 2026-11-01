@@ -743,6 +743,24 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         Store(mismatched_quote_events), refresh_interval_seconds=30.0,
     ).refresh("EURUSD", now=now) == []
 
+    forming_geometry_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            snapshot_payload = json.loads(row["payload_json"])
+            feature_row = snapshot_payload["point_in_time_evidence"][0]
+            feature_row["source_timestamp_epoch"] = (
+                float(snapshot_payload["decision_epoch"]) - 60.0
+            )
+            feature_row["measurements"]["source_bar_epoch"] = (
+                float(snapshot_payload["decision_epoch"]) - 60.0
+            )
+            copied["payload_json"] = json.dumps(snapshot_payload)
+        forming_geometry_events.append(copied)
+    assert CalibrationProducer(
+        Store(forming_geometry_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
 
 
 def test_developing_world_model_generation_time_is_not_source_time():
