@@ -148,8 +148,14 @@ def test_atr_is_deterministic_and_positive_for_valid_bars():
 
 def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements():
     evidence = evidence_from_gold_market("XAUUSD", _payload())
-    assert len(evidence) == 3
+    assert len(evidence) == 4
     root = next(item for item in evidence if item.source_module == "market_desk")
+    quote = next(
+        item for item in evidence if item.source_module == "market_desk.live_quote"
+    )
+    assert root.source_timestamp_verified is False
+    assert quote.source_timestamp_verified is True
+    assert quote.measurements["price"]["symbol"] == "XAUUSD"
     assert all(item.polarity == 0.0 for item in evidence)
     assert root.measurements["pattern_families"] == ["crt_range_observation"]
     assert root.measurements["overlap_policy"] == "single_brain_synthesis_no_vote_summing"
@@ -487,7 +493,7 @@ def test_gold_observations_enter_existing_market_state_not_a_parallel_decider():
     state = consolidator.build("XAUUSD")
     gold_records = [item for item in state.evidence if item.source_module.startswith("market_desk")]
     assert calls == ["XAUUSD"]
-    assert len(gold_records) == 3
+    assert len(gold_records) == 4
     assert all(item.polarity == 0.0 for item in gold_records)
     root = next(item for item in gold_records if item.source_module == "market_desk")
     assert root.measurements["orders_sent"] is False
