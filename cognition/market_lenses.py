@@ -756,7 +756,7 @@ def analyze_market_frames(
                     "prior_range_low": prior_low,
                     "lookback_bars": lookback,
                 },
-                source_epoch=source_epoch,
+                source_epoch=source_epoch, source_metadata=source_metadata,
             ))
 
         # Momentum is a measurement of recent price changes. Only assign
