@@ -929,19 +929,43 @@ def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportuni
                 "thesis": "native hypothesis without stable identity",
             }
 
+    class StableHypothesis:
+        hypothesis_id = "reused-hypothesis-id"
+        direction_implication = "LONG"
+        hypothesis_kind = "continuation"
+
+        def __init__(self, direction, thesis):
+            self.direction_implication = direction
+            self.thesis = thesis
+
+        def to_dict(self):
+            return {
+                "hypothesis_id": self.hypothesis_id,
+                "direction_implication": self.direction_implication,
+                "hypothesis_kind": self.hypothesis_kind,
+                "thesis": self.thesis,
+            }
+
+    conflicting_first = StableHypothesis("LONG", "first hypothesis meaning")
+    conflicting_second = StableHypothesis("SHORT", "different meaning with reused ID")
+
     decision = SimpleNamespace(
         decision_id="decision-malformed-ledger",
         symbol="EURUSD",
         created_epoch=stamp,
         decision_type=DecisionType.OPPORTUNITY_FORMING,
         opportunities=[first, second],
-        hypotheses=[MissingIdHypothesis()],
+        hypotheses=[
+            MissingIdHypothesis(),
+            conflicting_first,
+            conflicting_second,
+        ],
         questions_answered={},
     )
     market = MarketState(symbol="EURUSD", created_epoch=stamp)
     loop._record_candidate_snapshot(SimpleNamespace(decision=decision), market)
 
-    assert len(store.events) == 3
+    assert len(store.events) == 5
     by_kind = {}
     for payload in store.events:
         by_kind.setdefault(payload["candidate_kind"], []).append(payload)
@@ -954,3 +978,10 @@ def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportuni
     assert malformed["candidate"]["candidate_parse_status"] == "MISSING_STABLE_ID"
     assert malformed["candidate"]["candidate_family"] == "unclassified"
     assert malformed["candidate"]["calibration_candidate"] is False
+
+    assert len(by_kind["hypothesis"]) == 3
+    duplicate_hypothesis = by_kind["hypothesis"][2]
+    assert duplicate_hypothesis["candidate_ref"] == "malformed:duplicate-hypothesis:2"
+    assert duplicate_hypothesis["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+    assert duplicate_hypothesis["candidate"]["candidate_family"] == "unclassified"
+    assert duplicate_hypothesis["candidate"]["calibration_candidate"] is False
