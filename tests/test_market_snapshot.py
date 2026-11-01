@@ -122,6 +122,19 @@ def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
     foreign_evidence = snapshot_to_evidence("EURUSD", foreign_snapshot)[0]
     assert foreign_evidence.source_timestamp_verified is False
 
+    missing_symbol = SimpleNamespace(
+        quote_kind="bid_ask",
+        bid=1.099,
+        ask=1.101,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    missing_symbol_snapshot = build_price_snapshot(
+        "EURUSD", candles, tick=missing_symbol,
+    )
+    assert missing_symbol_snapshot["price"] is None
+
     crossed = SimpleNamespace(
         symbol="EURUSD",
         quote_kind="bid_ask",
@@ -290,7 +303,10 @@ def test_build_snapshot_wires_microstructure_depth_session_pullback():
     snap = build_price_snapshot(
         "XAUUSD",
         {"H4": _uptrend(start=80.0), "M1": _downtrend(start=104.0, step=0.05)},
-        tick=SimpleNamespace(bid=104.0, ask=104.3, mid=104.15),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.3, mid=104.15,
+        ),
         ticks=_ticks([104.0, 104.1, 104.05, 104.2]),
         depth=[
             {"price": 104.0, "volume": 5.0, "side": "bid"},
