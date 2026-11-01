@@ -177,6 +177,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
                 "mid": mid,
                 "timestamp_epoch": source_epoch,
                 "source_timestamp_verified": verified,
+                "quote_kind": "bid_ask",
                 "symbol": symbol,
             },
         }
@@ -304,6 +305,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 1.099, "ask": 1.101, "mid": 1.1,
             "timestamp_epoch": 1000.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -339,6 +341,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 1.109, "ask": 1.111, "mid": 1.11,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -353,6 +356,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 8.999, "ask": 9.001, "mid": 9.0,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "GBPUSD",
         }},
     ))
@@ -379,6 +383,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 5.999, "ask": 6.001, "mid": 6.0,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": False,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -1018,7 +1023,7 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
     assert root.source_timestamp_epoch is None
     assert root.timestamp_epoch >= time.time() - 5.0
     assert quote_evidence.source_timestamp_verified is True
-    assert quote_evidence.source_timestamp_epoch == now
+    assert quote_evidence.source_timestamp_epoch == pytest.approx(now, abs=1e-6)
     assert quote_evidence.timestamp_epoch >= time.time() - 5.0
     assert quote_evidence.timestamp_epoch != quote_evidence.source_timestamp_epoch
 
