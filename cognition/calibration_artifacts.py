@@ -548,7 +548,7 @@ class CalibrationProducer:
             artifacts: list[CalibrationArtifact] = []
             for direction in ("LONG", "SHORT"):
                 for horizon in (300, 900, 3600, 14400, 86400):
-                    for family in CANDIDATE_FAMILIES:
+                    for family in sorted(CANDIDATE_FAMILIES):
                         eligible_groups = []
                         total_matured = 0
                         observed_groups = 0
