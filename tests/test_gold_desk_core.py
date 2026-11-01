@@ -157,7 +157,11 @@ def test_gold_market_adapter_emits_one_neutral_record_with_detector_measurements
     observation = root.measurements["pattern_observations"][0]
     assert observation["measurements"]["anchor_high"] == 2001.0
     assert root.measurements["event_context"]["pre_event_high"] == 2010.0
-    assert "Verified news context: US CPI" in root.observation
+    assert (
+        "Event context (publication provenance not established here): US CPI"
+        in root.observation
+    )
+    assert "Verified news context" not in root.observation
     assert {item.domain.value for item in evidence} == {"multi_timeframe", "liquidity", "structure"}
     liquidity = next(item for item in evidence if item.domain.value == "liquidity")
     structure = next(item for item in evidence if item.domain.value == "structure")
