@@ -527,13 +527,36 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "point_in_time_evidence": [
                 {
                     "evidence_id": f"feature-{index}",
+                    "symbol": "EURUSD",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
+                    "relevance_horizon_seconds": 3600.0,
+                    "provisional": False,
+                    "measurements": {
+                        "source_kind": "market_lens",
+                        "source_timestamp_known": True,
+                        "source_bar_epoch": decision_epoch,
+                        "data_basis": "completed_ohlc",
+                        "provisional": False,
+                    },
                 },
                 {
                     "evidence_id": f"quote-{index}",
+                    "symbol": "EURUSD",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
+                    "relevance_horizon_seconds": 90.0,
+                    "provisional": False,
+                    "measurements": {
+                        "price": {
+                            "symbol": "EURUSD",
+                            "bid": 99.99,
+                            "ask": 100.01,
+                            "mid": 100.0,
+                            "timestamp_epoch": decision_epoch,
+                            "source_timestamp_verified": True,
+                        },
+                    },
                 },
             ],
         }
