@@ -107,13 +107,21 @@ class MT5TickPoller:
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
+                        reported_symbol = str(getattr(td, "symbol", "") or sym).strip().upper()
+                        if reported_symbol != sym.strip().upper():
+                            raise RuntimeError(
+                                f"MT5 tick symbol mismatch: requested={sym}, received={reported_symbol}"
+                            )
                         tick = Tick(
                             symbol=sym,
                             bid=td.bid,
                             ask=td.ask,
                             timestamp=td.time,
                             source="mt5",
-                            source_timestamp_verified=True,
+                            source_timestamp_verified=(
+                                getattr(td, "source_timestamp_verified", False) is True
+                            ),
+                            quote_kind=getattr(td, "quote_kind", "unknown"),
                         )
                         self._router.on_tick(tick)
                         error_counts[sym] = 0
@@ -235,13 +243,21 @@ class DerivTickAdapter:
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
+                        reported_symbol = str(getattr(td, "symbol", "") or sym).strip().upper()
+                        if reported_symbol != sym.strip().upper():
+                            raise RuntimeError(
+                                f"Deriv tick symbol mismatch: requested={sym}, received={reported_symbol}"
+                            )
                         tick = Tick(
                             symbol=sym,
                             bid=td.bid,
                             ask=td.ask,
                             timestamp=td.time,
                             source="deriv",
-                            source_timestamp_verified=True,
+                            source_timestamp_verified=(
+                                getattr(td, "source_timestamp_verified", False) is True
+                            ),
+                            quote_kind=getattr(td, "quote_kind", "unknown"),
                         )
                         # Route immediately — ticks must keep flowing regardless
                         # of connection-state bookkeeping.
