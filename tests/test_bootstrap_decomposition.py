@@ -80,10 +80,13 @@ tick_sources = _load("_tick_sources_uut", "tick/tick_sources.py",
 
 
 class _Px:
-    def __init__(self, bid, ask):
+    def __init__(self, bid, ask, *, source_timestamp_verified=True, quote_kind="bid_ask"):
         self.bid = bid
         self.ask = ask
         self.time = datetime.now(timezone.utc)
+        self.source_timestamp_verified = source_timestamp_verified
+        self.quote_kind = quote_kind
+        self.symbol = None
 
 
 class _PM:
