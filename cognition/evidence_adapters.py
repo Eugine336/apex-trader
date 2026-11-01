@@ -878,22 +878,55 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
         data_quality_ok = bool(data.get("data_quality_ok", False))
         confidence = 0.95 if data_quality_ok else 0.0
         uncertainty = 0.05 if data_quality_ok else 1.0
-        evidence: list[Evidence] = [Evidence(
-            source_module="market_desk",
-            domain=EvidenceDomain.MULTI_TIMEFRAME,
-            symbol=requested_symbol,
-            observation=" ".join(observation_parts)[:4000],
-            confidence=confidence,
-            uncertainty=uncertainty,
-            polarity=0.0,
-            measurements=measurements,
-            relevance_horizon_seconds=15.0,
-            timestamp_iso=timestamp_iso,
-            timestamp_epoch=ingested_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
-        )]
+        quote_measurement = {
+            "symbol": quote_symbol,
+            "quote_kind": quote_kind,
+            "bid": bid,
+            "ask": ask,
+            "mid": (bid + ask) / 2.0,
+            "spread": derived_spread,
+            "timestamp_epoch": quote_epoch,
+            "source_timestamp_verified": True,
+        }
+        evidence: list[Evidence] = [
+            Evidence(
+                source_module="market_desk",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=requested_symbol,
+                observation=" ".join(observation_parts)[:4000],
+                confidence=confidence,
+                uncertainty=uncertainty,
+                polarity=0.0,
+                measurements=measurements,
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=ingested_epoch,
+                source_timestamp_verified=False,
+                data_basis="market_desk_context_with_unverified_pattern_times",
+            ),
+            Evidence(
+                source_module="market_desk.live_quote",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=requested_symbol,
+                observation=(
+                    f"broker quote {requested_symbol}: bid={bid}, ask={ask}, "
+                    f"mid={(bid + ask) / 2.0}"
+                ),
+                confidence=0.9,
+                uncertainty=0.1,
+                polarity=0.0,
+                measurements={"price": quote_measurement},
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=ingested_epoch,
+                source_timestamp_epoch=observed_epoch,
+                source_timestamp_verified=True,
+                data_basis="live_broker_quote",
+                provisional=False,
+                independence_group=f"live_quote:{requested_symbol}",
+                measurement_version="live-quote-v1",
+            ),
+        ]
 
         # Give the SAME Brain the structured dimensions its native pattern rules
         # require. These remain observations, not votes or strategies: polarity is
