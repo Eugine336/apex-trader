@@ -3008,7 +3008,14 @@ class EventDrivenSystem:
             if self._tick_store is None or self._pm is None:
                 return None
             tick = self._tick_store.get_latest(symbol)
-            if tick is None or getattr(tick, "source_timestamp_verified", False) is not True:
+            if (
+                tick is None
+                or getattr(tick, "source_timestamp_verified", False) is not True
+                or str(getattr(tick, "symbol", "") or "").strip().upper()
+                    != str(symbol or "").strip().upper()
+                or str(getattr(tick, "quote_kind", "unknown") or "unknown").strip().lower()
+                    != "bid_ask"
+            ):
                 return None
             source_time = getattr(tick, "timestamp", None)
             if (
@@ -3060,7 +3067,9 @@ class EventDrivenSystem:
                     "bid": bid,
                     "ask": ask,
                     "spread": ask - bid,
+                    "quote_kind": "bid_ask",
                     "source_timestamp_epoch": source_epoch,
+                    "source_timestamp_verified": True,
                 },
             }
         except Exception as exc:  # noqa: BLE001 — unknown monetary cost must remain unverified
