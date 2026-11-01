@@ -540,6 +540,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                     "measurements": {
                         "source_kind": "market_lens",
                         "source_timestamp_known": True,
+                        "source_timestamp_origin": "broker_ohlcv",
+                        "source_broker": "fixture-broker",
                         "source_bar_epoch": decision_epoch - 3600.0,
                         "timeframe": "H1",
                         "data_basis": "completed_ohlc",
