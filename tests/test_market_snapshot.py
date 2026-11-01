@@ -128,6 +128,19 @@ def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
     crossed_snapshot = build_price_snapshot("EURUSD", candles, tick=crossed)
     assert crossed_snapshot["price"] is None
 
+    mid_only = SimpleNamespace(
+        symbol="R_75",
+        quote_kind="mid_only",
+        bid=1500.0,
+        ask=1500.0,
+        mid=1490.0,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    mid_only_snapshot = build_price_snapshot("R_75", candles, tick=mid_only)
+    assert mid_only_snapshot["price"]["quote_kind"] == "mid_only"
+    assert mid_only_snapshot["price"]["mid"] == 1500.0
+
 
 def test_source_time_requires_explicit_verified_broker_tick():
     from datetime import datetime, timezone
