@@ -1594,7 +1594,10 @@ class CognitionLoop:
         """Record the final Brain/portfolio disposition without changing authority."""
         try:
             from persistence.event_store import get_event_store
-            from persistence.domain_events import COGNITIVE_CANDIDATE_DISPOSITION
+            from persistence.domain_events import (
+                COGNITIVE_CANDIDATE_DISPOSITION,
+                COGNITIVE_CANDIDATE_SNAPSHOT,
+            )
 
             decision = getattr(output, "decision", None)
             if decision is None:
