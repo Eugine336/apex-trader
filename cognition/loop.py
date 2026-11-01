@@ -1073,6 +1073,7 @@ class CognitionLoop:
             opportunities = list(getattr(decision, "opportunities", []) or [])
             hypotheses = list(getattr(decision, "hypotheses", []) or [])
             records: list[tuple[str, str, dict]] = []
+            seen_opportunity_ids: set[str] = set()
             for index, opportunity in enumerate(opportunities):
                 data = _json_safe(
                     opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
@@ -1084,15 +1085,38 @@ class CognitionLoop:
                     data["state"] = "UNKNOWN"
                     data["candidate_family"] = "unclassified"
                     data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                elif oid in seen_opportunity_ids:
+                    # Retain conflicting duplicates as malformed records rather
+                    # than creating multiple calibratable snapshots for one ID.
+                    oid = f"malformed:duplicate-opportunity:{index}"
+                    data["id"] = oid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "DUPLICATE_STABLE_ID"
+                seen_opportunity_ids.add(oid)
                 records.append(("opportunity", oid, data))
+            hypothesis_index = 0
             def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
+                nonlocal hypothesis_index
+                current_index = hypothesis_index
+                hypothesis_index += 1
                 data = _json_safe(data)
                 hid = str(
                     data.get("hypothesis_id", "")
                     or getattr(hypothesis, "hypothesis_id", "")
                     or ""
                 )
-                if not hid or any(
+                if not hid:
+                    # Missing native IDs remain observable and non-actionable.
+                    hid = f"malformed-hypothesis:{current_index}"
+                    data["hypothesis_id"] = hid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                    data["calibration_candidate"] = False
+                    records.append(("hypothesis", hid, data))
+                    return
+                if any(
                     kind == "hypothesis" and ref == hid
                     for kind, ref, _ in records
                 ):
