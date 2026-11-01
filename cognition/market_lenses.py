@@ -255,6 +255,7 @@ def _technical_indicator_evidence(
     timeframe: str,
     bars: list[dict[str, Any]],
     source_epoch: float | None,
+    source_metadata: Optional[dict[str, Any]] = None,
 ) -> list[Evidence]:
     """Calculate causal, completed-bar technical measurements without signals."""
     if len(bars) < 15:
@@ -542,19 +543,19 @@ def _technical_indicator_evidence(
         output.append(_record(
             symbol, timeframe, EvidenceDomain.MOMENTUM, "technical_momentum",
             f"{timeframe} completed-bar technical momentum and trend measurements.",
-            momentum, source_epoch=source_epoch,
+            momentum, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     if volatility:
         output.append(_record(
             symbol, timeframe, EvidenceDomain.VOLATILITY, "technical_volatility",
             f"{timeframe} completed-bar volatility and statistical-location measurements.",
-            volatility, source_epoch=source_epoch,
+            volatility, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     if volume:
         output.append(_record(
             symbol, timeframe, EvidenceDomain.VOLUME, "technical_volume",
             f"{timeframe} provider-volume indicators; source={volume.get('volume_source')}.",
-            volume, source_epoch=source_epoch,
+            volume, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     return output
 
@@ -568,6 +569,7 @@ def _record(
     measurements: dict[str, Any],
     *,
     source_epoch: float | None = None,
+    source_metadata: Optional[dict[str, Any]] = None,
 ) -> Evidence:
     seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
     known_source_time = bool(source_epoch and source_epoch > 0)
@@ -588,14 +590,13 @@ def _record(
         polarity=0.0,
         measurements={
             **measurements,
+            **(source_metadata or {}),
             "source_kind": "market_lens",
             "timeframe": timeframe,
             "provisional": False,
             "data_basis": "completed_ohlc",
             "source_timestamp_known": known_source_time,
             "source_bar_epoch": source_epoch,
-            "source_timestamp_origin": current.get("source_timestamp_origin"),
-            "source_broker": current.get("source_broker"),
         },
         timestamp_epoch=sampled_at,
         timestamp_iso=timestamp_iso,
@@ -642,6 +643,10 @@ def analyze_market_frames(
             _safe_float(current.get("timestamp_epoch"))
             if current.get("source_timestamp_verified") is True else None
         )
+        source_metadata = {
+            "source_timestamp_origin": current.get("source_timestamp_origin"),
+            "source_broker": current.get("source_broker"),
+        }
         timeframe_observations.append({
             "timeframe": timeframe,
             "bar_open_epoch": source_epoch,
@@ -727,7 +732,7 @@ def analyze_market_frames(
             f"{timeframe} completed-candle structure: {location}; "
             f"close location within prior range={range_position:.2f}.",
             measurements,
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Sweep/reclaim is a boundary event, not proof that actual order flow was
@@ -783,7 +788,7 @@ def analyze_market_frames(
                 "candle_body_sign": 1 if candle_body > 0 else (-1 if candle_body < 0 else 0),
                 "body_to_range": measurements["body_to_range"],
             },
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Volatility: current range vs earlier range baseline, plus short-window
@@ -814,13 +819,13 @@ def analyze_market_frames(
                 "recent_mean_range": recent_mean,
                 "earlier_mean_range": earlier_mean,
             },
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Broad technical measurements are emitted as evidence only. They
         # never select a side or authorize an opportunity.
         output.extend(_technical_indicator_evidence(
-            symbol, timeframe, bars, source_epoch,
+            symbol, timeframe, bars, source_epoch, source_metadata,
         ))
 
         # Volume is included only when the selected broker actually supplies it.
