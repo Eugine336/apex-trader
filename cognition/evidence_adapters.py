@@ -804,7 +804,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
         ]
         if event_context is not None:
             observation_parts.append(
-                "Verified news context: "
+                "Event context (publication provenance not established here): "
                 f"{event_context['name']} impact={event_context['impact']} "
                 f"window={event_context['starts_at']}..{event_context['ends_at']} "
                 f"pre-event range={event_context['pre_event_low']}..{event_context['pre_event_high']}."
