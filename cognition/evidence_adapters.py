@@ -248,12 +248,13 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
         source_epoch = optional_finite(
             cost.get("source_timestamp_epoch")
         ) if isinstance(cost, dict) else None
-        source_verified = bool(
+        source_attested = bool(
             isinstance(cost, dict)
             and cost.get("source_timestamp_verified") is True
             and source_epoch is not None
             and source_epoch > 0.0
         )
+        source_verified = False
 
         total_r = None
         spread_r = None
@@ -280,9 +281,34 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
             cost_source = str(cost.get("cost_source", "unverified estimate") or "").strip()
             quote = cost.get("quote")
             if isinstance(quote, dict):
+                try:
+                    quote_symbol = str(quote.get("symbol", "") or "").strip().upper()
+                    quote_kind = str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                    quote_epoch = float(quote.get("source_timestamp_epoch"))
+                    bid = float(quote.get("bid"))
+                    ask = float(quote.get("ask"))
+                    spread = float(quote.get("spread"))
+                    quote_valid = (
+                        source_attested
+                        and quote.get("source_timestamp_verified") is True
+                        and quote_symbol == str(symbol or "").strip().upper()
+                        and quote_kind == "bid_ask"
+                        and math.isfinite(quote_epoch)
+                        and abs(quote_epoch - float(source_epoch)) <= 1e-6
+                        and math.isfinite(bid) and math.isfinite(ask)
+                        and math.isfinite(spread)
+                        and bid > 0.0 and ask > bid
+                        and math.isclose(spread, ask - bid, rel_tol=1e-6, abs_tol=1e-10)
+                    )
+                    source_verified = bool(quote_valid)
+                except (TypeError, ValueError, OverflowError):
+                    source_verified = False
                 extra_measurements["cost_quote"] = {
                     key: quote.get(key)
-                    for key in ("bid", "ask", "spread", "symbol", "source_timestamp_epoch")
+                    for key in (
+                        "bid", "ask", "spread", "symbol", "quote_kind",
+                        "source_timestamp_epoch", "source_timestamp_verified",
+                    )
                     if quote.get(key) is not None
                 }
         else:
