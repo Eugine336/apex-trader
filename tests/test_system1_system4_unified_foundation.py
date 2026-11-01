@@ -514,6 +514,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "symbol": "EURUSD",
             "candidate": candidate,
             "reference_quote": {
+                "quote_kind": "bid_ask",
                 "mid": 100.0,
                 "bid": 99.99,
                 "ask": 100.01,
@@ -579,6 +580,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "reference_evidence_id": f"quote-{index}",
             "outcome_evidence_id": f"outcome-{index}",
             "outcome_quote": {
+                "quote_kind": "bid_ask",
                 "mid": 100.0 + return_r,
                 "bid": 99.99 + return_r,
                 "ask": 100.01 + return_r,
