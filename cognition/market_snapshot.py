@@ -30,6 +30,7 @@ layer supplies the raw price rows / tick / ticks / depth / position.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain
@@ -550,19 +551,31 @@ def build_price_snapshot(
 
     price: Optional[dict] = None
     if tick is not None:
+        requested_symbol = str(symbol or "").strip().upper()
+        tick_symbol = str(getattr(tick, "symbol", "") or "").strip().upper()
+        if tick_symbol and tick_symbol != requested_symbol:
+            tick = None
+    if tick is not None:
         bid = _f(getattr(tick, "bid", 0.0))
         ask = _f(getattr(tick, "ask", 0.0))
-        mid = _f(getattr(tick, "mid", 0.0)) or ((bid + ask) / 2.0 if bid and ask else 0.0)
-        if bid or ask or mid:
-            dp = _decimals_for(mid or bid or ask)
-            tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
-            tick_source_verified = (
-                getattr(tick, "source_timestamp_verified", False) is True
-                and tick_epoch is not None
-            )
+        # Mid is derived from the verified bid/ask pair. Never trust a separate
+        # caller-supplied mid that can contradict the executable quote.
+        valid_quote = (
+            math.isfinite(bid) and math.isfinite(ask)
+            and bid > 0.0 and ask >= bid
+        )
+        tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
+        tick_source_verified = (
+            getattr(tick, "source_timestamp_verified", False) is True
+            and tick_epoch is not None
+        )
+        if valid_quote:
+            mid = (bid + ask) / 2.0
+            dp = _decimals_for(mid)
             price = {
+                "symbol": requested_symbol,
                 "bid": round(bid, dp), "ask": round(ask, dp),
-                "mid": round(mid, dp), "spread": round(abs(ask - bid), dp),
+                "mid": round(mid, dp), "spread": round(ask - bid, dp),
                 "timestamp_epoch": tick_epoch,
                 "source_timestamp_verified": tick_source_verified,
             }
