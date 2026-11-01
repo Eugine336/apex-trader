@@ -91,6 +91,7 @@ def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
     candles = {"M5": _uptrend()}
     verified = SimpleNamespace(
         symbol="EURUSD",
+        quote_kind="bid_ask",
         bid=1.099,
         ask=1.101,
         mid=9.0,
@@ -103,6 +104,7 @@ def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
 
     foreign = SimpleNamespace(
         symbol="GBPUSD",
+        quote_kind="bid_ask",
         bid=1.099,
         ask=1.101,
         mid=1.1,
@@ -116,6 +118,7 @@ def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
 
     crossed = SimpleNamespace(
         symbol="EURUSD",
+        quote_kind="bid_ask",
         bid=1.101,
         ask=1.099,
         mid=1.1,
@@ -134,7 +137,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
 
     verified = SimpleNamespace(
         bid=104.0, ask=104.2, mid=104.1,
-        timestamp=timestamp, source_timestamp_verified=True,
+        timestamp=timestamp, source_timestamp_verified=True, quote_kind="bid_ask",
     )
     verified_evidence = snapshot_to_evidence(
         "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
@@ -144,7 +147,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
 
     unverified = SimpleNamespace(
         bid=104.0, ask=104.2, mid=104.1,
-        timestamp=timestamp, source_timestamp_verified=False,
+        timestamp=timestamp, source_timestamp_verified=False, quote_kind="bid_ask",
     )
     unverified_evidence = snapshot_to_evidence(
         "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
@@ -155,7 +158,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
     naive = SimpleNamespace(
         bid=104.0, ask=104.2, mid=104.1,
         timestamp=datetime(2026, 10, 31, 12, 0, 0),
-        source_timestamp_verified=True,
+        source_timestamp_verified=True, quote_kind="bid_ask",
     )
     naive_evidence = snapshot_to_evidence(
         "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
