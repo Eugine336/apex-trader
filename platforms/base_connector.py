@@ -59,6 +59,24 @@ class TickData:
     quote_kind: str = "unknown"
     symbol: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        aware = bool(
+            isinstance(self.time, datetime)
+            and self.time.tzinfo is not None
+            and self.time.utcoffset() is not None
+        )
+        if aware:
+            self.time = self.time.astimezone(timezone.utc)
+        symbol = str(self.symbol or "").strip().upper()
+        self.symbol = symbol or None
+        self.source_timestamp_verified = bool(
+            self.source_timestamp_verified is True and aware and symbol
+        )
+        quote_kind = str(self.quote_kind or "unknown").strip().lower()
+        self.quote_kind = (
+            quote_kind if quote_kind in {"bid_ask", "mid_only"} else "unknown"
+        )
+
 
 @dataclass
 class OrderResult:
