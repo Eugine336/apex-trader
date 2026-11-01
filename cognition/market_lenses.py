@@ -72,10 +72,25 @@ def _timestamp_epoch(value: Any) -> float | None:
         return None
 
 
-def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
-    """Read a pandas-like OHLC(V) frame without importing pandas."""
+def _rows(
+    frame: Any, limit: int = 32, *, expected_symbol: str = "",
+) -> list[dict[str, Any]]:
+    """Read OHLC(V), retaining source-time attestation from the broker adapter."""
     if frame is None:
         return []
+    attrs = getattr(frame, "attrs", {})
+    attrs = attrs if isinstance(attrs, dict) else {}
+    source_symbol = str(attrs.get("source_symbol", "") or "").strip().upper()
+    source_origin = str(attrs.get("source_timestamp_origin", "") or "").strip()
+    source_attested = bool(
+        attrs.get("source_timestamp_verified") is True
+        and source_symbol == str(expected_symbol or "").strip().upper()
+        and attrs.get("source_timestamp_unit") == "unix_seconds"
+        and source_origin in {
+            "mt5.copy_rates_from_pos.time",
+            "deriv.ticks_history.candles.epoch",
+        }
+    )
     try:
         if getattr(frame, "empty", False):
             return []
@@ -130,6 +145,9 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
                     epoch = _timestamp_epoch(row_index)
             if epoch is not None:
                 row_data["timestamp_epoch"] = epoch
+            row_data["source_timestamp_verified"] = bool(
+                source_attested and epoch is not None
+            )
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
@@ -595,13 +613,16 @@ def analyze_market_frames(
         timeframe = str(raw_tf or "").upper()
         if timeframe not in _TIMEFRAME_SECONDS:
             continue
-        rows = _rows(frame)
+        rows = _rows(frame, expected_symbol=symbol)
         bars = rows[:-1] if source_includes_forming_bar and len(rows) > 1 else rows
         if len(bars) < 5:
             continue
 
         current = bars[-1]
-        source_epoch = _safe_float(current.get("timestamp_epoch"))
+        source_epoch = (
+            _safe_float(current.get("timestamp_epoch"))
+            if current.get("source_timestamp_verified") is True else None
+        )
         timeframe_observations.append({
             "timeframe": timeframe,
             "bar_open_epoch": source_epoch,
