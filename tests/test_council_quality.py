@@ -50,6 +50,7 @@ def _decide(opinion, uncertainty=0.1):
             confidence=0.9,
             uncertainty=uncertainty,
             timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+            source_timestamp_verified=True,
             relevance_horizon_seconds=900.0,
         ))
     state.add(Evidence(
@@ -71,6 +72,7 @@ def _decide(opinion, uncertainty=0.1):
         uncertainty=uncertainty,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     # Qualification also needs fresh completed-bar structure to derive the
