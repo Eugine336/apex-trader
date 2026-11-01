@@ -65,13 +65,17 @@ _tick_stub = types.ModuleType("tick")
 
 
 class _Tick:
-    def __init__(self, symbol, bid, ask, timestamp, source, source_timestamp_verified=False):
+    def __init__(
+        self, symbol, bid, ask, timestamp, source,
+        source_timestamp_verified=False, quote_kind="unknown",
+    ):
         self.symbol = symbol
         self.bid = bid
         self.ask = ask
         self.timestamp = timestamp
         self.source = source
         self.source_timestamp_verified = source_timestamp_verified
+        self.quote_kind = quote_kind
 
 
 _tick_stub.Tick = _Tick
@@ -125,11 +129,15 @@ def test_mt5_poller_routes_ticks_from_prices():
     assert router.ticks, "poller should route at least one tick"
     assert router.ticks[0].symbol == "EURUSD"
     assert router.ticks[0].source == "mt5"
+    assert router.ticks[0].source_timestamp_verified is True
+    assert router.ticks[0].quote_kind == "bid_ask"
 
 
 def test_deriv_adapter_routes_ticks_from_prices():
     router = _run_poller(tick_sources.DerivTickAdapter, _Px(101.0, 101.2))
     assert router.ticks and router.ticks[0].source == "deriv"
+    assert router.ticks[0].source_timestamp_verified is True
+    assert router.ticks[0].quote_kind == "bid_ask"
 
 
 def test_poller_no_symbols_is_inert():
@@ -274,3 +282,13 @@ def test_tick_eval_loop_runs_evaluator_and_profiles():
     assert ev.evals >= 1
     prof = loop.get_profile()
     assert prof["samples"] >= 1
+
+
+
+def test_tick_pollers_do_not_promote_unattested_provider_timestamps():
+    router = _run_poller(
+        tick_sources.MT5TickPoller,
+        _Px(1.2345, 1.2347, source_timestamp_verified=False),
+    )
+    assert router.ticks
+    assert router.ticks[0].source_timestamp_verified is False
