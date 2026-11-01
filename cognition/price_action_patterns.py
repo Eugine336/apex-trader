@@ -145,7 +145,7 @@ def _rows(
             ordered = (
                 len(source_epochs) == len(out)
                 and all(
-                    isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
+                    isinstance(epoch, (int, float)) and isfinite(float(epoch))
                     for epoch in source_epochs
                 )
                 and all(
