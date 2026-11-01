@@ -30,6 +30,15 @@ _CANDIDATE_EVENT = "COGNITIVE_CANDIDATE_SNAPSHOT"
 _OUTCOME_EVENT = "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
 _DISPOSITION_EVENT = "COGNITIVE_CANDIDATE_DISPOSITION"
 
+_GEOMETRY_TIMEFRAME_SECONDS = {
+    "M1": 60.0,
+    "M5": 300.0,
+    "M15": 900.0,
+    "H1": 3600.0,
+    "H4": 14400.0,
+    "D1": 86400.0,
+}
+
 
 @dataclass(frozen=True)
 class CalibrationArtifact:
@@ -436,10 +445,21 @@ class CalibrationProducer:
                             geometry_rows_valid = False
                             break
                         try:
-                            if abs(
-                                float(geometry_measurements.get("source_bar_epoch"))
-                                - float(geometry_row.get("source_timestamp_epoch"))
-                            ) > 1e-6:
+                            source_bar_epoch = float(
+                                geometry_measurements.get("source_bar_epoch")
+                            )
+                            evidence_source_epoch = float(
+                                geometry_row.get("source_timestamp_epoch")
+                            )
+                            timeframe = str(
+                                geometry_measurements.get("timeframe", "") or ""
+                            ).strip().upper()
+                            timeframe_seconds = _GEOMETRY_TIMEFRAME_SECONDS.get(timeframe)
+                            if (
+                                abs(source_bar_epoch - evidence_source_epoch) > 1e-6
+                                or timeframe_seconds is None
+                                or source_bar_epoch + timeframe_seconds > decision_epoch + 1e-6
+                            ):
                                 geometry_rows_valid = False
                                 break
                         except (TypeError, ValueError, OverflowError):
