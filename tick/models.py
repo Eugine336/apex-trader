@@ -9,7 +9,7 @@ events from them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -38,6 +38,8 @@ class Tick:
             aware = timezone is not None and timestamp.utcoffset() is not None
         except (AttributeError, TypeError, ValueError, OverflowError):
             aware = False
+        if aware:
+            object.__setattr__(self, "timestamp", timestamp.astimezone(timezone.utc))
         object.__setattr__(
             self,
             "source_timestamp_verified",
