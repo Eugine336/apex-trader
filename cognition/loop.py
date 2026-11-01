@@ -1634,6 +1634,7 @@ class CognitionLoop:
             import json
             symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
             questions = getattr(decision, "questions_answered", {}) or {}
+            questions = questions if isinstance(questions, dict) else {}
             records: list[dict[str, str]] = []
             query_events = getattr(store, "query_events", None)
             if callable(query_events):
