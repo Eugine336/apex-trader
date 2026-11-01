@@ -445,7 +445,15 @@ class CalibrationProducer:
                         and quote_row.get("source_timestamp_verified") is True
                         and quote_row.get("provisional") is not True
                         and abs(float(quote_row.get("source_timestamp_epoch")) - reference_epoch) <= 1e-6
+                        and str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            in {"bid_ask", "mid_only"}
+                        and (
+                            str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            != "mid_only" or ask == bid
+                        )
                         and str(quote_source.get("symbol", "") or "").strip().upper() == sym
+                        and str(quote_source.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            == str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
                         and quote_source.get("source_timestamp_verified") is True
                         and abs(float(quote_source.get("timestamp_epoch")) - reference_epoch) <= 1e-6
                         and abs(float(quote_source.get("mid")) - reference_price)
