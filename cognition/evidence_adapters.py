@@ -706,6 +706,11 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
         # Evidence is only valid for the instrument it was observed on.
         if not payload_symbol or payload_symbol != requested_symbol:
             return []
+        # The adapter must not infer source-time authority from a parseable,
+        # recently-ingested timestamp. The observer explicitly attests that this
+        # timestamp came from a broker Tick whose source provenance was checked.
+        if data.get("source_timestamp_verified") is not True:
+            return []
         observed_at = str(data.get("observed_at", "") or "")
         try:
             stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
@@ -714,9 +719,26 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             observed_epoch = stamp.timestamp()
         except (TypeError, ValueError, OverflowError, OSError):
             return []
+        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
+        quote_symbol = str(quote.get("symbol", "") or "").strip().upper()
+        try:
+            quote_epoch = float(quote.get("timestamp_epoch"))
+            bid = float(quote.get("bid"))
+            ask = float(quote.get("ask"))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if (
+            quote.get("source_timestamp_verified") is not True
+            or quote_symbol != requested_symbol
+            or not math.isfinite(quote_epoch)
+            or abs(quote_epoch - observed_epoch) > 1e-6
+            or not math.isfinite(bid) or not math.isfinite(ask)
+            or bid <= 0.0 or ask < bid
+        ):
+            return []
         # Do not turn an old cache entry into fresh evidence merely because the
-        # CognitionLoop polled it again. Freshness follows the original market read.
-        age = time.time() - observed_epoch
+        # CognitionLoop polled it again. Freshness follows the original broker quote.
+        age = time.time() - quote_epoch
         if age < -1.0 or age > 15.0:
             return []
         patterns = data.get("pattern_observations")
@@ -759,7 +781,6 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             })
             if family not in family_names:
                 family_names.append(family)
-        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
         bars = data.get("completed_bars") if isinstance(data.get("completed_bars"), dict) else {}
         raw_event = data.get("event_context")
         event_context = None
@@ -796,9 +817,12 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             "market_open": bool(data.get("market_open", False)),
             "data_quality_ok": bool(data.get("data_quality_ok", False)),
             "quote": {
-                "bid": _safe_number(quote.get("bid")),
-                "ask": _safe_number(quote.get("ask")),
+                "symbol": quote_symbol,
+                "bid": bid,
+                "ask": ask,
                 "spread": _safe_number(quote.get("spread")),
+                "timestamp_epoch": quote_epoch,
+                "source_timestamp_verified": True,
             },
             "event_context": event_context,
             "completed_bars": bars,
@@ -898,9 +922,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                 relevance_horizon_seconds=15.0,
                 timestamp_iso=timestamp_iso,
                 timestamp_epoch=observed_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
+                data_basis="broker_market_desk_snapshot",
             ))
 
             # Some detectors observe two separate facts at once (e.g. CRT =
@@ -938,9 +960,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                     relevance_horizon_seconds=15.0,
                     timestamp_iso=timestamp_iso,
                     timestamp_epoch=observed_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
+                    data_basis="broker_market_desk_snapshot",
                 ))
         return evidence
     except Exception:  # noqa: BLE001 — evidence conversion must never break cognition
