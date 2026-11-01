@@ -417,6 +417,9 @@ class MT5Connector(BaseConnector):
             ask=tick.ask,
             spread=round((tick.ask - tick.bid) / pip_size, 1),
             time=tick_time,
+            source_timestamp_verified=True,
+            quote_kind="bid_ask",
+            symbol=str(symbol or "").strip().upper(),
         )
 
     def get_tick(self, symbol: str) -> TickData:
