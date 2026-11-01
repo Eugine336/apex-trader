@@ -612,12 +612,65 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "payload_json": json.dumps(payload),
             })
 
+        # A second family on the same decision has a deliberately different
+        # return distribution. It must produce its own artifact, not be pooled
+        # into the continuation cohort.
+        mean_id = f"{decision_id}:opportunity:mean-{index}"
+        mean_snapshot = json.loads(json.dumps(snapshot))
+        mean_snapshot["candidate_id"] = mean_id
+        mean_snapshot["candidate_ref"] = f"mean-{index}"
+        mean_snapshot["candidate"]["opportunity_id"] = f"mean-{index}"
+        mean_snapshot["candidate"]["candidate_family"] = "mean_reversion"
+        mean_snapshot["candidate"]["geometry_evidence_ids"] = [f"mean-feature-{index}"]
+        mean_snapshot["reference_quote"]["evidence_id"] = f"mean-quote-{index}"
+        mean_snapshot["point_in_time_evidence"][0]["evidence_id"] = f"mean-feature-{index}"
+        mean_snapshot["point_in_time_evidence"][1]["evidence_id"] = f"mean-quote-{index}"
+        mean_outcome = json.loads(json.dumps(outcome))
+        mean_return_r = 0.4 if index % 2 == 0 else -0.2
+        mean_outcome.update({
+            "candidate_id": mean_id,
+            "candidate_family": "mean_reversion",
+            "outcome_label": "FAVOURABLE" if mean_return_r > 0 else "UNFAVOURABLE",
+            "directional_return_r": mean_return_r,
+            "observed_price": 100.0 + mean_return_r,
+            "reference_evidence_id": f"mean-quote-{index}",
+            "outcome_evidence_id": f"mean-outcome-{index}",
+        })
+        mean_outcome["outcome_quote"].update({
+            "mid": 100.0 + mean_return_r,
+            "bid": 99.99 + mean_return_r,
+            "ask": 100.01 + mean_return_r,
+            "evidence_id": f"mean-outcome-{index}",
+        })
+        mean_disposition = {
+            **disposition,
+            "candidate_id": mean_id,
+        }
+        for seq, event_type, payload in (
+            (10000 + index * 3 + 1, "COGNITIVE_CANDIDATE_SNAPSHOT", mean_snapshot),
+            (10000 + index * 3 + 2, "COGNITIVE_CANDIDATE_HORIZON_OUTCOME", mean_outcome),
+            (10000 + index * 3 + 3, "COGNITIVE_CANDIDATE_DISPOSITION", mean_disposition),
+        ):
+            events.append({
+                "seq": seq,
+                "event_type": event_type,
+                "symbol": "EURUSD",
+                "severity": "DEBUG",
+                "payload_json": json.dumps(payload),
+            })
+
     now = start + 149 * 600.0 + 400.0
     producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
     artifacts = producer.refresh("EURUSD", now=now)
     artifact = next(
         item for item in artifacts
         if item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "continuation"
+    )
+    mean_reversion_artifact = next(
+        item for item in artifacts
+        if item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "mean_reversion"
     )
     assert artifact.sample_count == 30
     assert artifact.walk_forward_folds == 3
@@ -635,6 +688,10 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert metrics["predictive_ability_demonstrated"] is False
     assert "not_a_calibrated_probability" in metrics["probability_semantics"]
     assert artifact.candidate_family == "continuation"
+    assert mean_reversion_artifact.sample_count == 30
+    assert mean_reversion_artifact.expected_return_r == 0.1
+    assert mean_reversion_artifact.holdout_expected_return_r == 0.1
+    assert mean_reversion_artifact.candidate_family == "mean_reversion"
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "LONG", "continuation", 300, now=now,
     ) is artifact
