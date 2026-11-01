@@ -46,7 +46,7 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
         "source_timestamp_verified": True,
         "source_symbol": "XAUUSD",
         "source_timestamp_unit": "unix_seconds",
-        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+        "source_timestamp_origin": "broker_ohlcv",
     })
     return frame
 
