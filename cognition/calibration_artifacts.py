@@ -38,14 +38,16 @@ class CalibrationArtifact:
     direction: str
     candidate_family: str
     horizon_seconds: int
-    # Probability of a favourable directional return at the declared horizon;
-    # this is not the probability of hitting a target before a stop.
+    # Development-sample favourable-return base rate at the declared horizon.
+    # It is not a calibrated forecast or a target-before-stop probability.
     favourable_probability: float
     expected_return_r: float
     holdout_expected_return_r: float
     expected_return_gap: float
     sample_count: int
     brier_score: float
+    # Legacy field name: absolute development-vs-holdout prevalence drift,
+    # not a reliability-diagram calibration error.
     reliability_gap: float
     dataset_digest: str
     issued_at_epoch: float
@@ -69,7 +71,14 @@ class CalibrationArtifact:
             "calibration_scope": "conditional_candidate_family_symbol_side_horizon",
             "expected_return_method": "minimum_of_development_and_untouched_holdout_mean_r",
             "favourable_horizon_probability": self.favourable_probability,
-            "probability_semantics": "favourable_directional_return_at_fixed_horizon",
+            "probability_semantics": (
+                "development_sample_favourable_directional_return_rate_at_fixed_horizon; "
+                "not_a_calibrated_probability_or_target_before_stop_probability"
+            ),
+            "brier_score_semantics": (
+                "development_base_rate_forecast_scored_on_untouched_holdout"
+            ),
+            "development_holdout_prevalence_gap": self.reliability_gap,
             "expected_return_r": self.expected_return_r,
             "holdout_expected_return_r": self.holdout_expected_return_r,
             "expected_return_gap": self.expected_return_gap,
@@ -79,7 +88,7 @@ class CalibrationArtifact:
             "dataset_digest": self.dataset_digest,
             "walk_forward_folds": self.walk_forward_folds,
             "selection_coverage": self.selection_coverage,
-            "probability_calibration_verified": True,
+            "probability_calibration_verified": False,
             "source_verified": True,
             "out_of_sample": True,
             "walk_forward": self.walk_forward_folds >= 3,
