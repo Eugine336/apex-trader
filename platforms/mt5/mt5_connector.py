@@ -489,6 +489,12 @@ class MT5Connector(BaseConnector):
         # observational reads legitimately keep it).
         if not include_forming and len(out) > 1:
             out = out.iloc[:-1]
+        out.attrs.update({
+            "source_timestamp_verified": True,
+            "source_symbol": str(symbol or "").strip().upper(),
+            "source_timestamp_unit": "unix_seconds",
+            "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+        })
         return out
 
     def get_spread(self, symbol: str) -> float:
