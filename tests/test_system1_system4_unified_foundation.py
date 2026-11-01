@@ -550,6 +550,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                     "measurements": {
                         "price": {
                             "symbol": "EURUSD",
+                            "quote_kind": "bid_ask",
                             "bid": 99.99,
                             "ask": 100.01,
                             "mid": 100.0,
@@ -923,6 +924,7 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
             "spread": 0.0002,
             "timestamp_epoch": now,
             "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
         },
         "completed_bars": {},
         "pattern_observations": [],
