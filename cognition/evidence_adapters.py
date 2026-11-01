@@ -871,7 +871,10 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             "overlap_policy": "single_brain_synthesis_no_vote_summing",
             "orders_sent": False,
         }
-        timestamp_iso = stamp.astimezone(timezone.utc).isoformat()
+        ingested_epoch = time.time()
+        timestamp_iso = datetime.fromtimestamp(
+            ingested_epoch, tz=timezone.utc,
+        ).isoformat()
         data_quality_ok = bool(data.get("data_quality_ok", False))
         confidence = 0.95 if data_quality_ok else 0.0
         uncertainty = 0.05 if data_quality_ok else 1.0
@@ -886,7 +889,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             measurements=measurements,
             relevance_horizon_seconds=15.0,
             timestamp_iso=timestamp_iso,
-            timestamp_epoch=observed_epoch,
+            timestamp_epoch=ingested_epoch,
             source_timestamp_epoch=observed_epoch,
             source_timestamp_verified=True,
             data_basis="broker_market_desk_snapshot",
@@ -960,7 +963,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                 measurements=structured,
                 relevance_horizon_seconds=15.0,
                 timestamp_iso=timestamp_iso,
-                timestamp_epoch=observed_epoch,
+                timestamp_epoch=ingested_epoch,
                 data_basis="broker_market_desk_snapshot",
             ))
 
@@ -998,7 +1001,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                     measurements=structure_measurements,
                     relevance_horizon_seconds=15.0,
                     timestamp_iso=timestamp_iso,
-                    timestamp_epoch=observed_epoch,
+                    timestamp_epoch=ingested_epoch,
                     data_basis="broker_market_desk_snapshot",
                 ))
         return evidence
