@@ -967,10 +967,25 @@ def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportuni
     class Store:
         def __init__(self):
             self.events = []
+            self.rows = []
 
         def emit(self, event_type, severity, **kwargs):
-            self.events.append(kwargs["payload"])
+            payload = kwargs["payload"]
+            self.events.append(payload)
+            self.rows.append({
+                "seq": len(self.rows) + 1,
+                "event_type": event_type,
+                "symbol": kwargs.get("symbol"),
+                "payload_json": json.dumps(payload),
+            })
             return f"event-{len(self.events)}"
+
+        def query_events(self, *, event_types, symbol, limit, offset, **kwargs):
+            rows = [
+                row for row in self.rows
+                if row["event_type"] in event_types and row["symbol"] == symbol
+            ]
+            return rows[offset:offset + limit]
 
     store = Store()
     loop = CognitionLoop(
@@ -1060,6 +1075,32 @@ def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportuni
     assert duplicate_hypothesis["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
     assert duplicate_hypothesis["candidate"]["candidate_family"] == "unclassified"
     assert duplicate_hypothesis["candidate"]["calibration_candidate"] is False
+
+    snapshot_ids = {
+        payload["candidate_id"] for payload in store.events
+        if payload.get("candidate_kind") in {"opportunity", "hypothesis"}
+    }
+    loop._record_candidate_disposition(
+        SimpleNamespace(decision=decision, campaign=None),
+        stage="final",
+    )
+    dispositions = [
+        payload for payload in store.events
+        if payload.get("stage") == "final"
+    ]
+    assert len(dispositions) == len(snapshot_ids) == 5
+    assert {payload["candidate_id"] for payload in dispositions} == snapshot_ids
+    malformed_disposition = next(
+        payload for payload in dispositions
+        if payload["candidate_parse_status"] == "MISSING_STABLE_ID"
+    )
+    assert malformed_disposition["candidate_ref"] == "malformed-hypothesis:0"
+    duplicate_disposition = next(
+        payload for payload in dispositions
+        if payload["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+        and payload["candidate_kind"] == "opportunity"
+    )
+    assert duplicate_disposition["candidate_ref"] == "malformed:duplicate-opportunity:1"
 
 
 
