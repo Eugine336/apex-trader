@@ -484,7 +484,8 @@ class CalibrationProducer:
                     continue
                 disposition = disposition_map.get(candidate_id) or {}
                 disposition_valid = (
-                    str(disposition.get("decision_id", "") or "") == decision_id
+                    int(disposition.get("_event_seq", 0) or 0) > 0
+                    and str(disposition.get("decision_id", "") or "") == decision_id
                     and str(disposition.get("symbol", "") or "").strip().upper()
                         == str(payload.get("symbol", "") or "").strip().upper()
                     and str(disposition.get("disposition", "") or "") in {
