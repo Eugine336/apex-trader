@@ -727,10 +727,13 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             ask = float(quote.get("ask"))
         except (TypeError, ValueError, OverflowError):
             return []
+        quote_kind = str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
         reported_spread = _safe_number(quote.get("spread"))
         derived_spread = ask - bid
         if (
             quote.get("source_timestamp_verified") is not True
+            or quote_kind not in {"bid_ask", "mid_only"}
+            or (quote_kind == "mid_only" and ask != bid)
             or quote_symbol != requested_symbol
             or not math.isfinite(quote_epoch)
             or abs(quote_epoch - observed_epoch) > 1e-6
@@ -826,6 +829,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             "data_quality_ok": bool(data.get("data_quality_ok", False)),
             "quote": {
                 "symbol": quote_symbol,
+                "quote_kind": quote_kind,
                 "bid": bid,
                 "ask": ask,
                 "mid": (bid + ask) / 2.0,
