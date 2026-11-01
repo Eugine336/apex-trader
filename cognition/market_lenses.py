@@ -14,7 +14,7 @@ import math
 import time
 from datetime import datetime, timezone
 from math import isfinite, sqrt
-from typing import Any
+from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain
 
