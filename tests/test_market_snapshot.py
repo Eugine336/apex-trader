@@ -84,6 +84,48 @@ def test_snapshot_to_evidence_carries_chart_non_directional():
     assert "chart XAUUSD" in e.observation
 
 
+def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
+    from datetime import datetime, timezone
+
+    timestamp = datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)
+    candles = {"M5": _uptrend()}
+    verified = SimpleNamespace(
+        symbol="EURUSD",
+        bid=1.099,
+        ask=1.101,
+        mid=9.0,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    snapshot = build_price_snapshot("EURUSD", candles, tick=verified)
+    assert snapshot["price"]["symbol"] == "EURUSD"
+    assert snapshot["price"]["mid"] == 1.1
+
+    foreign = SimpleNamespace(
+        symbol="GBPUSD",
+        bid=1.099,
+        ask=1.101,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    foreign_snapshot = build_price_snapshot("EURUSD", candles, tick=foreign)
+    assert foreign_snapshot["price"] is None
+    foreign_evidence = snapshot_to_evidence("EURUSD", foreign_snapshot)[0]
+    assert foreign_evidence.source_timestamp_verified is False
+
+    crossed = SimpleNamespace(
+        symbol="EURUSD",
+        bid=1.101,
+        ask=1.099,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    crossed_snapshot = build_price_snapshot("EURUSD", candles, tick=crossed)
+    assert crossed_snapshot["price"] is None
+
+
 def test_source_time_requires_explicit_verified_broker_tick():
     from datetime import datetime, timezone
 
