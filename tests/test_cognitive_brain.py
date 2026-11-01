@@ -105,6 +105,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
             "close_change": change,
         },
         timestamp_epoch=stamp,
+        source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=900.0,
     ))
     return ms
