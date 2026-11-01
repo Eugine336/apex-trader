@@ -340,3 +340,45 @@ class TestRiskConfigDefault:
         with patch.dict("os.environ", {"MAX_TICK_AGE_SECONDS": "not-a-number"}):
             cfg = RiskConfig()
         assert cfg.max_tick_age_seconds == 120.0
+
+
+
+def test_tick_data_contract_normalizes_time_and_requires_symbol_for_attestation():
+    from datetime import datetime, timezone
+    from platforms.base_connector import TickData
+
+    stamp = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    valid = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=stamp,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol=" eurusd ",
+    )
+    assert valid.time.tzinfo is timezone.utc
+    assert valid.symbol == "EURUSD"
+    assert valid.source_timestamp_verified is True
+
+    missing_symbol = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=stamp,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol=None,
+    )
+    assert missing_symbol.source_timestamp_verified is False
+
+    naive = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=datetime(2026, 11, 1, 12, 0),
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol="EURUSD",
+    )
+    assert naive.source_timestamp_verified is False
