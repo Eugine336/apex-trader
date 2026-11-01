@@ -31,6 +31,7 @@ layer supplies the raw price rows / tick / ticks / depth / position.
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain
@@ -687,22 +688,57 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             and price.get("source_timestamp_verified") is True
             and price_epoch is not None
         )
+        ingested_epoch = time.time()
+        # This chart aggregates completed and forming candles, recent ticks,
+        # depth and position state. Its live quote timestamp cannot attest every
+        # embedded observation, so the aggregate is not calibration evidence.
         out.append(Evidence(
             source_module="market.price_action",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=str(symbol or ""),
             observation=observation,
-            confidence=round(0.4 + 0.5 * agree, 4),  # more agreement ⇒ clearer picture
+            confidence=round(0.4 + 0.5 * agree, 4),
             uncertainty=round(1.0 - agree, 4),
-            polarity=0.0,  # Part XXV — the chart is raw market reality, not a lean
+            polarity=0.0,
             measurements=snap,
+            timestamp_epoch=ingested_epoch,
             relevance_horizon_seconds=90.0,
-            source_timestamp_epoch=price_epoch if price_source_verified else None,
-            source_timestamp_verified=price_source_verified,
-            data_basis="live_quote_and_market_snapshot",
-            provisional=False,
-            independence_group=f"live_quote:{str(symbol or '').upper()}",
-            measurement_version="market-snapshot-v1",
+            source_timestamp_verified=False,
+            data_basis="aggregated_market_snapshot_with_forming_context",
+            provisional=True,
+            independence_group=f"market_snapshot:{str(symbol or '').upper()}",
+            measurement_version="market-snapshot-v2",
         ))
+        # The quote has its own source timestamp and symbol lineage. It is
+        # separate from the chart so forming candle data cannot inherit it.
+        if isinstance(price, dict) and price:
+            quote_kind = str(price.get("quote_kind", "unknown") or "unknown").strip().lower()
+            quote_source_verified = bool(
+                price_source_verified
+                and quote_kind in {"bid_ask", "mid_only"}
+                and str(price.get("symbol", "") or "").strip().upper()
+                    == str(symbol or "").strip().upper()
+            )
+            out.append(Evidence(
+                source_module="market.live_quote",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=str(symbol or ""),
+                observation=(
+                    f"broker quote {symbol}: bid={price.get('bid')} "
+                    f"ask={price.get('ask')} mid={price.get('mid')}"
+                ),
+                confidence=0.9 if quote_source_verified else 0.4,
+                uncertainty=0.1 if quote_source_verified else 0.6,
+                polarity=0.0,
+                measurements={"price": price, "quote_kind": quote_kind},
+                timestamp_epoch=ingested_epoch,
+                relevance_horizon_seconds=90.0,
+                source_timestamp_epoch=price_epoch if quote_source_verified else None,
+                source_timestamp_verified=quote_source_verified,
+                data_basis="live_broker_quote",
+                provisional=False,
+                independence_group=f"live_quote:{str(symbol or '').upper()}",
+                measurement_version="live-quote-v1",
+            ))
     except Exception:  # noqa: BLE001
         return out
     return out
