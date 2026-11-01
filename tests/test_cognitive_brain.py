@@ -121,10 +121,10 @@ def _confident_state(
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
     ms.add(Evidence(source_module="s", domain="momentum", confidence=0.9,
                     uncertainty=0.1, polarity=polarity,
-                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp, source_timestamp_verified=True))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
                     uncertainty=0.1, polarity=polarity,
-                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp, source_timestamp_verified=True))
     # The Brain has a hard three-domain floor plus an advisor-quorum gate.
     # Keep this fixture genuinely eligible so positive-path tests test EV and
     # campaign construction rather than relying on absent council metadata.
@@ -137,6 +137,7 @@ def _confident_state(
         confidence=0.9, uncertainty=0.1, polarity=0.0,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
     ))
     # Action-path fixtures must include fresh execution-cost evidence; a
     # diagnostic default is intentionally insufficient to authorize exposure.
@@ -149,6 +150,7 @@ def _confident_state(
         uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
