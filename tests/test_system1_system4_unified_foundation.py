@@ -528,7 +528,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 {
                     "evidence_id": f"feature-{index}",
                     "symbol": "EURUSD",
-                    "source_timestamp_epoch": decision_epoch,
+                    "source_timestamp_epoch": decision_epoch - 3600.0,
                     "source_timestamp_verified": True,
                     "relevance_horizon_seconds": 3600.0,
                     "provisional": False,
