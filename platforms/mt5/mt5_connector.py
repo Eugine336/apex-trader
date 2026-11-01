@@ -391,6 +391,10 @@ class MT5Connector(BaseConnector):
                 f"Invalid tick timestamp for {mapped}: epoch={tick.time}"
             )
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        if age < -1.0:
+            raise RuntimeError(
+                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of UTC clock"
+            )
         if age > self._max_tick_age_seconds:
             now_mono = _time.monotonic()
             # Tests, health probes and recovery paths may construct a connector
