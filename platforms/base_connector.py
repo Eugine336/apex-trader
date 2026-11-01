@@ -176,8 +176,16 @@ class BaseConnector(ABC):
         Fetch historical candles.
         Returns DataFrame with columns: time, open, high, low, close, volume.
 
-        ``include_forming`` defaults to True (broker-native: the last row is the
+        include_forming defaults to True (broker-native: the last row is the
         still-forming bar). Pass False to return confirmed-closed bars only.
+
+        A broker adapter that verifies candle source time must attach these
+        DataFrame attrs after normalizing provider timestamps to Unix seconds:
+        source_timestamp_verified=True, source_symbol (canonical symbol),
+        source_timestamp_unit="unix_seconds", and
+        source_timestamp_origin="broker_ohlcv". Never set this attestation from
+        local ingestion time, cache insertion time, or an unverified parsed time.
+        Missing provenance remains unattested.
         """
 
     @abstractmethod
