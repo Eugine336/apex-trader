@@ -208,35 +208,43 @@ class CalibrationProducer:
     @staticmethod
     def _valid_point_in_time(payload: dict) -> bool:
         evidence = payload.get("point_in_time_evidence")
+        symbol = str(payload.get("symbol", "") or "").strip().upper()
+        try:
+            decision_epoch = float(payload.get("decision_epoch"))
+        except (TypeError, ValueError, OverflowError):
+            return False
         if (
             payload.get("point_in_time_complete") is not True
             or not isinstance(evidence, list) or not evidence
+            or not symbol or not math.isfinite(decision_epoch) or decision_epoch <= 0.0
         ):
             return False
-        decision_epoch = float(payload.get("decision_epoch") or 0.0)
+        seen_ids: set[str] = set()
         for item in evidence:
             if not isinstance(item, dict):
                 return False
+            evidence_id = str(item.get("evidence_id", "") or "")
+            evidence_symbol = str(item.get("symbol", "") or "").strip().upper()
             if (
-                item.get("source_timestamp_verified") is not True
+                not evidence_id or evidence_id in seen_ids
+                or evidence_symbol != symbol
+                or item.get("source_timestamp_verified") is not True
                 or item.get("provisional") is True
             ):
                 return False
+            seen_ids.add(evidence_id)
             stamp = item.get("source_timestamp_epoch")
-            try:
-                stamp = float(stamp)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            if not math.isfinite(stamp) or stamp <= 0.0 or stamp > decision_epoch:
-                return False
             raw_horizon = item.get("relevance_horizon_seconds")
             try:
-                horizon = 900.0 if raw_horizon is None else float(raw_horizon)
+                stamp = float(stamp)
+                horizon = float(raw_horizon)
             except (TypeError, ValueError, OverflowError):
                 return False
-            if not math.isfinite(horizon):
-                return False
-            if horizon > 0.0 and decision_epoch - stamp > horizon:
+            if (
+                not math.isfinite(stamp) or stamp <= 0.0 or stamp > decision_epoch
+                or not math.isfinite(horizon) or horizon <= 0.0
+                or decision_epoch - stamp > horizon
+            ):
                 return False
         return True
 
@@ -256,18 +264,33 @@ class CalibrationProducer:
             dispositions, dispositions_complete = self._query_all(_DISPOSITION_EVENT, sym)
             if not (snapshots_complete and outcomes_complete and dispositions_complete):
                 return []
-            candidate_map = {
-                str(payload.get("candidate_id", "")): payload
-                for payload in (self._payload(row) for row in snapshots)
-                if payload.get("candidate_id")
-            }
-            outcome_map = {}
+            candidate_map: dict[str, dict] = {}
+            duplicate_candidate_ids: set[str] = set()
+            for row in snapshots:
+                payload = self._payload(row)
+                candidate_id = str(payload.get("candidate_id", "") or "")
+                if not candidate_id:
+                    continue
+                if candidate_id in candidate_map:
+                    duplicate_candidate_ids.add(candidate_id)
+                else:
+                    candidate_map[candidate_id] = payload
+
+            outcome_map: dict[tuple[str, int], dict] = {}
+            duplicate_outcome_keys: set[tuple[str, int]] = set()
             for row in outcomes:
                 payload = self._payload(row)
                 candidate_id = str(payload.get("candidate_id", "") or "")
-                horizon = int(payload.get("horizon_seconds", 0) or 0)
-                if candidate_id and horizon:
-                    outcome_map[(candidate_id, horizon)] = payload
+                try:
+                    horizon = int(payload.get("horizon_seconds", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                key = (candidate_id, horizon)
+                if candidate_id and horizon > 0:
+                    if key in outcome_map:
+                        duplicate_outcome_keys.add(key)
+                    else:
+                        outcome_map[key] = payload
             disposition_map = {}
             for row in dispositions:
                 payload = self._payload(row)
@@ -286,6 +309,9 @@ class CalibrationProducer:
             groups: dict[tuple[str, str, str], list[dict]] = {}
             invalid_directional_candidates = 0
             for candidate_id, payload in candidate_map.items():
+                if candidate_id in duplicate_candidate_ids:
+                    invalid_directional_candidates += 1
+                    continue
                 candidate = payload.get("candidate") or {}
                 quote = payload.get("reference_quote") or {}
                 direction = str(
@@ -319,14 +345,16 @@ class CalibrationProducer:
                     invalid_directional_candidates += 1
                     continue
                 point_in_time_rows = payload.get("point_in_time_evidence") or []
-                point_in_time_ids = {
-                    str(item.get("evidence_id", "") or "")
+                evidence_by_id = {
+                    str(item.get("evidence_id", "") or ""): item
                     for item in point_in_time_rows if isinstance(item, dict)
                 }
-                geometry_ids = {
+                point_in_time_ids = set(evidence_by_id)
+                geometry_id_values = [
                     str(item) for item in (candidate.get("geometry_evidence_ids") or [])
                     if str(item)
-                }
+                ]
+                geometry_ids = set(geometry_id_values)
                 quote_evidence_id = str(quote.get("evidence_id", "") or "")
                 try:
                     reference_epoch = float(quote.get("source_timestamp_epoch"))
@@ -343,6 +371,50 @@ class CalibrationProducer:
                         abs(entry_price - reference_price) / risk_distance
                         if risk_distance > 0.0 else float("inf")
                     )
+                    quote_row = evidence_by_id.get(quote_evidence_id) or {}
+                    quote_measurements = quote_row.get("measurements") or {}
+                    quote_source = (
+                        quote_measurements.get("price")
+                        if isinstance(quote_measurements, dict) else None
+                    )
+                    quote_source = quote_source if isinstance(quote_source, dict) else {}
+                    geometry_rows_valid = bool(geometry_ids) and (
+                        len(geometry_ids) == len(geometry_id_values)
+                    )
+                    for geometry_id in geometry_ids:
+                        geometry_row = evidence_by_id.get(geometry_id) or {}
+                        geometry_measurements = geometry_row.get("measurements") or {}
+                        if (
+                            str(geometry_row.get("symbol", "") or "").strip().upper() != sym
+                            or not isinstance(geometry_measurements, dict)
+                            or geometry_measurements.get("source_kind") != "market_lens"
+                            or geometry_measurements.get("source_timestamp_known") is not True
+                            or geometry_measurements.get("data_basis") != "completed_ohlc"
+                            or geometry_measurements.get("provisional") is True
+                        ):
+                            geometry_rows_valid = False
+                            break
+                        try:
+                            if abs(
+                                float(geometry_measurements.get("source_bar_epoch"))
+                                - float(geometry_row.get("source_timestamp_epoch"))
+                            ) > 1e-6:
+                                geometry_rows_valid = False
+                                break
+                        except (TypeError, ValueError, OverflowError):
+                            geometry_rows_valid = False
+                            break
+                    quote_lineage_valid = (
+                        str(quote_row.get("symbol", "") or "").strip().upper() == sym
+                        and quote_row.get("source_timestamp_verified") is True
+                        and quote_row.get("provisional") is not True
+                        and abs(float(quote_row.get("source_timestamp_epoch")) - reference_epoch) <= 1e-6
+                        and str(quote_source.get("symbol", "") or "").strip().upper() == sym
+                        and quote_source.get("source_timestamp_verified") is True
+                        and abs(float(quote_source.get("timestamp_epoch")) - reference_epoch) <= 1e-6
+                        and abs(float(quote_source.get("bid")) - bid) <= max(1e-10, bid * 1e-8)
+                        and abs(float(quote_source.get("ask")) - ask) <= max(1e-10, ask * 1e-8)
+                    )
                     quote_valid = (
                         math.isfinite(reference_epoch)
                         and math.isfinite(reference_price)
@@ -353,11 +425,12 @@ class CalibrationProducer:
                         and math.isfinite(risk_distance)
                         and math.isfinite(entry_deviation_r)
                         and 0.0 < reference_epoch <= decision_epoch
+                        and str(payload.get("symbol", "") or "").strip().upper() == sym
                         and quote.get("source_timestamp_verified") is True
-                        and str(quote.get("symbol", "") or "").strip().upper()
-                            == str(payload.get("symbol", "") or "").strip().upper()
+                        and str(quote.get("symbol", "") or "").strip().upper() == sym
                         and quote_evidence_id in point_in_time_ids
-                        and bool(geometry_ids) and geometry_ids <= point_in_time_ids
+                        and quote_lineage_valid
+                        and geometry_rows_valid
                         and bid > 0.0 and ask >= bid
                         and abs(reference_price - ((bid + ask) / 2.0))
                             <= max(1e-10, reference_price * 1e-8)
@@ -424,9 +497,13 @@ class CalibrationProducer:
                             for item in members
                         ):
                             continue
+                        outcome_keys = [
+                            (item["candidate_id"], horizon) for item in members
+                        ]
+                        if any(key in duplicate_outcome_keys for key in outcome_keys):
+                            continue
                         member_outcomes = [
-                            outcome_map.get((item["candidate_id"], horizon))
-                            for item in members
+                            outcome_map.get(key) for key in outcome_keys
                         ]
                         if any(item is None for item in member_outcomes):
                             continue
@@ -509,6 +586,8 @@ class CalibrationProducer:
                                     or not math.isfinite(observed_price)
                                     or observed_price <= 0.0
                                     or not math.isfinite(expected_r)
+                                    or abs(observed_price - outcome_quote_mid)
+                                        > max(1e-10, outcome_quote_mid * 1e-8)
                                     or abs(supplied_r - expected_r) > 1e-6
                                     or outcome.get("outcome_label") != expected_label
                                 ):
