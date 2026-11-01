@@ -297,8 +297,10 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
 
 def test_high_confidence_poor_market_derived_payoff_is_sized_down():
     # Same 0.8 confidence, but the observed target is only 0.5R from entry while
-    # the structural invalidation is 1R away. Advisor-reported excursions cannot
-    # replace these market-derived levels.
+    # the structural invalidation is 1R away. The historical fixed-horizon
+    # expected return remains 0.25R less 0.05R verified cost; current market
+    # geometry independently caps exposure despite that historical estimate.
+    # Advisor-reported excursions cannot replace these market-derived levels.
     op = _RichOpinion("LONG", 0.8, efe="8R", eae="0.1R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8, target_r=0.5))
@@ -306,7 +308,7 @@ def test_high_confidence_poor_market_derived_payoff_is_sized_down():
     assert out.decision.questions_answered["payoff_geometry_status"] == (
         "qualified_from_fresh_completed_market_evidence"
     )
-    assert out.campaign.expected_value == pytest.approx(0.15)
+    assert out.campaign.expected_value == pytest.approx(0.20)
     assert out.campaign.desired_exposure == pytest.approx(0.3)
     assert out.campaign.desired_exposure < out.campaign.confidence
 
