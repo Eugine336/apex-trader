@@ -86,10 +86,7 @@ def _rows(
         attrs.get("source_timestamp_verified") is True
         and source_symbol == str(expected_symbol or "").strip().upper()
         and attrs.get("source_timestamp_unit") == "unix_seconds"
-        and source_origin in {
-            "broker_ohlcv",
-            "broker_ohlcv",
-        }
+        and source_origin == "broker_ohlcv"
     )
     try:
         if getattr(frame, "empty", False):
