@@ -38,7 +38,10 @@ def test_snapshot_shapes_and_trend():
     snap = build_price_snapshot(
         "XAUUSD",
         {"M5": _uptrend(), "M15": _uptrend(start=90.0)},
-        tick=SimpleNamespace(bid=104.0, ask=104.3, mid=104.15),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.3, mid=104.15,
+        ),
     )
     assert snap["symbol"] == "XAUUSD"
     assert set(snap["timeframes"].keys()) == {"M5", "M15"}
@@ -71,7 +74,10 @@ def test_empty_candles_yields_no_evidence():
 def test_snapshot_to_evidence_carries_chart_non_directional():
     snap = build_price_snapshot(
         "XAUUSD", {"M5": _uptrend(), "M15": _uptrend(start=90.0), "H1": _uptrend(start=80.0)},
-        tick=SimpleNamespace(bid=104.0, ask=104.2, mid=104.1),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.2, mid=104.1,
+        ),
     )
     ev = snapshot_to_evidence("XAUUSD", snap)
     assert len(ev) == 1
@@ -149,7 +155,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
     candles = {"M5": _uptrend()}
 
     verified = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=timestamp, source_timestamp_verified=True, quote_kind="bid_ask",
     )
     verified_evidence = snapshot_to_evidence(
@@ -159,7 +165,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
     assert verified_evidence.source_timestamp_epoch == timestamp.timestamp()
 
     unverified = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=timestamp, source_timestamp_verified=False, quote_kind="bid_ask",
     )
     unverified_evidence = snapshot_to_evidence(
@@ -169,7 +175,7 @@ def test_source_time_requires_explicit_verified_broker_tick():
     assert unverified_evidence.source_timestamp_epoch is None
 
     naive = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=datetime(2026, 10, 31, 12, 0, 0),
         source_timestamp_verified=True, quote_kind="bid_ask",
     )
