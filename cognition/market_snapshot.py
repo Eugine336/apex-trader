@@ -553,7 +553,7 @@ def build_price_snapshot(
     if tick is not None:
         requested_symbol = str(symbol or "").strip().upper()
         tick_symbol = str(getattr(tick, "symbol", "") or "").strip().upper()
-        if tick_symbol and tick_symbol != requested_symbol:
+        if not requested_symbol or tick_symbol != requested_symbol:
             tick = None
     if tick is not None:
         bid = _f(getattr(tick, "bid", 0.0))
@@ -682,6 +682,8 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
         )
         price_source_verified = bool(
             isinstance(price, dict)
+            and str(price.get("symbol", "") or "").strip().upper()
+                == str(symbol or "").strip().upper()
             and price.get("source_timestamp_verified") is True
             and price_epoch is not None
         )
