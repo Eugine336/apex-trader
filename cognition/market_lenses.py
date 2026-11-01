@@ -82,11 +82,13 @@ def _rows(
     attrs = attrs if isinstance(attrs, dict) else {}
     source_symbol = str(attrs.get("source_symbol", "") or "").strip().upper()
     source_origin = str(attrs.get("source_timestamp_origin", "") or "").strip()
+    source_broker = str(attrs.get("source_broker", "") or "").strip().lower()
     source_attested = bool(
         attrs.get("source_timestamp_verified") is True
         and source_symbol == str(expected_symbol or "").strip().upper()
         and attrs.get("source_timestamp_unit") == "unix_seconds"
         and source_origin == "broker_ohlcv"
+        and bool(source_broker)
     )
     try:
         if getattr(frame, "empty", False):
@@ -145,6 +147,10 @@ def _rows(
             row_data["source_timestamp_verified"] = bool(
                 source_attested and epoch is not None
             )
+            row_data["source_timestamp_origin"] = (
+                source_origin if source_attested else None
+            )
+            row_data["source_broker"] = source_broker if source_attested else None
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
@@ -588,6 +594,8 @@ def _record(
             "data_basis": "completed_ohlc",
             "source_timestamp_known": known_source_time,
             "source_bar_epoch": source_epoch,
+            "source_timestamp_origin": current.get("source_timestamp_origin"),
+            "source_broker": current.get("source_broker"),
         },
         timestamp_epoch=sampled_at,
         timestamp_iso=timestamp_iso,
