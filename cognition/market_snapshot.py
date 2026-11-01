@@ -17,9 +17,9 @@ real trader sees, end to end:
   a dip within an uptrend (or a bounce within a downtrend) is legible, and,
 * when managing, the Brain's own open position (live P&L in R).
 
-It all becomes one structured :class:`~cognition.contracts.Evidence` so the
-reasoner literally sees the chart, the tape and the book alongside the
-analytical reads. The endgame is a real market; a demo feed that omits depth is
+The chart/tape/book aggregate and the live quote are emitted as separate
+structured :class:`~cognition.contracts.Evidence` records so source-time
+provenance for the quote cannot be inherited by forming candle observations. The endgame is a real market; a demo feed that omits depth is
 no reason not to reconstruct it — depth simply reads empty until the feed
 supplies it, and every field is fail-open.
 
@@ -626,7 +626,7 @@ def _trend_agreement(tfs_out: dict) -> float:
 
 
 def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
-    """Turn a price snapshot into one multi-timeframe Evidence (the chart).
+    """Emit a provisional chart aggregate and a separately attributed live quote.
 
     Part XXV — the chart is raw market reality, so ``polarity`` is always 0 (no
     directional lean); ``confidence`` reflects only how *aligned* the observed
