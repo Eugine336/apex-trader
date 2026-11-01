@@ -171,6 +171,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         measurements=artifact.to_measurements(),
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=3600.0,
     ))
     return ms
