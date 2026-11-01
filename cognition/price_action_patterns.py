@@ -94,6 +94,7 @@ def _rows(
             == str(expected_symbol or "").strip().upper()
         and attrs.get("source_timestamp_unit") == "unix_seconds"
         and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+        and bool(str(attrs.get("source_broker", "") or "").strip())
     )
     try:
         if getattr(frame, "empty", False):
@@ -135,6 +136,14 @@ def _rows(
                 item["timestamp_epoch"] = source_epoch
             item["source_timestamp_verified"] = bool(
                 source_attested and source_epoch is not None
+            )
+            item["source_timestamp_origin"] = (
+                str(attrs.get("source_timestamp_origin", "") or "")
+                if source_attested else None
+            )
+            item["source_broker"] = (
+                str(attrs.get("source_broker", "") or "").strip().lower()
+                if source_attested else None
             )
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None:
@@ -279,6 +288,8 @@ def detect_m1_price_action(
             if current.get("source_timestamp_verified") is True else None
         ),
         "source_timestamp_known": current.get("source_timestamp_verified") is True,
+        "source_timestamp_origin": current.get("source_timestamp_origin"),
+        "source_broker": current.get("source_broker"),
         "facts": facts,
     }
 
