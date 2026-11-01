@@ -242,8 +242,11 @@ def detect_m1_price_action(frame: Any) -> dict[str, Any]:
         "current_range": candle_range,
         "average_prior_range": average_range,
         "volume_spike_multiple": volume_multiple,
-        "source_bar_epoch": current.get("timestamp_epoch"),
-        "source_timestamp_known": bool(current.get("timestamp_epoch")),
+        "source_bar_epoch": (
+            current.get("timestamp_epoch")
+            if current.get("source_timestamp_verified") is True else None
+        ),
+        "source_timestamp_known": current.get("source_timestamp_verified") is True,
         "facts": facts,
     }
 
@@ -253,7 +256,7 @@ def evidence_from_m1_candles(
 ) -> Evidence | None:
     """Convert M1 price-action measurements into one neutral Evidence record."""
     try:
-        measurements = detect_m1_price_action(frame)
+        measurements = detect_m1_price_action(frame, expected_symbol=symbol)
         if not measurements:
             return None
         facts = list(measurements.pop("facts", []))
