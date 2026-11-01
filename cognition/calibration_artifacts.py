@@ -596,6 +596,12 @@ class CalibrationProducer:
                                 break
                             if (
                                 outcome_quote.get("source_timestamp_verified") is not True
+                                or str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                                    not in {"bid_ask", "mid_only"}
+                                or (
+                                    str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                                    == "mid_only" and outcome_quote_ask != outcome_quote_bid
+                                )
                                 or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
                                 or str(outcome_quote.get("evidence_id", "") or "")
                                     != str(outcome.get("outcome_evidence_id", "") or "")
