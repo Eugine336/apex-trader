@@ -47,6 +47,7 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
         "source_symbol": "XAUUSD",
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
     })
     return frame
 
