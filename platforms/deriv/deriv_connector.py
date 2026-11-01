@@ -1178,6 +1178,10 @@ class DerivConnector(BaseConnector):
             )
         tick_time = datetime.fromtimestamp(epoch, tz=timezone.utc)
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        if age < -1.0:
+            raise RuntimeError(
+                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of UTC clock"
+            )
         max_tick_age = getattr(self, "_max_tick_age_seconds", 120.0)
         if age > max_tick_age:
             logger.warning(
