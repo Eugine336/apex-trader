@@ -29,6 +29,7 @@ class Tick:
     # Set only by a broker adapter that preserves and validates the provider's
     # original quote timestamp. Receipt/analysis timestamps are not source time.
     source_timestamp_verified: bool = False
+    quote_kind: str = "unknown"
 
     def __post_init__(self) -> None:
         timestamp = self.timestamp
@@ -42,6 +43,10 @@ class Tick:
             "source_timestamp_verified",
             self.source_timestamp_verified is True and aware,
         )
+        quote_kind = str(self.quote_kind or "unknown").strip().lower()
+        if quote_kind not in {"bid_ask", "mid_only"}:
+            quote_kind = "unknown"
+        object.__setattr__(self, "quote_kind", quote_kind)
 
     @property
     def mid(self) -> float:
