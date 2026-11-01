@@ -2890,8 +2890,8 @@ class EventDrivenSystem:
                         == str(expected_symbol or "").strip().upper()
                     and attrs.get("source_timestamp_unit") == "unix_seconds"
                     and attrs.get("source_timestamp_origin") in {
-                        "mt5.copy_rates_from_pos.time",
-                        "deriv.ticks_history.candles.epoch",
+                        "broker_ohlcv",
+                        "broker_ohlcv",
                     }
                 ):
                     return None
