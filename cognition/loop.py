@@ -1308,13 +1308,15 @@ class CognitionLoop:
                 if not isinstance(quote, dict):
                     continue
                 evidence_symbol = str(getattr(evidence, "symbol", "") or "").strip().upper()
-                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                quote_symbol = str(quote.get("symbol") or "").strip().upper()
                 if (
                     evidence_symbol != symbol
                     or quote_symbol != symbol
                     or getattr(evidence, "source_timestamp_verified", False) is not True
                     or getattr(evidence, "provisional", False) is True
                     or quote.get("source_timestamp_verified") is not True
+                    or str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                        not in {"bid_ask", "mid_only"}
                 ):
                     continue
                 try:
@@ -1326,6 +1328,10 @@ class CognitionLoop:
                         math.isfinite(bid) and math.isfinite(ask)
                         and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
                         and bid > 0.0 and ask >= bid
+                        and (
+                            str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            != "mid_only" or ask == bid
+                        )
                         and 0.0 < source_epoch <= cutoff
                         and abs(source_epoch - quote_epoch) <= 1e-6
                     ):
@@ -1333,6 +1339,7 @@ class CognitionLoop:
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
                             "ask": ask,
+                            "quote_kind": str(quote.get("quote_kind", "unknown") or "unknown").strip().lower(),
                             "source_timestamp_epoch": source_epoch,
                             "source_timestamp_verified": (
                                 getattr(evidence, "source_timestamp_verified", False) is True
