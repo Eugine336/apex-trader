@@ -48,6 +48,7 @@ def _payload(symbol: str = "XAUUSD", observed_at: datetime | None = None) -> dic
         "source_timestamp_verified": True,
         "quote": {
             "symbol": symbol,
+            "quote_kind": "bid_ask",
             "bid": 2000.0,
             "ask": 2000.2,
             "spread": 0.2,
