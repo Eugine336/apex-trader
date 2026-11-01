@@ -140,6 +140,22 @@ def _rows(
             if volume is not None:
                 item["volume"] = max(0.0, volume)
             out.append(item)
+        if source_attested:
+            source_epochs = [row.get("timestamp_epoch") for row in out]
+            ordered = (
+                len(source_epochs) == len(out)
+                and all(
+                    isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
+                    for epoch in source_epochs
+                )
+                and all(
+                    float(right) > float(left)
+                    for left, right in zip(source_epochs, source_epochs[1:])
+                )
+            )
+            if not ordered:
+                for row in out:
+                    row["source_timestamp_verified"] = False
         return out
     except Exception:  # noqa: BLE001 — market observer must not break cognition
         return []
