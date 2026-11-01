@@ -263,7 +263,6 @@ def test_no_opportunity_decision_is_also_recorded_in_candidate_universe():
 
 
 def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_calibration():
-    import json
 
     class Store:
         def __init__(self):
@@ -471,7 +470,6 @@ def test_market_lenses_do_not_invent_volume_indicators_without_volume():
 
 
 def test_calibration_producer_requires_complete_selection_aware_chronological_data():
-    import json
 
     from cognition.calibration_artifacts import (
         CalibrationProducer,
@@ -965,7 +963,6 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
 
 
 def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportunity_ids():
-    import json
     from types import SimpleNamespace
 
     class Store:
