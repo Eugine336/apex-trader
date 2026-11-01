@@ -116,6 +116,7 @@ def _rich_state(
         uncertainty=unc,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     # Activated-opportunity tests need fresh, market-derived payoff geometry;
