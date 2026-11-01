@@ -46,7 +46,7 @@ def test_snapshot_shapes_and_trend():
     assert m5["trend"] == "up"
     assert m5["high"] >= m5["low"]
     assert len(m5["bars"]) == 8 and len(m5["bars"][0]) == 4
-    assert snap["price"]["spread"] == round(104.3 - 104.0, 2)
+    assert abs(snap["price"]["spread"] - (104.3 - 104.0)) < 1e-9
 
 
 def test_bars_capped_and_dicts_accepted():
