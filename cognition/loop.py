@@ -1085,6 +1085,7 @@ class CognitionLoop:
                     data["state"] = "UNKNOWN"
                     data["candidate_family"] = "unclassified"
                     data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                    data["calibration_candidate"] = False
                 elif oid in seen_opportunity_ids:
                     # Retain conflicting duplicates as malformed records rather
                     # than creating multiple calibratable snapshots for one ID.
@@ -1093,18 +1094,38 @@ class CognitionLoop:
                     data["state"] = "UNKNOWN"
                     data["candidate_family"] = "unclassified"
                     data["candidate_parse_status"] = "DUPLICATE_STABLE_ID"
+                    data["calibration_candidate"] = False
                 seen_opportunity_ids.add(oid)
                 records.append(("opportunity", oid, data))
             hypothesis_index = 0
+            hypothesis_signatures: dict[str, tuple[str, str, str, str]] = {}
             def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
                 nonlocal hypothesis_index
                 current_index = hypothesis_index
                 hypothesis_index += 1
                 data = _json_safe(data)
+                data = data if isinstance(data, dict) else {}
                 hid = str(
                     data.get("hypothesis_id", "")
                     or getattr(hypothesis, "hypothesis_id", "")
                     or ""
+                )
+                direction = str(
+                    data.get("direction_implication")
+                    or getattr(hypothesis, "direction_implication", "")
+                    or ""
+                ).upper()
+                family = candidate_family_from(
+                    data.get("candidate_family")
+                    or data.get("hypothesis_kind")
+                    or data.get("opportunity_type")
+                    or data.get("strategy_family")
+                )
+                signature = (
+                    direction,
+                    family,
+                    str(data.get("thesis") or data.get("description") or ""),
+                    str(data.get("state") or data.get("hypothesis_kind") or ""),
                 )
                 if not hid:
                     # Missing native IDs remain observable and non-actionable.
@@ -1116,22 +1137,23 @@ class CognitionLoop:
                     data["calibration_candidate"] = False
                     records.append(("hypothesis", hid, data))
                     return
-                if any(
-                    kind == "hypothesis" and ref == hid
-                    for kind, ref, _ in records
-                ):
+                previous_signature = hypothesis_signatures.get(hid)
+                if previous_signature is not None:
+                    # The same native hypothesis may be serialized in both the
+                    # decision field and questions_answered. Deduplicate identical
+                    # copies; retain conflicting reuse of an ID as malformed.
+                    if previous_signature == signature:
+                        return
+                    malformed_id = f"malformed:duplicate-hypothesis:{current_index}"
+                    data["hypothesis_id"] = malformed_id
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "DUPLICATE_STABLE_ID"
+                    data["calibration_candidate"] = False
+                    records.append(("hypothesis", malformed_id, data))
                     return
-                direction = str(
-                    data.get("direction_implication")
-                    or getattr(hypothesis, "direction_implication", "")
-                    or ""
-                ).upper()
-                data["candidate_family"] = candidate_family_from(
-                    data.get("candidate_family")
-                    or data.get("hypothesis_kind")
-                    or data.get("opportunity_type")
-                    or data.get("strategy_family")
-                )
+                hypothesis_signatures[hid] = signature
+                data["candidate_family"] = family
                 data["calibration_candidate"] = False
                 if direction in {"LONG", "SHORT"}:
                     # Preserve every native directional hypothesis in the
