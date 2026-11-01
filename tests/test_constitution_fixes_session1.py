@@ -87,6 +87,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         ms.add(Evidence(source_module=f"m{i}", domain=domains[i % len(domains)],
                         symbol=symbol, confidence=conf, uncertainty=1.0 - conf,
                         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+                        source_timestamp_verified=True,
                         relevance_horizon_seconds=900.0))
     # These fixtures exercise reasoning/EV behavior, not missing-quorum behavior.
     ms.add(Evidence(
@@ -98,6 +99,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
         uncertainty=1.0 - conf,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=900.0,
     ))
     extras = list(extra or [])
@@ -114,6 +116,7 @@ def _evidence_state(symbol="EURUSD", conf=0.9, n=6, extra=None, target_high=1.11
             uncertainty=1.0 - conf,
             measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "test live quote"},
             timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+            source_timestamp_verified=True,
             relevance_horizon_seconds=60.0,
         ))
     for e in extras:
