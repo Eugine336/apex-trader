@@ -45,7 +45,15 @@ def _payload(symbol: str = "XAUUSD", observed_at: datetime | None = None) -> dic
         "venue": "MT5",
         "market_open": True,
         "data_quality_ok": True,
-        "quote": {"bid": 2000.0, "ask": 2000.2, "spread": 0.2},
+        "source_timestamp_verified": True,
+        "quote": {
+            "symbol": symbol,
+            "bid": 2000.0,
+            "ask": 2000.2,
+            "spread": 0.2,
+            "timestamp_epoch": now.timestamp(),
+            "source_timestamp_verified": True,
+        },
         "completed_bars": {
             "M5": [{
                 "close_time": now.isoformat(),
