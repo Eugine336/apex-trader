@@ -82,6 +82,7 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
         },
         timestamp_epoch=time.time(),
         source_timestamp_epoch=time.time(),
+        source_timestamp_verified=True,
         relevance_horizon_seconds=900.0,
     )
 
@@ -157,6 +158,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
         measurements=artifact.to_measurements(),
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=3600.0,
     ))
     return ms
