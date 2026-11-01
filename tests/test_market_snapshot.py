@@ -80,8 +80,13 @@ def test_snapshot_to_evidence_carries_chart_non_directional():
         ),
     )
     ev = snapshot_to_evidence("XAUUSD", snap)
-    assert len(ev) == 1
-    e = ev[0]
+    assert len(ev) == 2
+    e = next(item for item in ev if item.source_module == "market.price_action")
+    quote_evidence = next(item for item in ev if item.source_module == "market.live_quote")
+    assert e.provisional is True
+    assert e.source_timestamp_verified is False
+    assert quote_evidence.provisional is False
+    assert quote_evidence.source_timestamp_verified is False
     assert e.source_module == "market.price_action"
     assert e.domain.value == "multi_timeframe"
     assert e.polarity == 0.0           # Part XXV — the chart is reality, not a lean
@@ -171,9 +176,12 @@ def test_source_time_requires_explicit_verified_broker_tick():
         symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=timestamp, source_timestamp_verified=True, quote_kind="bid_ask",
     )
-    verified_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
-    )[0]
+    verified_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert verified_evidence.source_timestamp_verified is True
     assert verified_evidence.source_timestamp_epoch == timestamp.timestamp()
 
@@ -181,9 +189,12 @@ def test_source_time_requires_explicit_verified_broker_tick():
         symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=timestamp, source_timestamp_verified=False, quote_kind="bid_ask",
     )
-    unverified_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
-    )[0]
+    unverified_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert unverified_evidence.source_timestamp_verified is False
     assert unverified_evidence.source_timestamp_epoch is None
 
@@ -192,9 +203,12 @@ def test_source_time_requires_explicit_verified_broker_tick():
         timestamp=datetime(2026, 10, 31, 12, 0, 0),
         source_timestamp_verified=True, quote_kind="bid_ask",
     )
-    naive_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
-    )[0]
+    naive_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert naive_evidence.source_timestamp_verified is False
     assert naive_evidence.source_timestamp_epoch is None
 
