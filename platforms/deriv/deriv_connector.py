@@ -1198,6 +1198,9 @@ class DerivConnector(BaseConnector):
             ask=quote,
             spread=0.0,
             time=tick_time,
+            source_timestamp_verified=True,
+            quote_kind="mid_only",
+            symbol=str(symbol or "").strip().upper(),
         )
 
     def get_tick(self, symbol: str) -> TickData:
