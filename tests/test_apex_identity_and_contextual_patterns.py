@@ -343,6 +343,12 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         periods=len(frame),
         freq="5min",
     )
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "EURUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+    })
     evidence = analyze_market_frames(
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
     )
