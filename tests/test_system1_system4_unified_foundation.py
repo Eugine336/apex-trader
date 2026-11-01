@@ -1012,6 +1012,8 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
     assert len(valid) == 1
     assert valid[0].source_timestamp_verified is True
     assert valid[0].source_timestamp_epoch == now
+    assert valid[0].timestamp_epoch >= time.time() - 5.0
+    assert valid[0].timestamp_epoch != valid[0].source_timestamp_epoch
 
     missing_attestation = dict(payload)
     missing_attestation.pop("source_timestamp_verified")
