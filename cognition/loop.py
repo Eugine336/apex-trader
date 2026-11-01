@@ -1034,7 +1034,7 @@ class CognitionLoop:
                     continue
                 evidence_id = str(getattr(item, "evidence_id", "") or "")
                 evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
-                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                quote_symbol = str(quote.get("symbol") or "").strip().upper()
                 try:
                     bid, ask = float(quote.get("bid")), float(quote.get("ask"))
                     source_epoch = float(getattr(item, "source_timestamp_epoch", None))
@@ -1044,6 +1044,12 @@ class CognitionLoop:
                         and evidence_symbol == target_symbol
                         and quote_symbol == target_symbol
                         and quote.get("source_timestamp_verified") is True
+                        and str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            in {"bid_ask", "mid_only"}
+                        and (
+                            str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            != "mid_only" or ask == bid
+                        )
                         and math.isfinite(bid) and math.isfinite(ask)
                         and bid > 0.0 and ask >= bid
                         and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
@@ -1056,6 +1062,7 @@ class CognitionLoop:
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
                             "ask": ask,
+                            "quote_kind": str(quote.get("quote_kind", "unknown") or "unknown").strip().lower(),
                             "timestamp_epoch": quote_epoch,
                             "source_timestamp_epoch": source_epoch,
                             "source_timestamp_verified": True,
@@ -1073,6 +1080,7 @@ class CognitionLoop:
             opportunities = list(getattr(decision, "opportunities", []) or [])
             hypotheses = list(getattr(decision, "hypotheses", []) or [])
             records: list[tuple[str, str, dict]] = []
+            seen_opportunity_ids: set[str] = set()
             for index, opportunity in enumerate(opportunities):
                 data = _json_safe(
                     opportunity.to_dict() if callable(getattr(opportunity, "to_dict", None)) else {}
@@ -1084,30 +1092,75 @@ class CognitionLoop:
                     data["state"] = "UNKNOWN"
                     data["candidate_family"] = "unclassified"
                     data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                    data["calibration_candidate"] = False
+                elif oid in seen_opportunity_ids:
+                    # Retain conflicting duplicates as malformed records rather
+                    # than creating multiple calibratable snapshots for one ID.
+                    oid = f"malformed:duplicate-opportunity:{index}"
+                    data["id"] = oid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "DUPLICATE_STABLE_ID"
+                    data["calibration_candidate"] = False
+                seen_opportunity_ids.add(oid)
                 records.append(("opportunity", oid, data))
+            hypothesis_index = 0
+            hypothesis_signatures: dict[str, tuple[str, str, str, str]] = {}
             def append_hypothesis(data: dict, hypothesis: Any = None) -> None:
+                nonlocal hypothesis_index
+                current_index = hypothesis_index
+                hypothesis_index += 1
                 data = _json_safe(data)
+                data = data if isinstance(data, dict) else {}
                 hid = str(
                     data.get("hypothesis_id", "")
                     or getattr(hypothesis, "hypothesis_id", "")
                     or ""
                 )
-                if not hid or any(
-                    kind == "hypothesis" and ref == hid
-                    for kind, ref, _ in records
-                ):
-                    return
                 direction = str(
                     data.get("direction_implication")
                     or getattr(hypothesis, "direction_implication", "")
                     or ""
                 ).upper()
-                data["candidate_family"] = candidate_family_from(
+                family = candidate_family_from(
                     data.get("candidate_family")
                     or data.get("hypothesis_kind")
                     or data.get("opportunity_type")
                     or data.get("strategy_family")
                 )
+                signature = (
+                    direction,
+                    family,
+                    str(data.get("thesis") or data.get("description") or ""),
+                    str(data.get("state") or data.get("hypothesis_kind") or ""),
+                )
+                if not hid:
+                    # Missing native IDs remain observable and non-actionable.
+                    hid = f"malformed-hypothesis:{current_index}"
+                    data["hypothesis_id"] = hid
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "MISSING_STABLE_ID"
+                    data["calibration_candidate"] = False
+                    records.append(("hypothesis", hid, data))
+                    return
+                previous_signature = hypothesis_signatures.get(hid)
+                if previous_signature is not None:
+                    # The same native hypothesis may be serialized in both the
+                    # decision field and questions_answered. Deduplicate identical
+                    # copies; retain conflicting reuse of an ID as malformed.
+                    if previous_signature == signature:
+                        return
+                    malformed_id = f"malformed:duplicate-hypothesis:{current_index}"
+                    data["hypothesis_id"] = malformed_id
+                    data["state"] = "UNKNOWN"
+                    data["candidate_family"] = "unclassified"
+                    data["candidate_parse_status"] = "DUPLICATE_STABLE_ID"
+                    data["calibration_candidate"] = False
+                    records.append(("hypothesis", malformed_id, data))
+                    return
+                hypothesis_signatures[hid] = signature
+                data["candidate_family"] = family
                 data["calibration_candidate"] = False
                 if direction in {"LONG", "SHORT"}:
                     # Preserve every native directional hypothesis in the
@@ -1162,6 +1215,7 @@ class CognitionLoop:
                     "thesis": str(getattr(decision, "thesis", "") or ""),
                     "do_nothing_considered": bool(getattr(decision, "do_nothing_considered", False)),
                 }))
+            persisted_records = []
             for candidate_kind, candidate_ref, candidate_data in records:
                 candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
                 state = str(candidate_data.get("state", "") or candidate_data.get("hypothesis_kind", "") or "considered")
@@ -1217,6 +1271,22 @@ class CognitionLoop:
                     payload=payload,
                     durable=True,
                 )
+                persisted_records.append({
+                    "candidate_id": candidate_id,
+                    "candidate_kind": candidate_kind,
+                    "candidate_ref": candidate_ref,
+                    "candidate_parse_status": str(
+                        candidate_data.get("candidate_parse_status", "") or ""
+                    ),
+                })
+            # Keep exact identities for the immediate disposition write. This
+            # avoids reconstructing candidate IDs from a reduced DecisionPackage
+            # when a test or alternate event store cannot query its own snapshots.
+            cache = getattr(self, "_candidate_snapshot_ids_by_decision", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._candidate_snapshot_ids_by_decision = cache
+            cache[decision_id] = persisted_records
         except Exception as exc:  # noqa: BLE001 — preserve failure visibility; never invent a durable acknowledgement
             logger.error(
                 "[cognition-loop] durable candidate snapshot failed for %s: %s",
@@ -1255,13 +1325,15 @@ class CognitionLoop:
                 if not isinstance(quote, dict):
                     continue
                 evidence_symbol = str(getattr(evidence, "symbol", "") or "").strip().upper()
-                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                quote_symbol = str(quote.get("symbol") or "").strip().upper()
                 if (
                     evidence_symbol != symbol
                     or quote_symbol != symbol
                     or getattr(evidence, "source_timestamp_verified", False) is not True
                     or getattr(evidence, "provisional", False) is True
                     or quote.get("source_timestamp_verified") is not True
+                    or str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                        not in {"bid_ask", "mid_only"}
                 ):
                     continue
                 try:
@@ -1273,6 +1345,10 @@ class CognitionLoop:
                         math.isfinite(bid) and math.isfinite(ask)
                         and math.isfinite(source_epoch) and math.isfinite(quote_epoch)
                         and bid > 0.0 and ask >= bid
+                        and (
+                            str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                            != "mid_only" or ask == bid
+                        )
                         and 0.0 < source_epoch <= cutoff
                         and abs(source_epoch - quote_epoch) <= 1e-6
                     ):
@@ -1280,6 +1356,7 @@ class CognitionLoop:
                             "mid": (bid + ask) / 2.0,
                             "bid": bid,
                             "ask": ask,
+                            "quote_kind": str(quote.get("quote_kind", "unknown") or "unknown").strip().lower(),
                             "source_timestamp_epoch": source_epoch,
                             "source_timestamp_verified": (
                                 getattr(evidence, "source_timestamp_verified", False) is True
@@ -1534,7 +1611,10 @@ class CognitionLoop:
         """Record the final Brain/portfolio disposition without changing authority."""
         try:
             from persistence.event_store import get_event_store
-            from persistence.domain_events import COGNITIVE_CANDIDATE_DISPOSITION
+            from persistence.domain_events import (
+                COGNITIVE_CANDIDATE_DISPOSITION,
+                COGNITIVE_CANDIDATE_SNAPSHOT,
+            )
 
             decision = getattr(output, "decision", None)
             if decision is None:
@@ -1568,36 +1648,110 @@ class CognitionLoop:
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
-            opportunities = list(getattr(decision, "opportunities", []) or [])
-            hypotheses = list(getattr(decision, "hypotheses", []) or [])
-            records: list[tuple[str, str]] = []
-            for item in opportunities:
-                candidate_ref = str(getattr(item, "opportunity_id", "") or "")
-                if candidate_ref:
-                    records.append(("opportunity", candidate_ref))
-            for item in hypotheses:
-                candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
-                if candidate_ref:
-                    records.append(("hypothesis", candidate_ref))
+            import json
+            symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
             questions = getattr(decision, "questions_answered", {}) or {}
-            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
-                raw_records = questions.get(key, [])
-                if isinstance(raw_records, list):
+            questions = questions if isinstance(questions, dict) else {}
+            records: list[dict[str, str]] = []
+            cache = getattr(self, "_candidate_snapshot_ids_by_decision", {})
+            cached_records = cache.get(decision_id) if isinstance(cache, dict) else None
+            if isinstance(cached_records, list):
+                records.extend(
+                    dict(item) for item in cached_records if isinstance(item, dict)
+                )
+            query_events = getattr(store, "query_events", None)
+            if not records and callable(query_events):
+                snapshot_rows = query_events(
+                    severity_min="DEBUG",
+                    event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
+                    symbol=symbol,
+                    limit=10000,
+                    offset=0,
+                ) or []
+                for row in snapshot_rows:
+                    try:
+                        snapshot = json.loads(row.get("payload_json") or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(snapshot, dict):
+                        continue
+                    if str(snapshot.get("decision_id", "") or "") != decision_id:
+                        continue
+                    candidate_id = str(snapshot.get("candidate_id", "") or "")
+                    if not candidate_id or any(
+                        item["candidate_id"] == candidate_id for item in records
+                    ):
+                        continue
+                    candidate = snapshot.get("candidate")
+                    candidate = candidate if isinstance(candidate, dict) else {}
+                    records.append({
+                        "candidate_id": candidate_id,
+                        "candidate_kind": str(snapshot.get("candidate_kind", "") or ""),
+                        "candidate_ref": str(snapshot.get("candidate_ref", "") or ""),
+                        "candidate_parse_status": str(
+                            candidate.get("candidate_parse_status", "") or ""
+                        ),
+                    })
+            if not records:
+                # Compatibility fallback for stores without snapshot querying.
+                opportunities = list(getattr(decision, "opportunities", []) or [])
+                hypotheses = list(getattr(decision, "hypotheses", []) or [])
+                for item in opportunities:
+                    candidate_ref = str(getattr(item, "opportunity_id", "") or "")
+                    if candidate_ref:
+                        records.append({
+                            "candidate_id": f"{decision_id}:opportunity:{candidate_ref}",
+                            "candidate_kind": "opportunity",
+                            "candidate_ref": candidate_ref,
+                            "candidate_parse_status": "",
+                        })
+                for item in hypotheses:
+                    candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
+                    if candidate_ref:
+                        candidate_id = f"{decision_id}:hypothesis:{candidate_ref}"
+                        if not any(row["candidate_id"] == candidate_id for row in records):
+                            records.append({
+                                "candidate_id": candidate_id,
+                                "candidate_kind": "hypothesis",
+                                "candidate_ref": candidate_ref,
+                                "candidate_parse_status": "",
+                            })
+                # Some native BrainReasoner hypotheses are persisted in the
+                # decision's structured question payload rather than the
+                # legacy hypotheses attribute. Preserve those exact identities
+                # when a store cannot query the already-written snapshots.
+                for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                    raw_records = questions.get(key, [])
+                    if not isinstance(raw_records, list):
+                        continue
                     for item in raw_records:
                         if not isinstance(item, dict):
                             continue
                         candidate_ref = str(item.get("hypothesis_id", "") or "")
-                        if candidate_ref and ("hypothesis", candidate_ref) not in records:
-                            records.append(("hypothesis", candidate_ref))
+                        if not candidate_ref:
+                            continue
+                        candidate_id = f"{decision_id}:hypothesis:{candidate_ref}"
+                        if any(row["candidate_id"] == candidate_id for row in records):
+                            continue
+                        records.append({
+                            "candidate_id": candidate_id,
+                            "candidate_kind": "hypothesis",
+                            "candidate_ref": candidate_ref,
+                            "candidate_parse_status": "",
+                        })
             if not records:
-                records.append(("decision_outcome", decision_id))
-            questions = getattr(decision, "questions_answered", {}) or {}
-            for candidate_kind, candidate_ref in records:
-                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                records.append({
+                    "candidate_id": f"{decision_id}:decision_outcome:{decision_id}",
+                    "candidate_kind": "decision_outcome",
+                    "candidate_ref": decision_id,
+                    "candidate_parse_status": "",
+                })
+            for record in records:
+                candidate_id = record["candidate_id"]
                 store.emit(
                     COGNITIVE_CANDIDATE_DISPOSITION,
                     "DEBUG",
-                    symbol=str(getattr(decision, "symbol", "") or ""),
+                    symbol=symbol,
                     correlation_id=decision_id,
                     parent_id=candidate_id,
                     source_module="cognition.loop.candidate_disposition",
@@ -1605,7 +1759,10 @@ class CognitionLoop:
                         "schema_version": "1.0.0",
                         "candidate_id": candidate_id,
                         "decision_id": decision_id,
-                        "symbol": str(getattr(decision, "symbol", "") or ""),
+                        "symbol": symbol,
+                        "candidate_kind": record["candidate_kind"],
+                        "candidate_ref": record["candidate_ref"],
+                        "candidate_parse_status": record["candidate_parse_status"],
                         "stage": str(stage or "unknown"),
                         "disposition": disposition,
                         "decision_type": decision_type,

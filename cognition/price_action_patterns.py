@@ -80,10 +80,22 @@ def _raw_row_value(row: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
-    """Read OHLC(V) and source time from a pandas-like frame without importing pandas."""
+def _rows(
+    frame: Any, limit: int = 30, *, expected_symbol: str = "",
+) -> list[dict[str, Any]]:
+    """Read OHLC(V) with source-time attestation from the broker adapter."""
     if frame is None:
         return []
+    attrs = getattr(frame, "attrs", {})
+    attrs = attrs if isinstance(attrs, dict) else {}
+    source_attested = bool(
+        attrs.get("source_timestamp_verified") is True
+        and str(attrs.get("source_symbol", "") or "").strip().upper()
+            == str(expected_symbol or "").strip().upper()
+        and attrs.get("source_timestamp_unit") == "unix_seconds"
+        and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+        and bool(str(attrs.get("source_broker", "") or "").strip())
+    )
     try:
         if getattr(frame, "empty", False):
             return []
@@ -122,18 +134,47 @@ def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
                     source_epoch = _timestamp_epoch(row_index)
             if source_epoch is not None:
                 item["timestamp_epoch"] = source_epoch
+            item["source_timestamp_verified"] = bool(
+                source_attested and source_epoch is not None
+            )
+            item["source_timestamp_origin"] = (
+                str(attrs.get("source_timestamp_origin", "") or "")
+                if source_attested else None
+            )
+            item["source_broker"] = (
+                str(attrs.get("source_broker", "") or "").strip().lower()
+                if source_attested else None
+            )
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None:
                 item["volume"] = max(0.0, volume)
             out.append(item)
+        if source_attested:
+            source_epochs = [row.get("timestamp_epoch") for row in out]
+            ordered = (
+                len(source_epochs) == len(out)
+                and all(
+                    isinstance(epoch, (int, float)) and isfinite(float(epoch))
+                    for epoch in source_epochs
+                )
+                and all(
+                    float(right) > float(left)
+                    for left, right in zip(source_epochs, source_epochs[1:])
+                )
+            )
+            if not ordered:
+                for row in out:
+                    row["source_timestamp_verified"] = False
         return out
     except Exception:  # noqa: BLE001 — market observer must not break cognition
         return []
 
 
-def detect_m1_price_action(frame: Any) -> dict[str, Any]:
+def detect_m1_price_action(
+    frame: Any, *, expected_symbol: str = "",
+) -> dict[str, Any]:
     """Return evidence measurements from recent M1 bars; never returns a trade."""
-    bars = _rows(frame)
+    bars = _rows(frame, expected_symbol=expected_symbol)
     if len(bars) < 3:
         return {}
 
@@ -242,8 +283,13 @@ def detect_m1_price_action(frame: Any) -> dict[str, Any]:
         "current_range": candle_range,
         "average_prior_range": average_range,
         "volume_spike_multiple": volume_multiple,
-        "source_bar_epoch": current.get("timestamp_epoch"),
-        "source_timestamp_known": bool(current.get("timestamp_epoch")),
+        "source_bar_epoch": (
+            current.get("timestamp_epoch")
+            if current.get("source_timestamp_verified") is True else None
+        ),
+        "source_timestamp_known": current.get("source_timestamp_verified") is True,
+        "source_timestamp_origin": current.get("source_timestamp_origin"),
+        "source_broker": current.get("source_broker"),
         "facts": facts,
     }
 
@@ -253,7 +299,7 @@ def evidence_from_m1_candles(
 ) -> Evidence | None:
     """Convert M1 price-action measurements into one neutral Evidence record."""
     try:
-        measurements = detect_m1_price_action(frame)
+        measurements = detect_m1_price_action(frame, expected_symbol=symbol)
         if not measurements:
             return None
         facts = list(measurements.pop("facts", []))
@@ -269,7 +315,8 @@ def evidence_from_m1_candles(
             bool(measurements.get("source_timestamp_known"))
             and source_epoch > 0
         )
-        sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
+        # Keep local evidence creation time separate from the broker candle time.
+        sampled_at = datetime.now(timezone.utc).timestamp()
         timestamp_iso = datetime.fromtimestamp(
             sampled_at, tz=timezone.utc,
         ).isoformat()
@@ -289,7 +336,11 @@ def evidence_from_m1_candles(
             measurements=measurements,
             timestamp_epoch=sampled_at,
             timestamp_iso=timestamp_iso,
+            source_timestamp_epoch=source_epoch if known_source_time else None,
+            source_timestamp_verified=known_source_time,
             relevance_horizon_seconds=60.0,
+            data_basis="broker_ohlcv_m1" if known_source_time else "unverified_m1_context",
+            provisional=bool(provisional),
         )
     except Exception:  # noqa: BLE001
         return None

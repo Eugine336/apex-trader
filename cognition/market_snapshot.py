@@ -17,9 +17,9 @@ real trader sees, end to end:
   a dip within an uptrend (or a bounce within a downtrend) is legible, and,
 * when managing, the Brain's own open position (live P&L in R).
 
-It all becomes one structured :class:`~cognition.contracts.Evidence` so the
-reasoner literally sees the chart, the tape and the book alongside the
-analytical reads. The endgame is a real market; a demo feed that omits depth is
+The chart/tape/book aggregate and the live quote are emitted as separate
+structured :class:`~cognition.contracts.Evidence` records so source-time
+provenance for the quote cannot be inherited by forming candle observations. The endgame is a real market; a demo feed that omits depth is
 no reason not to reconstruct it — depth simply reads empty until the feed
 supplies it, and every field is fail-open.
 
@@ -30,6 +30,8 @@ layer supplies the raw price rows / tick / ticks / depth / position.
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain
@@ -550,19 +552,35 @@ def build_price_snapshot(
 
     price: Optional[dict] = None
     if tick is not None:
+        requested_symbol = str(symbol or "").strip().upper()
+        tick_symbol = str(getattr(tick, "symbol", "") or "").strip().upper()
+        if not requested_symbol or tick_symbol != requested_symbol:
+            tick = None
+    if tick is not None:
         bid = _f(getattr(tick, "bid", 0.0))
         ask = _f(getattr(tick, "ask", 0.0))
-        mid = _f(getattr(tick, "mid", 0.0)) or ((bid + ask) / 2.0 if bid and ask else 0.0)
-        if bid or ask or mid:
-            dp = _decimals_for(mid or bid or ask)
-            tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
-            tick_source_verified = (
-                getattr(tick, "source_timestamp_verified", False) is True
-                and tick_epoch is not None
-            )
+        # Mid is derived from the verified bid/ask pair. Never trust a separate
+        # caller-supplied mid that can contradict the executable quote.
+        quote_kind = str(getattr(tick, "quote_kind", "unknown") or "unknown").strip().lower()
+        valid_quote = (
+            math.isfinite(bid) and math.isfinite(ask)
+            and bid > 0.0 and ask >= bid
+            and (quote_kind != "mid_only" or ask == bid)
+        )
+        tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
+        tick_source_verified = (
+            getattr(tick, "source_timestamp_verified", False) is True
+            and tick_epoch is not None
+        )
+        if valid_quote:
+            mid = (bid + ask) / 2.0
             price = {
-                "bid": round(bid, dp), "ask": round(ask, dp),
-                "mid": round(mid, dp), "spread": round(abs(ask - bid), dp),
+                "symbol": requested_symbol,
+                "quote_kind": quote_kind,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "spread": ask - bid,
                 "timestamp_epoch": tick_epoch,
                 "source_timestamp_verified": tick_source_verified,
             }
@@ -608,7 +626,7 @@ def _trend_agreement(tfs_out: dict) -> float:
 
 
 def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
-    """Turn a price snapshot into one multi-timeframe Evidence (the chart).
+    """Emit a provisional chart aggregate and a separately attributed live quote.
 
     Part XXV — the chart is raw market reality, so ``polarity`` is always 0 (no
     directional lean); ``confidence`` reflects only how *aligned* the observed
@@ -665,25 +683,62 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
         )
         price_source_verified = bool(
             isinstance(price, dict)
+            and str(price.get("symbol", "") or "").strip().upper()
+                == str(symbol or "").strip().upper()
             and price.get("source_timestamp_verified") is True
             and price_epoch is not None
         )
+        ingested_epoch = time.time()
+        # This chart aggregates completed and forming candles, recent ticks,
+        # depth and position state. Its live quote timestamp cannot attest every
+        # embedded observation, so the aggregate is not calibration evidence.
         out.append(Evidence(
             source_module="market.price_action",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=str(symbol or ""),
             observation=observation,
-            confidence=round(0.4 + 0.5 * agree, 4),  # more agreement ⇒ clearer picture
+            confidence=round(0.4 + 0.5 * agree, 4),
             uncertainty=round(1.0 - agree, 4),
-            polarity=0.0,  # Part XXV — the chart is raw market reality, not a lean
+            polarity=0.0,
             measurements=snap,
+            timestamp_epoch=ingested_epoch,
             relevance_horizon_seconds=90.0,
-            source_timestamp_epoch=price_epoch if price_source_verified else None,
-            source_timestamp_verified=price_source_verified,
-            data_basis="live_quote_and_market_snapshot",
-            provisional=False,
-            independence_group=f"live_quote:{str(symbol or '').upper()}",
-            measurement_version="market-snapshot-v1",
+            source_timestamp_verified=False,
+            data_basis="aggregated_market_snapshot_with_forming_context",
+            provisional=True,
+            independence_group=f"market_snapshot:{str(symbol or '').upper()}",
+            measurement_version="market-snapshot-v2",
         ))
+        # The quote has its own source timestamp and symbol lineage. It is
+        # separate from the chart so forming candle data cannot inherit it.
+        if isinstance(price, dict) and price:
+            quote_kind = str(price.get("quote_kind", "unknown") or "unknown").strip().lower()
+            quote_source_verified = bool(
+                price_source_verified
+                and quote_kind in {"bid_ask", "mid_only"}
+                and str(price.get("symbol", "") or "").strip().upper()
+                    == str(symbol or "").strip().upper()
+            )
+            out.append(Evidence(
+                source_module="market.live_quote",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=str(symbol or ""),
+                observation=(
+                    f"broker quote {symbol}: bid={price.get('bid')} "
+                    f"ask={price.get('ask')} mid={price.get('mid')}"
+                ),
+                confidence=0.9 if quote_source_verified else 0.4,
+                uncertainty=0.1 if quote_source_verified else 0.6,
+                polarity=0.0,
+                measurements={"price": price, "quote_kind": quote_kind},
+                timestamp_epoch=ingested_epoch,
+                relevance_horizon_seconds=90.0,
+                source_timestamp_epoch=price_epoch if quote_source_verified else None,
+                source_timestamp_verified=quote_source_verified,
+                data_basis="live_broker_quote",
+                provisional=False,
+                independence_group=f"live_quote:{str(symbol or '').upper()}",
+                measurement_version="live-quote-v1",
+            ))
     except Exception:  # noqa: BLE001
         return out
     return out

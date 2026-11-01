@@ -87,6 +87,9 @@ class TestMT5FreshTick:
         assert isinstance(result, TickData)
         assert result.bid == 1.1000
         assert result.ask == 1.1002
+        assert result.source_timestamp_verified is True
+        assert result.quote_kind == "bid_ask"
+        assert result.symbol == "EURUSD"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -131,6 +134,18 @@ class TestMT5NonPositiveTick:
 # ═══════════════════════════════════════════════════════════════════════════
 # MT5 — invalid timestamp (epoch <= 0) rejected
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestMT5FutureTimestamp:
+
+    @patch("platforms.mt5.mt5_connector.mt5")
+    def test_future_epoch_raises(self, mock_mt5):
+        c, _ = _make_mt5()
+        future_epoch = _now_epoch() + 600
+        mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick(epoch=future_epoch)
+        with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
+            with pytest.raises(RuntimeError, match="Future tick"):
+                c.get_price("EURUSD")
+
 
 class TestMT5InvalidTimestamp:
 
@@ -194,6 +209,9 @@ class TestDerivFreshTick:
         c._sync_send.return_value = _deriv_tick_response(quote=1500.0)
         result = c.get_price("R_75")
         assert isinstance(result, TickData)
+        assert result.source_timestamp_verified is True
+        assert result.quote_kind == "mid_only"
+        assert result.symbol == "R_75"
         assert result.bid == 1500.0
         assert result.ask == 1500.0
         assert result.spread == 0.0
@@ -235,6 +253,16 @@ class TestDerivNonPositiveQuote:
 # ═══════════════════════════════════════════════════════════════════════════
 # Deriv — invalid timestamp (epoch <= 0) rejected
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestDerivFutureTimestamp:
+
+    def test_future_epoch_raises(self):
+        c = _make_deriv()
+        future_epoch = _now_epoch() + 600
+        c._sync_send.return_value = _deriv_tick_response(epoch=future_epoch)
+        with pytest.raises(RuntimeError, match="Future tick"):
+            c.get_price("R_75")
+
 
 class TestDerivInvalidTimestamp:
 
@@ -312,3 +340,45 @@ class TestRiskConfigDefault:
         with patch.dict("os.environ", {"MAX_TICK_AGE_SECONDS": "not-a-number"}):
             cfg = RiskConfig()
         assert cfg.max_tick_age_seconds == 120.0
+
+
+
+def test_tick_data_contract_normalizes_time_and_requires_symbol_for_attestation():
+    from datetime import datetime, timezone
+    from platforms.base_connector import TickData
+
+    stamp = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    valid = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=stamp,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol=" eurusd ",
+    )
+    assert valid.time.tzinfo is timezone.utc
+    assert valid.symbol == "EURUSD"
+    assert valid.source_timestamp_verified is True
+
+    missing_symbol = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=stamp,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol=None,
+    )
+    assert missing_symbol.source_timestamp_verified is False
+
+    naive = TickData(
+        bid=1.0,
+        ask=1.1,
+        spread=0.1,
+        time=datetime(2026, 11, 1, 12, 0),
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        symbol="EURUSD",
+    )
+    assert naive.source_timestamp_verified is False

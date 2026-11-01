@@ -103,6 +103,7 @@ def add_market_geometry(
             measurements=artifact.to_measurements(),
             timestamp_epoch=artifact.issued_at_epoch,
             source_timestamp_epoch=artifact.issued_at_epoch,
+            source_timestamp_verified=True,
             relevance_horizon_seconds=3600.0,
             data_basis="test_fixture",
             independence_group=(

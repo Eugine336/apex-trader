@@ -683,7 +683,7 @@ class CognitiveBrain:
                     _m = self._calibration.metrics()
                     calib_note = (
                         f"applied: factor {calib_factor:.3f} "
-                        f"(reliability gap {_m.get('reliability_gap', 0.0):.3f}, "
+                        f"(development/holdout prevalence gap {_m.get('development_holdout_prevalence_gap', _m.get('reliability_gap', 0.0)):.3f}, "
                         f"Brier {_m.get('brier', 0.0):.3f}, "
                         f"{int(_m.get('samples', 0))} samples)"
                     )
@@ -2434,9 +2434,11 @@ class CognitiveBrain:
     ) -> tuple[bool, float, str]:
         """Return producer-validated family-conditional expected directional return in R.
 
-        The artifact separately reports favourable-return probability, but that
-        probability is not a target-before-stop win probability. EV therefore
-        uses the validated fixed-horizon expected return directly, less costs.
+        The artifact separately reports the development-sample favourable-return
+        base rate. It is not a calibrated forecast or target-before-stop win
+        probability. EV therefore uses fixed-horizon expected return directly,
+        less costs; the legacy reliability_gap field is a development/holdout
+        prevalence-drift guard, not a reliability-diagram metric.
         """
         side = str(direction or "").strip().upper()
         if side not in (LONG, SHORT):
@@ -2520,7 +2522,7 @@ class CognitiveBrain:
                     f"holdout_R={holdout_return:.4f}, "
                     f"favourable_p={favourable_probability:.4f}, "
                     f"Brier={artifact.brier_score:.4f}, "
-                    f"gap={artifact.reliability_gap:.4f})",
+                    f"development_holdout_prevalence_gap={artifact.reliability_gap:.4f})",
                 ))
         except Exception:
             return False, 0.0, "calibration evidence unavailable"

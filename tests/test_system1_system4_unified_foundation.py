@@ -1,3 +1,4 @@
+import json
 import time
 from types import SimpleNamespace
 
@@ -59,6 +60,7 @@ def test_source_timestamp_controls_freshness_not_ingestion_time():
         uncertainty=0.0,
         timestamp_epoch=now,
         source_timestamp_epoch=now - 3600,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60,
         data_basis="completed_ohlc",
         measurement_version="test-v1",
@@ -98,6 +100,7 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         measurements={"source_kind": "market_lens", "timeframe": "H1", "trend_state": "uptrend"},
         timestamp_epoch=stamp,
         source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         data_basis="completed_ohlc",
         independence_group="price_structure:H1",
     ))
@@ -160,6 +163,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
         symbol="EURUSD",
         timestamp_epoch=stamp - 1.0,
         source_timestamp_epoch=stamp - 1.0,
+        source_timestamp_verified=True,
         measurements={"timeframe": "H1", "trend_state": "uptrend"},
         relevance_horizon_seconds=60.0,
     )
@@ -173,6 +177,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
                 "mid": mid,
                 "timestamp_epoch": source_epoch,
                 "source_timestamp_verified": verified,
+                "quote_kind": "bid_ask",
                 "symbol": symbol,
             },
         }
@@ -259,7 +264,6 @@ def test_no_opportunity_decision_is_also_recorded_in_candidate_universe():
 
 
 def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_calibration():
-    import json
 
     class Store:
         def __init__(self):
@@ -295,11 +299,13 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         symbol="EURUSD",
         timestamp_epoch=1000.0,
         source_timestamp_epoch=1000.0,
+        source_timestamp_verified=True,
         confidence=0.9,
         uncertainty=0.1,
         measurements={"price": {
             "bid": 1.099, "ask": 1.101, "mid": 1.1,
             "timestamp_epoch": 1000.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -329,11 +335,13 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         symbol="EURUSD",
         timestamp_epoch=1301.0,
         source_timestamp_epoch=1301.0,
+        source_timestamp_verified=True,
         confidence=0.9,
         uncertainty=0.1,
         measurements={"price": {
             "bid": 1.109, "ask": 1.111, "mid": 1.11,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -348,6 +356,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 8.999, "ask": 9.001, "mid": 9.0,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
             "symbol": "GBPUSD",
         }},
     ))
@@ -374,6 +383,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         measurements={"price": {
             "bid": 5.999, "ask": 6.001, "mid": 6.0,
             "timestamp_epoch": 1301.0, "source_timestamp_verified": False,
+            "quote_kind": "bid_ask",
             "symbol": "EURUSD",
         }},
     ))
@@ -465,7 +475,6 @@ def test_market_lenses_do_not_invent_volume_indicators_without_volume():
 
 
 def test_calibration_producer_requires_complete_selection_aware_chronological_data():
-    import json
 
     from cognition.calibration_artifacts import (
         CalibrationProducer,
@@ -509,6 +518,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "symbol": "EURUSD",
             "candidate": candidate,
             "reference_quote": {
+                "quote_kind": "bid_ask",
                 "mid": 100.0,
                 "bid": 99.99,
                 "ask": 100.01,
@@ -522,13 +532,40 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "point_in_time_evidence": [
                 {
                     "evidence_id": f"feature-{index}",
-                    "source_timestamp_epoch": decision_epoch,
+                    "symbol": "EURUSD",
+                    "source_timestamp_epoch": decision_epoch - 3600.0,
                     "source_timestamp_verified": True,
+                    "relevance_horizon_seconds": 3600.0,
+                    "provisional": False,
+                    "measurements": {
+                        "source_kind": "market_lens",
+                        "source_timestamp_known": True,
+                        "source_timestamp_origin": "broker_ohlcv",
+                        "source_broker": "fixture-broker",
+                        "source_bar_epoch": decision_epoch - 3600.0,
+                        "timeframe": "H1",
+                        "data_basis": "completed_ohlc",
+                        "provisional": False,
+                    },
                 },
                 {
                     "evidence_id": f"quote-{index}",
+                    "symbol": "EURUSD",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
+                    "relevance_horizon_seconds": 90.0,
+                    "provisional": False,
+                    "measurements": {
+                        "price": {
+                            "symbol": "EURUSD",
+                            "quote_kind": "bid_ask",
+                            "bid": 99.99,
+                            "ask": 100.01,
+                            "mid": 100.0,
+                            "timestamp_epoch": decision_epoch,
+                            "source_timestamp_verified": True,
+                        },
+                    },
                 },
             ],
         }
@@ -550,6 +587,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "reference_evidence_id": f"quote-{index}",
             "outcome_evidence_id": f"outcome-{index}",
             "outcome_quote": {
+                "quote_kind": "bid_ask",
                 "mid": 100.0 + return_r,
                 "bid": 99.99 + return_r,
                 "ask": 100.01 + return_r,
@@ -582,12 +620,65 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "payload_json": json.dumps(payload),
             })
 
+        # A second family on the same decision has a deliberately different
+        # return distribution. It must produce its own artifact, not be pooled
+        # into the continuation cohort.
+        mean_id = f"{decision_id}:opportunity:mean-{index}"
+        mean_snapshot = json.loads(json.dumps(snapshot))
+        mean_snapshot["candidate_id"] = mean_id
+        mean_snapshot["candidate_ref"] = f"mean-{index}"
+        mean_snapshot["candidate"]["opportunity_id"] = f"mean-{index}"
+        mean_snapshot["candidate"]["candidate_family"] = "mean_reversion"
+        mean_snapshot["candidate"]["geometry_evidence_ids"] = [f"mean-feature-{index}"]
+        mean_snapshot["reference_quote"]["evidence_id"] = f"mean-quote-{index}"
+        mean_snapshot["point_in_time_evidence"][0]["evidence_id"] = f"mean-feature-{index}"
+        mean_snapshot["point_in_time_evidence"][1]["evidence_id"] = f"mean-quote-{index}"
+        mean_outcome = json.loads(json.dumps(outcome))
+        mean_return_r = 0.4 if index % 2 == 0 else -0.2
+        mean_outcome.update({
+            "candidate_id": mean_id,
+            "candidate_family": "mean_reversion",
+            "outcome_label": "FAVOURABLE" if mean_return_r > 0 else "UNFAVOURABLE",
+            "directional_return_r": mean_return_r,
+            "observed_price": 100.0 + mean_return_r,
+            "reference_evidence_id": f"mean-quote-{index}",
+            "outcome_evidence_id": f"mean-outcome-{index}",
+        })
+        mean_outcome["outcome_quote"].update({
+            "mid": 100.0 + mean_return_r,
+            "bid": 99.99 + mean_return_r,
+            "ask": 100.01 + mean_return_r,
+            "evidence_id": f"mean-outcome-{index}",
+        })
+        mean_disposition = {
+            **disposition,
+            "candidate_id": mean_id,
+        }
+        for seq, event_type, payload in (
+            (10000 + index * 3 + 1, "COGNITIVE_CANDIDATE_SNAPSHOT", mean_snapshot),
+            (10000 + index * 3 + 2, "COGNITIVE_CANDIDATE_HORIZON_OUTCOME", mean_outcome),
+            (10000 + index * 3 + 3, "COGNITIVE_CANDIDATE_DISPOSITION", mean_disposition),
+        ):
+            events.append({
+                "seq": seq,
+                "event_type": event_type,
+                "symbol": "EURUSD",
+                "severity": "DEBUG",
+                "payload_json": json.dumps(payload),
+            })
+
     now = start + 149 * 600.0 + 400.0
     producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
     artifacts = producer.refresh("EURUSD", now=now)
     artifact = next(
         item for item in artifacts
         if item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "continuation"
+    )
+    mean_reversion_artifact = next(
+        item for item in artifacts
+        if item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "mean_reversion"
     )
     assert artifact.sample_count == 30
     assert artifact.walk_forward_folds == 3
@@ -595,7 +686,20 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert artifact.expected_return_r == 0.05
     assert artifact.holdout_expected_return_r == 0.05
     assert artifact.brier_score == 0.25
+    metrics = artifact.to_measurements()
+    assert metrics["probability_calibration_verified"] is False
+    assert metrics["brier_score_semantics"] == (
+        "development_base_rate_forecast_scored_on_untouched_holdout"
+    )
+    assert metrics["development_holdout_prevalence_gap"] == artifact.reliability_gap
+    assert metrics["current_regime_edge_demonstrated"] is False
+    assert metrics["predictive_ability_demonstrated"] is False
+    assert "not_a_calibrated_probability" in metrics["probability_semantics"]
     assert artifact.candidate_family == "continuation"
+    assert mean_reversion_artifact.sample_count == 30
+    assert mean_reversion_artifact.expected_return_r == 0.1
+    assert mean_reversion_artifact.holdout_expected_return_r == 0.1
+    assert mean_reversion_artifact.candidate_family == "mean_reversion"
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "LONG", "continuation", 300, now=now,
     ) is artifact
@@ -605,6 +709,65 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
+
+    duplicate_snapshot_events = [dict(row) for row in events]
+    duplicate_snapshot_events.append({**events[0], "seq": 10000})
+    assert CalibrationProducer(
+        Store(duplicate_snapshot_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    duplicate_outcome_events = [dict(row) for row in events]
+    duplicate_outcome_events.append({**events[1], "seq": 10001})
+    assert CalibrationProducer(
+        Store(duplicate_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    mismatched_outcome_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            outcome_payload = json.loads(row["payload_json"])
+            outcome_payload["observed_price"] = float(outcome_payload["observed_price"]) + 0.5
+            outcome_payload["directional_return_r"] = (
+                float(outcome_payload["directional_return_r"]) + 0.5
+            )
+            outcome_payload["outcome_label"] = "FAVOURABLE"
+            copied["payload_json"] = json.dumps(outcome_payload)
+        mismatched_outcome_events.append(copied)
+    assert CalibrationProducer(
+        Store(mismatched_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    mismatched_quote_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            snapshot_payload = json.loads(row["payload_json"])
+            quote_row = snapshot_payload["point_in_time_evidence"][1]
+            quote_row["measurements"]["price"]["symbol"] = "GBPUSD"
+            copied["payload_json"] = json.dumps(snapshot_payload)
+        mismatched_quote_events.append(copied)
+    assert CalibrationProducer(
+        Store(mismatched_quote_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    forming_geometry_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            snapshot_payload = json.loads(row["payload_json"])
+            feature_row = snapshot_payload["point_in_time_evidence"][0]
+            feature_row["source_timestamp_epoch"] = (
+                float(snapshot_payload["decision_epoch"]) - 60.0
+            )
+            feature_row["measurements"]["source_bar_epoch"] = (
+                float(snapshot_payload["decision_epoch"]) - 60.0
+            )
+            copied["payload_json"] = json.dumps(snapshot_payload)
+        forming_geometry_events.append(copied)
+    assert CalibrationProducer(
+        Store(forming_geometry_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
 
 
 
@@ -647,8 +810,40 @@ def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time()
         timestamp_epoch=1_900_000_100.0,
         source_timestamp_epoch=1_900_000_000.0,
     )
-    assert explicit_source.source_timestamp_verified is True
-    assert explicit_source.source_timestamp_epoch == 1_900_000_000.0
+    assert explicit_source.source_timestamp_verified is False
+    assert explicit_source.source_timestamp_epoch is None
+
+    verified_source = Evidence(
+        source_module="test.verified_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        source_timestamp_epoch=1_900_000_000.0,
+        source_timestamp_verified=True,
+    )
+    assert verified_source.source_timestamp_verified is True
+    assert verified_source.source_timestamp_epoch == 1_900_000_000.0
+
+    measurement_timestamp_only = Evidence(
+        source_module="test.measurement_timestamp_only",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        measurements={"source_timestamp_epoch": 1_900_000_000.0},
+    )
+    assert measurement_timestamp_only.source_timestamp_verified is False
+    assert measurement_timestamp_only.source_timestamp_epoch is None
+
+    forged_truthy_flag = Evidence(
+        source_module="test.forged_truthy_flag",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        source_timestamp_epoch=1_900_000_000.0,
+        source_timestamp_verified="true",
+    )
+    assert forged_truthy_flag.source_timestamp_verified is False
+    assert forged_truthy_flag.source_timestamp_epoch is None
 
     unknown = Evidence(
         source_module="test.unknown_source",
@@ -795,3 +990,222 @@ def test_malformed_considered_opportunity_is_retained_as_non_actionable():
     assert opportunities[0].state == OpportunityState.UNKNOWN
     assert opportunities[0].candidate_family == "unclassified"
     assert opportunities[0].is_actionable is False
+
+
+
+def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
+    from datetime import datetime, timezone
+    from cognition.evidence_adapters import evidence_from_market_desk
+
+    now = time.time()
+    payload = {
+        "symbol": "EURUSD",
+        "observed_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+        "source_timestamp_verified": True,
+        "data_quality_ok": True,
+        "quote": {
+            "symbol": "EURUSD",
+            "bid": 1.0999,
+            "ask": 1.1001,
+            "spread": 0.0002,
+            "timestamp_epoch": now,
+            "source_timestamp_verified": True,
+            "quote_kind": "bid_ask",
+        },
+        "completed_bars": {},
+        "pattern_observations": [],
+    }
+
+    valid = evidence_from_market_desk("EURUSD", payload)
+    assert len(valid) == 2
+    root = next(item for item in valid if item.source_module == "market_desk")
+    quote_evidence = next(
+        item for item in valid if item.source_module == "market_desk.live_quote"
+    )
+    assert root.source_timestamp_verified is False
+    assert root.source_timestamp_epoch is None
+    assert root.timestamp_epoch >= time.time() - 5.0
+    assert quote_evidence.source_timestamp_verified is True
+    assert abs(quote_evidence.source_timestamp_epoch - now) < 1e-6
+    assert quote_evidence.timestamp_epoch >= time.time() - 5.0
+    assert quote_evidence.timestamp_epoch != quote_evidence.source_timestamp_epoch
+
+    missing_attestation = dict(payload)
+    missing_attestation.pop("source_timestamp_verified")
+    assert evidence_from_market_desk("EURUSD", missing_attestation) == []
+
+    mismatched_quote_time = {
+        **payload,
+        "quote": {**payload["quote"], "timestamp_epoch": now - 2.0},
+    }
+    assert evidence_from_market_desk("EURUSD", mismatched_quote_time) == []
+
+    mismatched_quote_symbol = {
+        **payload,
+        "quote": {**payload["quote"], "symbol": "GBPUSD"},
+    }
+    assert evidence_from_market_desk("EURUSD", mismatched_quote_symbol) == []
+
+    inconsistent_spread = {
+        **payload,
+        "quote": {**payload["quote"], "spread": 0.5},
+    }
+    assert evidence_from_market_desk("EURUSD", inconsistent_spread) == []
+
+
+
+def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportunity_ids():
+    from types import SimpleNamespace
+
+    class Store:
+        def __init__(self):
+            self.events = []
+            self.rows = []
+
+        def emit(self, event_type, severity, **kwargs):
+            payload = kwargs["payload"]
+            self.events.append(payload)
+            self.rows.append({
+                "seq": len(self.rows) + 1,
+                "event_type": event_type,
+                "symbol": kwargs.get("symbol"),
+                "payload_json": json.dumps(payload),
+            })
+            return f"event-{len(self.events)}"
+
+        def query_events(self, *, event_types, symbol, limit, offset, **kwargs):
+            rows = [
+                row for row in self.rows
+                if row["event_type"] in event_types and row["symbol"] == symbol
+            ]
+            return rows[offset:offset + limit]
+
+    store = Store()
+    loop = CognitionLoop(
+        brain=object(),
+        consolidator=EvidenceConsolidator(),
+        symbols_provider=lambda: [],
+        candidate_event_store=store,
+    )
+    stamp = time.time()
+    first = Opportunity(
+        opportunity_id="duplicate-opportunity",
+        direction="LONG",
+        state=OpportunityState.FORMING,
+        thesis="first representation",
+    )
+    second = Opportunity(
+        opportunity_id="duplicate-opportunity",
+        direction="SHORT",
+        state=OpportunityState.ACTIVE,
+        thesis="conflicting duplicate representation",
+    )
+
+    class MissingIdHypothesis:
+        direction_implication = "LONG"
+        hypothesis_kind = "continuation"
+
+        def to_dict(self):
+            return {
+                "direction_implication": "LONG",
+                "hypothesis_kind": "continuation",
+                "thesis": "native hypothesis without stable identity",
+            }
+
+    class StableHypothesis:
+        hypothesis_id = "reused-hypothesis-id"
+        direction_implication = "LONG"
+        hypothesis_kind = "continuation"
+
+        def __init__(self, direction, thesis):
+            self.direction_implication = direction
+            self.thesis = thesis
+
+        def to_dict(self):
+            return {
+                "hypothesis_id": self.hypothesis_id,
+                "direction_implication": self.direction_implication,
+                "hypothesis_kind": self.hypothesis_kind,
+                "thesis": self.thesis,
+            }
+
+    conflicting_first = StableHypothesis("LONG", "first hypothesis meaning")
+    conflicting_second = StableHypothesis("SHORT", "different meaning with reused ID")
+
+    decision = SimpleNamespace(
+        decision_id="decision-malformed-ledger",
+        symbol="EURUSD",
+        created_epoch=stamp,
+        decision_type=DecisionType.OPPORTUNITY_FORMING,
+        opportunities=[first, second],
+        hypotheses=[
+            MissingIdHypothesis(),
+            conflicting_first,
+            conflicting_second,
+        ],
+        questions_answered={},
+    )
+    market = MarketState(symbol="EURUSD", created_epoch=stamp)
+    loop._record_candidate_snapshot(SimpleNamespace(decision=decision), market)
+
+    assert len(store.events) == 5
+    by_kind = {}
+    for payload in store.events:
+        by_kind.setdefault(payload["candidate_kind"], []).append(payload)
+    assert len(by_kind["opportunity"]) == 2
+    duplicate = by_kind["opportunity"][1]
+    assert duplicate["candidate_ref"] == "malformed:duplicate-opportunity:1"
+    assert duplicate["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+    malformed = by_kind["hypothesis"][0]
+    assert malformed["candidate_ref"] == "malformed-hypothesis:0"
+    assert malformed["candidate"]["candidate_parse_status"] == "MISSING_STABLE_ID"
+    assert malformed["candidate"]["candidate_family"] == "unclassified"
+    assert malformed["candidate"]["calibration_candidate"] is False
+
+    assert len(by_kind["hypothesis"]) == 3
+    duplicate_hypothesis = by_kind["hypothesis"][2]
+    assert duplicate_hypothesis["candidate_ref"] == "malformed:duplicate-hypothesis:2"
+    assert duplicate_hypothesis["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+    assert duplicate_hypothesis["candidate"]["candidate_family"] == "unclassified"
+    assert duplicate_hypothesis["candidate"]["calibration_candidate"] is False
+
+    snapshot_ids = {
+        payload["candidate_id"] for payload in store.events
+        if payload.get("candidate_kind") in {"opportunity", "hypothesis"}
+    }
+    loop._record_candidate_disposition(
+        SimpleNamespace(decision=decision, campaign=None),
+        stage="final",
+    )
+    dispositions = [
+        payload for payload in store.events
+        if payload.get("stage") == "final"
+    ]
+    assert len(dispositions) == len(snapshot_ids) == 5
+    assert {payload["candidate_id"] for payload in dispositions} == snapshot_ids
+    malformed_disposition = next(
+        payload for payload in dispositions
+        if payload["candidate_parse_status"] == "MISSING_STABLE_ID"
+    )
+    assert malformed_disposition["candidate_ref"] == "malformed-hypothesis:0"
+    duplicate_disposition = next(
+        payload for payload in dispositions
+        if payload["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
+        and payload["candidate_kind"] == "opportunity"
+    )
+    assert duplicate_disposition["candidate_ref"] == "malformed:duplicate-opportunity:1"
+
+
+
+def test_calibration_counts_only_non_overlapping_decision_horizons():
+    from cognition.calibration_artifacts import CalibrationProducer
+
+    groups = [
+        {"decision_id": "d0", "decision_epoch": 1000.0},
+        {"decision_id": "d1", "decision_epoch": 1060.0},
+        {"decision_id": "d2", "decision_epoch": 1300.0},
+        {"decision_id": "d3", "decision_epoch": 1301.0},
+        {"decision_id": "d4", "decision_epoch": 1601.0},
+    ]
+    selected = CalibrationProducer._non_overlapping_decision_groups(groups, 300)
+    assert [item["decision_id"] for item in selected] == ["d0", "d3"]

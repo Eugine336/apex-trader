@@ -248,12 +248,13 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
         source_epoch = optional_finite(
             cost.get("source_timestamp_epoch")
         ) if isinstance(cost, dict) else None
-        source_verified = bool(
+        source_attested = bool(
             isinstance(cost, dict)
             and cost.get("source_timestamp_verified") is True
             and source_epoch is not None
             and source_epoch > 0.0
         )
+        source_verified = False
 
         total_r = None
         spread_r = None
@@ -280,9 +281,34 @@ def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
             cost_source = str(cost.get("cost_source", "unverified estimate") or "").strip()
             quote = cost.get("quote")
             if isinstance(quote, dict):
+                try:
+                    quote_symbol = str(quote.get("symbol", "") or "").strip().upper()
+                    quote_kind = str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                    quote_epoch = float(quote.get("source_timestamp_epoch"))
+                    bid = float(quote.get("bid"))
+                    ask = float(quote.get("ask"))
+                    spread = float(quote.get("spread"))
+                    quote_valid = (
+                        source_attested
+                        and quote.get("source_timestamp_verified") is True
+                        and quote_symbol == str(symbol or "").strip().upper()
+                        and quote_kind == "bid_ask"
+                        and math.isfinite(quote_epoch)
+                        and abs(quote_epoch - float(source_epoch)) <= 1e-6
+                        and math.isfinite(bid) and math.isfinite(ask)
+                        and math.isfinite(spread)
+                        and bid > 0.0 and ask > bid
+                        and math.isclose(spread, ask - bid, rel_tol=1e-6, abs_tol=1e-10)
+                    )
+                    source_verified = bool(quote_valid)
+                except (TypeError, ValueError, OverflowError):
+                    source_verified = False
                 extra_measurements["cost_quote"] = {
                     key: quote.get(key)
-                    for key in ("bid", "ask", "spread", "symbol", "source_timestamp_epoch")
+                    for key in (
+                        "bid", "ask", "spread", "symbol", "quote_kind",
+                        "source_timestamp_epoch", "source_timestamp_verified",
+                    )
                     if quote.get(key) is not None
                 }
         else:
@@ -706,6 +732,11 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
         # Evidence is only valid for the instrument it was observed on.
         if not payload_symbol or payload_symbol != requested_symbol:
             return []
+        # The adapter must not infer source-time authority from a parseable,
+        # recently-ingested timestamp. The observer explicitly attests that this
+        # timestamp came from a broker Tick whose source provenance was checked.
+        if data.get("source_timestamp_verified") is not True:
+            return []
         observed_at = str(data.get("observed_at", "") or "")
         try:
             stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
@@ -714,9 +745,37 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             observed_epoch = stamp.timestamp()
         except (TypeError, ValueError, OverflowError, OSError):
             return []
+        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
+        quote_symbol = str(quote.get("symbol", "") or "").strip().upper()
+        try:
+            quote_epoch = float(quote.get("timestamp_epoch"))
+            bid = float(quote.get("bid"))
+            ask = float(quote.get("ask"))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        quote_kind = str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+        reported_spread = _safe_number(quote.get("spread"))
+        derived_spread = ask - bid
+        if (
+            quote.get("source_timestamp_verified") is not True
+            or quote_kind not in {"bid_ask", "mid_only"}
+            or (quote_kind == "mid_only" and ask != bid)
+            or quote_symbol != requested_symbol
+            or not math.isfinite(quote_epoch)
+            or abs(quote_epoch - observed_epoch) > 1e-6
+            or not math.isfinite(bid) or not math.isfinite(ask)
+            or bid <= 0.0 or ask < bid
+            or (
+                reported_spread is not None
+                and not math.isclose(
+                    reported_spread, derived_spread, rel_tol=1e-6, abs_tol=1e-10
+                )
+            )
+        ):
+            return []
         # Do not turn an old cache entry into fresh evidence merely because the
-        # CognitionLoop polled it again. Freshness follows the original market read.
-        age = time.time() - observed_epoch
+        # CognitionLoop polled it again. Freshness follows the original broker quote.
+        age = time.time() - quote_epoch
         if age < -1.0 or age > 15.0:
             return []
         patterns = data.get("pattern_observations")
@@ -759,7 +818,6 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             })
             if family not in family_names:
                 family_names.append(family)
-        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
         bars = data.get("completed_bars") if isinstance(data.get("completed_bars"), dict) else {}
         raw_event = data.get("event_context")
         event_context = None
@@ -776,14 +834,14 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             f"Market-backed {payload_symbol} read from the selected broker feed.",
             f"venue={str(data.get('venue', '') or 'unknown')}",
             f"bid={quote.get('bid', 'unknown')}, ask={quote.get('ask', 'unknown')}, "
-            f"spread={quote.get('spread', 'unknown')}",
+            f"spread={derived_spread}",
             f"completed timeframes={','.join(sorted(str(k) for k in bars)) or 'none'}",
             f"pattern observations={len(clean_patterns)} from {len(family_names)} detector family/families.",
             "Patterns may overlap and are NOT independent votes; no trade direction or order is issued by this source.",
         ]
         if event_context is not None:
             observation_parts.append(
-                "Verified news context: "
+                "Event context (publication provenance not established here): "
                 f"{event_context['name']} impact={event_context['impact']} "
                 f"window={event_context['starts_at']}..{event_context['ends_at']} "
                 f"pre-event range={event_context['pre_event_low']}..{event_context['pre_event_high']}."
@@ -796,9 +854,14 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             "market_open": bool(data.get("market_open", False)),
             "data_quality_ok": bool(data.get("data_quality_ok", False)),
             "quote": {
-                "bid": _safe_number(quote.get("bid")),
-                "ask": _safe_number(quote.get("ask")),
-                "spread": _safe_number(quote.get("spread")),
+                "symbol": quote_symbol,
+                "quote_kind": quote_kind,
+                "bid": bid,
+                "ask": ask,
+                "mid": (bid + ask) / 2.0,
+                "spread": derived_spread,
+                "timestamp_epoch": quote_epoch,
+                "source_timestamp_verified": True,
             },
             "event_context": event_context,
             "completed_bars": bars,
@@ -808,26 +871,62 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             "overlap_policy": "single_brain_synthesis_no_vote_summing",
             "orders_sent": False,
         }
-        timestamp_iso = stamp.astimezone(timezone.utc).isoformat()
+        ingested_epoch = time.time()
+        timestamp_iso = datetime.fromtimestamp(
+            ingested_epoch, tz=timezone.utc,
+        ).isoformat()
         data_quality_ok = bool(data.get("data_quality_ok", False))
         confidence = 0.95 if data_quality_ok else 0.0
         uncertainty = 0.05 if data_quality_ok else 1.0
-        evidence: list[Evidence] = [Evidence(
-            source_module="market_desk",
-            domain=EvidenceDomain.MULTI_TIMEFRAME,
-            symbol=requested_symbol,
-            observation=" ".join(observation_parts)[:4000],
-            confidence=confidence,
-            uncertainty=uncertainty,
-            polarity=0.0,
-            measurements=measurements,
-            relevance_horizon_seconds=15.0,
-            timestamp_iso=timestamp_iso,
-            timestamp_epoch=observed_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
-        )]
+        quote_measurement = {
+            "symbol": quote_symbol,
+            "quote_kind": quote_kind,
+            "bid": bid,
+            "ask": ask,
+            "mid": (bid + ask) / 2.0,
+            "spread": derived_spread,
+            "timestamp_epoch": quote_epoch,
+            "source_timestamp_verified": True,
+        }
+        evidence: list[Evidence] = [
+            Evidence(
+                source_module="market_desk",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=requested_symbol,
+                observation=" ".join(observation_parts)[:4000],
+                confidence=confidence,
+                uncertainty=uncertainty,
+                polarity=0.0,
+                measurements=measurements,
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=ingested_epoch,
+                source_timestamp_verified=False,
+                data_basis="market_desk_context_with_unverified_pattern_times",
+            ),
+            Evidence(
+                source_module="market_desk.live_quote",
+                domain=EvidenceDomain.MULTI_TIMEFRAME,
+                symbol=requested_symbol,
+                observation=(
+                    f"broker quote {requested_symbol}: bid={bid}, ask={ask}, "
+                    f"mid={(bid + ask) / 2.0}"
+                ),
+                confidence=0.9,
+                uncertainty=0.1,
+                polarity=0.0,
+                measurements={"price": quote_measurement},
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=ingested_epoch,
+                source_timestamp_epoch=observed_epoch,
+                source_timestamp_verified=True,
+                data_basis="live_broker_quote",
+                provisional=False,
+                independence_group=f"live_quote:{requested_symbol}",
+                measurement_version="live-quote-v1",
+            ),
+        ]
 
         # Give the SAME Brain the structured dimensions its native pattern rules
         # require. These remain observations, not votes or strategies: polarity is
@@ -897,10 +996,8 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                 measurements=structured,
                 relevance_horizon_seconds=15.0,
                 timestamp_iso=timestamp_iso,
-                timestamp_epoch=observed_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
+                timestamp_epoch=ingested_epoch,
+                data_basis="broker_market_desk_snapshot",
             ))
 
             # Some detectors observe two separate facts at once (e.g. CRT =
@@ -937,10 +1034,8 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                     measurements=structure_measurements,
                     relevance_horizon_seconds=15.0,
                     timestamp_iso=timestamp_iso,
-                    timestamp_epoch=observed_epoch,
-            source_timestamp_epoch=observed_epoch,
-            source_timestamp_verified=True,
-            data_basis="broker_market_desk_snapshot",
+                    timestamp_epoch=ingested_epoch,
+                    data_basis="broker_market_desk_snapshot",
                 ))
         return evidence
     except Exception:  # noqa: BLE001 — evidence conversion must never break cognition

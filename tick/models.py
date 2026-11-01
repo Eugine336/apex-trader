@@ -9,7 +9,7 @@ events from them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -29,19 +29,26 @@ class Tick:
     # Set only by a broker adapter that preserves and validates the provider's
     # original quote timestamp. Receipt/analysis timestamps are not source time.
     source_timestamp_verified: bool = False
+    quote_kind: str = "unknown"
 
     def __post_init__(self) -> None:
         timestamp = self.timestamp
-        timezone = getattr(timestamp, "tzinfo", None)
+        tzinfo = getattr(timestamp, "tzinfo", None)
         try:
-            aware = timezone is not None and timestamp.utcoffset() is not None
+            aware = tzinfo is not None and timestamp.utcoffset() is not None
         except (AttributeError, TypeError, ValueError, OverflowError):
             aware = False
+        if aware:
+            object.__setattr__(self, "timestamp", timestamp.astimezone(timezone.utc))
         object.__setattr__(
             self,
             "source_timestamp_verified",
             self.source_timestamp_verified is True and aware,
         )
+        quote_kind = str(self.quote_kind or "unknown").strip().lower()
+        if quote_kind not in {"bid_ask", "mid_only"}:
+            quote_kind = "unknown"
+        object.__setattr__(self, "quote_kind", quote_kind)
 
     @property
     def mid(self) -> float:

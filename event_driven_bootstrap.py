@@ -2879,8 +2879,19 @@ class EventDrivenSystem:
             if not related or self._pm is None:
                 return []
 
-            def _closed_series(frame, drop_forming: bool):
+            def _closed_series(frame, drop_forming: bool, expected_symbol: str):
                 if frame is None or not hasattr(frame, "columns"):
+                    return None
+                attrs = getattr(frame, "attrs", {})
+                attrs = attrs if isinstance(attrs, dict) else {}
+                if not (
+                    attrs.get("source_timestamp_verified") is True
+                    and str(attrs.get("source_symbol", "") or "").strip().upper()
+                        == str(expected_symbol or "").strip().upper()
+                    and attrs.get("source_timestamp_unit") == "unix_seconds"
+                    and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+                    and bool(str(attrs.get("source_broker", "") or "").strip())
+                ):
                     return None
                 if "time" not in frame.columns or "close" not in frame.columns:
                     return None
@@ -2909,7 +2920,9 @@ class EventDrivenSystem:
                 return dict(zip(timestamps, closes))
 
             primary_frame = (primary_data or {}).get("H1")
-            primary = _closed_series(primary_frame, drop_forming=True)
+            primary = _closed_series(
+                primary_frame, drop_forming=True, expected_symbol=symbol,
+            )
             if not primary:
                 return []
             output = []
@@ -2922,7 +2935,9 @@ class EventDrivenSystem:
                     related_frame = related_data.get("H1")
                     if related_frame is None:
                         continue
-                    related_series = _closed_series(related_frame, drop_forming=False)
+                    related_series = _closed_series(
+                        related_frame, drop_forming=False, expected_symbol=related_symbol,
+                    )
                     if not related_series:
                         continue
                     common = sorted(set(primary) & set(related_series))
@@ -2960,6 +2975,14 @@ class EventDrivenSystem:
                     coefficient = covariance / denominator
                     if not math.isfinite(coefficient):
                         continue
+                    source_epoch = return_timestamps[-1].timestamp() + 3600.0
+                    source_age = _time.time() - source_epoch
+                    if (
+                        not math.isfinite(source_epoch)
+                        or source_age < -1.0
+                        or source_age > 3600.0
+                    ):
+                        continue
                     output.append(Evidence(
                         source_module="broker.cross_asset_returns",
                         domain=EvidenceDomain.CORRELATION,
@@ -2978,12 +3001,23 @@ class EventDrivenSystem:
                             "timeframe": "H1",
                             "synchronized_timestamps": True,
                             "source_verified": True,
+                            "source_timestamp_verified": True,
+                            "source_timestamp_epoch": source_epoch,
+                            "source_timestamp_origin": "broker_h1_candles_both_legs",
+                            "source_brokers": [
+                                str(getattr(primary_frame, "attrs", {}).get("source_broker", "") or ""),
+                                str(getattr(related_frame, "attrs", {}).get("source_broker", "") or ""),
+                            ],
                             "first_common_timestamp": return_timestamps[0].isoformat(),
                             "last_common_timestamp": return_timestamps[-1].isoformat(),
                             "causation_established": False,
                         },
                         timestamp_epoch=_time.time(),
+                        source_timestamp_epoch=source_epoch,
+                        source_timestamp_verified=True,
                         relevance_horizon_seconds=3600.0,
+                        data_basis="broker_cross_asset_h1_returns",
+                        provisional=False,
                     ))
                 except Exception as exc:  # noqa: BLE001 — one missing leg stays missing
                     logger.debug(
@@ -3008,7 +3042,14 @@ class EventDrivenSystem:
             if self._tick_store is None or self._pm is None:
                 return None
             tick = self._tick_store.get_latest(symbol)
-            if tick is None or getattr(tick, "source_timestamp_verified", False) is not True:
+            if (
+                tick is None
+                or getattr(tick, "source_timestamp_verified", False) is not True
+                or str(getattr(tick, "symbol", "") or "").strip().upper()
+                    != str(symbol or "").strip().upper()
+                or str(getattr(tick, "quote_kind", "unknown") or "unknown").strip().lower()
+                    != "bid_ask"
+            ):
                 return None
             source_time = getattr(tick, "timestamp", None)
             if (
@@ -3060,7 +3101,9 @@ class EventDrivenSystem:
                     "bid": bid,
                     "ask": ask,
                     "spread": ask - bid,
+                    "quote_kind": "bid_ask",
                     "source_timestamp_epoch": source_epoch,
+                    "source_timestamp_verified": True,
                 },
             }
         except Exception as exc:  # noqa: BLE001 — unknown monetary cost must remain unverified

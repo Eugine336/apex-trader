@@ -74,7 +74,7 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
             "source_kind": "market_lens",
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
-            "source_bar_epoch": stamp,
+            "source_bar_epoch": stamp - 300.0,
             "timeframe": "M5",
             "current_close": entry,
             "prior_range_high": high,
@@ -87,6 +87,8 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
             "lower_wick": 0.0,
         },
         timestamp_epoch=stamp,
+        source_timestamp_epoch=stamp - 300.0,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=900.0,
     ))
     ms.add(Evidence(
@@ -98,11 +100,13 @@ def _add_market_geometry(ms, *, target_r=2.0, direction="LONG"):
             "source_kind": "market_lens",
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
-            "source_bar_epoch": stamp,
+            "source_bar_epoch": stamp - 300.0,
             "timeframe": "M5",
             "close_change": change,
         },
         timestamp_epoch=stamp,
+        source_timestamp_epoch=stamp - 300.0,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=900.0,
     ))
     return ms
@@ -121,10 +125,10 @@ def _confident_state(
     # (Article XXXIV, default 2 domains) is satisfied for the act path.
     ms.add(Evidence(source_module="s", domain="momentum", confidence=0.9,
                     uncertainty=0.1, polarity=polarity,
-                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp, source_timestamp_verified=True))
     ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
                     uncertainty=0.1, polarity=polarity,
-                    timestamp_epoch=stamp, source_timestamp_epoch=stamp))
+                    timestamp_epoch=stamp, source_timestamp_epoch=stamp, source_timestamp_verified=True))
     # The Brain has a hard three-domain floor plus an advisor-quorum gate.
     # Keep this fixture genuinely eligible so positive-path tests test EV and
     # campaign construction rather than relying on absent council metadata.
@@ -137,6 +141,7 @@ def _confident_state(
         confidence=0.9, uncertainty=0.1, polarity=0.0,
         measurements={"advisors_responded": 2, "advisors_available": 2, "advisors_total": 2},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
     ))
     # Action-path fixtures must include fresh execution-cost evidence; a
     # diagnostic default is intentionally insufficient to authorize exposure.
@@ -149,6 +154,7 @@ def _confident_state(
         uncertainty=0.1,
         measurements={"estimated_total_cost_r": 0.05, "cost_verified": True, "cost_source": "simulated live quote for test"},
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     _add_market_geometry(ms, target_r=target_r, direction=("LONG" if polarity >= 0 else "SHORT"))
@@ -168,6 +174,7 @@ def _confident_state(
         measurements=artifact.to_measurements(),
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=3600.0,
     ))
     return ms
@@ -267,6 +274,7 @@ class _RichOpinion:
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
               "candidate_family": "continuation",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
@@ -287,20 +295,20 @@ def test_sizing_is_lesser_of_confidence_and_ev_normalized():
 
 
 
-def test_high_confidence_poor_market_derived_payoff_is_sized_down():
-    # Same 0.8 confidence, but the observed target is only 0.5R from entry while
-    # the structural invalidation is 1R away. Advisor-reported excursions cannot
-    # replace these market-derived levels.
+def test_high_confidence_without_producer_verified_return_stands_down():
+    # Reasoning confidence and a diagnostic payoff cannot substitute for a
+    # producer-verified fixed-horizon expected-return artifact. Market geometry
+    # remains observable, but it does not authorize exposure by itself.
     op = _RichOpinion("LONG", 0.8, efe="8R", eae="0.1R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8, target_r=0.5))
-    assert out.campaign is not None
+    assert out.campaign is None
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.decision.questions_answered["payoff_geometry_status"] == (
         "qualified_from_fresh_completed_market_evidence"
     )
-    assert out.campaign.expected_value == pytest.approx(0.15)
-    assert out.campaign.desired_exposure == pytest.approx(0.3)
-    assert out.campaign.desired_exposure < out.campaign.confidence
+    assert out.decision.expected_value == 0.0
+    assert "fixed-horizon expected return is unverified" in out.decision.risk_rationale
 
 
 def test_campaign_carries_expected_value_field():

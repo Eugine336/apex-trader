@@ -52,6 +52,30 @@ class TickData:
     ask: float
     spread: float
     time: datetime
+    # Broker adapters attest source time only after validating the provider field.
+    source_timestamp_verified: bool = False
+    # "bid_ask" is an executable top-of-book quote; "mid_only" is a single
+    # provider price represented in both bid/ask slots for compatibility.
+    quote_kind: str = "unknown"
+    symbol: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        aware = bool(
+            isinstance(self.time, datetime)
+            and self.time.tzinfo is not None
+            and self.time.utcoffset() is not None
+        )
+        if aware:
+            self.time = self.time.astimezone(timezone.utc)
+        symbol = str(self.symbol or "").strip().upper()
+        self.symbol = symbol or None
+        self.source_timestamp_verified = bool(
+            self.source_timestamp_verified is True and aware and symbol
+        )
+        quote_kind = str(self.quote_kind or "unknown").strip().lower()
+        self.quote_kind = (
+            quote_kind if quote_kind in {"bid_ask", "mid_only"} else "unknown"
+        )
 
 
 @dataclass
@@ -152,8 +176,16 @@ class BaseConnector(ABC):
         Fetch historical candles.
         Returns DataFrame with columns: time, open, high, low, close, volume.
 
-        ``include_forming`` defaults to True (broker-native: the last row is the
+        include_forming defaults to True (broker-native: the last row is the
         still-forming bar). Pass False to return confirmed-closed bars only.
+
+        A broker adapter that verifies candle source time must attach these
+        DataFrame attrs after normalizing provider timestamps to Unix seconds:
+        source_timestamp_verified=True, source_symbol (canonical symbol),
+        source_timestamp_unit="unix_seconds", and
+        source_timestamp_origin="broker_ohlcv". Never set this attestation from
+        local ingestion time, cache insertion time, or an unverified parsed time.
+        Missing provenance remains unattested.
         """
 
     @abstractmethod

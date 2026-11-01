@@ -1178,6 +1178,10 @@ class DerivConnector(BaseConnector):
             )
         tick_time = datetime.fromtimestamp(epoch, tz=timezone.utc)
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        if age < -1.0:
+            raise RuntimeError(
+                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of UTC clock"
+            )
         max_tick_age = getattr(self, "_max_tick_age_seconds", 120.0)
         if age > max_tick_age:
             logger.warning(
@@ -1198,6 +1202,9 @@ class DerivConnector(BaseConnector):
             ask=quote,
             spread=0.0,
             time=tick_time,
+            source_timestamp_verified=True,
+            quote_kind="mid_only",
+            symbol=str(symbol or "").strip().upper(),
         )
 
     def get_tick(self, symbol: str) -> TickData:
@@ -1250,6 +1257,13 @@ class DerivConnector(BaseConnector):
         # reads legitimately keep it).
         if not include_forming and len(out) > 1:
             out = out.iloc[:-1]
+        out.attrs.update({
+            "source_timestamp_verified": True,
+            "source_symbol": str(symbol or "").strip().upper(),
+            "source_timestamp_unit": "unix_seconds",
+            "source_timestamp_origin": "broker_ohlcv",
+            "source_broker": "deriv",
+        })
         return out
 
     def get_spread(self, symbol: str) -> float:

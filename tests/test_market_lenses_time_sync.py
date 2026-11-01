@@ -41,7 +41,15 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
         "close": close,
         "volume": 10 + count,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "XAUUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+    })
+    return frame
 
 
 def _alignment(frames):
@@ -87,3 +95,46 @@ def test_timestamp_parser_rejects_naive_datetime_values():
 
     assert _timestamp_epoch(datetime(2026, 1, 1, 12, 0, 0)) is None
     assert _timestamp_epoch(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)) is not None
+
+
+
+def test_parseable_candle_timestamp_is_not_verified_without_broker_attestation():
+    unverified = _frame(60)
+    unverified.attrs.clear()
+    evidence = analyze_market_frames(
+        "XAUUSD", {"M1": unverified}, source_includes_forming_bar=True,
+    )
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure.measurements["source_timestamp_known"] is False
+    assert structure.source_timestamp_verified is False
+    assert structure.source_timestamp_epoch is None
+
+    wrong_symbol = _frame(60)
+    wrong_symbol.attrs["source_symbol"] = "EURUSD"
+    mismatched = analyze_market_frames(
+        "XAUUSD", {"M1": wrong_symbol}, source_includes_forming_bar=True,
+    )
+    mismatched_structure = next(
+        item for item in mismatched
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert mismatched_structure.source_timestamp_verified is False
+    assert mismatched_structure.source_timestamp_epoch is None
+
+
+
+def test_broker_attestation_does_not_verify_unordered_candle_rows():
+    frame = _frame(60).iloc[::-1].copy()
+    evidence = analyze_market_frames(
+        "XAUUSD", {"M1": frame}, source_includes_forming_bar=True,
+    )
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure.measurements["source_timestamp_known"] is False
+    assert structure.source_timestamp_verified is False
+    assert structure.source_timestamp_epoch is None

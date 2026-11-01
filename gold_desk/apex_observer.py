@@ -540,7 +540,16 @@ class ApexMarketObserver:
             "venue": venue,
             "market_open": market_is_open,
             "data_quality_ok": snapshot.data_quality_ok,
-            "quote": {"bid": bid, "ask": ask, "spread": ask - bid},
+            "source_timestamp_verified": True,
+            "quote": {
+                "symbol": symbol,
+                "quote_kind": str(getattr(tick, "quote_kind", "unknown") or "unknown"),
+                "bid": bid,
+                "ask": ask,
+                "spread": ask - bid,
+                "timestamp_epoch": epoch,
+                "source_timestamp_verified": True,
+            },
             "completed_bars": completed_bars,
             "event_context": ({
                 "name": event_window.name,

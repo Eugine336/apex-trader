@@ -45,7 +45,8 @@ def _make_adapter(symbols, results):
         if behavior == "ok":
             from datetime import datetime, timezone
             return SimpleNamespace(
-                bid=1.1000, ask=1.1002, time=datetime.now(timezone.utc),
+                symbol=sym, bid=1.1000, ask=1.1002,
+                time=datetime.now(timezone.utc),
             )
         if behavior == "none":
             return None

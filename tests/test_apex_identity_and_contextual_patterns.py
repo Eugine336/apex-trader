@@ -108,11 +108,36 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
         periods=len(frame),
         freq="min",
     )
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "XAUUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+    })
     evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
     assert evidence is not None
     assert evidence.measurements["source_timestamp_known"] is True
-    assert evidence.timestamp_epoch < now.timestamp() - 4 * 60
+    assert evidence.source_timestamp_verified is True
+    assert evidence.measurements["source_timestamp_origin"] == "broker_ohlcv"
+    assert evidence.measurements["source_broker"] == "test-broker"
+    assert evidence.source_timestamp_epoch < now.timestamp() - 4 * 60
+    assert evidence.timestamp_epoch >= now.timestamp() - 5.0
     assert evidence.is_fresh(now.timestamp()) is False
+
+
+def test_m1_price_action_does_not_trust_parseable_timestamp_without_adapter_attestation():
+    frame = _m1_frame()
+    frame["time"] = pd.date_range(
+        end=datetime.now(timezone.utc),
+        periods=len(frame),
+        freq="min",
+    )
+    evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
+    assert evidence is not None
+    assert evidence.measurements["source_timestamp_known"] is False
+    assert evidence.source_timestamp_verified is False
+    assert evidence.source_timestamp_epoch is None
 
 
 def test_m1_price_action_with_unknown_source_time_is_explicitly_uncertain():
@@ -343,6 +368,13 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         periods=len(frame),
         freq="5min",
     )
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "EURUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+    })
     evidence = analyze_market_frames(
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
     )
@@ -352,5 +384,6 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         and item.measurements.get("timeframe") == "M5"
     )
     assert structure.measurements["source_timestamp_known"] is True
-    assert structure.timestamp_epoch < now.timestamp() - 2 * 3600 + 1
+    assert structure.source_timestamp_epoch < now.timestamp() - 2 * 3600 + 1
+    assert structure.timestamp_epoch >= now.timestamp() - 5.0
     assert structure.is_fresh(now.timestamp()) is False

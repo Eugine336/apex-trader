@@ -38,7 +38,10 @@ def test_snapshot_shapes_and_trend():
     snap = build_price_snapshot(
         "XAUUSD",
         {"M5": _uptrend(), "M15": _uptrend(start=90.0)},
-        tick=SimpleNamespace(bid=104.0, ask=104.3, mid=104.15),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.3, mid=104.15,
+        ),
     )
     assert snap["symbol"] == "XAUUSD"
     assert set(snap["timeframes"].keys()) == {"M5", "M15"}
@@ -46,7 +49,7 @@ def test_snapshot_shapes_and_trend():
     assert m5["trend"] == "up"
     assert m5["high"] >= m5["low"]
     assert len(m5["bars"]) == 8 and len(m5["bars"][0]) == 4
-    assert snap["price"]["spread"] == round(104.3 - 104.0, 2)
+    assert abs(snap["price"]["spread"] - (104.3 - 104.0)) < 1e-9
 
 
 def test_bars_capped_and_dicts_accepted():
@@ -71,17 +74,96 @@ def test_empty_candles_yields_no_evidence():
 def test_snapshot_to_evidence_carries_chart_non_directional():
     snap = build_price_snapshot(
         "XAUUSD", {"M5": _uptrend(), "M15": _uptrend(start=90.0), "H1": _uptrend(start=80.0)},
-        tick=SimpleNamespace(bid=104.0, ask=104.2, mid=104.1),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.2, mid=104.1,
+        ),
     )
     ev = snapshot_to_evidence("XAUUSD", snap)
-    assert len(ev) == 1
-    e = ev[0]
+    assert len(ev) == 2
+    e = next(item for item in ev if item.source_module == "market.price_action")
+    quote_evidence = next(item for item in ev if item.source_module == "market.live_quote")
+    assert e.provisional is True
+    assert e.source_timestamp_verified is False
+    assert quote_evidence.provisional is False
+    assert quote_evidence.source_timestamp_verified is False
     assert e.source_module == "market.price_action"
     assert e.domain.value == "multi_timeframe"
     assert e.polarity == 0.0           # Part XXV — the chart is reality, not a lean
     assert e.confidence > 0.4          # aligned timeframes ⇒ a clearer picture
     assert e.measurements.get("timeframes")   # the actual chart rides along
     assert "chart XAUUSD" in e.observation
+
+
+def test_price_quote_requires_matching_symbol_and_derives_mid_from_bid_ask():
+    from datetime import datetime, timezone
+
+    timestamp = datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)
+    candles = {"M5": _uptrend()}
+    verified = SimpleNamespace(
+        symbol="EURUSD",
+        quote_kind="bid_ask",
+        bid=1.099,
+        ask=1.101,
+        mid=9.0,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    snapshot = build_price_snapshot("EURUSD", candles, tick=verified)
+    assert snapshot["price"]["symbol"] == "EURUSD"
+    assert snapshot["price"]["mid"] == 1.1
+
+    foreign = SimpleNamespace(
+        symbol="GBPUSD",
+        quote_kind="bid_ask",
+        bid=1.099,
+        ask=1.101,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    foreign_snapshot = build_price_snapshot("EURUSD", candles, tick=foreign)
+    assert foreign_snapshot["price"] is None
+    foreign_evidence = snapshot_to_evidence("EURUSD", foreign_snapshot)[0]
+    assert foreign_evidence.source_timestamp_verified is False
+
+    missing_symbol = SimpleNamespace(
+        quote_kind="bid_ask",
+        bid=1.099,
+        ask=1.101,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    missing_symbol_snapshot = build_price_snapshot(
+        "EURUSD", candles, tick=missing_symbol,
+    )
+    assert missing_symbol_snapshot["price"] is None
+
+    crossed = SimpleNamespace(
+        symbol="EURUSD",
+        quote_kind="bid_ask",
+        bid=1.101,
+        ask=1.099,
+        mid=1.1,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    crossed_snapshot = build_price_snapshot("EURUSD", candles, tick=crossed)
+    assert crossed_snapshot["price"] is None
+
+    mid_only = SimpleNamespace(
+        symbol="R_75",
+        quote_kind="mid_only",
+        bid=1500.0,
+        ask=1500.0,
+        mid=1490.0,
+        timestamp=timestamp,
+        source_timestamp_verified=True,
+    )
+    mid_only_snapshot = build_price_snapshot("R_75", candles, tick=mid_only)
+    assert mid_only_snapshot["price"]["quote_kind"] == "mid_only"
+    assert mid_only_snapshot["price"]["mid"] == 1500.0
 
 
 def test_source_time_requires_explicit_verified_broker_tick():
@@ -91,33 +173,42 @@ def test_source_time_requires_explicit_verified_broker_tick():
     candles = {"M5": _uptrend()}
 
     verified = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
-        timestamp=timestamp, source_timestamp_verified=True,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
+        timestamp=timestamp, source_timestamp_verified=True, quote_kind="bid_ask",
     )
-    verified_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
-    )[0]
+    verified_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=verified),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert verified_evidence.source_timestamp_verified is True
     assert verified_evidence.source_timestamp_epoch == timestamp.timestamp()
 
     unverified = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
-        timestamp=timestamp, source_timestamp_verified=False,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
+        timestamp=timestamp, source_timestamp_verified=False, quote_kind="bid_ask",
     )
-    unverified_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
-    )[0]
+    unverified_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=unverified),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert unverified_evidence.source_timestamp_verified is False
     assert unverified_evidence.source_timestamp_epoch is None
 
     naive = SimpleNamespace(
-        bid=104.0, ask=104.2, mid=104.1,
+        symbol="XAUUSD", bid=104.0, ask=104.2, mid=104.1,
         timestamp=datetime(2026, 10, 31, 12, 0, 0),
-        source_timestamp_verified=True,
+        source_timestamp_verified=True, quote_kind="bid_ask",
     )
-    naive_evidence = snapshot_to_evidence(
-        "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
-    )[0]
+    naive_evidence = next(
+        item for item in snapshot_to_evidence(
+            "XAUUSD", build_price_snapshot("XAUUSD", candles, tick=naive),
+        )
+        if item.source_module == "market.live_quote"
+    )
     assert naive_evidence.source_timestamp_verified is False
     assert naive_evidence.source_timestamp_epoch is None
 
@@ -226,7 +317,10 @@ def test_build_snapshot_wires_microstructure_depth_session_pullback():
     snap = build_price_snapshot(
         "XAUUSD",
         {"H4": _uptrend(start=80.0), "M1": _downtrend(start=104.0, step=0.05)},
-        tick=SimpleNamespace(bid=104.0, ask=104.3, mid=104.15),
+        tick=SimpleNamespace(
+            symbol="XAUUSD", quote_kind="bid_ask",
+            bid=104.0, ask=104.3, mid=104.15,
+        ),
         ticks=_ticks([104.0, 104.1, 104.05, 104.2]),
         depth=[
             {"price": 104.0, "volume": 5.0, "side": "bid"},

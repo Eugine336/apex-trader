@@ -14,7 +14,7 @@ import math
 import time
 from datetime import datetime, timezone
 from math import isfinite, sqrt
-from typing import Any
+from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain
 
@@ -72,10 +72,24 @@ def _timestamp_epoch(value: Any) -> float | None:
         return None
 
 
-def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
-    """Read a pandas-like OHLC(V) frame without importing pandas."""
+def _rows(
+    frame: Any, limit: int = 32, *, expected_symbol: str = "",
+) -> list[dict[str, Any]]:
+    """Read OHLC(V), retaining source-time attestation from the broker adapter."""
     if frame is None:
         return []
+    attrs = getattr(frame, "attrs", {})
+    attrs = attrs if isinstance(attrs, dict) else {}
+    source_symbol = str(attrs.get("source_symbol", "") or "").strip().upper()
+    source_origin = str(attrs.get("source_timestamp_origin", "") or "").strip()
+    source_broker = str(attrs.get("source_broker", "") or "").strip().lower()
+    source_attested = bool(
+        attrs.get("source_timestamp_verified") is True
+        and source_symbol == str(expected_symbol or "").strip().upper()
+        and attrs.get("source_timestamp_unit") == "unix_seconds"
+        and source_origin == "broker_ohlcv"
+        and bool(source_broker)
+    )
     try:
         if getattr(frame, "empty", False):
             return []
@@ -130,6 +144,13 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
                     epoch = _timestamp_epoch(row_index)
             if epoch is not None:
                 row_data["timestamp_epoch"] = epoch
+            row_data["source_timestamp_verified"] = bool(
+                source_attested and epoch is not None
+            )
+            row_data["source_timestamp_origin"] = (
+                source_origin if source_attested else None
+            )
+            row_data["source_broker"] = source_broker if source_attested else None
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
@@ -149,6 +170,22 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
                     )
                 )
             result.append(row_data)
+        if source_attested:
+            source_epochs = [row.get("timestamp_epoch") for row in result]
+            ordered = (
+                len(source_epochs) == len(result)
+                and all(
+                    isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
+                    for epoch in source_epochs
+                )
+                and all(
+                    float(right) > float(left)
+                    for left, right in zip(source_epochs, source_epochs[1:])
+                )
+            )
+            if not ordered:
+                for row in result:
+                    row["source_timestamp_verified"] = False
         return result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
         return []
@@ -218,6 +255,7 @@ def _technical_indicator_evidence(
     timeframe: str,
     bars: list[dict[str, Any]],
     source_epoch: float | None,
+    source_metadata: Optional[dict[str, Any]] = None,
 ) -> list[Evidence]:
     """Calculate causal, completed-bar technical measurements without signals."""
     if len(bars) < 15:
@@ -505,19 +543,19 @@ def _technical_indicator_evidence(
         output.append(_record(
             symbol, timeframe, EvidenceDomain.MOMENTUM, "technical_momentum",
             f"{timeframe} completed-bar technical momentum and trend measurements.",
-            momentum, source_epoch=source_epoch,
+            momentum, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     if volatility:
         output.append(_record(
             symbol, timeframe, EvidenceDomain.VOLATILITY, "technical_volatility",
             f"{timeframe} completed-bar volatility and statistical-location measurements.",
-            volatility, source_epoch=source_epoch,
+            volatility, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     if volume:
         output.append(_record(
             symbol, timeframe, EvidenceDomain.VOLUME, "technical_volume",
             f"{timeframe} provider-volume indicators; source={volume.get('volume_source')}.",
-            volume, source_epoch=source_epoch,
+            volume, source_epoch=source_epoch, source_metadata=source_metadata,
         ))
     return output
 
@@ -531,16 +569,15 @@ def _record(
     measurements: dict[str, Any],
     *,
     source_epoch: float | None = None,
+    source_metadata: Optional[dict[str, Any]] = None,
 ) -> Evidence:
     seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
     known_source_time = bool(source_epoch and source_epoch > 0)
-    sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
-    try:
-        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
-    except (OverflowError, OSError, ValueError):
-        sampled_at = datetime.now(timezone.utc).timestamp()
-        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
-        known_source_time = False
+    # Evidence creation/ingestion time is distinct from the broker candle time.
+    sampled_at = datetime.now(timezone.utc).timestamp()
+    timestamp_iso = datetime.fromtimestamp(
+        sampled_at, tz=timezone.utc,
+    ).isoformat()
     confidence = 0.72 if known_source_time else 0.55
     uncertainty = 0.28 if known_source_time else 0.45
     return Evidence(
@@ -553,6 +590,7 @@ def _record(
         polarity=0.0,
         measurements={
             **measurements,
+            **(source_metadata or {}),
             "source_kind": "market_lens",
             "timeframe": timeframe,
             "provisional": False,
@@ -595,13 +633,20 @@ def analyze_market_frames(
         timeframe = str(raw_tf or "").upper()
         if timeframe not in _TIMEFRAME_SECONDS:
             continue
-        rows = _rows(frame)
+        rows = _rows(frame, expected_symbol=symbol)
         bars = rows[:-1] if source_includes_forming_bar and len(rows) > 1 else rows
         if len(bars) < 5:
             continue
 
         current = bars[-1]
-        source_epoch = _safe_float(current.get("timestamp_epoch"))
+        source_epoch = (
+            _safe_float(current.get("timestamp_epoch"))
+            if current.get("source_timestamp_verified") is True else None
+        )
+        source_metadata = {
+            "source_timestamp_origin": current.get("source_timestamp_origin"),
+            "source_broker": current.get("source_broker"),
+        }
         timeframe_observations.append({
             "timeframe": timeframe,
             "bar_open_epoch": source_epoch,
@@ -687,7 +732,7 @@ def analyze_market_frames(
             f"{timeframe} completed-candle structure: {location}; "
             f"close location within prior range={range_position:.2f}.",
             measurements,
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Sweep/reclaim is a boundary event, not proof that actual order flow was
@@ -711,7 +756,7 @@ def analyze_market_frames(
                     "prior_range_low": prior_low,
                     "lookback_bars": lookback,
                 },
-                source_epoch=source_epoch,
+                source_epoch=source_epoch, source_metadata=source_metadata,
             ))
 
         # Momentum is a measurement of recent price changes. Only assign
@@ -743,7 +788,7 @@ def analyze_market_frames(
                 "candle_body_sign": 1 if candle_body > 0 else (-1 if candle_body < 0 else 0),
                 "body_to_range": measurements["body_to_range"],
             },
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Volatility: current range vs earlier range baseline, plus short-window
@@ -774,13 +819,13 @@ def analyze_market_frames(
                 "recent_mean_range": recent_mean,
                 "earlier_mean_range": earlier_mean,
             },
-            source_epoch=source_epoch,
+            source_epoch=source_epoch, source_metadata=source_metadata,
         ))
 
         # Broad technical measurements are emitted as evidence only. They
         # never select a side or authorize an opportunity.
         output.extend(_technical_indicator_evidence(
-            symbol, timeframe, bars, source_epoch,
+            symbol, timeframe, bars, source_epoch, source_metadata,
         ))
 
         # Volume is included only when the selected broker actually supplies it.
