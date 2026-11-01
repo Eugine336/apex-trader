@@ -37,6 +37,7 @@ def _frame(start, closes, *, symbol, naive=False):
         "source_symbol": symbol,
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
     })
     return frame
 
