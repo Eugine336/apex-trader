@@ -80,10 +80,21 @@ def _raw_row_value(row: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
-    """Read OHLC(V) and source time from a pandas-like frame without importing pandas."""
+def _rows(
+    frame: Any, limit: int = 30, *, expected_symbol: str = "",
+) -> list[dict[str, Any]]:
+    """Read OHLC(V) with source-time attestation from the broker adapter."""
     if frame is None:
         return []
+    attrs = getattr(frame, "attrs", {})
+    attrs = attrs if isinstance(attrs, dict) else {}
+    source_attested = bool(
+        attrs.get("source_timestamp_verified") is True
+        and str(attrs.get("source_symbol", "") or "").strip().upper()
+            == str(expected_symbol or "").strip().upper()
+        and attrs.get("source_timestamp_unit") == "unix_seconds"
+        and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+    )
     try:
         if getattr(frame, "empty", False):
             return []
@@ -122,6 +133,9 @@ def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
                     source_epoch = _timestamp_epoch(row_index)
             if source_epoch is not None:
                 item["timestamp_epoch"] = source_epoch
+            item["source_timestamp_verified"] = bool(
+                source_attested and source_epoch is not None
+            )
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None:
                 item["volume"] = max(0.0, volume)
@@ -131,9 +145,11 @@ def _rows(frame: Any, limit: int = 30) -> list[dict[str, Any]]:
         return []
 
 
-def detect_m1_price_action(frame: Any) -> dict[str, Any]:
+def detect_m1_price_action(
+    frame: Any, *, expected_symbol: str = "",
+) -> dict[str, Any]:
     """Return evidence measurements from recent M1 bars; never returns a trade."""
-    bars = _rows(frame)
+    bars = _rows(frame, expected_symbol=expected_symbol)
     if len(bars) < 3:
         return {}
 
