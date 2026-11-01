@@ -811,3 +811,48 @@ def test_malformed_considered_opportunity_is_retained_as_non_actionable():
     assert opportunities[0].state == OpportunityState.UNKNOWN
     assert opportunities[0].candidate_family == "unclassified"
     assert opportunities[0].is_actionable is False
+
+
+
+def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
+    from datetime import datetime, timezone
+    from cognition.evidence_adapters import evidence_from_market_desk
+
+    now = time.time()
+    payload = {
+        "symbol": "EURUSD",
+        "observed_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+        "source_timestamp_verified": True,
+        "data_quality_ok": True,
+        "quote": {
+            "symbol": "EURUSD",
+            "bid": 1.0999,
+            "ask": 1.1001,
+            "spread": 0.0002,
+            "timestamp_epoch": now,
+            "source_timestamp_verified": True,
+        },
+        "completed_bars": {},
+        "pattern_observations": [],
+    }
+
+    valid = evidence_from_market_desk("EURUSD", payload)
+    assert len(valid) == 1
+    assert valid[0].source_timestamp_verified is True
+    assert valid[0].source_timestamp_epoch == now
+
+    missing_attestation = dict(payload)
+    missing_attestation.pop("source_timestamp_verified")
+    assert evidence_from_market_desk("EURUSD", missing_attestation) == []
+
+    mismatched_quote_time = {
+        **payload,
+        "quote": {**payload["quote"], "timestamp_epoch": now - 2.0},
+    }
+    assert evidence_from_market_desk("EURUSD", mismatched_quote_time) == []
+
+    mismatched_quote_symbol = {
+        **payload,
+        "quote": {**payload["quote"], "symbol": "GBPUSD"},
+    }
+    assert evidence_from_market_desk("EURUSD", mismatched_quote_symbol) == []
