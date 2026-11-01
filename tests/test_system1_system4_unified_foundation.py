@@ -634,6 +634,47 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
 
+    duplicate_snapshot_events = [dict(row) for row in events]
+    duplicate_snapshot_events.append({**events[0], "seq": 10000})
+    assert CalibrationProducer(
+        Store(duplicate_snapshot_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    duplicate_outcome_events = [dict(row) for row in events]
+    duplicate_outcome_events.append({**events[1], "seq": 10001})
+    assert CalibrationProducer(
+        Store(duplicate_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    mismatched_outcome_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            outcome_payload = json.loads(row["payload_json"])
+            outcome_payload["observed_price"] = float(outcome_payload["observed_price"]) + 0.5
+            outcome_payload["directional_return_r"] = (
+                float(outcome_payload["directional_return_r"]) + 0.5
+            )
+            outcome_payload["outcome_label"] = "FAVOURABLE"
+            copied["payload_json"] = json.dumps(outcome_payload)
+        mismatched_outcome_events.append(copied)
+    assert CalibrationProducer(
+        Store(mismatched_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    mismatched_quote_events = []
+    for row in events:
+        copied = dict(row)
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            snapshot_payload = json.loads(row["payload_json"])
+            quote_row = snapshot_payload["point_in_time_evidence"][1]
+            quote_row["measurements"]["price"]["symbol"] = "GBPUSD"
+            copied["payload_json"] = json.dumps(snapshot_payload)
+        mismatched_quote_events.append(copied)
+    assert CalibrationProducer(
+        Store(mismatched_quote_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
 
 
 def test_developing_world_model_generation_time_is_not_source_time():
