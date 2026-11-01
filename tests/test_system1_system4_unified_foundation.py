@@ -623,6 +623,13 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert artifact.expected_return_r == 0.05
     assert artifact.holdout_expected_return_r == 0.05
     assert artifact.brier_score == 0.25
+    metrics = artifact.to_measurements()
+    assert metrics["probability_calibration_verified"] is False
+    assert metrics["brier_score_semantics"] == (
+        "development_base_rate_forecast_scored_on_untouched_holdout"
+    )
+    assert metrics["development_holdout_prevalence_gap"] == artifact.reliability_gap
+    assert "not_a_calibrated_probability" in metrics["probability_semantics"]
     assert artifact.candidate_family == "continuation"
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "LONG", "continuation", 300, now=now,
