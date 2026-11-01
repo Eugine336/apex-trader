@@ -964,6 +964,7 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
 
 
 def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportunity_ids():
+    import json
     from types import SimpleNamespace
 
     class Store:
