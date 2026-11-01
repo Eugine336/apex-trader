@@ -308,6 +308,49 @@ def test_v9_execution_cost_adapter_shapes_measurements():
     assert m["cost_source"] == "test live quote"
     assert ev[0].domain == EvidenceDomain.EXECUTION_QUALITY
     assert ev[0].polarity == 0.0
+    assert ev[0].source_timestamp_verified is False
+
+
+def test_v9_execution_cost_adapter_requires_same_symbol_quote_lineage():
+    stamp = time.time()
+    verified = evidence_from_execution_cost("EURUSD", {
+        "estimated_total_cost_account_ccy_per_lot": 2.5,
+        "money_per_price_account_ccy_per_lot": 100.0,
+        "cost_verified": True,
+        "cost_source": "broker quote and verified contract specification",
+        "source_timestamp_epoch": stamp,
+        "source_timestamp_verified": True,
+        "quote": {
+            "symbol": "EURUSD",
+            "quote_kind": "bid_ask",
+            "bid": 1.0999,
+            "ask": 1.1001,
+            "spread": 0.0002,
+            "source_timestamp_epoch": stamp,
+            "source_timestamp_verified": True,
+        },
+    })
+    assert len(verified) == 1
+    assert verified[0].source_timestamp_verified is True
+
+    wrong_symbol = evidence_from_execution_cost("EURUSD", {
+        "estimated_total_cost_account_ccy_per_lot": 2.5,
+        "money_per_price_account_ccy_per_lot": 100.0,
+        "cost_verified": True,
+        "source_timestamp_epoch": stamp,
+        "source_timestamp_verified": True,
+        "quote": {
+            "symbol": "GBPUSD",
+            "quote_kind": "bid_ask",
+            "bid": 1.0999,
+            "ask": 1.1001,
+            "spread": 0.0002,
+            "source_timestamp_epoch": stamp,
+            "source_timestamp_verified": True,
+        },
+    })
+    assert len(wrong_symbol) == 1
+    assert wrong_symbol[0].source_timestamp_verified is False
 
 
 def test_v9_execution_cost_adapter_defaults_to_unverified():
