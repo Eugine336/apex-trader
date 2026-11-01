@@ -727,6 +727,8 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             ask = float(quote.get("ask"))
         except (TypeError, ValueError, OverflowError):
             return []
+        reported_spread = _safe_number(quote.get("spread"))
+        derived_spread = ask - bid
         if (
             quote.get("source_timestamp_verified") is not True
             or quote_symbol != requested_symbol
@@ -734,6 +736,12 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             or abs(quote_epoch - observed_epoch) > 1e-6
             or not math.isfinite(bid) or not math.isfinite(ask)
             or bid <= 0.0 or ask < bid
+            or (
+                reported_spread is not None
+                and not math.isclose(
+                    reported_spread, derived_spread, rel_tol=1e-6, abs_tol=1e-10
+                )
+            )
         ):
             return []
         # Do not turn an old cache entry into fresh evidence merely because the
@@ -797,7 +805,7 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
             f"Market-backed {payload_symbol} read from the selected broker feed.",
             f"venue={str(data.get('venue', '') or 'unknown')}",
             f"bid={quote.get('bid', 'unknown')}, ask={quote.get('ask', 'unknown')}, "
-            f"spread={quote.get('spread', 'unknown')}",
+            f"spread={derived_spread}",
             f"completed timeframes={','.join(sorted(str(k) for k in bars)) or 'none'}",
             f"pattern observations={len(clean_patterns)} from {len(family_names)} detector family/families.",
             "Patterns may overlap and are NOT independent votes; no trade direction or order is issued by this source.",
@@ -820,7 +828,8 @@ def evidence_from_market_desk(symbol: str, payload: Any) -> list[Evidence]:
                 "symbol": quote_symbol,
                 "bid": bid,
                 "ask": ask,
-                "spread": _safe_number(quote.get("spread")),
+                "mid": (bid + ask) / 2.0,
+                "spread": derived_spread,
                 "timestamp_epoch": quote_epoch,
                 "source_timestamp_verified": True,
             },
