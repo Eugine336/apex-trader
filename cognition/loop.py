@@ -1034,7 +1034,7 @@ class CognitionLoop:
                     continue
                 evidence_id = str(getattr(item, "evidence_id", "") or "")
                 evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
-                quote_symbol = str(quote.get("symbol") or evidence_symbol).strip().upper()
+                quote_symbol = str(quote.get("symbol") or "").strip().upper()
                 try:
                     bid, ask = float(quote.get("bid")), float(quote.get("ask"))
                     source_epoch = float(getattr(item, "source_timestamp_epoch", None))
