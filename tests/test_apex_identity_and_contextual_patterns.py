@@ -119,6 +119,8 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
     assert evidence is not None
     assert evidence.measurements["source_timestamp_known"] is True
     assert evidence.source_timestamp_verified is True
+    assert evidence.measurements["source_timestamp_origin"] == "broker_ohlcv"
+    assert evidence.measurements["source_broker"] == "test-broker"
     assert evidence.source_timestamp_epoch < now.timestamp() - 4 * 60
     assert evidence.timestamp_epoch >= now.timestamp() - 5.0
     assert evidence.is_fresh(now.timestamp()) is False
