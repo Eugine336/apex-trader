@@ -564,7 +564,6 @@ def build_price_snapshot(
         valid_quote = (
             math.isfinite(bid) and math.isfinite(ask)
             and bid > 0.0 and ask >= bid
-            and quote_kind in {"bid_ask", "mid_only"}
             and (quote_kind != "mid_only" or ask == bid)
         )
         tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
