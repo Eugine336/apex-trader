@@ -119,6 +119,7 @@ def _decide(opinion, uncertainty=0.1):
         measurements=artifact.to_measurements(),
         timestamp_epoch=artifact.issued_at_epoch,
         source_timestamp_epoch=artifact.issued_at_epoch,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=3600.0,
     ))
     # The helper supplies exactly three independent market domains above;
