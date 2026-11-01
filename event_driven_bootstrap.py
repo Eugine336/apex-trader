@@ -2889,10 +2889,7 @@ class EventDrivenSystem:
                     and str(attrs.get("source_symbol", "") or "").strip().upper()
                         == str(expected_symbol or "").strip().upper()
                     and attrs.get("source_timestamp_unit") == "unix_seconds"
-                    and attrs.get("source_timestamp_origin") in {
-                        "broker_ohlcv",
-                        "broker_ohlcv",
-                    }
+                    and attrs.get("source_timestamp_origin") == "broker_ohlcv"
                 ):
                     return None
                 if "time" not in frame.columns or "close" not in frame.columns:
