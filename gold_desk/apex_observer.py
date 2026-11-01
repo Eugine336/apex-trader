@@ -543,6 +543,7 @@ class ApexMarketObserver:
             "source_timestamp_verified": True,
             "quote": {
                 "symbol": symbol,
+                "quote_kind": str(getattr(tick, "quote_kind", "unknown") or "unknown"),
                 "bid": bid,
                 "ask": ask,
                 "spread": ask - bid,
