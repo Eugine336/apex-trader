@@ -134,10 +134,13 @@ def test_mt5_poller_routes_ticks_from_prices():
 
 
 def test_deriv_adapter_routes_ticks_from_prices():
-    router = _run_poller(tick_sources.DerivTickAdapter, _Px(101.0, 101.2))
+    router = _run_poller(
+        tick_sources.DerivTickAdapter,
+        _Px(101.0, 101.0, quote_kind="mid_only"),
+    )
     assert router.ticks and router.ticks[0].source == "deriv"
     assert router.ticks[0].source_timestamp_verified is True
-    assert router.ticks[0].quote_kind == "bid_ask"
+    assert router.ticks[0].quote_kind == "mid_only"
 
 
 def test_poller_no_symbols_is_inert():
