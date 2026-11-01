@@ -632,6 +632,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         "development_base_rate_forecast_scored_on_untouched_holdout"
     )
     assert metrics["development_holdout_prevalence_gap"] == artifact.reliability_gap
+    assert metrics["current_regime_edge_demonstrated"] is False
+    assert metrics["predictive_ability_demonstrated"] is False
     assert "not_a_calibrated_probability" in metrics["probability_semantics"]
     assert artifact.candidate_family == "continuation"
     assert resolve_calibration_artifact(
