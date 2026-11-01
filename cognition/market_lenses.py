@@ -549,13 +549,11 @@ def _record(
 ) -> Evidence:
     seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
     known_source_time = bool(source_epoch and source_epoch > 0)
-    sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
-    try:
-        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
-    except (OverflowError, OSError, ValueError):
-        sampled_at = datetime.now(timezone.utc).timestamp()
-        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
-        known_source_time = False
+    # Evidence creation/ingestion time is distinct from the broker candle time.
+    sampled_at = datetime.now(timezone.utc).timestamp()
+    timestamp_iso = datetime.fromtimestamp(
+        sampled_at, tz=timezone.utc,
+    ).isoformat()
     confidence = 0.72 if known_source_time else 0.55
     uncertainty = 0.28 if known_source_time else 0.45
     return Evidence(
