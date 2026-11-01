@@ -274,6 +274,7 @@ class _RichOpinion:
         self.opportunities = (
             [{"id": "auto", "direction": direction, "state": "ACTIVE",
               "candidate_family": "continuation",
+              "horizon": "M5",
               "quality": confidence, "asymmetry": confidence,
               "evidence_strength": confidence}]
             if str(direction).upper() in ("LONG", "SHORT") else []
