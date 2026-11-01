@@ -1628,36 +1628,80 @@ class CognitionLoop:
             store = self._candidate_event_store
             if store is None:
                 store = get_event_store()
-            opportunities = list(getattr(decision, "opportunities", []) or [])
-            hypotheses = list(getattr(decision, "hypotheses", []) or [])
-            records: list[tuple[str, str]] = []
-            for item in opportunities:
-                candidate_ref = str(getattr(item, "opportunity_id", "") or "")
-                if candidate_ref:
-                    records.append(("opportunity", candidate_ref))
-            for item in hypotheses:
-                candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
-                if candidate_ref:
-                    records.append(("hypothesis", candidate_ref))
+            import json
+            symbol = str(getattr(decision, "symbol", "") or "").strip().upper()
             questions = getattr(decision, "questions_answered", {}) or {}
-            for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
-                raw_records = questions.get(key, [])
-                if isinstance(raw_records, list):
-                    for item in raw_records:
-                        if not isinstance(item, dict):
-                            continue
-                        candidate_ref = str(item.get("hypothesis_id", "") or "")
-                        if candidate_ref and ("hypothesis", candidate_ref) not in records:
-                            records.append(("hypothesis", candidate_ref))
+            records: list[dict[str, str]] = []
+            query_events = getattr(store, "query_events", None)
+            if callable(query_events):
+                snapshot_rows = query_events(
+                    severity_min="DEBUG",
+                    event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
+                    symbol=symbol,
+                    limit=10000,
+                    offset=0,
+                ) or []
+                for row in snapshot_rows:
+                    try:
+                        snapshot = json.loads(row.get("payload_json") or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(snapshot, dict):
+                        continue
+                    if str(snapshot.get("decision_id", "") or "") != decision_id:
+                        continue
+                    candidate_id = str(snapshot.get("candidate_id", "") or "")
+                    if not candidate_id or any(
+                        item["candidate_id"] == candidate_id for item in records
+                    ):
+                        continue
+                    candidate = snapshot.get("candidate")
+                    candidate = candidate if isinstance(candidate, dict) else {}
+                    records.append({
+                        "candidate_id": candidate_id,
+                        "candidate_kind": str(snapshot.get("candidate_kind", "") or ""),
+                        "candidate_ref": str(snapshot.get("candidate_ref", "") or ""),
+                        "candidate_parse_status": str(
+                            candidate.get("candidate_parse_status", "") or ""
+                        ),
+                    })
             if not records:
-                records.append(("decision_outcome", decision_id))
-            questions = getattr(decision, "questions_answered", {}) or {}
-            for candidate_kind, candidate_ref in records:
-                candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
+                # Compatibility fallback for stores without snapshot querying.
+                opportunities = list(getattr(decision, "opportunities", []) or [])
+                hypotheses = list(getattr(decision, "hypotheses", []) or [])
+                for item in opportunities:
+                    candidate_ref = str(getattr(item, "opportunity_id", "") or "")
+                    if candidate_ref:
+                        records.append({
+                            "candidate_id": f"{decision_id}:opportunity:{candidate_ref}",
+                            "candidate_kind": "opportunity",
+                            "candidate_ref": candidate_ref,
+                            "candidate_parse_status": "",
+                        })
+                for item in hypotheses:
+                    candidate_ref = str(getattr(item, "hypothesis_id", "") or "")
+                    if candidate_ref:
+                        candidate_id = f"{decision_id}:hypothesis:{candidate_ref}"
+                        if not any(row["candidate_id"] == candidate_id for row in records):
+                            records.append({
+                                "candidate_id": candidate_id,
+                                "candidate_kind": "hypothesis",
+                                "candidate_ref": candidate_ref,
+                                "candidate_parse_status": "",
+                            })
+            if not records:
+                records.append({
+                    "candidate_id": f"{decision_id}:decision_outcome:{decision_id}",
+                    "candidate_kind": "decision_outcome",
+                    "candidate_ref": decision_id,
+                    "candidate_parse_status": "",
+                })
+            for record in records:
+                candidate_id = record["candidate_id"]
                 store.emit(
                     COGNITIVE_CANDIDATE_DISPOSITION,
                     "DEBUG",
-                    symbol=str(getattr(decision, "symbol", "") or ""),
+                    symbol=symbol,
                     correlation_id=decision_id,
                     parent_id=candidate_id,
                     source_module="cognition.loop.candidate_disposition",
@@ -1665,7 +1709,10 @@ class CognitionLoop:
                         "schema_version": "1.0.0",
                         "candidate_id": candidate_id,
                         "decision_id": decision_id,
-                        "symbol": str(getattr(decision, "symbol", "") or ""),
+                        "symbol": symbol,
+                        "candidate_kind": record["candidate_kind"],
+                        "candidate_ref": record["candidate_ref"],
+                        "candidate_parse_status": record["candidate_parse_status"],
                         "stage": str(stage or "unknown"),
                         "disposition": disposition,
                         "decision_type": decision_type,
