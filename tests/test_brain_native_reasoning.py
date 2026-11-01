@@ -176,6 +176,7 @@ def _with_verified_council(ms, *, responded=2, available=2, total=2):
             "cost_source": "simulated live quote for test",
         },
         timestamp_epoch=stamp, source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60.0,
     ))
     ms.add(Evidence(
