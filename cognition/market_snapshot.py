@@ -571,11 +571,12 @@ def build_price_snapshot(
         )
         if valid_quote:
             mid = (bid + ask) / 2.0
-            dp = _decimals_for(mid)
             price = {
                 "symbol": requested_symbol,
-                "bid": round(bid, dp), "ask": round(ask, dp),
-                "mid": round(mid, dp), "spread": round(ask - bid, dp),
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "spread": ask - bid,
                 "timestamp_epoch": tick_epoch,
                 "source_timestamp_verified": tick_source_verified,
             }
