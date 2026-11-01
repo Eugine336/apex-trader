@@ -570,7 +570,6 @@ def build_price_snapshot(
         tick_source_verified = (
             getattr(tick, "source_timestamp_verified", False) is True
             and tick_epoch is not None
-            and quote_kind in {"bid_ask", "mid_only"}
         )
         if valid_quote:
             mid = (bid + ask) / 2.0
