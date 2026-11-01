@@ -59,6 +59,7 @@ def test_source_timestamp_controls_freshness_not_ingestion_time():
         uncertainty=0.0,
         timestamp_epoch=now,
         source_timestamp_epoch=now - 3600,
+        source_timestamp_verified=True,
         relevance_horizon_seconds=60,
         data_basis="completed_ohlc",
         measurement_version="test-v1",
@@ -98,6 +99,7 @@ def test_candidate_snapshot_durably_records_opportunity_and_point_in_time_eviden
         measurements={"source_kind": "market_lens", "timeframe": "H1", "trend_state": "uptrend"},
         timestamp_epoch=stamp,
         source_timestamp_epoch=stamp,
+        source_timestamp_verified=True,
         data_basis="completed_ohlc",
         independence_group="price_structure:H1",
     ))
@@ -160,6 +162,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
         symbol="EURUSD",
         timestamp_epoch=stamp - 1.0,
         source_timestamp_epoch=stamp - 1.0,
+        source_timestamp_verified=True,
         measurements={"timeframe": "H1", "trend_state": "uptrend"},
         relevance_horizon_seconds=60.0,
     )
@@ -295,6 +298,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         symbol="EURUSD",
         timestamp_epoch=1000.0,
         source_timestamp_epoch=1000.0,
+        source_timestamp_verified=True,
         confidence=0.9,
         uncertainty=0.1,
         measurements={"price": {
@@ -329,6 +333,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         symbol="EURUSD",
         timestamp_epoch=1301.0,
         source_timestamp_epoch=1301.0,
+        source_timestamp_verified=True,
         confidence=0.9,
         uncertainty=0.1,
         measurements={"price": {
@@ -647,8 +652,19 @@ def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time()
         timestamp_epoch=1_900_000_100.0,
         source_timestamp_epoch=1_900_000_000.0,
     )
-    assert explicit_source.source_timestamp_verified is True
-    assert explicit_source.source_timestamp_epoch == 1_900_000_000.0
+    assert explicit_source.source_timestamp_verified is False
+    assert explicit_source.source_timestamp_epoch is None
+
+    verified_source = Evidence(
+        source_module="test.verified_source",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        timestamp_epoch=1_900_000_100.0,
+        source_timestamp_epoch=1_900_000_000.0,
+        source_timestamp_verified=True,
+    )
+    assert verified_source.source_timestamp_verified is True
+    assert verified_source.source_timestamp_epoch == 1_900_000_000.0
 
     unknown = Evidence(
         source_module="test.unknown_source",
