@@ -135,6 +135,18 @@ class TestMT5NonPositiveTick:
 # MT5 — invalid timestamp (epoch <= 0) rejected
 # ═══════════════════════════════════════════════════════════════════════════
 
+class TestMT5FutureTimestamp:
+
+    @patch("platforms.mt5.mt5_connector.mt5")
+    def test_future_epoch_raises(self, mock_mt5):
+        c, _ = _make_mt5()
+        future_epoch = _now_epoch() + 600
+        mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick(epoch=future_epoch)
+        with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
+            with pytest.raises(RuntimeError, match="Future tick"):
+                c.get_price("EURUSD")
+
+
 class TestMT5InvalidTimestamp:
 
     @patch("platforms.mt5.mt5_connector.mt5")
@@ -241,6 +253,16 @@ class TestDerivNonPositiveQuote:
 # ═══════════════════════════════════════════════════════════════════════════
 # Deriv — invalid timestamp (epoch <= 0) rejected
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestDerivFutureTimestamp:
+
+    def test_future_epoch_raises(self):
+        c = _make_deriv()
+        future_epoch = _now_epoch() + 600
+        c._sync_send.return_value = _deriv_tick_response(epoch=future_epoch)
+        with pytest.raises(RuntimeError, match="Future tick"):
+            c.get_price("R_75")
+
 
 class TestDerivInvalidTimestamp:
 
