@@ -1692,6 +1692,29 @@ class CognitionLoop:
                                 "candidate_ref": candidate_ref,
                                 "candidate_parse_status": "",
                             })
+                # Some native BrainReasoner hypotheses are persisted in the
+                # decision's structured question payload rather than the
+                # legacy hypotheses attribute. Preserve those exact identities
+                # when a store cannot query the already-written snapshots.
+                for key in ("native_hypothesis_records", "brain_native_hypothesis_records"):
+                    raw_records = questions.get(key, [])
+                    if not isinstance(raw_records, list):
+                        continue
+                    for item in raw_records:
+                        if not isinstance(item, dict):
+                            continue
+                        candidate_ref = str(item.get("hypothesis_id", "") or "")
+                        if not candidate_ref:
+                            continue
+                        candidate_id = f"{decision_id}:hypothesis:{candidate_ref}"
+                        if any(row["candidate_id"] == candidate_id for row in records):
+                            continue
+                        records.append({
+                            "candidate_id": candidate_id,
+                            "candidate_kind": "hypothesis",
+                            "candidate_ref": candidate_ref,
+                            "candidate_parse_status": "",
+                        })
             if not records:
                 records.append({
                     "candidate_id": f"{decision_id}:decision_outcome:{decision_id}",
