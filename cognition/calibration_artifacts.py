@@ -421,6 +421,8 @@ class CalibrationProducer:
                         and str(quote_source.get("symbol", "") or "").strip().upper() == sym
                         and quote_source.get("source_timestamp_verified") is True
                         and abs(float(quote_source.get("timestamp_epoch")) - reference_epoch) <= 1e-6
+                        and abs(float(quote_source.get("mid")) - reference_price)
+                            <= max(1e-10, reference_price * 1e-8)
                         and abs(float(quote_source.get("bid")) - bid) <= max(1e-10, bid * 1e-8)
                         and abs(float(quote_source.get("ask")) - ask) <= max(1e-10, ask * 1e-8)
                     )
