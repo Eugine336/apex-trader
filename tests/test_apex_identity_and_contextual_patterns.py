@@ -112,7 +112,7 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
         "source_timestamp_verified": True,
         "source_symbol": "XAUUSD",
         "source_timestamp_unit": "unix_seconds",
-        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+        "source_timestamp_origin": "broker_ohlcv",
     })
     evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
     assert evidence is not None
@@ -353,7 +353,7 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         "source_timestamp_verified": True,
         "source_symbol": "EURUSD",
         "source_timestamp_unit": "unix_seconds",
-        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+        "source_timestamp_origin": "broker_ohlcv",
     })
     evidence = analyze_market_frames(
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
