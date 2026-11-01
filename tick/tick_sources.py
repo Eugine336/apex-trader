@@ -107,8 +107,8 @@ class MT5TickPoller:
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
-                        reported_symbol = str(getattr(td, "symbol", "") or sym).strip().upper()
-                        if reported_symbol != sym.strip().upper():
+                        reported_symbol = str(getattr(td, "symbol", "") or "").strip().upper()
+                        if not reported_symbol or reported_symbol != sym.strip().upper():
                             raise RuntimeError(
                                 f"MT5 tick symbol mismatch: requested={sym}, received={reported_symbol}"
                             )
