@@ -41,7 +41,14 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
         "close": close,
         "volume": 10 + count,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "XAUUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+    })
+    return frame
 
 
 def _alignment(frames):
