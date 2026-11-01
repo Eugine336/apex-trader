@@ -493,7 +493,8 @@ class MT5Connector(BaseConnector):
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
             "source_timestamp_unit": "unix_seconds",
-            "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+            "source_timestamp_origin": "broker_ohlcv",
+            "source_broker": "mt5",
         })
         return out
 
