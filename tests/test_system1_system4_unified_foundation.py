@@ -1056,3 +1056,18 @@ def test_candidate_ledger_retains_missing_hypothesis_ids_and_duplicate_opportuni
     assert duplicate_hypothesis["candidate"]["candidate_parse_status"] == "DUPLICATE_STABLE_ID"
     assert duplicate_hypothesis["candidate"]["candidate_family"] == "unclassified"
     assert duplicate_hypothesis["candidate"]["calibration_candidate"] is False
+
+
+
+def test_calibration_counts_only_non_overlapping_decision_horizons():
+    from cognition.calibration_artifacts import CalibrationProducer
+
+    groups = [
+        {"decision_id": "d0", "decision_epoch": 1000.0},
+        {"decision_id": "d1", "decision_epoch": 1060.0},
+        {"decision_id": "d2", "decision_epoch": 1300.0},
+        {"decision_id": "d3", "decision_epoch": 1301.0},
+        {"decision_id": "d4", "decision_epoch": 1601.0},
+    ]
+    selected = CalibrationProducer._non_overlapping_decision_groups(groups, 300)
+    assert [item["decision_id"] for item in selected] == ["d0", "d3"]
