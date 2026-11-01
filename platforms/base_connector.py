@@ -52,6 +52,12 @@ class TickData:
     ask: float
     spread: float
     time: datetime
+    # Broker adapters attest source time only after validating the provider field.
+    source_timestamp_verified: bool = False
+    # "bid_ask" is an executable top-of-book quote; "mid_only" is a single
+    # provider price represented in both bid/ask slots for compatibility.
+    quote_kind: str = "unknown"
+    symbol: Optional[str] = None
 
 
 @dataclass
