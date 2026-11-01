@@ -81,6 +81,11 @@ class CalibrationArtifact:
             "development_holdout_prevalence_gap": self.reliability_gap,
             "expected_return_r": self.expected_return_r,
             "holdout_expected_return_r": self.holdout_expected_return_r,
+            "expected_return_semantics": (
+                "historical_family_conditional_fixed_horizon_estimate_not_current_regime_edge"
+            ),
+            "current_regime_edge_demonstrated": False,
+            "predictive_ability_demonstrated": False,
             "expected_return_gap": self.expected_return_gap,
             "sample_count": self.sample_count,
             "brier_score": self.brier_score,
