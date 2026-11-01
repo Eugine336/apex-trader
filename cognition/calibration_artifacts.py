@@ -528,303 +528,304 @@ class CalibrationProducer:
             artifacts: list[CalibrationArtifact] = []
             for direction in ("LONG", "SHORT"):
                 for horizon in (300, 900, 3600, 14400, 86400):
-                    eligible_groups = []
-                    total_matured = 0
-                    observed_groups = 0
-                    missed_groups = 0
-                    for (decision_id, side, family), members in groups.items():
-                        if side != direction:
-                            continue
-                        decision_epochs = {item["decision_epoch"] for item in members}
-                        if len(decision_epochs) != 1:
-                            invalid_directional_candidates += 1
-                            continue
-                        decision_epoch = next(iter(decision_epochs))
-                        if decision_epoch + horizon > current:
-                            continue
-                        total_matured += 1
-                        # A candidate only enters the calibration sample when
-                        # its quote, feature timestamps and final disposition are
-                        # all attributable. Missing members remain in the
-                        # denominator and therefore reduce selection coverage.
-                        if not all(
-                            item["quote_valid"] and item["provenance_valid"]
-                            and item["disposition_valid"]
-                            for item in members
-                        ):
-                            continue
-                        outcome_keys = [
-                            (item["candidate_id"], horizon) for item in members
-                        ]
-                        if any(key in duplicate_outcome_keys for key in outcome_keys):
-                            continue
-                        member_outcomes = [
-                            outcome_map.get(key) for key in outcome_keys
-                        ]
-                        if any(item is None for item in member_outcomes):
-                            continue
-                        outcomes_match = True
-                        for member, outcome in zip(members, member_outcomes):
-                            try:
-                                observed_at = float(outcome.get("observed_at_epoch"))
-                                due_at = member["decision_epoch"] + horizon
-                            except (TypeError, ValueError, OverflowError):
-                                outcomes_match = False
-                                break
-                            status = str(outcome.get("observation_status", "") or "")
-                            tolerance = max(60.0, horizon * 0.10)
-                            if (
-                                str(outcome.get("candidate_id", "") or "") != member["candidate_id"]
-                                or str(outcome.get("decision_id", "") or "") != decision_id
-                                or str(outcome.get("symbol", "") or "").strip().upper() != sym
-                                or str(outcome.get("direction", "") or "").upper() != direction
-                                or str(outcome.get("candidate_family", "") or "").strip().lower() != family
-                                or int(outcome.get("horizon_seconds", 0) or 0) != horizon
-                                or outcome.get("outcome_source_timestamp_verified") is not True
-                                or not math.isfinite(observed_at)
-                                or observed_at < due_at
-                                or str(outcome.get("reference_evidence_id", "") or "")
-                                    != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
+                    for family in CANDIDATE_FAMILIES:
+                        eligible_groups = []
+                        total_matured = 0
+                        observed_groups = 0
+                        missed_groups = 0
+                        for (decision_id, side, candidate_family), members in groups.items():
+                            if side != direction or candidate_family != family:
+                                continue
+                            decision_epochs = {item["decision_epoch"] for item in members}
+                            if len(decision_epochs) != 1:
+                                invalid_directional_candidates += 1
+                                continue
+                            decision_epoch = next(iter(decision_epochs))
+                            if decision_epoch + horizon > current:
+                                continue
+                            total_matured += 1
+                            # A candidate only enters the calibration sample when
+                            # its quote, feature timestamps and final disposition are
+                            # all attributable. Missing members remain in the
+                            # denominator and therefore reduce selection coverage.
+                            if not all(
+                                item["quote_valid"] and item["provenance_valid"]
+                                and item["disposition_valid"]
+                                for item in members
                             ):
-                                outcomes_match = False
-                                break
-                            outcome_quote = outcome.get("outcome_quote") or {}
-                            try:
-                                outcome_quote_mid = float(outcome_quote.get("mid"))
-                                outcome_quote_bid = float(outcome_quote.get("bid"))
-                                outcome_quote_ask = float(outcome_quote.get("ask"))
-                                outcome_quote_epoch = float(
-                                    outcome_quote.get("source_timestamp_epoch")
-                                )
-                            except (TypeError, ValueError, OverflowError):
-                                outcomes_match = False
-                                break
-                            if (
-                                outcome_quote.get("source_timestamp_verified") is not True
-                                or str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
-                                    not in {"bid_ask", "mid_only"}
-                                or (
-                                    str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
-                                    == "mid_only" and outcome_quote_ask != outcome_quote_bid
-                                )
-                                or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
-                                or str(outcome_quote.get("evidence_id", "") or "")
-                                    != str(outcome.get("outcome_evidence_id", "") or "")
-                                or not math.isfinite(outcome_quote_mid)
-                                or not math.isfinite(outcome_quote_bid)
-                                or not math.isfinite(outcome_quote_ask)
-                                or not math.isfinite(outcome_quote_epoch)
-                                or outcome_quote_bid <= 0.0
-                                or outcome_quote_ask < outcome_quote_bid
-                                or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0))
-                                    > max(1e-10, outcome_quote_mid * 1e-8)
-                                or abs(outcome_quote_epoch - observed_at) > 1e-6
-                            ):
-                                outcomes_match = False
-                                break
-                            if status == "OBSERVED":
+                                continue
+                            outcome_keys = [
+                                (item["candidate_id"], horizon) for item in members
+                            ]
+                            if any(key in duplicate_outcome_keys for key in outcome_keys):
+                                continue
+                            member_outcomes = [
+                                outcome_map.get(key) for key in outcome_keys
+                            ]
+                            if any(item is None for item in member_outcomes):
+                                continue
+                            outcomes_match = True
+                            for member, outcome in zip(members, member_outcomes):
                                 try:
-                                    observed_price = float(outcome.get("observed_price"))
-                                    reference_price = float(
-                                        (member.get("payload", {}).get("reference_quote") or {}).get("mid")
-                                    )
-                                    risk_distance = float(member.get("risk_distance"))
-                                    supplied_r = float(outcome.get("directional_return_r"))
+                                    observed_at = float(outcome.get("observed_at_epoch"))
+                                    due_at = member["decision_epoch"] + horizon
                                 except (TypeError, ValueError, OverflowError):
                                     outcomes_match = False
                                     break
-                                expected_r = (
-                                    (observed_price - reference_price)
-                                    * (1.0 if direction == "LONG" else -1.0)
-                                    / risk_distance
-                                ) if risk_distance > 0.0 else float("nan")
-                                expected_label = (
-                                    "FAVOURABLE" if expected_r > 0.0
-                                    else "UNFAVOURABLE" if expected_r < 0.0
-                                    else "FLAT"
-                                )
+                                status = str(outcome.get("observation_status", "") or "")
+                                tolerance = max(60.0, horizon * 0.10)
                                 if (
-                                    observed_at > due_at + tolerance
-                                    or not math.isfinite(observed_price)
-                                    or observed_price <= 0.0
-                                    or not math.isfinite(expected_r)
-                                    or abs(observed_price - outcome_quote_mid)
+                                    str(outcome.get("candidate_id", "") or "") != member["candidate_id"]
+                                    or str(outcome.get("decision_id", "") or "") != decision_id
+                                    or str(outcome.get("symbol", "") or "").strip().upper() != sym
+                                    or str(outcome.get("direction", "") or "").upper() != direction
+                                    or str(outcome.get("candidate_family", "") or "").strip().lower() != family
+                                    or int(outcome.get("horizon_seconds", 0) or 0) != horizon
+                                    or outcome.get("outcome_source_timestamp_verified") is not True
+                                    or not math.isfinite(observed_at)
+                                    or observed_at < due_at
+                                    or str(outcome.get("reference_evidence_id", "") or "")
+                                        != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
+                                ):
+                                    outcomes_match = False
+                                    break
+                                outcome_quote = outcome.get("outcome_quote") or {}
+                                try:
+                                    outcome_quote_mid = float(outcome_quote.get("mid"))
+                                    outcome_quote_bid = float(outcome_quote.get("bid"))
+                                    outcome_quote_ask = float(outcome_quote.get("ask"))
+                                    outcome_quote_epoch = float(
+                                        outcome_quote.get("source_timestamp_epoch")
+                                    )
+                                except (TypeError, ValueError, OverflowError):
+                                    outcomes_match = False
+                                    break
+                                if (
+                                    outcome_quote.get("source_timestamp_verified") is not True
+                                    or str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                                        not in {"bid_ask", "mid_only"}
+                                    or (
+                                        str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
+                                        == "mid_only" and outcome_quote_ask != outcome_quote_bid
+                                    )
+                                    or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
+                                    or str(outcome_quote.get("evidence_id", "") or "")
+                                        != str(outcome.get("outcome_evidence_id", "") or "")
+                                    or not math.isfinite(outcome_quote_mid)
+                                    or not math.isfinite(outcome_quote_bid)
+                                    or not math.isfinite(outcome_quote_ask)
+                                    or not math.isfinite(outcome_quote_epoch)
+                                    or outcome_quote_bid <= 0.0
+                                    or outcome_quote_ask < outcome_quote_bid
+                                    or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0))
                                         > max(1e-10, outcome_quote_mid * 1e-8)
-                                    or abs(supplied_r - expected_r) > 1e-6
-                                    or outcome.get("outcome_label") != expected_label
+                                    or abs(outcome_quote_epoch - observed_at) > 1e-6
                                 ):
                                     outcomes_match = False
                                     break
-                            elif status == "MISSED_WINDOW":
-                                if (
-                                    observed_at <= due_at + tolerance
-                                    or outcome.get("outcome_label") != "UNOBSERVED"
-                                    or outcome.get("directional_return_r") is not None
-                                ):
+                                if status == "OBSERVED":
+                                    try:
+                                        observed_price = float(outcome.get("observed_price"))
+                                        reference_price = float(
+                                            (member.get("payload", {}).get("reference_quote") or {}).get("mid")
+                                        )
+                                        risk_distance = float(member.get("risk_distance"))
+                                        supplied_r = float(outcome.get("directional_return_r"))
+                                    except (TypeError, ValueError, OverflowError):
+                                        outcomes_match = False
+                                        break
+                                    expected_r = (
+                                        (observed_price - reference_price)
+                                        * (1.0 if direction == "LONG" else -1.0)
+                                        / risk_distance
+                                    ) if risk_distance > 0.0 else float("nan")
+                                    expected_label = (
+                                        "FAVOURABLE" if expected_r > 0.0
+                                        else "UNFAVOURABLE" if expected_r < 0.0
+                                        else "FLAT"
+                                    )
+                                    if (
+                                        observed_at > due_at + tolerance
+                                        or not math.isfinite(observed_price)
+                                        or observed_price <= 0.0
+                                        or not math.isfinite(expected_r)
+                                        or abs(observed_price - outcome_quote_mid)
+                                            > max(1e-10, outcome_quote_mid * 1e-8)
+                                        or abs(supplied_r - expected_r) > 1e-6
+                                        or outcome.get("outcome_label") != expected_label
+                                    ):
+                                        outcomes_match = False
+                                        break
+                                elif status == "MISSED_WINDOW":
+                                    if (
+                                        observed_at <= due_at + tolerance
+                                        or outcome.get("outcome_label") != "UNOBSERVED"
+                                        or outcome.get("directional_return_r") is not None
+                                    ):
+                                        outcomes_match = False
+                                        break
+                                else:
                                     outcomes_match = False
                                     break
-                            else:
-                                outcomes_match = False
-                                break
-                        if not outcomes_match:
-                            continue
-                        if any(item.get("observation_status") == "MISSED_WINDOW" for item in member_outcomes):
-                            missed_groups += 1
-                            continue
-                        if not all(item.get("observation_status") == "OBSERVED" for item in member_outcomes):
-                            continue
-                        returns = []
-                        for item in member_outcomes:
-                            try:
-                                value = float(item.get("directional_return_r"))
-                            except (TypeError, ValueError, OverflowError):
-                                value = float("nan")
-                            if math.isfinite(value):
-                                returns.append(value)
-                        if len(returns) != len(member_outcomes):
-                            continue
-                        # Multiple opportunities can coexist for the same
-                        # decision and side. Their labels may legitimately
-                        # differ; aggregate their outcomes at the decision level
-                        # instead of discarding the entire decision.
-                        ordered_returns = sorted(returns)
-                        median_return = (
-                            ordered_returns[len(ordered_returns) // 2]
-                            if len(ordered_returns) % 2
-                            else (
-                                ordered_returns[len(ordered_returns) // 2 - 1]
-                                + ordered_returns[len(ordered_returns) // 2]
-                            ) / 2.0
+                            if not outcomes_match:
+                                continue
+                            if any(item.get("observation_status") == "MISSED_WINDOW" for item in member_outcomes):
+                                missed_groups += 1
+                                continue
+                            if not all(item.get("observation_status") == "OBSERVED" for item in member_outcomes):
+                                continue
+                            returns = []
+                            for item in member_outcomes:
+                                try:
+                                    value = float(item.get("directional_return_r"))
+                                except (TypeError, ValueError, OverflowError):
+                                    value = float("nan")
+                                if math.isfinite(value):
+                                    returns.append(value)
+                            if len(returns) != len(member_outcomes):
+                                continue
+                            # Multiple opportunities can coexist for the same
+                            # decision and side. Their labels may legitimately
+                            # differ; aggregate their outcomes at the decision level
+                            # instead of discarding the entire decision.
+                            ordered_returns = sorted(returns)
+                            median_return = (
+                                ordered_returns[len(ordered_returns) // 2]
+                                if len(ordered_returns) % 2
+                                else (
+                                    ordered_returns[len(ordered_returns) // 2 - 1]
+                                    + ordered_returns[len(ordered_returns) // 2]
+                                ) / 2.0
+                            )
+                            observed_groups += 1
+                            eligible_groups.append({
+                                "decision_id": decision_id,
+                                "decision_epoch": decision_epoch,
+                                "label": 1 if median_return > 0.0 else 0,
+                                "return_r": median_return,
+                                "candidate_ids": sorted(item["candidate_id"] for item in members),
+                            })
+                        coverage = (
+                            (observed_groups + missed_groups) / total_matured
+                            if total_matured else 0.0
                         )
-                        observed_groups += 1
-                        eligible_groups.append({
-                            "decision_id": decision_id,
-                            "decision_epoch": decision_epoch,
-                            "label": 1 if median_return > 0.0 else 0,
-                            "return_r": median_return,
-                            "candidate_ids": sorted(item["candidate_id"] for item in members),
-                        })
-                    coverage = (
-                        (observed_groups + missed_groups) / total_matured
-                        if total_matured else 0.0
-                    )
-                    missed_rate = missed_groups / max(1, total_matured)
-                    if (
-                        invalid_directional_candidates > 0
-                        or total_matured == 0
-                        or coverage < 0.95
-                        or missed_rate > 0.05
-                    ):
-                        continue
-                    eligible_groups = self._non_overlapping_decision_groups(
-                        eligible_groups, horizon,
-                    )
-                    if len(eligible_groups) < self.min_samples * 5:
-                        continue
-                    n = len(eligible_groups)
-                    holdout_start = int(n * 0.80)
-                    holdout = eligible_groups[holdout_start:]
-                    if len(holdout) < self.min_samples:
-                        continue
-                    holdout_start_epoch = holdout[0]["decision_epoch"]
-                    # Purge development rows whose fixed-horizon outcome could
-                    # overlap the untouched holdout decision window.
-                    development = [
-                        item for item in eligible_groups[:holdout_start]
-                        if item["decision_epoch"] + horizon < holdout_start_epoch
-                    ]
-                    if len(development) < self.min_samples * 3:
-                        continue
-
-                    # Three expanding chronological folds. Each training sample
-                    # must have its full fixed horizon before the validation window.
-                    folds = []
-                    development_size = len(development)
-                    for train_fraction in (0.40, 0.55, 0.70):
-                        train_end = int(development_size * train_fraction)
-                        validation_end = min(
-                            development_size,
-                            train_end + max(self.min_samples, int(development_size * 0.12)),
+                        missed_rate = missed_groups / max(1, total_matured)
+                        if (
+                            invalid_directional_candidates > 0
+                            or total_matured == 0
+                            or coverage < 0.95
+                            or missed_rate > 0.05
+                        ):
+                            continue
+                        eligible_groups = self._non_overlapping_decision_groups(
+                            eligible_groups, horizon,
                         )
-                        if train_end <= 0 or validation_end <= train_end:
+                        if len(eligible_groups) < self.min_samples * 5:
                             continue
-                        validation = development[train_end:validation_end]
-                        if not validation:
+                        n = len(eligible_groups)
+                        holdout_start = int(n * 0.80)
+                        holdout = eligible_groups[holdout_start:]
+                        if len(holdout) < self.min_samples:
                             continue
-                        validation_start = validation[0]["decision_epoch"]
-                        training = [
-                            item for item in development[:train_end]
-                            if item["decision_epoch"] + horizon < validation_start
+                        holdout_start_epoch = holdout[0]["decision_epoch"]
+                        # Purge development rows whose fixed-horizon outcome could
+                        # overlap the untouched holdout decision window.
+                        development = [
+                            item for item in eligible_groups[:holdout_start]
+                            if item["decision_epoch"] + horizon < holdout_start_epoch
                         ]
-                        if len(training) < self.min_samples or len(validation) < self.min_samples:
+                        if len(development) < self.min_samples * 3:
                             continue
-                        probability = mean(item["label"] for item in training)
-                        brier = mean(
-                            (probability - item["label"]) ** 2 for item in validation
-                        )
-                        folds.append((probability, brier, len(training), len(validation)))
-                    if len(folds) < 3:
-                        continue
 
-                    base_probability = mean(item["label"] for item in development)
-                    holdout_rate = mean(item["label"] for item in holdout)
-                    expected_return_r = mean(item["return_r"] for item in development)
-                    holdout_expected_return_r = mean(item["return_r"] for item in holdout)
-                    expected_return_gap = abs(expected_return_r - holdout_expected_return_r)
-                    holdout_brier = mean(
-                        (base_probability - item["label"]) ** 2 for item in holdout
-                    )
-                    reliability_gap = abs(base_probability - holdout_rate)
-                    if (
-                        not math.isfinite(base_probability)
-                        or not math.isfinite(holdout_brier)
-                        or not math.isfinite(reliability_gap)
-                        or not math.isfinite(expected_return_r)
-                        or not math.isfinite(holdout_expected_return_r)
-                        or not math.isfinite(expected_return_gap)
-                        or holdout_brier > 0.25
-                        or reliability_gap > 0.15
-                        or expected_return_gap > 0.50
-                    ):
-                        continue
-                    digest_input = [
-                        (
-                            family,
-                            item["decision_id"],
-                            item["decision_epoch"],
-                            item["label"],
-                            item["return_r"],
-                            item["candidate_ids"],
+                        # Three expanding chronological folds. Each training sample
+                        # must have its full fixed horizon before the validation window.
+                        folds = []
+                        development_size = len(development)
+                        for train_fraction in (0.40, 0.55, 0.70):
+                            train_end = int(development_size * train_fraction)
+                            validation_end = min(
+                                development_size,
+                                train_end + max(self.min_samples, int(development_size * 0.12)),
+                            )
+                            if train_end <= 0 or validation_end <= train_end:
+                                continue
+                            validation = development[train_end:validation_end]
+                            if not validation:
+                                continue
+                            validation_start = validation[0]["decision_epoch"]
+                            training = [
+                                item for item in development[:train_end]
+                                if item["decision_epoch"] + horizon < validation_start
+                            ]
+                            if len(training) < self.min_samples or len(validation) < self.min_samples:
+                                continue
+                            probability = mean(item["label"] for item in training)
+                            brier = mean(
+                                (probability - item["label"]) ** 2 for item in validation
+                            )
+                            folds.append((probability, brier, len(training), len(validation)))
+                        if len(folds) < 3:
+                            continue
+
+                        base_probability = mean(item["label"] for item in development)
+                        holdout_rate = mean(item["label"] for item in holdout)
+                        expected_return_r = mean(item["return_r"] for item in development)
+                        holdout_expected_return_r = mean(item["return_r"] for item in holdout)
+                        expected_return_gap = abs(expected_return_r - holdout_expected_return_r)
+                        holdout_brier = mean(
+                            (base_probability - item["label"]) ** 2 for item in holdout
                         )
-                        for item in eligible_groups
-                    ]
-                    digest = hashlib.sha256(
-                        json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                    ).hexdigest()
-                    artifact_id = hashlib.sha256(
-                        f"{sym}|{direction}|{family}|{horizon}|{digest}|conditional_family_fixed_horizon_v1".encode("utf-8")
-                    ).hexdigest()
-                    artifact = CalibrationArtifact(
-                        artifact_id=artifact_id,
-                        symbol=sym,
-                        direction=direction,
-                        candidate_family=family,
-                        horizon_seconds=horizon,
-                        favourable_probability=base_probability,
-                        expected_return_r=expected_return_r,
-                        holdout_expected_return_r=holdout_expected_return_r,
-                        expected_return_gap=expected_return_gap,
-                        sample_count=len(holdout),
-                        brier_score=holdout_brier,
-                        reliability_gap=reliability_gap,
-                        dataset_digest=digest,
-                        issued_at_epoch=current,
-                        expires_at_epoch=current + self.artifact_ttl,
-                        walk_forward_folds=len(folds),
-                        selection_coverage=coverage,
-                    )
-                    _register_artifact(artifact)
-                    artifacts.append(artifact)
+                        reliability_gap = abs(base_probability - holdout_rate)
+                        if (
+                            not math.isfinite(base_probability)
+                            or not math.isfinite(holdout_brier)
+                            or not math.isfinite(reliability_gap)
+                            or not math.isfinite(expected_return_r)
+                            or not math.isfinite(holdout_expected_return_r)
+                            or not math.isfinite(expected_return_gap)
+                            or holdout_brier > 0.25
+                            or reliability_gap > 0.15
+                            or expected_return_gap > 0.50
+                        ):
+                            continue
+                        digest_input = [
+                            (
+                                family,
+                                item["decision_id"],
+                                item["decision_epoch"],
+                                item["label"],
+                                item["return_r"],
+                                item["candidate_ids"],
+                            )
+                            for item in eligible_groups
+                        ]
+                        digest = hashlib.sha256(
+                            json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                        ).hexdigest()
+                        artifact_id = hashlib.sha256(
+                            f"{sym}|{direction}|{family}|{horizon}|{digest}|conditional_family_fixed_horizon_v1".encode("utf-8")
+                        ).hexdigest()
+                        artifact = CalibrationArtifact(
+                            artifact_id=artifact_id,
+                            symbol=sym,
+                            direction=direction,
+                            candidate_family=family,
+                            horizon_seconds=horizon,
+                            favourable_probability=base_probability,
+                            expected_return_r=expected_return_r,
+                            holdout_expected_return_r=holdout_expected_return_r,
+                            expected_return_gap=expected_return_gap,
+                            sample_count=len(holdout),
+                            brier_score=holdout_brier,
+                            reliability_gap=reliability_gap,
+                            dataset_digest=digest,
+                            issued_at_epoch=current,
+                            expires_at_epoch=current + self.artifact_ttl,
+                            walk_forward_folds=len(folds),
+                            selection_coverage=coverage,
+                        )
+                        _register_artifact(artifact)
+                        artifacts.append(artifact)
             return artifacts
         except Exception:
             return []
