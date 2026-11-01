@@ -2890,6 +2890,7 @@ class EventDrivenSystem:
                         == str(expected_symbol or "").strip().upper()
                     and attrs.get("source_timestamp_unit") == "unix_seconds"
                     and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+                    and bool(str(attrs.get("source_broker", "") or "").strip())
                 ):
                     return None
                 if "time" not in frame.columns or "close" not in frame.columns:
@@ -3003,6 +3004,10 @@ class EventDrivenSystem:
                             "source_timestamp_verified": True,
                             "source_timestamp_epoch": source_epoch,
                             "source_timestamp_origin": "broker_h1_candles_both_legs",
+                            "source_brokers": [
+                                str(getattr(primary_frame, "attrs", {}).get("source_broker", "") or ""),
+                                str(getattr(related_frame, "attrs", {}).get("source_broker", "") or ""),
+                            ],
                             "first_common_timestamp": return_timestamps[0].isoformat(),
                             "last_common_timestamp": return_timestamps[-1].isoformat(),
                             "causation_established": False,
