@@ -1215,6 +1215,7 @@ class CognitionLoop:
                     "thesis": str(getattr(decision, "thesis", "") or ""),
                     "do_nothing_considered": bool(getattr(decision, "do_nothing_considered", False)),
                 }))
+            persisted_records = []
             for candidate_kind, candidate_ref, candidate_data in records:
                 candidate_id = f"{decision_id}:{candidate_kind}:{candidate_ref}"
                 state = str(candidate_data.get("state", "") or candidate_data.get("hypothesis_kind", "") or "considered")
@@ -1270,6 +1271,22 @@ class CognitionLoop:
                     payload=payload,
                     durable=True,
                 )
+                persisted_records.append({
+                    "candidate_id": candidate_id,
+                    "candidate_kind": candidate_kind,
+                    "candidate_ref": candidate_ref,
+                    "candidate_parse_status": str(
+                        candidate_data.get("candidate_parse_status", "") or ""
+                    ),
+                })
+            # Keep exact identities for the immediate disposition write. This
+            # avoids reconstructing candidate IDs from a reduced DecisionPackage
+            # when a test or alternate event store cannot query its own snapshots.
+            cache = getattr(self, "_candidate_snapshot_ids_by_decision", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._candidate_snapshot_ids_by_decision = cache
+            cache[decision_id] = persisted_records
         except Exception as exc:  # noqa: BLE001 — preserve failure visibility; never invent a durable acknowledgement
             logger.error(
                 "[cognition-loop] durable candidate snapshot failed for %s: %s",
@@ -1636,8 +1653,14 @@ class CognitionLoop:
             questions = getattr(decision, "questions_answered", {}) or {}
             questions = questions if isinstance(questions, dict) else {}
             records: list[dict[str, str]] = []
+            cache = getattr(self, "_candidate_snapshot_ids_by_decision", {})
+            cached_records = cache.get(decision_id) if isinstance(cache, dict) else None
+            if isinstance(cached_records, list):
+                records.extend(
+                    dict(item) for item in cached_records if isinstance(item, dict)
+                )
             query_events = getattr(store, "query_events", None)
-            if callable(query_events):
+            if not records and callable(query_events):
                 snapshot_rows = query_events(
                     severity_min="DEBUG",
                     event_types=[COGNITIVE_CANDIDATE_SNAPSHOT],
