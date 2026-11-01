@@ -1009,11 +1009,18 @@ def test_market_desk_adapter_requires_explicit_broker_quote_provenance():
     }
 
     valid = evidence_from_market_desk("EURUSD", payload)
-    assert len(valid) == 1
-    assert valid[0].source_timestamp_verified is True
-    assert valid[0].source_timestamp_epoch == now
-    assert valid[0].timestamp_epoch >= time.time() - 5.0
-    assert valid[0].timestamp_epoch != valid[0].source_timestamp_epoch
+    assert len(valid) == 2
+    root = next(item for item in valid if item.source_module == "market_desk")
+    quote_evidence = next(
+        item for item in valid if item.source_module == "market_desk.live_quote"
+    )
+    assert root.source_timestamp_verified is False
+    assert root.source_timestamp_epoch is None
+    assert root.timestamp_epoch >= time.time() - 5.0
+    assert quote_evidence.source_timestamp_verified is True
+    assert quote_evidence.source_timestamp_epoch == now
+    assert quote_evidence.timestamp_epoch >= time.time() - 5.0
+    assert quote_evidence.timestamp_epoch != quote_evidence.source_timestamp_epoch
 
     missing_attestation = dict(payload)
     missing_attestation.pop("source_timestamp_verified")
