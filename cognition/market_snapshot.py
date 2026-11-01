@@ -560,19 +560,24 @@ def build_price_snapshot(
         ask = _f(getattr(tick, "ask", 0.0))
         # Mid is derived from the verified bid/ask pair. Never trust a separate
         # caller-supplied mid that can contradict the executable quote.
+        quote_kind = str(getattr(tick, "quote_kind", "unknown") or "unknown").strip().lower()
         valid_quote = (
             math.isfinite(bid) and math.isfinite(ask)
             and bid > 0.0 and ask >= bid
+            and quote_kind in {"bid_ask", "mid_only"}
+            and (quote_kind != "mid_only" or ask == bid)
         )
         tick_epoch = _timestamp_epoch(getattr(tick, "timestamp", None))
         tick_source_verified = (
             getattr(tick, "source_timestamp_verified", False) is True
             and tick_epoch is not None
+            and quote_kind in {"bid_ask", "mid_only"}
         )
         if valid_quote:
             mid = (bid + ask) / 2.0
             price = {
                 "symbol": requested_symbol,
+                "quote_kind": quote_kind,
                 "bid": bid,
                 "ask": ask,
                 "mid": mid,
