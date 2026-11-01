@@ -108,6 +108,12 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
         periods=len(frame),
         freq="min",
     )
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "XAUUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "mt5.copy_rates_from_pos.time",
+    })
     evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
     assert evidence is not None
     assert evidence.measurements["source_timestamp_known"] is True
