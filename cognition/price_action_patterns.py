@@ -288,7 +288,8 @@ def evidence_from_m1_candles(
             bool(measurements.get("source_timestamp_known"))
             and source_epoch > 0
         )
-        sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
+        # Keep local evidence creation time separate from the broker candle time.
+        sampled_at = datetime.now(timezone.utc).timestamp()
         timestamp_iso = datetime.fromtimestamp(
             sampled_at, tz=timezone.utc,
         ).isoformat()
@@ -308,7 +309,11 @@ def evidence_from_m1_candles(
             measurements=measurements,
             timestamp_epoch=sampled_at,
             timestamp_iso=timestamp_iso,
+            source_timestamp_epoch=source_epoch if known_source_time else None,
+            source_timestamp_verified=known_source_time,
             relevance_horizon_seconds=60.0,
+            data_basis="broker_ohlcv_m1" if known_source_time else "unverified_m1_context",
+            provisional=bool(provisional),
         )
     except Exception:  # noqa: BLE001
         return None
