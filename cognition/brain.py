@@ -2118,6 +2118,17 @@ class CognitiveBrain:
                                 campaign["invalidation_conditions"] = [
                                     str(item)[:200] for item in raw_invalidation if str(item).strip()
                                 ][:8]
+                            # The concept that originated the thesis (if any) and its own
+                            # invalidation / milestones / objective, so management can read
+                            # the position the way the concept reads it.
+                            geometry = (spec.get("initial_execution_intent") or {}).get("payoff_geometry")
+                            if isinstance(geometry, dict) and geometry.get("concept"):
+                                campaign["concept_geometry"] = {
+                                    k: geometry.get(k) for k in (
+                                        "concept", "concept_timeframe", "entry_price", "stop_price",
+                                        "target_price", "milestones", "invalidation_reason",
+                                    )
+                                }
                             campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
                             campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
                             campaign["entry_expected_value"] = spec.get("expected_value")

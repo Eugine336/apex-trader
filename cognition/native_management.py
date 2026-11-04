@@ -337,6 +337,10 @@ class NativePositionManager:
                 "hypothesis_count": len(hypotheses or []),
             }
 
+            concept_action = self._concept_milestone_guidance(
+                context, held_side, position, fresh, symbol,
+            )
+
             # A campaign-scoped, explicit portfolio-risk breach only de-risks the
             # position. It never creates an add or reversal.
             if any(state in {"breach", "critical", "exceeded", "over_limit"}
@@ -389,6 +393,15 @@ class NativePositionManager:
                     action="hold", thesis_state="invalidation_unconfirmed",
                     reason="invalidation marker is not sufficient to exit; missing " + ", ".join(missing),
                     **base,
+                )
+
+            # The concept that originated this thesis says the first milestone has
+            # been delivered: protect the profit. This only de-risks and uses the
+            # concept's own level; it never exits or adds.
+            if concept_action is not None:
+                return NativeManagementVerdict(
+                    action="protect_profit", thesis_state="milestone_delivered",
+                    reason=concept_action, **base,
                 )
 
             # Negative expected value is meaningful only when it is explicitly
@@ -609,6 +622,52 @@ class NativePositionManager:
                 0,
                 len(hypotheses or []),
             )
+
+    @staticmethod
+    def _concept_milestone_guidance(
+        context: dict, held_side: str, position: Any, fresh: list, symbol: str,
+    ) -> Optional[str]:
+        """Reason string when the originating concept's first milestone has been
+        passed by a fresh completed close while the position is in profit.
+
+        Uses only the stored concept geometry and fresh completed-bar evidence;
+        returns None (no opinion) on anything missing or ambiguous.
+        """
+        geometry = context.get("concept_geometry")
+        if not isinstance(geometry, dict) or held_side not in {"LONG", "SHORT"}:
+            return None
+        milestones = [m for m in (_finite_number(x) for x in (geometry.get("milestones") or [])) if m]
+        if not milestones:
+            return None
+        profit_r = _finite_number(getattr(position, "profit_r", None))
+        if profit_r is None or profit_r <= 0.0:
+            return None
+        latest: Optional[tuple[float, float]] = None   # (source_epoch, completed close)
+        for ev in fresh:
+            if str(getattr(ev, "symbol", "") or "") not in ("", symbol):
+                continue
+            m = getattr(ev, "measurements", None)
+            if not isinstance(m, dict) or m.get("source_kind") != "market_lens":
+                continue
+            if m.get("source_timestamp_known") is not True or m.get("provisional") is True:
+                continue
+            close = _finite_number(m.get("current_close"))
+            epoch = _finite_number(m.get("source_bar_epoch"))
+            if close is None or epoch is None:
+                continue
+            if latest is None or epoch > latest[0]:
+                latest = (epoch, close)
+        if latest is None:
+            return None
+        close = latest[1]
+        first = min(milestones) if held_side == "LONG" else max(milestones)
+        reached = close >= first if held_side == "LONG" else close <= first
+        if not reached:
+            return None
+        return (
+            f"{geometry.get('concept')} ({geometry.get('concept_timeframe')}) first milestone {first:.10g} "
+            f"has been passed by a completed close at {close:.10g}; protect the profit"
+        )
 
     @staticmethod
     def _hold(
