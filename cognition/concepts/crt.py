@@ -151,6 +151,8 @@ def _higher_timeframe_liquidity_taken(
 class CandleRangeTheory:
     key = "crt"
     family = "ict_smc_named_models"
+    covers_methods = ("crt",)       # analytical_knowledge row keys fully read by this module
+    covers_lenses = ("crt",)        # strategy_knowledge lens keys fully read by this module
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         readings: list[ConceptReading] = []

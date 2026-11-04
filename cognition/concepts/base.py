@@ -115,6 +115,8 @@ class ConceptReading:
 class ConceptModule(Protocol):
     key: str
     family: str
+    covers_methods: tuple[str, ...]   # analytical_knowledge keys this module reads in full
+    covers_lenses: tuple[str, ...]    # strategy_knowledge lens keys this module reads in full
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         ...
