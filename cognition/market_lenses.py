@@ -639,7 +639,13 @@ def analyze_market_frames(
         if len(bars) < 5:
             continue
 
-        bars_by_timeframe[timeframe] = bars
+        # Concept modules rank a reading against the instrument's own history, so
+        # they receive every completed bar the connector supplied (not just the
+        # short window the raw lenses use).
+        full_rows = _rows(frame, limit=1_000_000, expected_symbol=symbol)
+        bars_by_timeframe[timeframe] = (
+            full_rows[:-1] if source_includes_forming_bar and len(full_rows) > 1 else full_rows
+        )
         current = bars[-1]
         source_epoch = (
             _safe_float(current.get("timestamp_epoch"))

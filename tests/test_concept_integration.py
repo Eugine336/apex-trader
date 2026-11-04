@@ -1,0 +1,113 @@
+"""Concept readings flow from candles -> evidence -> hypotheses -> geometry (live-shaped input)."""
+
+import random
+import time
+
+import pandas as pd
+import pytest
+
+from cognition.brain_reasoning import BrainReasoner
+from cognition.contracts import MarketState
+from cognition.market_lenses import analyze_market_frames
+from cognition.opportunity_geometry import derive_opportunity_geometry
+
+H = 3600
+
+
+def _frame(rows, symbol="EURUSD"):
+    df = pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
+    df.attrs.update({
+        "source_timestamp_verified": True, "source_symbol": symbol, "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv", "source_broker": "mt5",
+    })
+    return df
+
+
+def _history(n, forming_open, seed=11):
+    """n completed H1 bars ending right before ``forming_open`` (neutral random walk)."""
+    from cognition.concepts.crt import _classify
+
+    for s in range(seed, seed + 300):
+        rng = random.Random(s)
+        px, rows = 1.0800, []
+        for i in range(n):
+            o = px
+            c = px + rng.uniform(-0.0006, 0.0006)
+            h = max(o, c) + rng.uniform(0.0001, 0.0004)
+            l = min(o, c) - rng.uniform(0.0001, 0.0004)
+            rows.append([forming_open - (n - i) * H, o, h, l, c, 100.0])
+            px = c
+        bars = [dict(open=r[1], high=r[2], low=r[3], close=r[4]) for r in rows[-3:]] + [
+            dict(open=1.0820, high=1.0840, low=1.0800, close=1.0810)]
+        if all(_classify(a, b) not in ("bullish_crt", "bearish_crt") for a, b in zip(bars, bars[1:])):
+            return rows
+    raise AssertionError("no neutral seed")
+
+
+def _crt_frame(bullish=True):
+    now = time.time()
+    forming = int(now // H) * H
+    rows = _history(60, forming - 2 * H)
+    c1_open, c2_open = forming - 2 * H, forming - H
+    if bullish:
+        rows.append([c1_open, 1.0820, 1.0840, 1.0800, 1.0810, 100.0])
+        rows.append([c2_open, 1.0810, 1.0825, 1.0795, 1.0818, 100.0])   # sweep low, close inside
+    else:
+        rows.append([c1_open, 1.0820, 1.0840, 1.0800, 1.0830, 100.0])
+        rows.append([c2_open, 1.0830, 1.0845, 1.0815, 1.0822, 100.0])
+    rows.append([forming, 1.0818, 1.0819, 1.0817, 1.0818, 5.0])          # forming bar (excluded)
+    return _frame(rows)
+
+
+def _state(frames):
+    state = MarketState(symbol="EURUSD")
+    for ev in analyze_market_frames("EURUSD", frames):
+        state.add(ev)
+    return state
+
+
+def test_candles_produce_a_concept_reading_in_the_live_evidence_path():
+    state = _state({"H1": _crt_frame()})
+    readings = [e for e in state.evidence if e.measurements.get("source_kind") == "concept_reading"]
+    assert [e.source_module for e in readings] == ["concept.crt.h1"]
+    imp = readings[0].measurements["implications"][0]
+    assert imp["direction"] == "LONG" and imp["activated"] is True
+
+
+def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
+    state = _state({"H1": _crt_frame()})
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state)
+    hyps = reasoner.generate_hypotheses(analysis, "EURUSD")
+    concept = [h for h in hyps if h.hypothesis_kind == "concept:crt:h1"]
+    assert len(concept) == 1
+    h = concept[0]
+    assert h.direction_implication == "LONG"
+    assert "below the sweep extreme" in h.invalidation
+    assert h.confidence_components["calibrated_probability"] is False
+    assert h.supporting_evidence_ids and h.supporting_evidence_ids[0]
+    assert any("lower-timeframe" in u for u in h.unresolved_unknowns)
+
+
+def test_geometry_comes_from_the_concept_not_from_a_default_multiple():
+    state = _state({"H1": _crt_frame()})
+    geo = derive_opportunity_geometry(state, "LONG")
+    assert geo is not None and geo.concept == "crt" and geo.concept_timeframe == "H1"
+    assert geo.stop_price == pytest.approx(1.0795)      # beyond the sweep extreme
+    assert geo.target_price == pytest.approx(1.0840)    # opposite extreme of C1
+    assert geo.entry_price == pytest.approx(1.0818)     # latest completed close
+    assert geo.milestones == (pytest.approx(1.0820),)
+    assert geo.reward_r == pytest.approx((1.0840 - 1.0818) / (1.0818 - 1.0795))
+    assert "sweep" in geo.invalidation_reason
+    # The opposite side may still be derived by the older structure path, but never by this concept.
+    opposite = derive_opportunity_geometry(state, "SHORT")
+    assert opposite is None or opposite.concept == ""
+
+
+def test_bearish_crt_gives_short_geometry():
+    state = _state({"H1": _crt_frame(bullish=False)})
+    geo = derive_opportunity_geometry(state, "SHORT")
+    assert geo is not None
+    assert geo.stop_price == pytest.approx(1.0845) and geo.target_price == pytest.approx(1.0800)
+    opposite = derive_opportunity_geometry(state, "LONG")
+    assert opposite is None or opposite.concept == ""

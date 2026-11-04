@@ -107,6 +107,9 @@ class EvidenceAnalysis:
     # Point-in-time evidence lineage. Records contain metadata only; raw
     # measurements remain in the original Evidence objects.
     evidence_index: list[dict] = field(default_factory=list)
+    # Full concept readings (invalidation, objective, milestones, requirements,
+    # management meaning) from the concept modules, with their evidence ids.
+    concept_readings: list[dict] = field(default_factory=list)
     pattern_evidence_ids: dict = field(default_factory=dict)
     observed_facts: list[dict] = field(default_factory=list)
     inferences: list[str] = field(default_factory=list)
@@ -455,6 +458,20 @@ class BrainReasoner:
             else (1.0 if not fresh else _clamp01(
                 sum(_clamp01(getattr(e, "uncertainty", 0.0)) for e in fresh) / len(fresh)))
 
+        concept_readings: list[dict] = []
+        for e in fresh:
+            m = getattr(e, "measurements", None)
+            if isinstance(m, dict) and m.get("source_kind") == "concept_reading":
+                concept_readings.append({
+                    "evidence_id": str(getattr(e, "evidence_id", "") or ""),
+                    "concept": str(m.get("concept", "") or ""),
+                    "timeframe": str(m.get("timeframe", "") or ""),
+                    "applicable": m.get("applicable") is True,
+                    "implications": list(m.get("implications") or []),
+                    "facts": dict(m.get("facts") or {}),
+                    "unknowns": list(m.get("unknowns") or []),
+                })
+
         return EvidenceAnalysis(
             domain_coverage=domain_coverage,
             informative_domains=sorted(informative_domains),
@@ -472,6 +489,7 @@ class BrainReasoner:
             knowledge_coverage=knowledge_coverage_record,
             market_context=market_context,
             evidence_index=evidence_index,
+            concept_readings=concept_readings,
             pattern_evidence_ids=pattern_evidence_ids,
             observed_facts=observed_facts,
             inferences=(
@@ -1491,6 +1509,54 @@ class BrainReasoner:
                     },
                     evidence_lineage_scope="domain_level_candidate_sources",
                 ))
+
+            # Concept readings: each applicable implication of a full concept
+            # reading becomes a hypothesis carrying the concept's own invalidation,
+            # objective and open requirements. Strength is the reading's own
+            # evidence strength versus this instrument's history (uncalibrated);
+            # the Brain still weighs, challenges and may reject every one.
+            for reading in analysis.concept_readings:
+                if not reading.get("applicable"):
+                    continue
+                for imp in reading.get("implications", []):
+                    direction = str(imp.get("direction", "") or "").upper()
+                    if direction not in (LONG, SHORT, FLAT):
+                        continue
+                    strength = imp.get("strength")
+                    conflicts = list(imp.get("conflicts_with", []) or [])
+                    requires = list(imp.get("requires", []) or [])
+                    objective = imp.get("objective_price")
+                    invalid_px = imp.get("invalidation_price")
+                    hyps.append(BrainHypothesis(
+                        statement=str(imp.get("statement", ""))[:500],
+                        confidence=float(strength) if isinstance(strength, (int, float)) else 0.0,
+                        direction_implication=direction,
+                        invalidation=str(imp.get("invalidation_reason", "") or ""),
+                        opportunity_implication=(
+                            f"{reading.get('concept')} on {reading.get('timeframe')}: "
+                            + (f"objective {objective:.10g}" if isinstance(objective, (int, float)) else "no objective")
+                            + (f"; invalidation {invalid_px:.10g}" if isinstance(invalid_px, (int, float)) else "")
+                            + ("; trigger satisfied" if imp.get("activated") else "; trigger not satisfied")
+                        ),
+                        hypothesis_kind=f"concept:{reading.get('concept')}:{reading.get('timeframe')}",
+                        supporting_evidence_ids=[reading.get("evidence_id", "")],
+                        assumptions=["Concept reading strength is uncalibrated reasoning strength, "
+                                     "not a probability or a validated edge."],
+                        unresolved_unknowns=requires + conflicts,
+                        distinguishing_evidence=(
+                            [f"requires: {item}" for item in requires]
+                            + [f"weakened by: {item}" for item in conflicts]
+                            + ([f"invalidation: {imp.get('invalidation_reason')}"] if imp.get("invalidation_reason") else [])
+                        ),
+                        horizon=f"{reading.get('timeframe')} structure",
+                        confidence_components={
+                            "concept": reading.get("concept"),
+                            "reading_strength": strength,
+                            "score_kind": "concept_reading_strength_vs_own_history",
+                            "calibrated_probability": False,
+                        },
+                        evidence_lineage_scope="concept_reading_evidence",
+                    ))
 
             # Generate explicit counter-hypotheses for the strongest distinct
             # directional explanations. When no directional thesis exists, still
