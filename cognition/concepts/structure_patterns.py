@@ -83,15 +83,34 @@ class StructurePatternConcepts:
         tolerance = (sum(ranges) / len(ranges)) * 0.35 if ranges else 0.0
         selected = pivots[-5:]
         tags, direction, invalid, neckline = [], FLAT, None, None
-        # Double top / bottom: alternating pivot sequence H-L-H or L-H-L.
-        if len(selected) >= 3:
-            a, b, c = selected[-3:]
+        # Evaluate every alternating triple. A later, unconfirmed overlapping
+        # pattern must not mask an earlier pattern whose own neckline has broken.
+        double_candidates = []
+        for a, b, c in zip(pivots, pivots[1:], pivots[2:]):
             if a[0] == c[0] == "H" and b[0] == "L" and abs(a[2]-c[2]) <= tolerance:
-                tags.append("double_top")
-                direction, invalid, neckline = SHORT, max(a[2], c[2]), b[2]
+                candidate_direction, candidate_neckline = SHORT, b[2]
+                candidate_invalid = max(a[2], c[2])
+                candidate_confirmed = bars[-1]["close"] < candidate_neckline
+                double_candidates.append((
+                    candidate_confirmed, c[1], "double_top",
+                    candidate_direction, candidate_invalid, candidate_neckline,
+                ))
             elif a[0] == c[0] == "L" and b[0] == "H" and abs(a[2]-c[2]) <= tolerance:
-                tags.append("double_bottom")
-                direction, invalid, neckline = LONG, min(a[2], c[2]), b[2]
+                candidate_direction, candidate_neckline = LONG, b[2]
+                candidate_invalid = min(a[2], c[2])
+                candidate_confirmed = bars[-1]["close"] > candidate_neckline
+                double_candidates.append((
+                    candidate_confirmed, c[1], "double_bottom",
+                    candidate_direction, candidate_invalid, candidate_neckline,
+                ))
+        if double_candidates:
+            confirmed_candidates = [item for item in double_candidates if item[0]]
+            chosen = max(
+                confirmed_candidates or double_candidates,
+                key=lambda item: (item[1], item[2]),
+            )
+            _, _, pattern_tag, direction, invalid, neckline = chosen
+            tags.append(pattern_tag)
         # Head-and-shoulders / inverse: H-L-H-L-H or its mirror.
         if len(selected) == 5:
             a, b, c, d, e = selected
@@ -196,6 +215,6 @@ class StructurePatternConcepts:
                      "impulse_index": impulse_i, "impulse_range_multiple": span/baseline,
                      "impulse_body_ratio": body_ratio, "mitigated": mitigated,
                      "invalidated": invalid, "definition": "two_to_five_bar_base_before_relative_impulse_v1"},
-                    ("Supply/demand zone is a price-action proxy; OHLC cannot reveal hidden limit orders or institutional ownership.",)
+                    ("Supply/demand zone is a price-action proxy; it does not prove hidden limit orders or institutional ownership. OHLC cannot reveal either.",)
                 )]
         return []
