@@ -269,7 +269,8 @@ class IndicatorContextConcepts:
         d_high,d_low=max(highs[-20:]),min(lows[-20:])
         log_returns=[math.log(b/a) for a,b in zip(closes[-21:],closes[-20:]) if a>0 and b>0]
         realized=pstdev(log_returns) if len(log_returns)>1 else None
-        parkinson=math.sqrt(mean((math.log(h/l)**2 for h,l in zip(highs[-20:],lows[-20:]) if h>0 and l>0))/(4*math.log(2)))
+        parkinson_terms=[math.log(h/l)**2 for h,l in zip(highs[-20:],lows[-20:]) if h>l>0]
+        parkinson=math.sqrt(mean(parkinson_terms)/(4*math.log(2))) if parkinson_terms else None
         state="high_relative_volatility" if atr_rank is not None and atr_rank>=0.8 else "low_relative_volatility" if atr_rank is not None and atr_rank<=0.2 else "middle_or_unknown"
         return [_read(
             "atr_true_range",tf,EvidenceDomain.VOLATILITY,bars,ref,ref_tf,
