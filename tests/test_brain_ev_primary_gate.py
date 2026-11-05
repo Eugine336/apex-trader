@@ -222,3 +222,31 @@ def test_calibration_quality_does_not_veto_positive_historical_expectancy():
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert out.decision.expected_value > 0.0
     assert out.campaign is not None
+
+
+def test_long_and_short_have_mirrored_positive_ev_eligibility():
+    long_out = _brain(0.45, direction="LONG").reason(
+        _state(polarity=0.8, expected_return_r=0.45)
+    )
+    short_out = _brain(0.45, direction="SHORT").reason(
+        _state(polarity=-0.8, expected_return_r=0.45)
+    )
+    assert long_out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert short_out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert long_out.campaign is not None
+    assert short_out.campaign is not None
+    assert long_out.decision.expected_value == short_out.decision.expected_value
+
+
+def test_long_and_short_have_mirrored_negative_ev_rejection():
+    long_out = _brain(0.80, direction="LONG").reason(
+        _state(polarity=0.8, expected_return_r=-0.30)
+    )
+    short_out = _brain(0.80, direction="SHORT").reason(
+        _state(polarity=-0.8, expected_return_r=-0.30)
+    )
+    assert long_out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert short_out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert long_out.campaign is None
+    assert short_out.campaign is None
+    assert long_out.decision.expected_value == short_out.decision.expected_value
