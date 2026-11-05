@@ -7,9 +7,6 @@ previously never fired in production:
   threshold, planner calibrator, etc.) whose writers were dormant because only
   ``on_trade_close`` was wired live.
 * ``TunerAgent.on_scan_cycle`` — wakes PER_SCAN_CYCLE tunables.
-* ``AdaptiveWeightProvider.recompute`` — nudges the probabilistic-bias evidence
-  weights toward the better-performing timeframes (bounded).
-
 It is the missing scheduler that closes the continuous-learning loop. Mirrors
 the :class:`brain.developing_analysis.DevelopingAnalysisLoop` daemon pattern:
 1-second tick, monotonic-clock cadence gating, fully exception-safe, never
@@ -30,20 +27,18 @@ from adaptive.tunable import TuneContext
 
 
 class AdaptiveSchedulerLoop:
-    """Drives periodic / per-scan tuning and weight recompute on a timer."""
+    """Drives periodic and per-scan tuning on a timer."""
 
     def __init__(
         self,
         *,
         tuner_agent: Optional[Any],
-        weight_provider: Optional[Any] = None,
         trade_count_provider: Optional[Callable[[], int]] = None,
         periodic_interval_seconds: float = 900.0,
         scan_interval_seconds: float = 3600.0,
         enabled: bool = True,
     ) -> None:
         self._agent = tuner_agent
-        self._weights = weight_provider
         self._trade_count = trade_count_provider or (lambda: 0)
         self._periodic_interval = max(1.0, float(periodic_interval_seconds))
         self._scan_interval = max(1.0, float(scan_interval_seconds))
@@ -59,7 +54,6 @@ class AdaptiveSchedulerLoop:
 
         self._periodic_runs = 0
         self._scan_runs = 0
-        self._weight_recomputes = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -84,8 +78,8 @@ class AdaptiveSchedulerLoop:
         if t is not None:
             t.join(timeout=2.0)
         logger.info(
-            "[adaptive-scheduler] stopped (periodic={}, scan={}, recomputes={})",
-            self._periodic_runs, self._scan_runs, self._weight_recomputes,
+            "[adaptive-scheduler] stopped (periodic={}, scan={})",
+            self._periodic_runs, self._scan_runs,
         )
 
     def stats(self) -> dict:
@@ -96,7 +90,6 @@ class AdaptiveSchedulerLoop:
             "scan_interval_seconds": self._scan_interval,
             "periodic_runs": self._periodic_runs,
             "scan_runs": self._scan_runs,
-            "weight_recomputes": self._weight_recomputes,
         }
 
     # ── Loop ─────────────────────────────────────────────────────────────
@@ -137,13 +130,6 @@ class AdaptiveSchedulerLoop:
                 self._periodic_runs += 1
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[adaptive-scheduler] on_periodic_tick failed: {}", exc)
-        # Recompute the adaptive evidence weights on the same cadence.
-        if self._weights is not None:
-            try:
-                if self._weights.recompute():
-                    self._weight_recomputes += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[adaptive-scheduler] weight recompute failed: {}", exc)
 
     def _run_scan(self) -> None:
         if self._agent is not None:

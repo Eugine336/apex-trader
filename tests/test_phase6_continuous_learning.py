@@ -158,26 +158,16 @@ class _FakeAgent:
         self.scan += 1
 
 
-class _FakeWeights:
-    def __init__(self):
-        self.calls = 0
-
-    def recompute(self):
-        self.calls += 1
-        return True
-
-
 def test_scheduler_disabled_does_not_start():
     sched = AdaptiveSchedulerLoop(tuner_agent=_FakeAgent(), enabled=False)
     sched.start()
     assert sched.stats()["running"] is False
 
 
-def test_scheduler_drives_periodic_and_recompute():
+def test_scheduler_drives_periodic_and_scan_cadences():
     agent = _FakeAgent()
-    weights = _FakeWeights()
     sched = AdaptiveSchedulerLoop(
-        tuner_agent=agent, weight_provider=weights,
+        tuner_agent=agent,
         periodic_interval_seconds=1.0, scan_interval_seconds=1.0,
         trade_count_provider=lambda: 42,
     )
@@ -187,7 +177,6 @@ def test_scheduler_drives_periodic_and_recompute():
     sched._tick()
     assert agent.periodic == 1
     assert agent.scan == 1
-    assert weights.calls == 1
 
 
 def test_scheduler_is_exception_safe_with_faulty_agent():
