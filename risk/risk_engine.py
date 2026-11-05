@@ -809,7 +809,11 @@ class RiskEngine:
                 continue
             try:
                 bal = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "[risk] ignoring malformed balance snapshot for %s: %s",
+                    platform, exc,
+                )
                 continue
             if bal < 0:
                 continue
