@@ -90,6 +90,7 @@ def _frame_to_closed_candles(
                     close=float(row[columns["close"]]),
                     volume=max(0.0, volume),
                 ))
+# SAFE-FALLBACK: malformed broker history rows are excluded before the observer computes from candles.
             except (KeyError, TypeError, ValueError):
                 continue
         result.sort(key=lambda bar: bar.timestamp)
@@ -251,6 +252,7 @@ class ApexMarketObserver:
         self._running = False
         try:
             self.tick_router.unregister_callback(self._on_tick)
+# SAFE-FALLBACK: unregistering an already-removed tick callback is idempotent during observer shutdown.
         except Exception:
             pass
         self._stop.set()
