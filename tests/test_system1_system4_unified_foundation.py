@@ -493,7 +493,10 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 if row["event_type"] in event_types and row["symbol"] == symbol
             ]
             rows.sort(key=lambda row: row["seq"], reverse=True)
-            return rows[offset:offset + limit]
+            return [
+                {**row, "_event_seq": row["seq"]}
+                for row in rows[offset:offset + limit]
+            ]
 
     events = []
     start = 1_700_000_000.0
