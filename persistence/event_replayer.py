@@ -181,5 +181,6 @@ class EventReplayer:
         with self._lock:
             try:
                 self._conn.close()
+# SAFE-FALLBACK: closing an already-closed replay connection is best-effort teardown.
             except Exception:
                 pass
