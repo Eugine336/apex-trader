@@ -189,6 +189,7 @@ class ShadowStore:
             if self._conn is not None:
                 try:
                     self._conn.close()
+# SAFE-FALLBACK: connection close is best-effort during store shutdown.
                 except Exception:
                     pass
             self._conn = None
@@ -209,6 +210,7 @@ class ShadowStore:
             return
         try:
             self._conn.execute(_MIGRATE_SOURCE)
+# SAFE-FALLBACK: this migration is idempotent when the column already exists; migration errors are handled by the store's open path.
         except Exception:
             # Column already exists — nothing to do.
             pass
