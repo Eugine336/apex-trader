@@ -122,6 +122,7 @@ def derive_protective_levels(
         for t in list(structural_targets or []):
             try:
                 tv = float(t)
+# SAFE-FALLBACK: malformed structural target is excluded; only valid numeric levels can become objectives.
             except (TypeError, ValueError):
                 continue
             if is_long and tv >= price + min_ahead:
