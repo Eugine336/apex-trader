@@ -480,10 +480,12 @@ class ApexMultiTFTradingEnv:
         try:
             import fcntl
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+# SAFE-FALLBACK: unlocking an already-released or unsupported file lock must not mask environment shutdown.
         except Exception:
             pass
         try:
             fd.close()
+# SAFE-FALLBACK: descriptor close is best-effort after lock release; cleanup must not mask the primary result.
         except Exception:
             pass
 
