@@ -84,6 +84,7 @@ class PriceDeliveryConcepts:
             touched = any(x["low"] <= hi and x["high"] >= lo for x in later)
             filled = any(x["low"] <= lo for x in later) if bull else any(x["high"] >= hi for x in later)
             invalid = any(x["close"] < lo for x in later) if bull else any(x["close"] > hi for x in later)
+            active = not invalid and not filled
             sample = [abs(x["close"] - x["open"]) / max(x["high"] - x["low"], 1e-12)
                       for x in bars[max(0, i - 20):i] if x["high"] > x["low"]]
             body = abs(b["close"] - b["open"]) / max(b["high"] - b["low"], 1e-12)
@@ -92,12 +93,12 @@ class PriceDeliveryConcepts:
                 "fair_value_gap", tf, EvidenceDomain.STRUCTURE,
                 f"{side} three-candle imbalance {lo:.10g}–{hi:.10g}; touched={touched}; "
                 f"fully_filled={filled}; invalidated={invalid}.",
-                [_imp(side, f"{side} imbalance remains structurally intact" if not invalid else
-                      f"{side} imbalance has been invalidated", not invalid,
+                [_imp(side, f"{side} imbalance remains active" if active else
+                      f"{side} imbalance has been mitigated or invalidated", active,
                       "Completed close through the far edge invalidates the gap",
                       stop=lo if bull else hi,
                       requires=("price to revisit the gap before a mitigation thesis",) if not touched else (),
-                      conflicts=("gap has already been touched",) if touched else (), strength=strength),
+                      conflicts=(("gap has been fully filled",) if filled else (("gap has already been touched",) if touched else ())), strength=strength),
                  _imp(FLAT, "A gap is a location hypothesis, not proof of future fill", False,
                       "Not applicable")],
                 {"lower": lo, "upper": hi, "midpoint": (lo + hi) / 2, "direction": side,
@@ -110,12 +111,12 @@ class PriceDeliveryConcepts:
 
     def _order_block(self, tf, bars, close, close_tf):
         # Last opposite-colour candle within three bars before a relative impulse.
-        sample = [abs(x["close"] - x["open"]) / max(x["high"] - x["low"], 1e-12)
-                  for x in bars[:-1] if x["high"] > x["low"]]
         for i in range(len(bars) - 1, max(2, len(bars) - 18), -1):
             impulse = bars[i]
             body = abs(impulse["close"] - impulse["open"]) / max(impulse["high"] - impulse["low"], 1e-12)
-            rank = percentile_rank(body, sample[:-1])
+            sample = [abs(x["close"] - x["open"]) / max(x["high"] - x["low"], 1e-12)
+                      for x in bars[max(0, i - 20):i] if x["high"] > x["low"]]
+            rank = percentile_rank(body, sample)
             if rank is None or rank < 0.80 or impulse["close"] == impulse["open"]:
                 continue
             bull = impulse["close"] > impulse["open"]
@@ -161,10 +162,10 @@ class PriceDeliveryConcepts:
         for bull in reversed(bulls):
             for bear in reversed(bears):
                 lo, hi = max(bull[1], bear[1]), min(bull[2], bear[2])
-                if lo >= hi:
+                if lo >= hi or abs(bull[3] - bear[3]) > 20:
                     continue
                 latest = max(bull[3], bear[3])
-                invalid = bars[-1]["close"] < lo or bars[-1]["close"] > hi
+                invalid = any(x["close"] < lo or x["close"] > hi for x in bars[latest + 1:])
                 return [_record(
                     "balanced_price_range", tf, EvidenceDomain.STRUCTURE,
                     f"Opposing FVGs overlap at {lo:.10g}–{hi:.10g}; latest close "
