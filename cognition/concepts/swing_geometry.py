@@ -52,7 +52,7 @@ class SwingGeometryConcepts:
     key = "swing_geometry"
     family = "structure_geometry"
     covers_methods = ("fibonacci", "ote", "trend_channels")
-    covers_lenses = ("fibonacci_geometry",)
+    covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         close, close_tf = reference_price(bars_by_tf)
