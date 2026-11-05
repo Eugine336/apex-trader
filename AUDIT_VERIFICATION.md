@@ -48,7 +48,7 @@ But the fixes are **shallower than the guard implies**:
 - Several forbidden mechanisms survive **dormant-but-one-wire-from-live**
   (`planning/trade_planner.py` directional decider, `adaptive/signal_ledger.py` +
   `module_governor.py` directional-correctness learning,
-  `adaptive/adaptive_weight_provider.py`).
+  `planning/trade_planner.py` directional decider and `adaptive/signal_ledger.py` + `module_governor.py` directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810.
 - The historical `_directional_lean` implementation is absent from the current
   `cognition/brain_reasoning.py`; the Brain forms hypotheses from structured evidence.
 - Core cognitive gates **fail OPEN** (UNKNOWN opportunity ⇒ actionable; absent
@@ -57,8 +57,8 @@ But the fixes are **shallower than the guard implies**:
 
 | Status | Count | Violations |
 |---|---|---|
-| ✅ FIXED | 10 | V-004, V-006, V-007, V-016, V-017, V-018, V-019, V-020, V-022, V-023 |
-| ⚠️ PARTIALLY_FIXED | 10 | V-001, V-002, V-005, V-008, V-009, V-012, V-013, V-014, V-021, V-024 |
+| ✅ FIXED | 11 | V-001, V-004, V-006, V-007, V-016, V-017, V-018, V-019, V-020, V-022, V-023 |
+| ⚠️ PARTIALLY_FIXED | 9 | V-002, V-005, V-008, V-009, V-012, V-013, V-014, V-021, V-024 |
 | ❌ STILL_PRESENT | 7 | V-003, V-010, V-011, V-015, V-025, V-026, V-027 |
 
 ---
@@ -122,7 +122,7 @@ Same format as the register (ID | severity | live/dormant | evidence).
 
 | V-ID | Sev. | Reach | Violation & evidence |
 |---|---|---|---|
-| **V-NEW-001** | CRITICAL | **LIVE** | **Pre-reasoning indicator-vote collapse in the Brain's native reasoner.** `cognition/brain_reasoning.py:301-326` `_directional_lean` sums `+1/-1` for structure / order-flow / absorbed-sweep and thresholds to `LONG/SHORT/FLAT` (docstring: "Combine directional signals into a single LONG/SHORT/FLAT lean"). It runs in `analyze_evidence` **before** `generate_hypotheses` and seeds hypothesis direction (`:390,407,426`); on LLM outage it drives `_originate_independent` → `OPEN_CAMPAIGN`. This is verbatim what Part XL forbids ("NO indicator voting / NO collapsing into LONG/SHORT/FLAT before reasoning; direction is a CONSEQUENCE of cognition"). **The guard never scans `cognition/brain_reasoning.py`** — complete blind spot. (Root cause behind V-001's PARTIAL status; called out separately because it is a distinct live mechanism.) |
+| **V-NEW-001** | CRITICAL | **FIXED** | **Pre-reasoning indicator-vote collapse removed.** The current `cognition/brain_reasoning.py` has no `_directional_lean` implementation; `analyze_evidence` preserves measurements and provenance for hypothesis formation. PR #810 records this verified removal. Keep a guard check over the Brain reasoning module to prevent reintroduction. |
 | **V-NEW-002** | HIGH | **LIVE (default)** | **The strongest fixes are inert on shipped defaults.** `ev_primary_gate=False` (`config.py:3752`), `min_advisors_for_action=1` + `min_evidence_domains=1` (`config.py:3757,3761`, shipped `.env`), budgets unmetered (`llm/client.py:731-733`), `scan_directional_exits_enabled=True` (`config.py:666`). The constitutional guarantees exist in code but are **not active in the deployed configuration** — compliance depends entirely on operator config. |
 | **V-NEW-003** | HIGH | **LIVE** | **Fail-open cognitive gates.** UNKNOWN opportunity ⇒ actionable (`cognition/contracts.py:525`); quorum passes when `advisors_responded is None` (`cognition/brain.py:601-604`); evidence-domain gate passes when `domain_count` absent (`:620`); native independent origination can emit `OPEN_CAMPAIGN` under **total provider outage with zero advisors** (`:336-341,1971-2090`, sized 0.5×). Uncertainty/absence becomes action permission — inverts fail-closed. |
 | **V-NEW-004** | HIGH | dormant (one wire) | **Forbidden deciders present-but-unreachable.** `planning/trade_planner.py` weighted directional agreement + BUY/SELL remains dormant and excluded from the call scan; `adaptive/signal_ledger.py` + `module_governor.py` retain dormant directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810. Remaining dormant components require separate removal or proof they cannot reach a decision path. |
@@ -137,9 +137,9 @@ Same format as the register (ID | severity | live/dormant | evidence).
 
 | # | Constitutional principle | Assessment | Basis |
 |---|---|---|---|
-| 1 | No premature directional compression before hypothesis formation | ❌ **NON-COMPLIANT** | `_directional_lean` collapses to LONG/SHORT/FLAT before hypotheses and seeds them (V-001 fixed in PR #810). |
-| 2 | Observations → hypotheses → opportunities → execution | ⚠️ **PARTIAL** | LLM harvesting + EV gate implement the flow, but the native path collapses direction first and UNKNOWN opportunities are actionable (V-001, V-003). |
-| 3 | Modules report observations, not directions | ⚠️ **PARTIAL** | `world_model` scrubs alignment keys; but `brain_reasoning` emits `directional_lean` and dormant `trade_planner`/`signal_ledger` remain directional (V-NEW-001, V-005, V-021). |
+| 1 | No premature directional compression before hypothesis formation | ✅ **COMPLIANT** | The pre-hypothesis directional-lean implementation is absent (V-001 / V-NEW-001 fixed in PR #810). Brain hypotheses are formed from structured evidence. |
+| 2 | Observations → hypotheses → opportunities → execution | ⚠️ **PARTIAL** | LLM harvesting + EV gate implement the flow; UNKNOWN opportunities remain actionable (V-003). |
+| 3 | Modules report observations, not directions | ⚠️ **PARTIAL** | `world_model` scrubs alignment keys; dormant `trade_planner`/`signal_ledger` components retain directional logic outside the live Brain path (V-005, V-021). |
 | 4 | The Brain is the single cognitive authority | ✅ **COMPLIANT** | Retired deciders gone (V-006/V-007); single reasoner; LONG/SHORT elsewhere is execution-layer side. |
 | 5 | Opportunities have lifecycle states; not actionable when unknown | ❌ **NON-COMPLIANT** | `is_actionable` returns True for `UNKNOWN` (V-003) — explicit fail-open. |
 | 6 | Management is thesis-based, not direction-comparison | ⚠️ **PARTIAL** | Thesis tree + fail-closed-on-fault exist, but legacy direction+confidence REVERSE/EXIT remains, scan-directional exits default-on outside cognition, re-entry is directional (V-008/V-009/V-010/V-012). |
