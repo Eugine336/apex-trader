@@ -17,7 +17,7 @@ def test_gap_read_requires_verified_timestamp_discontinuity():
     for i in range(21, 24):
         bars[i].update({
             "open": 102.5, "high": 103.5, "low": 102.1, "close": 103.0,
-            "timestamp_epoch": start + 21 * 3600 + (i-21) * 3600,
+            "timestamp_epoch": start + (i+1) * 3600,
         })
     readings = PriceDeliveryConcepts().read("TEST", {"H1": bars})
     gap = next(item for item in readings if item.concept == "gap_analysis")
