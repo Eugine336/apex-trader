@@ -133,6 +133,7 @@ class DevelopingAnalysisLoop:
             t.join(timeout=2.0)
         try:
             self._pool.shutdown(wait=False)
+# SAFE-FALLBACK: thread-pool shutdown is best-effort after workers have been joined; it cannot mask shutdown.
         except Exception:  # pragma: no cover - defensive
             pass
         logger.info(
