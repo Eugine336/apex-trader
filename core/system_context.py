@@ -1385,7 +1385,7 @@ class SystemContext:
                 # System 1 — feed every completed broker timeframe through the
                 # native concept registry. This is deliberately independent of
                 # the optional AI advisor and does not create execution authority.
-                _default_concept_timeframes = ("D1", "H4", "H1", "M15", "M5", "M1")
+                _default_concept_timeframes = ("D1", "H4", "H1", "M5")
                 _configured_concept_timeframes = getattr(
                     cog_cfg, "concept_timeframes", _default_concept_timeframes,
                 ) if cog_cfg is not None else _default_concept_timeframes
@@ -1399,11 +1399,11 @@ class SystemContext:
                 try:
                     _concept_history_bars = max(
                         100,
-                        int(getattr(cog_cfg, "concept_history_bars", 120)
-                            if cog_cfg is not None else 120),
+                        int(getattr(cog_cfg, "concept_history_bars", 100)
+                            if cog_cfg is not None else 100),
                     )
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
-                    _concept_history_bars = 120
+                    _concept_history_bars = 100
 
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
