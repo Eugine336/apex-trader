@@ -157,6 +157,7 @@ def _headers_to_dict(headers: Any) -> dict:
     for k, v in items:
         try:
             out[str(k).strip().lower()] = v
+# SAFE-FALLBACK: an unstringifiable optional header key is omitted from the normalized header map.
         except Exception:  # noqa: BLE001
             continue
     return out
@@ -173,6 +174,7 @@ def _parse_duration_token(value: Any) -> float:
         return 0.0
     try:
         return max(0.0, float(s))          # bare number ⇒ seconds
+# SAFE-FALLBACK: invalid bare Retry-After value falls through to the supported unit-suffixed parser.
     except ValueError:
         pass
     units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
@@ -183,6 +185,7 @@ def _parse_duration_token(value: Any) -> float:
         try:
             total += float(num) * units[unit]
             matched = True
+# SAFE-FALLBACK: malformed Retry-After token is ignored; valid tokens are still accumulated.
         except (ValueError, KeyError):
             continue
     return total if matched else 0.0
@@ -196,6 +199,7 @@ def _retry_after_value(raw: Any) -> float:
         return 0.0
     try:
         return max(0.0, float(s))          # RFC 7231 delta-seconds
+# SAFE-FALLBACK: invalid delta-seconds falls through to the RFC 7231 HTTP-date parser.
     except ValueError:
         pass
     try:  # RFC 7231 HTTP-date form
@@ -276,6 +280,7 @@ def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "
         detail = ""
         try:
             detail = exc.read().decode("utf-8", "replace")[:200]
+# SAFE-FALLBACK: error-body decoding is optional; the HTTP status and transport result remain authoritative.
         except Exception:  # noqa: BLE001
             pass
         return int(exc.code or 0), detail, _headers_to_dict(getattr(exc, "headers", None))
