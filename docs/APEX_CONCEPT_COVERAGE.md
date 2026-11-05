@@ -90,7 +90,7 @@ FULL 41 · MEASURED 28 · UNMEASURED 10
 | volume_indicators | OBV MFI CMF A/D | `volume_indicators` | MEASURED |
 
 ## Strategy lenses (38)
-FULL 3 · MEASURED 35 · UNMEASURED 0
+FULL 2 · MEASURED 36 · UNMEASURED 0
 
 | Lens | Key | Level |
 |---|---|---|
