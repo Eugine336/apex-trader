@@ -1,5 +1,7 @@
 import json
 import time
+
+import pytest
 from types import SimpleNamespace
 
 from cognition.analytical_knowledge import (
@@ -403,7 +405,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     assert payload["directional_return_r"] > 0
     assert payload["outcome_evidence_id"] == later_market.evidence[0].evidence_id
     assert payload["outcome_quote"]["symbol"] == "EURUSD"
-    assert payload["observed_price"] == 1.11
+    assert payload["observed_price"] == pytest.approx(1.11)
 
 
 
@@ -667,7 +669,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "payload_json": json.dumps(payload),
             })
 
-    now = start + 149 * 600.0 + 400.0
+    now = start + 149 * 600.0 + 300.0
     producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
     artifacts = producer.refresh("EURUSD", now=now)
     artifact = next(

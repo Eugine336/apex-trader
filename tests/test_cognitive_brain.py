@@ -301,7 +301,14 @@ def test_high_confidence_without_producer_verified_return_stands_down():
     # remains observable, but it does not authorize exposure by itself.
     op = _RichOpinion("LONG", 0.8, efe="8R", eae="0.1R")
     brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
-    out = brain.reason(_confident_state(polarity=0.8, target_r=0.5))
+    state = _confident_state(polarity=0.8, target_r=0.5)
+    # The common positive-path fixture registers a real test artifact. Remove
+    # that artifact here so this case genuinely exercises the unverified path.
+    state.evidence = [
+        item for item in state.evidence
+        if item.domain.value != "historical_analogue"
+    ]
+    out = brain.reason(state)
     assert out.campaign is None
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.decision.questions_answered["payoff_geometry_status"] == (
