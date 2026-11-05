@@ -1191,3 +1191,75 @@ def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():
     assert [a for a in calls if a.kind == "partial_close"] == []
     assert loop.get_status()["reallocations"] == 0
 
+
+
+def test_concept_source_evidence_is_added_to_market_state_for_brain():
+    concept = Evidence(
+        source_module="concepts.crt.h1",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="XAUUSD",
+        observation="CRT range sweep/reclaim observation",
+        confidence=0.7,
+        uncertainty=0.3,
+        polarity=0.0,
+        measurements={
+            "source_kind": "concept_reading",
+            "concept": "crt",
+            "timeframe": "H1",
+            "applicable": True,
+            "implications": [],
+            "facts": {},
+        },
+        source_timestamp_verified=True,
+        source_timestamp_epoch=1_700_000_000,
+        independence_group="ohlc:XAUUSD:H1",
+    )
+    calls = []
+    cons = EvidenceConsolidator(
+        ctx=None,
+        concept_source=lambda symbol: calls.append(symbol) or [concept],
+    )
+    market_state = cons.build("XAUUSD")
+    assert calls == ["XAUUSD"]
+    assert concept in market_state.evidence
+    assert any(
+        item.measurements.get("concept") == "crt"
+        for item in market_state.evidence
+        if isinstance(item.measurements, dict)
+    )
+    assert not any(
+        "FULL CONCEPT READINGS UNAVAILABLE" in item.observation
+        for item in market_state.evidence
+    )
+
+
+def test_concept_source_missing_readings_are_explicitly_degraded():
+    raw_only = Evidence(
+        source_module="market_lenses.h1.structure",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="XAUUSD",
+        observation="raw OHLC structure observation",
+        confidence=0.5,
+        uncertainty=0.5,
+        polarity=0.0,
+        measurements={"source_kind": "market_lens"},
+    )
+    market_state = EvidenceConsolidator(
+        ctx=None, concept_source=lambda symbol: [raw_only],
+    ).build("XAUUSD")
+    assert any(
+        "FULL CONCEPT READINGS UNAVAILABLE" in item.observation
+        for item in market_state.evidence
+    )
+
+
+def test_concept_source_fault_is_visible_and_does_not_break_consolidation():
+    def _broken(symbol):
+        raise RuntimeError("broker history unavailable")
+    market_state = EvidenceConsolidator(
+        ctx=None, concept_source=_broken,
+    ).build("XAUUSD")
+    assert any(
+        "FULL CONCEPT READINGS FAILED" in item.observation
+        for item in market_state.evidence
+    )
