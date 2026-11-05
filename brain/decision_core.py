@@ -17,7 +17,7 @@ the sole authority that interprets those facts and forms direction.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 from loguru import logger
@@ -74,76 +74,7 @@ TF_MODULE_MAP: dict[str, list[str]] = {
 _TF_BY_RECENCY = ("M5", "M15", "H1", "H4", "D1")
 
 
-# ── Probabilistic evidence model (Phase 3) ──────────────────────────────────
-# Each timeframe contributes evidence proportional to its weight × confidence.
-# The per-timeframe weight reflects how USEFUL that timeframe's observations are
-# as context (learned by the AdaptiveWeightProvider from observation usefulness,
-# never from directional agreement). No timeframe holds veto power: higher
-# timeframes weigh more (strategic context) while lower timeframes can outweigh
-# them when their combined, confident evidence is larger. Weights are normalised
-# across the timeframes that actually contributed a structural observation, so
-# silent/ranging frames never introduce a systematic bias. Developing
-# (forming-bar) structure contributes as additional, discounted evidence
-# alongside confirmed structure.
-_EVIDENCE_WEIGHTS: dict[str, float] = {
-    "D1": 0.10,
-    "H4": 0.20,
-    "H1": 0.25,
-    "M15": 0.20,
-    "M5": 0.15,
-    "M1": 0.10,  # not in TF_MODULE_MAP yet, but ready when it is
-}
-
-# Gold (XAUUSD) evidence weights.  Gold's institutional flow is dominated by
-# H1/H4 structure, and its dollar-scale swings make M5/M15 noise larger in
-# relative terms than on forex.  This set shifts weight off M5/M15 and onto
-# H4/H1 so the bias leans on the timeframes that actually carry Gold's
-# directional conviction.
-_GOLD_EVIDENCE_WEIGHTS: dict[str, float] = {
-    "D1": 0.10,
-    "H4": 0.30,
-    "H1": 0.30,
-    "M15": 0.15,
-    "M5": 0.10,
-    "M1": 0.05,
-}
-
-# Phase 6 — optional adaptive override of the static weights above. When a
-# provider is registered (``set_evidence_weight_provider``) its bounded, learned
-# vector is used; the provider learns each timeframe's weight from how USEFUL its
-# observations were as context (never from directional agreement, Constitution
-# §XXIX). Otherwise the static defaults apply. The provider is duck-typed (only
-# ``get_weights() -> dict``) so this stays a leaf module with no learning-layer
-# dependency, and any provider fault transparently falls back to the static
-# defaults.
-_weight_provider = None  # set via set_evidence_weight_provider
-
-
-def set_evidence_weight_provider(provider) -> None:
-    """Register (or clear, with ``None``) the adaptive evidence-weight provider."""
-    global _weight_provider
-    _weight_provider = provider
-
-
-def _active_weights(symbol: Optional[str] = None) -> dict[str, float]:
-    """Return the active per-TF evidence weights.
-
-    The adaptive provider (when registered) takes precedence.  Otherwise, for
-    Gold (XAUUSD) the H1/H4-emphasised :data:`_GOLD_EVIDENCE_WEIGHTS` apply, and
-    for every other instrument the static :data:`_EVIDENCE_WEIGHTS` defaults.
-    """
-    provider = _weight_provider
-    if provider is not None:
-        try:
-            weights = provider.get_weights()
-            if isinstance(weights, dict) and weights:
-                return weights
-        except Exception:  # noqa: BLE001 — never break the bias model
-            pass
-    if symbol is not None and symbol.upper() == "XAUUSD":
-        return _GOLD_EVIDENCE_WEIGHTS
-    return _EVIDENCE_WEIGHTS
-
+# Timeframe modules publish observations, not a weighted directional bias.
 
 def run_tf_modules(
     symbol: str,
@@ -224,7 +155,6 @@ def run_tf_modules(
                     wyck = WyckoffEngine(
                         pip_size=pip_size,
                         swing_lookback=profile.swing_lookback,
-                        symbol=symbol,
                     )
                     # WyckoffEngine self-drops the forming bar for its pattern
                     # reads and feeds its inner StructureEngine the live frame
