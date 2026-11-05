@@ -81,6 +81,7 @@ class OrchestratorMixin:
                     continue
                 try:
                     payload = json.loads(pj) if isinstance(pj, str) else pj
+# SAFE-FALLBACK: malformed historical event JSON is omitted; no proposal is fabricated.
                 except Exception:
                     continue
                 payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
@@ -123,6 +124,7 @@ class OrchestratorMixin:
             try:
                 size_sum += float(p.get("size_multiplier", 0.0) or 0.0)
                 size_cnt += 1
+# SAFE-FALLBACK: malformed optional sizing telemetry is excluded from the displayed aggregate.
             except (TypeError, ValueError):
                 pass
             for d in p.get("dimensions") or []:
@@ -133,6 +135,7 @@ class OrchestratorMixin:
                 try:
                     acc[0] += float(d.get("multiplier", 1.0) or 1.0)
                     acc[1] += 1
+# SAFE-FALLBACK: malformed optional dimension telemetry is excluded from the displayed aggregate.
                 except (TypeError, ValueError):
                     pass
         dimensions = [
