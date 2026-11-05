@@ -170,8 +170,8 @@ class EventStore:
             )
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[event-store] close failed before database quarantine: %s", exc)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
             quarantined = self._db_path.with_name(
                 self._db_path.name + f".corrupt.{ts}"
