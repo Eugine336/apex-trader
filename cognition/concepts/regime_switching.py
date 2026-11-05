@@ -37,7 +37,7 @@ class RegimeSwitchingConcepts:
                 if values["high"] < values["low"]:
                     continue
                 bars.append({**bar, **values})
-            if len(bars) < 62:
+            if len(bars) < 61:
                 continue
             closes = [float(bar["close"]) for bar in bars]
             returns = [
