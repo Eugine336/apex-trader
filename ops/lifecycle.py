@@ -103,6 +103,7 @@ class ShutdownManager:
         # Mirror onto the loop's own running flag so the cycle loop exits.
         try:
             self._loop.running = False
+# SAFE-FALLBACK: loop-stop flag assignment is best-effort teardown; signal handling continues independently.
         except Exception:  # noqa: BLE001
             pass
 
@@ -155,6 +156,7 @@ class ShutdownManager:
             }
             try:
                 summary["open_positions"] = len(getattr(self._loop, "managed_positions", []) or [])
+# SAFE-FALLBACK: summary position count is optional telemetry; it cannot alter the live position registry.
             except Exception:  # noqa: BLE001
                 pass
 
@@ -275,16 +277,19 @@ class HealthCheck:
             return out
         try:
             out["any_connected"] = bool(getattr(pm, "any_connected", False))
+# SAFE-FALLBACK: connectivity snapshot is telemetry; an unavailable field remains unknown rather than changing execution.
         except Exception:  # noqa: BLE001
             pass
         try:
             flags = getattr(pm, "_mt5_connected_flags", []) or []
             out["mt5"] = any(bool(f) for f in flags)
+# SAFE-FALLBACK: connector flags are optional telemetry; other connector health fields remain available.
         except Exception:  # noqa: BLE001
             pass
         try:
             deriv = getattr(pm, "deriv", None)
             out["deriv"] = bool(deriv is not None and getattr(deriv, "is_connected", lambda: False)())
+# SAFE-FALLBACK: Deriv connectivity is optional telemetry; this cannot change broker execution state.
         except Exception:  # noqa: BLE001
             pass
         return out
@@ -320,6 +325,7 @@ class HealthCheck:
                 path = getattr(sub, key, None) if sub is not None else None
                 if path and Path(path).exists():
                     sizes[label] = round(Path(path).stat().st_size / (1024.0 * 1024.0), 3)
+# SAFE-FALLBACK: one inaccessible optional store is omitted from the diagnostic size summary.
             except Exception:  # noqa: BLE001
                 continue
         # The post-close tracker uses a fixed path.
@@ -327,6 +333,7 @@ class HealthCheck:
             p = Path("data/post_close_tracker.db")
             if p.exists():
                 sizes["post_close_tracker"] = round(p.stat().st_size / (1024.0 * 1024.0), 3)
+# SAFE-FALLBACK: store-size reporting is optional telemetry; inaccessible files are not treated as trading data.
         except Exception:  # noqa: BLE001
             pass
         return sizes
@@ -356,12 +363,14 @@ class HealthCheck:
                     "should_flatten": st.get("should_flatten"),
                     "sizing_factor": st.get("sizing_factor"),
                 }
+# SAFE-FALLBACK: adaptive-layer status is diagnostic only; an unreadable layer is not treated as a trading signal.
             except Exception:  # noqa: BLE001
                 pass
         dd = getattr(self._loop, "drawdown", None)
         if dd is not None:
             try:
                 return {"source": "drawdown_guard", "mode": getattr(getattr(dd, "mode", None), "value", None)}
+# SAFE-FALLBACK: drawdown mode enrichment is diagnostic only; failure returns the explicit source='none' sentinel below.
             except Exception:  # noqa: BLE001
                 pass
         return {"source": "none"}
@@ -373,6 +382,7 @@ class HealthCheck:
         open_positions = 0
         try:
             open_positions = len(getattr(self._loop, "managed_positions", []) or [])
+# SAFE-FALLBACK: open-position count is diagnostic telemetry; management and execution use the live broker book.
         except Exception:  # noqa: BLE001
             pass
         tick_age = self._last_tick_age()
