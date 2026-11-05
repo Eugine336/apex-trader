@@ -88,6 +88,9 @@ def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     assert h.confidence_components["calibrated_probability"] is False
     assert h.supporting_evidence_ids and h.supporting_evidence_ids[0]
     assert any("lower-timeframe" in u for u in h.unresolved_unknowns)
+    serialized = analysis.to_dict()
+    assert serialized["concept_readings"]
+    assert serialized["concept_readings"][0]["source_timestamp_verified"] is True
 
 
 
