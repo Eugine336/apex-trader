@@ -3,7 +3,7 @@ from cognition.concepts.structure_patterns import StructurePatternConcepts
 
 def _flat_history():
     return [{
-        "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.2,
+        "open": 101.0, "high": 102.0, "low": 100.5, "close": 101.2,
         "timestamp_epoch": 1_700_000_000 + i * 3600,
         "source_timestamp_verified": True,
     } for i in range(30)]
