@@ -46,6 +46,7 @@ def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "
         detail = ""
         try:
             detail = exc.read().decode("utf-8", "replace")[:200]
+# SAFE-FALLBACK: error-body decoding is optional; the HTTP status remains authoritative when the body cannot be read.
         except Exception:  # noqa: BLE001
             pass
         return int(exc.code or 0), detail
