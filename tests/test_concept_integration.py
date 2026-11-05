@@ -6,7 +6,7 @@ import time
 import pandas as pd
 import pytest
 
-from cognition.brain_reasoning import BrainReasoner
+from cognition.brain_reasoning import BrainHypothesis, BrainReasoner
 from cognition.contracts import MarketState
 from cognition.market_lenses import analyze_market_frames
 from cognition.opportunity_geometry import derive_opportunity_geometry
@@ -89,6 +89,67 @@ def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     assert h.supporting_evidence_ids and h.supporting_evidence_ids[0]
     assert any("lower-timeframe" in u for u in h.unresolved_unknowns)
 
+
+
+def test_brain_challenges_a_concept_hypothesis_when_its_trigger_is_not_satisfied():
+    state = _state({"H1": _crt_frame()})
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state)
+    reading = next(item for item in analysis.concept_readings if item["concept"] == "crt")
+    reading["implications"] = [{
+        "direction": "LONG",
+        "activated": False,
+        "requires": ["lower-timeframe structure shift"],
+        "conflicts_with": [],
+    }]
+    hypothesis = BrainHypothesis(
+        statement="CRT suggests a possible long setup",
+        confidence=0.8,
+        direction_implication="LONG",
+        hypothesis_kind=f"concept:crt:{reading['timeframe'].lower()}",
+        supporting_evidence_ids=[reading["evidence_id"]],
+    )
+
+    (challenged,) = reasoner.self_criticize([hypothesis], analysis)
+
+    assert challenged.confidence < 0.8
+    assert "trigger is not currently satisfied" in challenged.criticism
+
+
+def test_brain_challenges_a_concept_with_an_opposing_same_bar_concept_reading():
+    state = _state({"H1": _crt_frame()})
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state)
+    reading = next(item for item in analysis.concept_readings if item["concept"] == "crt")
+    reading["implications"] = [{
+        "direction": "LONG",
+        "activated": True,
+        "requires": [],
+        "conflicts_with": [],
+    }]
+    analysis.concept_readings.append({
+        **reading,
+        "evidence_id": "opposing-concept-evidence",
+        "concept": "market_structure",
+        "implications": [{
+            "direction": "SHORT",
+            "activated": True,
+            "requires": [],
+            "conflicts_with": [],
+        }],
+    })
+    hypothesis = BrainHypothesis(
+        statement="CRT suggests a possible long setup",
+        confidence=0.8,
+        direction_implication="LONG",
+        hypothesis_kind=f"concept:crt:{reading['timeframe'].lower()}",
+        supporting_evidence_ids=[reading["evidence_id"]],
+    )
+
+    (challenged,) = reasoner.self_criticize([hypothesis], analysis)
+
+    assert challenged.confidence < 0.8
+    assert "same-timeframe, same-source-bar concept interpretation opposes" in challenged.criticism
 
 def test_geometry_comes_from_the_concept_not_from_a_default_multiple():
     state = _state({"H1": _crt_frame()})
