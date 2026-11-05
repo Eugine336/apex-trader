@@ -176,3 +176,22 @@ def test_bearish_crt_gives_short_geometry():
     assert geo.stop_price == pytest.approx(1.0845) and geo.target_price == pytest.approx(1.0800)
     opposite = derive_opportunity_geometry(state, "LONG")
     assert opposite is None or opposite.concept == ""
+
+
+def test_unverified_concept_readings_do_not_count_as_current_market_domains():
+    rows = []
+    for i in range(30):
+        opening = 100.0 + (i % 2) * 0.05
+        closing = opening + 0.02
+        rows.append({
+            "open": opening, "high": closing + 0.1, "low": opening - 0.1,
+            "close": closing, "volume": 100.0,
+        })
+    frame = pd.DataFrame(rows)
+    # Deliberately omit broker timestamp attestation and source timestamps.
+    state = _state({"H1": frame})
+    concepts = [e for e in state.evidence
+                if e.measurements.get("source_kind") == "concept_reading"]
+    assert concepts
+    assert all(e.source_timestamp_verified is False for e in concepts)
+    assert state.consolidation()["market_domain_count"] == 0
