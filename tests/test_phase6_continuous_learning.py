@@ -2,12 +2,6 @@
 
 Covers the pieces that close the learning loop end to end:
 
-  * :class:`AdaptiveWeightProvider` — bounds (sum 1.0, per-TF floor/ceiling,
-    max shift per cycle), cold-start fallback to static defaults, the
-    min-trades gate, accuracy-driven adaptation direction, persistence
-    round-trip, and ``reset_to_defaults``.
-  * ``decision_core`` evidence-weight hook — provider used when registered,
-    static defaults when cleared or when the provider raises.
   * :class:`RecommendationApplier` — bounded application (±max% + absolute
     band), unregistered/disabled/wrong-type no-ops, and ``reset_target``.
   * :class:`RecommendationGateway` applier hook — fires only on APPROVED.

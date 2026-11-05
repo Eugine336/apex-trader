@@ -1765,6 +1765,7 @@ class SystemContext:
         )
 
         # ── Phase 6: continuous-learning closure ─────────────────────
+        at_cfg = getattr(config, "adaptive_tuner", None)
         # RecommendationApplier applies APPROVED PARAM_PROMOTE
         #     recommendations to a registered, bounded set of live config
         #     parameters (consensus / ranker thresholds). Wired as the gateway
@@ -1812,9 +1813,7 @@ class SystemContext:
             logger.warning("[SystemContext] RecommendationApplier init failed: {}", exc)
 
         logger.info(
-            "[SystemContext] continuous-learning closure — adaptive_weights={} "
-            "rec_applier={}",
-            ctx.adaptive_weight_provider is not None,
+            "[SystemContext] continuous-learning closure — rec_applier={}",
             ctx.recommendation_applier is not None,
         )
 

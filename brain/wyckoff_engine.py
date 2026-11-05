@@ -1,7 +1,7 @@
 """
-APEX TRADER — Wyckoff Engine
-This module translates market behavior into Wyckoff phases and highlights
-the spring/upthrust traps where a sharp sniper usually gets paid.
+APEX TRADER — Wyckoff Phase Reader
+This module reports auction phase and spring/upthrust facts. It does not
+recommend a trade direction or assign calibrated probability.
 """
 
 from dataclasses import dataclass
@@ -35,7 +35,7 @@ class WyckoffAnalysis:
 
 class WyckoffEngine:
     """
-    Classifies accumulation/distribution development and extracts expected direction.
+    Classifies observable accumulation/distribution development only.
     """
 
     def __init__(
