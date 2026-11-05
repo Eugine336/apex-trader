@@ -65,6 +65,7 @@ def _default_weights() -> Dict[str, float]:
         from brain.decision_core import _EVIDENCE_WEIGHTS as _canonical
         if isinstance(_canonical, dict) and _canonical:
             return {tf: float(w) for tf, w in _canonical.items()}
+# SAFE-FALLBACK: the Brain stack is optional in minimal environments; documented neutral weights are used instead.
     except Exception:  # noqa: BLE001 — minimal env without the brain stack
         pass
     return dict(_FALLBACK_WEIGHTS)
