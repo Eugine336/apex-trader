@@ -300,6 +300,7 @@ class BacktestRunner:
             try:
                 if obj is not None and hasattr(obj, "close"):
                     obj.close()
+# SAFE-FALLBACK: closing an optional backtest resource is best-effort and must not mask the backtest result.
             except Exception:  # noqa: BLE001
                 pass
         if self._tmpdir:
