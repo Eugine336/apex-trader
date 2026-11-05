@@ -53,7 +53,7 @@ class PriceDeliveryConcepts:
     """Read fair-value gaps, order blocks, balanced ranges and dealing-range location."""
     key = "price_delivery"
     family = "institutional_price_action"
-    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range", "break_retest", "gap_analysis")
+    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range", "break_retest", "gap_analysis", "breaker_block", "displacement", "ict_smc")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -71,6 +71,8 @@ class PriceDeliveryConcepts:
             readings.append(self._dealing_range(tf, bars, close, close_tf))
             readings.extend(self._break_retest(tf, bars, close, close_tf))
             readings.extend(self._gaps(tf, bars, close, close_tf))
+            readings.extend(self._displacement(tf, bars, close, close_tf))
+            readings.extend(self._breaker_block(tf, bars, close, close_tf))
         return readings
 
     def _fvg(self, tf, bars, close, close_tf):
@@ -249,6 +251,101 @@ class PriceDeliveryConcepts:
             )]
         return []
 
+
+
+    def _displacement(self, tf, bars, close, close_tf):
+        current = bars[-1]
+        span = current["high"] - current["low"]
+        if span <= 0:
+            return []
+        prior_ranges = [x["high"]-x["low"] for x in bars[-21:-1] if x["high"]>x["low"]]
+        if len(prior_ranges) < 10:
+            return []
+        baseline = sorted(prior_ranges)[len(prior_ranges)//2]
+        body_ratio = abs(current["close"]-current["open"])/span
+        multiple = span/baseline if baseline>0 else 0.0
+        close_location = (current["close"]-current["low"])/span
+        displaced = multiple>=1.5 and body_ratio>=0.65
+        side = LONG if current["close"]>current["open"] else SHORT if current["close"]<current["open"] else FLAT
+        return [_record(
+            "displacement",tf,EvidenceDomain.STRUCTURE,
+            f"Latest completed candle range={multiple:.2f}x prior median; body/range={body_ratio:.2f}; "
+            f"close-location={close_location:.2f}; displacement={displaced}; side={side}.",
+            [_imp(side,f"{side} relative-range displacement" if displaced else "No qualifying displacement on latest completed bar",
+                  displaced and side!=FLAT,"A completed close back through the displacement origin invalidates the impulse",
+                  stop=current["open"],requires=("confirmed structure break or shift","participation/volume confirmation"),
+                  conflicts=("range expansion without directional body dominance",) if multiple>=1.5 and body_ratio<0.65 else ())],
+            {"direction":side,"range_multiple":multiple,"body_ratio":body_ratio,
+             "close_location":close_location,"displacement":displaced,
+             "prior_median_range":baseline,"definition":"latest_range_1_5x_median_and_body_ratio_0_65_v1"},
+            bars,close,close_tf,
+            ("OHLC displacement is a price expansion proxy; it does not prove aggressive institutional execution.",)
+        )]
+
+    def _breaker_block(self, tf, bars, close, close_tf):
+        # An origin zone is a breaker only after the original block is invalidated
+        # and price subsequently retests it from the opposite side.
+        for i in range(len(bars)-1,max(2,len(bars)-30),-1):
+            impulse=bars[i]
+            span=impulse["high"]-impulse["low"]
+            if span<=0:
+                continue
+            sample=[abs(x["close"]-x["open"])/max(x["high"]-x["low"],1e-12)
+                    for x in bars[max(0,i-20):i] if x["high"]>x["low"]]
+            ratio=abs(impulse["close"]-impulse["open"])/span
+            rank=percentile_rank(ratio,sample)
+            if rank is None or rank<0.80 or impulse["close"]==impulse["open"]:
+                continue
+            original_bull=impulse["close"]>impulse["open"]
+            origin=next((j for j in range(i-1,max(-1,i-4),-1)
+                         if (bars[j]["close"]<bars[j]["open"] if original_bull
+                             else bars[j]["close"]>bars[j]["open"])),None)
+            if origin is None:
+                continue
+            zone=bars[origin]
+            lo,hi=zone["low"],zone["high"]
+            invalidation_index=None
+            for j in range(i+1,len(bars)):
+                if (bars[j]["close"]<lo if original_bull else bars[j]["close"]>hi):
+                    invalidation_index=j
+                    break
+            if invalidation_index is None:
+                continue
+            later=bars[invalidation_index+1:]
+            if original_bull:
+                side=SHORT
+                retested=any(x["high"]>=lo and x["low"]<=hi for x in later)
+                accepted=bars[-1]["close"]<lo
+                invalid=any(x["close"]>hi for x in later)
+                stop=hi
+            else:
+                side=LONG
+                retested=any(x["low"]<=hi and x["high"]>=lo for x in later)
+                accepted=bars[-1]["close"]>hi
+                invalid=any(x["close"]<lo for x in later)
+                stop=lo
+            active=retested and accepted and not invalid
+            return [_record(
+                "breaker_block",tf,EvidenceDomain.STRUCTURE,
+                f"Original {'bullish' if original_bull else 'bearish'} origin block {lo:.10g}–{hi:.10g} "
+                f"was invalidated at bar {invalidation_index}; opposite-side retest={retested}; "
+                f"acceptance={accepted}; invalidated_again={invalid}.",
+                [_imp(side,f"{side} breaker-block role reversal",active,
+                      "A completed close through the breaker zone's far edge invalidates the role reversal",
+                      stop=stop,requires=("retest from the opposite side","completed acceptance away from zone",
+                                          "independent structure and participation evidence"),
+                      conflicts=("price reclaimed the original block",) if invalid else ()),
+                 _imp(FLAT,"An invalidated order block is not a breaker until the role-reversal retest occurs",
+                      not active,"Not applicable")],
+                {"direction":side,"zone_low":lo,"zone_high":hi,"origin_index":origin,
+                 "impulse_index":i,"original_block_direction":"LONG" if original_bull else "SHORT",
+                 "invalidation_index":invalidation_index,"retested":retested,"accepted":accepted,
+                 "invalidated_again":invalid,"body_percentile":rank,
+                 "definition":"origin_block_invalidation_then_opposite_side_retest_v1"},
+                bars,close,close_tf,
+                ("Breaker block is inferred from OHLC origin/impulse geometry; hidden order inventory is not observable.",)
+            )]
+        return []
 
     def _gaps(self, tf, bars, close, close_tf):
         seconds = TIMEFRAME_SECONDS.get(tf)
