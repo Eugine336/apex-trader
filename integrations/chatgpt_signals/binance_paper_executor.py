@@ -46,6 +46,7 @@ class BinancePaperExecutor:
             for line in self.journal.read_text(encoding="utf-8").splitlines():
                 try:
                     self.seen.add(json.loads(line)["signal_id"])
+# SAFE-FALLBACK: malformed paper-signal journal line is skipped; no signal identity is invented.
                 except Exception:
                     continue
 
