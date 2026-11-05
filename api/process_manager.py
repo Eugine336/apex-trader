@@ -603,6 +603,7 @@ class ProcessManager:
         except (ProcessLookupError, OSError):
             try:
                 proc.send_signal(sig)
+# SAFE-FALLBACK: the child may already have exited; failed signal delivery must not block cleanup.
             except OSError:
                 pass
 
@@ -612,6 +613,7 @@ class ProcessManager:
             try:
                 inst.log_handle.flush()
                 inst.log_handle.close()
+# SAFE-FALLBACK: log-handle close is best-effort during process teardown and must not block clearing the handle.
             except OSError:
                 pass
             inst.log_handle = None
