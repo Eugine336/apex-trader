@@ -149,16 +149,19 @@ def _worker(remote, env_kwargs: dict):
                 break
             else:
                 raise RuntimeError(f"[vec_env worker] unknown command: {cmd}")
+# SAFE-FALLBACK: worker EOF/interrupt is a normal shutdown path; the parent owns restart and lifecycle decisions.
     except (KeyboardInterrupt, EOFError):
         pass
     except Exception as exc:  # pragma: no cover - surfaced to parent for restart
         try:
             remote.send(("__error__", repr(exc)))
+# SAFE-FALLBACK: the parent observes the worker exit if its error channel is already closed.
         except Exception:
             pass
     finally:
         try:
             remote.close()
+# SAFE-FALLBACK: remote close is best-effort during worker teardown.
         except Exception:
             pass
 
@@ -204,11 +207,13 @@ class SubprocVecEnv:
             if proc is not None:
                 proc.terminate()
                 proc.join(timeout=5)
+# SAFE-FALLBACK: a worker may already be dead; termination failure must not prevent remaining workers from closing.
         except Exception:
             pass
         try:
             if self.remotes[i] is not None:
                 self.remotes[i].close()
+# SAFE-FALLBACK: closing a stale remote is best-effort before spawning its replacement.
         except Exception:
             pass
         self._spawn(i)
@@ -293,6 +298,7 @@ class SubprocVecEnv:
         for r in self.remotes:
             try:
                 r.send(("close", None))
+# SAFE-FALLBACK: a worker pipe may already be closed; continue shutting down the remaining workers.
             except Exception:
                 pass
         for p in self.processes:
@@ -300,11 +306,13 @@ class SubprocVecEnv:
                 p.join(timeout=5)
                 if p.is_alive():
                     p.terminate()
+# SAFE-FALLBACK: process teardown is best-effort; this does not alter worker result or trading authority.
             except Exception:
                 pass
         for r in self.remotes:
             try:
                 r.close()
+# SAFE-FALLBACK: remote close is best-effort after worker termination.
             except Exception:
                 pass
         self.closed = True
@@ -312,6 +320,7 @@ class SubprocVecEnv:
     def __del__(self):
         try:
             self.close()
+# SAFE-FALLBACK: destructor cleanup cannot raise during interpreter shutdown.
         except Exception:
             pass
 
