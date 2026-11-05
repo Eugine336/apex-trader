@@ -941,12 +941,14 @@ class CognitionLoop:
                 if callable(iso):
                     try:
                         return iso()
+# SAFE-FALLBACK: unsupported scalar conversion falls through to the next explicit serialization strategy.
                     except Exception:
                         pass
                 item = getattr(value, "item", None)
                 if callable(item):
                     try:
                         return _json_safe(item())
+# SAFE-FALLBACK: unsupported object conversion falls through to numeric/string serialization without fabricating market facts.
                     except Exception:
                         pass
                 try:
@@ -992,6 +994,7 @@ class CognitionLoop:
             for item in fresh_items:
                 try:
                     source_epoch = float(getattr(item, "source_timestamp_epoch", None))
+# SAFE-FALLBACK: evidence with an invalid source epoch is excluded from point-in-time eligibility.
                 except (TypeError, ValueError, OverflowError):
                     continue
                 evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
@@ -1070,6 +1073,7 @@ class CognitionLoop:
                             "source_module": str(getattr(item, "source_module", "") or ""),
                             "evidence_id": evidence_id,
                         })
+# SAFE-FALLBACK: a quote with malformed numeric fields is excluded from verified quote candidates.
                 except (TypeError, ValueError, OverflowError):
                     continue
             reference_quote = max(
@@ -1365,6 +1369,7 @@ class CognitionLoop:
                             "source_module": str(getattr(evidence, "source_module", "") or ""),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
+# SAFE-FALLBACK: malformed persisted event payload is discarded; it cannot create a candidate or outcome.
                 except (TypeError, ValueError, OverflowError):
                     continue
             if not quote_rows:
@@ -1394,6 +1399,7 @@ class CognitionLoop:
                         event_type = str(event.get("event_type", "") or "")
                         try:
                             event_payload = json.loads(event.get("payload_json") or "{}")
+# SAFE-FALLBACK: malformed event payload is ignored; only validated candidate events enter the pending-label queue.
                         except (TypeError, ValueError, json.JSONDecodeError):
                             continue
                         if not isinstance(event_payload, dict):
@@ -1465,6 +1471,7 @@ class CognitionLoop:
                         event_candidate_id = str(event_payload.get("candidate_id", "") or "")
                         if event_candidate_id:
                             snapshots.append((event_candidate_id, event_payload))
+# SAFE-FALLBACK: malformed stored outcome identity is excluded from the recorded-outcome set.
                     except (TypeError, ValueError, json.JSONDecodeError):
                         continue
                 for row in outcome_rows:
@@ -1474,6 +1481,7 @@ class CognitionLoop:
                             str(event_payload.get("candidate_id", "")),
                             int(event_payload.get("horizon_seconds", 0) or 0),
                         ))
+# SAFE-FALLBACK: malformed candidate snapshot is excluded from the outcome-labeling input.
                     except (TypeError, ValueError, json.JSONDecodeError):
                         continue
 
@@ -1515,6 +1523,7 @@ class CognitionLoop:
                             if math.isfinite(candidate_deviation) and candidate_deviation <= 0.25:
                                 risk_distance = candidate_risk
                                 entry_deviation_r = candidate_deviation
+# SAFE-FALLBACK: malformed candidate geometry is excluded from outcome labeling; no synthetic price or risk is inferred.
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
 
@@ -1671,6 +1680,7 @@ class CognitionLoop:
                 for row in snapshot_rows:
                     try:
                         snapshot = json.loads(row.get("payload_json") or "{}")
+# SAFE-FALLBACK: malformed snapshot payload is discarded before candidate identity is admitted.
                     except (TypeError, ValueError, json.JSONDecodeError):
                         continue
                     if not isinstance(snapshot, dict):
@@ -2126,6 +2136,7 @@ class CognitionLoop:
                 if sources:
                     spec = dict(spec)
                     spec["supporting_sources"] = sources
+# SAFE-FALLBACK: optional scalar serialization failure is handled by the next JSON-safe conversion fallback.
             except Exception:  # noqa: BLE001
                 pass
             self._memory.record_open(
@@ -2365,6 +2376,7 @@ class CognitionLoop:
                             sym, direction, "reallocate",
                             confidence=0.0, uncertainty=0.0, now=now,
                         )
+# SAFE-FALLBACK: Brain reallocation is opportunity-level; any management failure vetoes the trim and returns no authorization.
                     except Exception:  # noqa: BLE001
                         pass
             return issued
