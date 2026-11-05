@@ -196,8 +196,11 @@ def main() -> None:
         )
         try:
             sys_ctx._mark_safety_degraded("UnsafeDataRepositoryTopology")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.critical(
+                "[startup] failed to persist safety-degraded state; broker-book verification is forced false: {}",
+                exc,
+            )
         _cog_loop = getattr(sys_ctx, "cognition_loop", None)
         if _cog_loop is not None:
             _cog_loop.broker_book_verified = False
