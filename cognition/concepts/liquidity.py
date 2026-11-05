@@ -116,6 +116,10 @@ class LiquidityPools:
         last = bars[-1]
         candidates = []
         for pool in swings:
+            # An inducement candidate must still be a resting internal pool
+            # immediately before the latest completed bar acts on it.
+            if not _untouched(bars[:-1], pool[0], pool[1], pool[2]):
+                continue
             if pool[1] == "H" and pool[0] != external_high[0] and last["high"] > pool[2] and last["close"] < pool[2]:
                 if last["high"] <= external_high[2]:
                     candidates.append(("buy_side", SHORT, pool))
