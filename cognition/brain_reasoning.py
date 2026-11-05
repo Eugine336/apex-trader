@@ -457,14 +457,31 @@ class BrainReasoner:
                 "evidence_id": str(getattr(item, "evidence_id", "") or ""),
             }
             concept_runtime_failures.append(failure)
-            unknown = f"Concept analysis unavailable: {module_key} reader failed ({exception_type})"
+            if failure["status"] == "pipeline_failed":
+                unknown = f"Concept analysis unavailable: pipeline initialization failed ({exception_type})"
+            else:
+                unknown = f"Concept analysis unavailable: {module_key} reader failed ({exception_type})"
             if unknown not in missing:
                 missing.append(unknown)
         if concept_runtime_failures:
-            observations.append(
-                f"{len(concept_runtime_failures)} registered concept reader(s) failed; "
-                "their interpretations are unavailable and must not be treated as negative readings"
-            )
+            pipeline_failures = [
+                item for item in concept_runtime_failures
+                if item["status"] == "pipeline_failed"
+            ]
+            reader_failures = [
+                item for item in concept_runtime_failures
+                if item["status"] != "pipeline_failed"
+            ]
+            if pipeline_failures:
+                observations.append(
+                    f"Concept-analysis pipeline initialization failed {len(pipeline_failures)} time(s); "
+                    "registered readers may not have run, so their interpretations are unavailable"
+                )
+            if reader_failures:
+                observations.append(
+                    f"{len(reader_failures)} registered concept reader(s) failed; "
+                    "their interpretations are unavailable and must not be treated as negative readings"
+                )
             market_context["concept_runtime_failures"] = concept_runtime_failures
         # Surface these unknowns in the Brain's normal reasoning record too;
         # a separate diagnostic blob that the reasoning chain ignores is not enough.
