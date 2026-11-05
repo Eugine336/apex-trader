@@ -254,6 +254,7 @@ class LiveCandleAggregator:
         for row in df.itertuples(index=False):
             try:
                 row_epoch = pd.Timestamp(row.time).timestamp()
+# SAFE-FALLBACK: discard a row with an invalid timestamp; it cannot be safely ordered into the candle stream.
             except Exception:
                 continue
             seeded_rows.append(
