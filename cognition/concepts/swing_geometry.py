@@ -84,13 +84,23 @@ class SwingGeometryConcepts:
         # the impulse before its actual terminal extreme.
         if len(pivots) < 2:
             return []
-        right = pivots[-1]
-        left = next(
-            (pivot for pivot in reversed(pivots[:-1]) if pivot[0] != right[0]),
-            None,
-        )
-        if left is None:
+        # Compare confirmed alternating anchors in a bounded recent window.
+        # A later minor pivot must not truncate a materially larger impulse that
+        # is still the active swing being retraced. Prefer the strongest recent
+        # completed leg, then the most recent endpoint when ranges tie.
+        recent = [pivot for pivot in pivots if pivot[1] >= max(0, len(bars) - 12)]
+        pairs = [
+            (left, right)
+            for right_index, right in enumerate(recent)
+            for left in recent[:right_index]
+            if left[0] != right[0] and right[1] > left[1]
+        ]
+        if not pairs:
             return []
+        left, right = max(
+            pairs,
+            key=lambda pair: (abs(pair[1][2] - pair[0][2]), pair[1][1]),
+        )
         if left[0] == "low":
             start, end, side = left[2], right[2], LONG
         else:
