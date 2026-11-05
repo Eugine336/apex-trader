@@ -62,8 +62,8 @@ class BrainMixin:
                             if wm is not None:
                                 results.append(wm)
                         return results
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("[dashboard-brain] world-model evidence unavailable: {}", exc)
         return []
 
     def _horizon_modules(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
