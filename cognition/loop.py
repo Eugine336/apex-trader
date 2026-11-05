@@ -270,6 +270,13 @@ class EvidenceConsolidator:
                         item for item in concept_evidence
                         if isinstance(getattr(item, "measurements", None), dict)
                         and item.measurements.get("source_kind") == "concept_reading"
+                        and item.measurements.get("source_timestamp_known") is True
+                        and item.measurements.get("data_basis") == "completed_ohlc"
+                        and item.measurements.get("provisional") is False
+                        and getattr(item, "source_timestamp_verified", False) is True
+                        and isinstance(getattr(item, "source_timestamp_epoch", None), (int, float))
+                        and not isinstance(getattr(item, "source_timestamp_epoch", None), bool)
+                        and item.source_timestamp_epoch > 0.0
                     ]
                     for item in concept_evidence:
                         ms.add(item)
