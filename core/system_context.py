@@ -618,8 +618,8 @@ class SystemContext:
             if ctx.post_close_tracker is not None:
                 try:
                     ctx.ml_adapter.pair_learner.set_post_close_tracker(ctx.post_close_tracker)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[SystemContext] post-close tracker wiring failed: {}", exc)
         except Exception as exc:
             logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
 
@@ -1266,8 +1266,8 @@ class SystemContext:
                                 realized_pnl=float(data.get("realized_pnl", 0.0) or 0.0),
                                 evidence_ref=str(data.get("campaign_id", "") or ""),
                             )
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[SystemContext] campaign memory close update failed: {}", exc)
                     # Part VIII — credit/debit the evidence sources that backed
                     # this campaign, and record the Brain's confidence-vs-outcome.
                     if stitched is not None:
@@ -1276,15 +1276,15 @@ class SystemContext:
                             try:
                                 _influence.observe_many(
                                     stitched.get("supporting_sources") or [], won)
-                            except Exception:  # noqa: BLE001
-                                pass
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("[SystemContext] campaign influence update failed: {}", exc)
                         if _calibration is not None:
                             ec = stitched.get("entry_confidence")
                             if ec is not None:
                                 try:
                                     _calibration.observe(ec, won)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning("[SystemContext] campaign calibration update failed: {}", exc)
 
                 if (_memory is not None or _ops_author is not None
                         or _influence is not None) \
@@ -1462,8 +1462,8 @@ class SystemContext:
                             syms = list((st.get("theses") or {}).keys())
                             if syms:
                                 return syms
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[SystemContext] dashboard thesis symbol lookup unavailable: {}", exc)
                     try:
                         return list(config.enabled_pairs)
                     except Exception:  # noqa: BLE001
