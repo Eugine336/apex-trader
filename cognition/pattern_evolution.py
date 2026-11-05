@@ -240,6 +240,7 @@ class PatternOutcomeTracker:
             for entry in evidence_log or []:
                 try:
                     domains, _direction, won = entry
+# SAFE-FALLBACK: malformed evidence-log tuple is excluded from pattern-evolution statistics.
                 except (TypeError, ValueError):
                     continue
                 names = frozenset(
