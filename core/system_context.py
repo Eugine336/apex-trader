@@ -179,7 +179,6 @@ class SystemContext:
     tuner_agent: Optional[TunerAgent] = None
     recommendation_gateway: Optional[RecommendationGateway] = None
     # ── Phase 6: continuous-learning closure ─────────────────────────
-    adaptive_weight_provider: Optional[Any] = None
     recommendation_applier: Optional[Any] = None
     # ── Cross-instrument opportunity layer (GAP 1-5) ──────────────────
     # Pure helpers consumed at gated call sites; default-disabled behaviour is an

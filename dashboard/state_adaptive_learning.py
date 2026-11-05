@@ -22,19 +22,10 @@ class AdaptiveLearningMixin:
 
         out: dict[str, Any] = {
             "available": False,
-            "weights": {},
             "applier": {},
             "scheduler": {},
             "tuner": {},
         }
-
-        try:
-            awp = getattr(ctx, "adaptive_weight_provider", None) if ctx else None
-            if awp is not None:
-                out["available"] = True
-                out["weights"] = awp.status()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[dash-adaptive] weights status failed: {}", exc)
 
         try:
             applier = getattr(ctx, "recommendation_applier", None) if ctx else None

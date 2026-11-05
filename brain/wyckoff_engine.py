@@ -31,7 +31,6 @@ class WyckoffAnalysis:
     sub_phase: str
     spring_detected: bool
     upthrust_detected: bool
-    phase_confidence: float
 
 
 class WyckoffEngine:
@@ -78,7 +77,6 @@ class WyckoffEngine:
                 sub_phase="INSUFFICIENT_DATA",
                 spring_detected=False,
                 upthrust_detected=False,
-                phase_confidence=0.0,
             )
 
         volume = self.volume_analyzer.analyze(closed)
@@ -88,7 +86,7 @@ class WyckoffEngine:
         upthrust = self._is_upthrust(closed, range_high)
         trend_return = self._trend_return(closed)
 
-        phase, sub_phase, confidence = self._classify(
+        phase, sub_phase = self._classify(
             in_range=in_range,
             trend=structure.trend,
             trend_return=trend_return,
@@ -102,7 +100,6 @@ class WyckoffEngine:
             sub_phase=sub_phase,
             spring_detected=spring,
             upthrust_detected=upthrust,
-            phase_confidence=round(confidence, 4),
         )
 
     def _range_state(self, df: pd.DataFrame) -> tuple[float, float, bool]:
@@ -154,19 +151,19 @@ class WyckoffEngine:
         spring: bool,
         upthrust: bool,
         volume: VolumeAnalysis,
-    )-> tuple[WyckoffPhase, str, float]:
+    ) -> tuple[WyckoffPhase, str]:
         # This reader reports phase facts only; it never recommends a side.
         if spring:
-            return WyckoffPhase.PHASE_C, "SPRING", 0.82
+            return WyckoffPhase.PHASE_C, "SPRING"
         if upthrust:
-            return WyckoffPhase.PHASE_C, "UPTHRUST", 0.82
+            return WyckoffPhase.PHASE_C, "UPTHRUST"
         if in_range and volume.climax_detected:
             sub = "SELLING_CLIMAX" if trend_return < 0 else "BUYING_CLIMAX"
-            return WyckoffPhase.PHASE_A, sub, 0.72
+            return WyckoffPhase.PHASE_A, sub
         if in_range:
-            return WyckoffPhase.PHASE_B, "BUILDING_CAUSE", 0.60
+            return WyckoffPhase.PHASE_B, "BUILDING_CAUSE"
         if trend in {Trend.BULLISH, Trend.BEARISH}:
-            return WyckoffPhase.PHASE_E, "TREND_CONTINUATION", 0.70
+            return WyckoffPhase.PHASE_E, "TREND_CONTINUATION"
         # No fixed percentage-return trigger: absent structural confirmation,
         # phase remains unresolved instead of inventing markup/markdown.
-        return WyckoffPhase.UNKNOWN, "UNRESOLVED", 0.45
+        return WyckoffPhase.UNKNOWN, "UNRESOLVED"
