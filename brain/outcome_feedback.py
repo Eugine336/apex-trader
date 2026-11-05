@@ -137,6 +137,7 @@ class OutcomeFeedback:
                 if os.path.exists(tmp_name):
                     try:
                         os.unlink(tmp_name)
+# SAFE-FALLBACK: temporary-file cleanup is best-effort and must not mask the completed journal rotation.
                     except OSError:
                         pass
             logger.info(
@@ -164,6 +165,7 @@ class OutcomeFeedback:
                         continue
                     try:
                         rec = json.loads(line)
+# SAFE-FALLBACK: malformed journal line is skipped; no trade outcome is fabricated from invalid JSON.
                     except json.JSONDecodeError:
                         continue
                     key = rec.get("trade_key")
