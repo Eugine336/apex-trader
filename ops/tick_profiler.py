@@ -156,6 +156,7 @@ class TickProfiler:
                         ],
                     })
                 self._current_tick = {}
+# SAFE-FALLBACK: profiler instrumentation is non-authoritative; profiling faults cannot interrupt a market tick.
         except Exception:  # noqa: BLE001
             pass
 
@@ -278,6 +279,7 @@ class TickProfiler:
                 self._current_tick = {}
                 self._tick_count = 0
                 self._slow_tick_count = 0
+# SAFE-FALLBACK: profiler reporting is non-authoritative; reporting faults cannot affect trading state.
         except Exception:  # noqa: BLE001
             pass
 
