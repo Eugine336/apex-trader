@@ -114,7 +114,7 @@ FULL 2 · MEASURED 36 · UNMEASURED 0
 | Outcome attribution and calibration | `learning_calibration` | MEASURED |
 | Range breakout / expansion | `breakout` | MEASURED |
 | Range trading / market auction | `range_auction` | MEASURED |
-| Regime transition / change-point | `market_regime_transition` | MEASURED |
+| Regime transition / change-point | `market_regime_transition` | FULL |
 | Relative value / pair relationships | `relative_value` | MEASURED |
 | Retracement / measured-move geometry | `fibonacci_geometry` | MEASURED |
 | Risk of ruin / capital survival | `risk_of_ruin` | MEASURED |
