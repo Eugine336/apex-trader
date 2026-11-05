@@ -25,9 +25,18 @@ class RegimeSwitchingConcepts:
         for timeframe, raw in bars_by_tf.items():
             if timeframe not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[timeframe] < 300:
                 continue
-            bars = [bar for bar in raw or [] if all(
-                finite(bar.get(key)) is not None for key in ("open", "high", "low", "close")
-            )]
+            bars = []
+            for bar in raw or []:
+                values = {key: finite(bar.get(key)) for key in ("open", "high", "low", "close")}
+                if any(value is None for value in values.values()):
+                    continue
+                if values["high"] < max(values["open"], values["close"]):
+                    continue
+                if values["low"] > min(values["open"], values["close"]):
+                    continue
+                if values["high"] < values["low"]:
+                    continue
+                bars.append({**bar, **values})
             if len(bars) < 62:
                 continue
             closes = [float(bar["close"]) for bar in bars]
