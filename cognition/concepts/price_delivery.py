@@ -53,7 +53,7 @@ class PriceDeliveryConcepts:
     """Read fair-value gaps, order blocks, balanced ranges and dealing-range location."""
     key = "price_delivery"
     family = "institutional_price_action"
-    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range")
+    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range", "break_retest")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -69,6 +69,7 @@ class PriceDeliveryConcepts:
             readings.extend(self._order_block(tf, bars, close, close_tf))
             readings.extend(self._bpr(tf, bars, close, close_tf))
             readings.append(self._dealing_range(tf, bars, close, close_tf))
+            readings.extend(self._break_retest(tf, bars, close, close_tf))
         return readings
 
     def _fvg(self, tf, bars, close, close_tf):
@@ -200,3 +201,50 @@ class PriceDeliveryConcepts:
             bars, close, close_tf,
             ("A rolling reference range is not a uniquely defined institutional dealing range.",)
         )
+
+    def _break_retest(self, tf, bars, close, close_tf):
+        # Find the most recent close beyond a prior 20-bar extreme. Only bars
+        # after that break can establish retest, hold or failure.
+        start = max(20, len(bars) - 12)
+        for i in range(len(bars) - 1, start - 1, -1):
+            prior = bars[i - 20:i]
+            if len(prior) != 20:
+                continue
+            ceiling = max(x["high"] for x in prior)
+            floor = min(x["low"] for x in prior)
+            current = bars[i]
+            if current["close"] > ceiling and bars[i-1]["close"] <= ceiling:
+                side, level = LONG, ceiling
+            elif current["close"] < floor and bars[i-1]["close"] >= floor:
+                side, level = SHORT, floor
+            else:
+                continue
+            later = bars[i+1:]
+            if side == LONG:
+                retested = any(x["low"] <= level for x in later)
+                invalid = any(x["close"] <= level for x in later)
+                accepted = bars[-1]["close"] > level
+            else:
+                retested = any(x["high"] >= level for x in later)
+                invalid = any(x["close"] >= level for x in later)
+                accepted = bars[-1]["close"] < level
+            active = retested and accepted and not invalid
+            return [_record(
+                "break_retest", tf, EvidenceDomain.STRUCTURE,
+                f"{side} close broke the prior 20-bar boundary {level:.10g}; "
+                f"post-break retest={retested}; latest acceptance={accepted}; invalidated={invalid}.",
+                [_imp(side, f"{side} breakout/retest hypothesis at {level:.10g}", active,
+                      "A completed close back through the broken boundary invalidates the retest",
+                      stop=level, requires=("post-break retest", "completed hold beyond boundary",
+                                            "independent participation evidence"),
+                      conflicts=("breakout failed back into the prior range",) if invalid else ()),
+                 _imp(FLAT, "Breakout without a completed retest and hold remains provisional",
+                      not active, "Not applicable")],
+                {"direction": side, "boundary": level, "break_index": i,
+                 "retest": retested, "accepted": accepted, "invalidated": invalid,
+                 "lookback_bars": 20, "definition": "prior_20_bar_close_break_then_post_break_retest_v1"},
+                bars, close, close_tf,
+                ("A 20-bar boundary is an explicit mechanical reference, not necessarily a major market swing.",)
+            )]
+        return []
+
