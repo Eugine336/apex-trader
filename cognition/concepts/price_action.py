@@ -48,7 +48,7 @@ def _imp(direction, statement, active, invalidation, *, stop=None, requires=(), 
 class PriceActionConcepts:
     key = "price_action"
     family = "price_action"
-    covers_methods = ("candlestick_patterns", "support_resistance", "failed_auction")
+    covers_methods = ("candlestick_patterns", "candle_microstructure", "support_resistance", "failed_auction")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -60,10 +60,46 @@ class PriceActionConcepts:
             bars = _bars(raw)
             if len(bars) < 12:
                 continue
+            out.extend(self._microstructure(tf, bars, ref, ref_tf))
             out.extend(self._candles(tf, bars, ref, ref_tf))
             out.extend(self._levels(tf, bars, ref, ref_tf))
             out.extend(self._failed_auction(tf, bars, ref, ref_tf))
         return out
+
+
+    def _microstructure(self, tf, bars, ref, ref_tf):
+        current = bars[-1]
+        span = current["high"] - current["low"]
+        if span <= 0:
+            return []
+        body = abs(current["close"] - current["open"])
+        upper = current["high"] - max(current["open"], current["close"])
+        lower = min(current["open"], current["close"]) - current["low"]
+        close_location = (current["close"] - current["low"]) / span
+        history_ranges = [x["high"]-x["low"] for x in bars[-21:-1] if x["high"] > x["low"]]
+        median_range = sorted(history_ranges)[len(history_ranges)//2] if history_ranges else None
+        prior_closes = [x["close"] for x in bars[-6:-1]]
+        up = sum(1 for a,b in zip(prior_closes, prior_closes[1:]) if b>a)
+        down = sum(1 for a,b in zip(prior_closes, prior_closes[1:]) if b<a)
+        facts = {
+            "body_ratio": body/span, "upper_wick_ratio": upper/span,
+            "lower_wick_ratio": lower/span, "close_location": close_location,
+            "range_price": span, "median_prior_range": median_range,
+            "range_vs_prior_median": span/median_range if median_range else None,
+            "prior_five_close_up_steps": up, "prior_five_close_down_steps": down,
+            "definition": "completed_candle_anatomy_and_five_close_sequence_v1",
+        }
+        return [_read(
+            "candle_microstructure", tf, EvidenceDomain.STRUCTURE, bars, ref, ref_tf,
+            f"Completed candle body/range={body/span:.3f}; upper wick/range={upper/span:.3f}; "
+            f"lower wick/range={lower/span:.3f}; close-location={close_location:.3f}; "
+            f"range/prior-median={facts['range_vs_prior_median']}; "
+            f"prior close sequence up-steps={up}, down-steps={down}.",
+            [_imp(FLAT, "Candle anatomy and short close sequence describe auction behaviour but do not determine direction",
+                  True, "A new completed candle replaces the current anatomy",
+                  requires=("compare with confirmed structure, volatility and participation",))],
+            facts, ("Candle geometry is not bid/ask delta, executed volume-at-price or direct order flow.",)
+        )]
 
     def _candles(self, tf, bars, ref, ref_tf):
         current, previous = bars[-1], bars[-2]
