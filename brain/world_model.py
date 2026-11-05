@@ -204,6 +204,7 @@ class WorldModel:
         try:
             for fvg in self.all_fvgs():
                 _consider(getattr(fvg, "midpoint", None))
+# SAFE-FALLBACK: malformed FVG source contributes no target; other independent geometry sources still run.
         except Exception:  # never let a malformed object break entry geometry
             pass
         # Order blocks — the near edge price reaches first becomes the target.
@@ -211,6 +212,7 @@ class WorldModel:
             for ob in self.all_order_blocks():
                 edge = getattr(ob, "bottom", None) if is_long else getattr(ob, "top", None)
                 _consider(edge)
+# SAFE-FALLBACK: malformed order-block source contributes no target; other independent geometry sources still run.
         except Exception:
             pass
         # Liquidity pools — price hunts buy-side liquidity above / sell-side below.
@@ -223,6 +225,7 @@ class WorldModel:
                 )
                 for zone in (pools or []):
                     _consider(getattr(zone, "price", None))
+# SAFE-FALLBACK: malformed liquidity source contributes no target; other independent geometry sources still run.
         except Exception:
             pass
 
