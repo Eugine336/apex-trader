@@ -154,6 +154,7 @@ class EvidenceAnalysis:
             "knowledge_coverage": dict(self.knowledge_coverage),
             "market_context": dict(self.market_context),
             "evidence_index": [dict(item) for item in self.evidence_index],
+            "concept_readings": [dict(item) for item in self.concept_readings],
             "pattern_evidence_ids": {
                 str(key): list(value) for key, value in self.pattern_evidence_ids.items()
             },
@@ -1815,7 +1816,8 @@ class BrainReasoner:
                         own = own_readings[0]
                         own_concept = str(own.get("concept", "") or "")
                         own_timeframe = str(own.get("timeframe", "") or "").upper()
-                        own_epoch = _num({"value": own.get("source_bar_epoch")}, "value")
+                        own_epoch = _num(own.get("source_bar_epoch"))
+                        own_epoch_verified = own.get("source_timestamp_verified") is True
                         side = str(h.direction_implication or "").upper()
                         own_implications = [
                             item for item in own.get("implications", [])
@@ -1836,13 +1838,14 @@ class BrainReasoner:
                             notes.append("concept-specific confirmations or weakening conditions remain unresolved")
                         opposite = self._opposite(side)
                         opposing = []
-                        if own_epoch is not None and own_timeframe:
+                        if own_epoch is not None and own_epoch_verified and own_timeframe:
                             for reading in analysis.concept_readings:
                                 if (
                                     not reading.get("applicable")
                                     or str(reading.get("concept", "") or "") == own_concept
                                     or str(reading.get("timeframe", "") or "").upper() != own_timeframe
-                                    or _num({"value": reading.get("source_bar_epoch")}, "value") != own_epoch
+                                    or reading.get("source_timestamp_verified") is not True
+                                    or _num(reading.get("source_bar_epoch")) != own_epoch
                                 ):
                                     continue
                                 if any(

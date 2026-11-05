@@ -12,6 +12,8 @@ from cognition.concepts.base import (
 from cognition.concepts.crt import CandleRangeTheory
 from cognition.concepts.liquidity import LiquidityPools
 from cognition.concepts.market_structure import MarketStructure
+from cognition.concepts.price_delivery import PriceDeliveryConcepts
+from cognition.concepts.price_action import PriceActionConcepts
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -20,6 +22,8 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     CandleRangeTheory(),
     MarketStructure(),
     LiquidityPools(),
+    PriceDeliveryConcepts(),
+    PriceActionConcepts(),
 )
 
 
