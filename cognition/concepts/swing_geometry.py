@@ -79,14 +79,18 @@ class SwingGeometryConcepts:
 
     def _fibonacci_ote(self, tf, bars, close, close_tf):
         pivots = self._pivots(bars)
-        pair = None
-        for left, right in zip(reversed(pivots[:-1]), reversed(pivots[1:])):
-            if left[0] != right[0]:
-                pair = (left, right)
-                break
-        if pair is None:
+        # Anchor the latest confirmed pivot to the nearest prior pivot of
+        # the opposite type. Same-type intermediate pivots must not truncate
+        # the impulse before its actual terminal extreme.
+        if len(pivots) < 2:
             return []
-        left, right = pair
+        right = pivots[-1]
+        left = next(
+            (pivot for pivot in reversed(pivots[:-1]) if pivot[0] != right[0]),
+            None,
+        )
+        if left is None:
+            return []
         if left[0] == "low":
             start, end, side = left[2], right[2], LONG
         else:
