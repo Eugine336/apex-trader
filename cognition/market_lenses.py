@@ -933,8 +933,32 @@ def analyze_market_frames(
         output.extend(run_concepts(symbol, bars_by_timeframe))
     except Exception as exc:  # noqa: BLE001 — concept faults never break observation
         import logging as _logging
-        _logging.getLogger("apex.cognition.market_lenses").warning(
-            "[market-lenses] concept readings failed for %s: %s: %s", symbol, type(exc).__name__, exc)
+        _logging.getLogger("apex.cognition.market_lenses").exception(
+            "[market-lenses] concept pipeline failed for %s (%s)", symbol, type(exc).__name__)
+        # This boundary catches failures before/around the registry itself
+        # (for example import or registry initialization faults). Keep that
+        # outage visible to the Brain as an unknown, never as market evidence.
+        output.append(Evidence(
+            source_module="concept_runtime.pipeline",
+            domain=EvidenceDomain.OTHER,
+            symbol=str(symbol or ""),
+            observation="The concept-analysis pipeline failed before it could complete its registered readers.",
+            confidence=0.0,
+            uncertainty=1.0,
+            polarity=0.0,
+            measurements={
+                "source_kind": "concept_runtime_diagnostic",
+                "concept_module": "pipeline",
+                "status": "pipeline_failed",
+                "exception_type": type(exc).__name__,
+                "reading_unavailable": True,
+                "non_market_evidence": True,
+            },
+            relevance_horizon_seconds=300.0,
+            data_basis="runtime_health_diagnostic",
+            provisional=True,
+            independence_group="concept_runtime_health:pipeline",
+        ))
 
     return output
 

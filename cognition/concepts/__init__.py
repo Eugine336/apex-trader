@@ -43,8 +43,8 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
 def run_concepts(symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[Any]:
     """Run every concept module over completed bars and return Evidence.
 
-    A module that faults is logged at WARNING and skipped; it never breaks the
-    cycle, and it never fabricates a reading.
+    A module that faults is logged and represented by a non-directional runtime
+    diagnostic. Subsequent modules still run; no market reading is fabricated.
     """
     evidence: list[Any] = []
     for module in CONCEPT_MODULES:

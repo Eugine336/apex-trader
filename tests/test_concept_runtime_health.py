@@ -96,3 +96,40 @@ def test_brain_surfaces_reader_failure_as_unknown_not_negative_market_evidence()
         "evidence_id": diagnostic.evidence_id,
     }]
     assert "other" not in analysis.informative_domains
+
+
+def test_brain_distinguishes_pipeline_initialization_failure_from_reader_failure():
+    from cognition.brain_reasoning import BrainReasoner
+    from cognition.contracts import Evidence, EvidenceDomain, MarketState
+
+    state = MarketState(symbol="EURUSD")
+    state.add(Evidence(
+        source_module="concept_runtime.pipeline",
+        domain=EvidenceDomain.OTHER,
+        symbol="EURUSD",
+        observation="The concept-analysis pipeline failed before readers completed.",
+        confidence=0.0,
+        uncertainty=1.0,
+        polarity=0.0,
+        measurements={
+            "source_kind": "concept_runtime_diagnostic",
+            "concept_module": "pipeline",
+            "status": "pipeline_failed",
+            "exception_type": "ImportError",
+            "reading_unavailable": True,
+            "non_market_evidence": True,
+        },
+        relevance_horizon_seconds=300.0,
+        data_basis="runtime_health_diagnostic",
+        provisional=True,
+        independence_group="concept_runtime_health:pipeline",
+    ))
+
+    analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
+
+    assert "Concept analysis unavailable: pipeline initialization failed (ImportError)" in analysis.missing_information
+    assert any(
+        "pipeline initialization failed" in item and "registered readers may not have run" in item
+        for item in analysis.observations
+    )
+    assert not any("registered concept reader(s) failed" in item for item in analysis.observations)
