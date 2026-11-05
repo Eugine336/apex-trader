@@ -36,6 +36,7 @@ class EventBus:
         with self._lock:
             try:
                 self._subscribers[event_type].remove(callback)
+# SAFE-FALLBACK: removing an absent subscriber is an idempotent no-op.
             except ValueError:
                 pass
 
