@@ -75,6 +75,7 @@ class PlannerMixin:
                 continue
             try:
                 rec = json.loads(line)
+# SAFE-FALLBACK: malformed historical plan JSON is skipped; valid plan records continue to be loaded.
             except json.JSONDecodeError:
                 continue
             pid = rec.get("plan_id")
@@ -125,6 +126,7 @@ class PlannerMixin:
                     try:
                         if float(oc.get("pnl_r", 0.0) or 0.0) > 0:
                             b["wins"] += 1
+# SAFE-FALLBACK: malformed optional outcome PnL is excluded from the dashboard win count.
                     except (TypeError, ValueError):
                         pass
             for b in counts.values():
