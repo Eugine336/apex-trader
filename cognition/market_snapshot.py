@@ -94,6 +94,7 @@ def _normalize_bars(bars: Any) -> "list[tuple[float, float, float, float]]":
                 o, h, lo, c = _f(seq[0]), _f(seq[1]), _f(seq[2]), _f(seq[3])
             if o > 0 or h > 0 or c > 0:
                 out.append((o, h, lo, c))
+# SAFE-FALLBACK: malformed OHLC row is excluded rather than repaired into fabricated market data.
         except (TypeError, ValueError, IndexError):
             continue
     return out
