@@ -14,6 +14,7 @@ Run ``python scripts/concept_coverage.py`` to rewrite the register, or with
 from __future__ import annotations
 
 import re
+import difflib
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +96,12 @@ def main(argv: list[str]) -> int:
         current = DOC.read_text(encoding="utf-8") if DOC.exists() else ""
         if current != text:
             print("docs/APEX_CONCEPT_COVERAGE.md is out of date; run scripts/concept_coverage.py")
+            print("".join(difflib.unified_diff(
+                current.splitlines(keepends=True),
+                text.splitlines(keepends=True),
+                fromfile="docs/APEX_CONCEPT_COVERAGE.md",
+                tofile="generated/APEX_CONCEPT_COVERAGE.md",
+            )))
             return 1
         return 0
     DOC.write_text(text, encoding="utf-8")
