@@ -69,13 +69,14 @@ def _wilder(values, period):
     return out
 
 
-def _read(concept,tf,domain,bars,ref,ref_tf,observation,implications,facts,unknowns=()):
+def _read(concept,tf,domain,bars,ref,ref_tf,observation,implications,facts,unknowns=(),applicable=True):
     last=bars[-1]
     epoch=finite(last.get("timestamp_epoch")) if last.get("source_timestamp_verified") is True else None
     return ConceptReading(
         concept=concept,timeframe=tf,domain=domain,applicable=True,
-        applicability_reason="The required completed-bar history and formula inputs are present",
-        observation=observation,implications=tuple(implications),facts=facts,
+        applicability_reason=("The required completed-bar history and formula inputs are present"
+                              if applicable else "Insufficient confirmed pivots to evaluate this concept"),
+        applicable=applicable,observation=observation,implications=tuple(implications),facts=facts,
         source_bar_epoch=epoch,reference_close=ref,reference_timeframe=ref_tf,
         unknowns=tuple(unknowns),
     )
@@ -91,12 +92,56 @@ def _imp(direction,statement,active,requires=(),conflicts=()):
     )
 
 
+
+def _rsi_series(values, period=14):
+    out=[None]*len(values)
+    if len(values)<period+1:
+        return out
+    changes=[b-a for a,b in zip(values,values[1:])]
+    gains=[max(x,0.0) for x in changes]
+    losses=[max(-x,0.0) for x in changes]
+    avg_gain=mean(gains[:period])
+    avg_loss=mean(losses[:period])
+    def value(gain,loss):
+        if gain==0 and loss==0: return 50.0
+        if loss==0: return 100.0
+        return 100.0-100.0/(1.0+gain/loss)
+    out[period]=value(avg_gain,avg_loss)
+    for i in range(period,len(changes)):
+        avg_gain=(avg_gain*(period-1)+gains[i])/period
+        avg_loss=(avg_loss*(period-1)+losses[i])/period
+        out[i+1]=value(avg_gain,avg_loss)
+    return out
+
+
+def _macd_hist_series(values):
+    fast,slow=_ema(values,12),_ema(values,26)
+    indexes=[i for i,(a,b) in enumerate(zip(fast,slow)) if a is not None and b is not None]
+    macd=[fast[i]-slow[i] for i in indexes]
+    signal=_ema(macd,9)
+    out=[None]*len(values)
+    for k,index in enumerate(indexes):
+        if k<len(signal) and signal[k] is not None:
+            out[index]=macd[k]-signal[k]
+    return out
+
+
+def _confirmed_pivots(bars):
+    out=[]
+    for i in range(1,len(bars)-1):
+        if bars[i]["high"]>bars[i-1]["high"] and bars[i]["high"]>=bars[i+1]["high"]:
+            out.append(("high",i,bars[i]["high"]))
+        if bars[i]["low"]<bars[i-1]["low"] and bars[i]["low"]<=bars[i+1]["low"]:
+            out.append(("low",i,bars[i]["low"]))
+    return out
+
+
 class IndicatorContextConcepts:
     key="indicator_context"
     family="technical_indicator_context"
     covers_methods=(
         "moving_averages","rsi","macd","stochastic","cci_williams","roc_momentum",
-        "adx_directional","aroon_trix","atr_true_range","bollinger",
+        "adx_directional","aroon_trix","divergence","atr_true_range","bollinger",
         "keltner_donchian","realized_volatility","zscore_mean",
     )
     covers_lenses=()
@@ -112,6 +157,7 @@ class IndicatorContextConcepts:
             out.extend(self._momentum(tf,bars,ref,ref_tf))
             out.extend(self._volatility(tf,bars,ref,ref_tf))
             out.extend(self._statistics(tf,bars,ref,ref_tf))
+            out.extend(self._divergence(tf,bars,ref,ref_tf))
         return out
 
     def _trend(self,tf,bars,ref,ref_tf):
@@ -328,6 +374,70 @@ class IndicatorContextConcepts:
             {"realized_log_return_std20":realized,"parkinson_ohlc20":parkinson,
              "definition":"20_bar_log_return_std_and_parkinson_ohlc_v1"},
             ("Estimators are sampling-frequency dependent and are not forward volatility forecasts.",)
+        )]
+
+
+    def _divergence(self,tf,bars,ref,ref_tf):
+        pivots=_confirmed_pivots(bars)
+        lows=[p for p in pivots if p[0]=="low"]
+        highs=[p for p in pivots if p[0]=="high"]
+        closes=[b["close"] for b in bars]
+        rsi_values=_rsi_series(closes,14)
+        macd_values=_macd_hist_series(closes)
+        bull_rsi=bull_macd=bear_rsi=bear_macd=False
+        low_pair=high_pair=None
+        if len(lows)>=2:
+            low_pair=lows[-2:]
+            a,b=low_pair
+            if rsi_values[a[1]] is not None and rsi_values[b[1]] is not None:
+                bull_rsi=b[2]<a[2] and rsi_values[b[1]]>rsi_values[a[1]]
+            if macd_values[a[1]] is not None and macd_values[b[1]] is not None:
+                bull_macd=b[2]<a[2] and macd_values[b[1]]>macd_values[a[1]]
+        if len(highs)>=2:
+            high_pair=highs[-2:]
+            a,b=high_pair
+            if rsi_values[a[1]] is not None and rsi_values[b[1]] is not None:
+                bear_rsi=b[2]>a[2] and rsi_values[b[1]]<rsi_values[a[1]]
+            if macd_values[a[1]] is not None and macd_values[b[1]] is not None:
+                bear_macd=b[2]>a[2] and macd_values[b[1]]<macd_values[a[1]]
+        applicable=low_pair is not None or high_pair is not None
+        bull=bull_rsi or bull_macd
+        bear=bear_rsi or bear_macd
+        implications=[]
+        if bull:
+            implications.append(_imp(
+                LONG,"Bullish price/oscillator divergence: lower confirmed price low with higher oscillator low",
+                bull_rsi and bull_macd,
+                ("completed structure shift and follow-through", "volatility and execution-cost context"),
+                ("RSI and MACD divergence disagree or only one is present",) if not (bull_rsi and bull_macd) else ()
+            ))
+        if bear:
+            implications.append(_imp(
+                SHORT,"Bearish price/oscillator divergence: higher confirmed price high with lower oscillator high",
+                bear_rsi and bear_macd,
+                ("completed structure shift and follow-through", "volatility and execution-cost context"),
+                ("RSI and MACD divergence disagree or only one is present",) if not (bear_rsi and bear_macd) else ()
+            ))
+        implications.append(_imp(
+            FLAT,"Divergence is an early warning hypothesis, not a reversal trigger",
+            True,("confirm with market structure and participation",)
+        ))
+        facts={
+            "bullish_rsi_divergence":bull_rsi,"bullish_macd_divergence":bull_macd,
+            "bearish_rsi_divergence":bear_rsi,"bearish_macd_divergence":bear_macd,
+            "last_two_price_lows":[{"index":p[1],"price":p[2],"rsi":rsi_values[p[1]],
+                                    "macd_histogram":macd_values[p[1]]} for p in (low_pair or [])],
+            "last_two_price_highs":[{"index":p[1],"price":p[2],"rsi":rsi_values[p[1]],
+                                     "macd_histogram":macd_values[p[1]]} for p in (high_pair or [])],
+            "definition":"confirmed_three_bar_price_pivots_vs_wilder_rsi14_and_macd_histogram_v1",
+        }
+        return [_read(
+            "divergence",tf,EvidenceDomain.MOMENTUM,bars,ref,ref_tf,
+            f"Confirmed-pivot divergence: bullish RSI={bull_rsi}; bullish MACD={bull_macd}; "
+            f"bearish RSI={bear_rsi}; bearish MACD={bear_macd}.",
+            implications,facts,
+            ("Price and oscillators are mathematically related; divergence can persist and is not independent confirmation.",),
+            applicable=applicable
         )]
 
     def _statistics(self,tf,bars,ref,ref_tf):
