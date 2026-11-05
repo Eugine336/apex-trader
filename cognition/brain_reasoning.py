@@ -466,6 +466,9 @@ class BrainReasoner:
                     "evidence_id": str(getattr(e, "evidence_id", "") or ""),
                     "concept": str(m.get("concept", "") or ""),
                     "timeframe": str(m.get("timeframe", "") or ""),
+                    "source_bar_epoch": m.get("source_bar_epoch"),
+                    "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
+                    "independence_group": str(getattr(e, "independence_group", "") or ""),
                     "applicable": m.get("applicable") is True,
                     "implications": list(m.get("implications") or []),
                     "facts": dict(m.get("facts") or {}),
@@ -1793,6 +1796,68 @@ class BrainReasoner:
                 if active_contra:
                     factor *= 0.8
                     notes.append(f"contradicted by detected pattern(s): {', '.join(sorted(set(active_contra)))}")
+
+                # Concept interpretations are hypotheses, not privileged facts.
+                # Re-test the originating reading's activation state and compare
+                # same-bar readings from other concepts for an explicit opposing
+                # interpretation. These readings may share OHLC provenance, so
+                # they are treated as competing explanations, never independent
+                # votes or additive confirmation.
+                if str(h.hypothesis_kind or "").startswith("concept:"):
+                    own_readings = [
+                        reading for reading in analysis.concept_readings
+                        if str(reading.get("evidence_id", "") or "") in h.supporting_evidence_ids
+                    ]
+                    if not own_readings:
+                        factor *= 0.75
+                        notes.append("originating concept reading is absent from the current evidence analysis")
+                    else:
+                        own = own_readings[0]
+                        own_concept = str(own.get("concept", "") or "")
+                        own_timeframe = str(own.get("timeframe", "") or "").upper()
+                        own_epoch = _num({"value": own.get("source_bar_epoch")}, "value")
+                        side = str(h.direction_implication or "").upper()
+                        own_implications = [
+                            item for item in own.get("implications", [])
+                            if isinstance(item, dict) and str(item.get("direction", "") or "").upper() == side
+                        ]
+                        if not own.get("applicable") or not any(
+                            item.get("activated") is True for item in own_implications
+                        ):
+                            factor *= 0.65
+                            notes.append("originating concept trigger is not currently satisfied; interpretation remains observational")
+                        outstanding = [
+                            str(value) for item in own_implications
+                            for value in (list(item.get("requires", []) or []) + list(item.get("conflicts_with", []) or []))
+                            if str(value).strip()
+                        ]
+                        if outstanding:
+                            factor *= max(0.70, 1.0 - 0.05 * min(6, len(outstanding)))
+                            notes.append("concept-specific confirmations or weakening conditions remain unresolved")
+                        opposite = self._opposite(side)
+                        opposing = []
+                        if own_epoch is not None and own_timeframe:
+                            for reading in analysis.concept_readings:
+                                if (
+                                    not reading.get("applicable")
+                                    or str(reading.get("concept", "") or "") == own_concept
+                                    or str(reading.get("timeframe", "") or "").upper() != own_timeframe
+                                    or _num({"value": reading.get("source_bar_epoch")}, "value") != own_epoch
+                                ):
+                                    continue
+                                if any(
+                                    isinstance(item, dict)
+                                    and str(item.get("direction", "") or "").upper() == opposite
+                                    and item.get("activated") is True
+                                    for item in reading.get("implications", [])
+                                ):
+                                    opposing.append(str(reading.get("concept", "") or "another concept"))
+                        if opposing:
+                            factor *= 0.70
+                            notes.append(
+                                "same-timeframe, same-source-bar concept interpretation opposes this thesis: "
+                                + ", ".join(sorted(set(opposing)))
+                            )
                 # 2) Missing information critical to a directional hypothesis.
                 if h.is_directional:
                     # Any independently recorded contradiction challenges the
