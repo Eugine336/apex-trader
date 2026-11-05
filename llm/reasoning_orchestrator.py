@@ -310,6 +310,7 @@ class ReasoningEngine:
             return True
         try:
             return bool(fn(symbol))
+# SAFE-FALLBACK: an unreadable degradation signal is treated as degraded, increasing breaker protection rather than admitting an advisor.
         except Exception:  # noqa: BLE001
             return True
 
