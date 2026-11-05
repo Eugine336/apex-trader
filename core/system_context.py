@@ -1385,7 +1385,7 @@ class SystemContext:
                 # System 1 — feed every completed broker timeframe through the
                 # native concept registry. This is deliberately independent of
                 # the optional AI advisor and does not create execution authority.
-                _default_concept_timeframes = ("D1", "H4", "H1", "M15", "M5")
+                _default_concept_timeframes = ("D1", "H4", "H1", "M15", "M5", "M1")
                 _configured_concept_timeframes = getattr(
                     cog_cfg, "concept_timeframes", _default_concept_timeframes,
                 ) if cog_cfg is not None else _default_concept_timeframes
