@@ -535,7 +535,6 @@ def test_origination_flat_decision_never_originates():
 
 # ── Institutional memory (Phase H — Part VII) ─────────────────────────────────
 
-from cognition.contracts import EvidenceDomain
 from cognition.memory import CampaignMemoryStore
 
 
