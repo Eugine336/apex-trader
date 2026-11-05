@@ -157,7 +157,7 @@ class IndicatorContextConcepts:
             pdi,mdi=100*b/a,100*d/a
             dx.append(100*abs(pdi-mdi)/(pdi+mdi) if pdi+mdi>0 else 0.0)
         if dx:
-            adx=mean(dx[-14:]); pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
+            adx_series=_wilder(dx,14); adx=adx_series[-1]/14.0 if adx_series and adx_series[-1] is not None else mean(dx[-14:]); pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             mdi=100*minus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             di_side=LONG if pdi>mdi else SHORT if mdi>pdi else FLAT
             strong=adx>=25.0
@@ -173,8 +173,8 @@ class IndicatorContextConcepts:
             ))
         # Aroon locates recent extrema; TRIX describes triple-smoothed momentum.
         period=25; wh=highs[-period:]; wl=lows[-period:]
-        aroon_up=100.0*wh.index(max(wh))/(period-1)
-        aroon_down=100.0*wl.index(min(wl))/(period-1)
+        aroon_up=100.0*(wh.index(max(wh))+1)/period
+        aroon_down=100.0*(wl.index(min(wl))+1)/period
         ema1=[x for x in _ema(closes,15) if x is not None]
         ema2=[x for x in _ema(ema1,15) if x is not None]
         ema3=_ema(ema2,15)
