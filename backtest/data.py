@@ -69,6 +69,7 @@ def _parse_timestamp(raw) -> datetime:
     # Pure number as string → epoch.
     try:
         return _epoch_to_dt(float(s))
+# SAFE-FALLBACK: non-numeric timestamp falls through to the supported ISO-8601 parser.
     except ValueError:
         pass
     # ISO-8601 (tolerate a trailing 'Z').
