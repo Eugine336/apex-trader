@@ -73,7 +73,7 @@ def _read(concept,tf,domain,bars,ref,ref_tf,observation,implications,facts,unkno
     last=bars[-1]
     epoch=finite(last.get("timestamp_epoch")) if last.get("source_timestamp_verified") is True else None
     return ConceptReading(
-        concept=concept,timeframe=tf,domain=domain,applicable=True,
+        concept=concept,timeframe=tf,domain=domain,
         applicability_reason=("The required completed-bar history and formula inputs are present"
                               if applicable else "Insufficient confirmed pivots to evaluate this concept"),
         applicable=applicable,observation=observation,implications=tuple(implications),facts=facts,
@@ -420,7 +420,7 @@ class IndicatorContextConcepts:
             ))
         implications.append(_imp(
             FLAT,"Divergence is an early warning hypothesis, not a reversal trigger",
-            True,("confirm with market structure and participation",)
+            applicable,("confirm with market structure and participation",)
         ))
         facts={
             "bullish_rsi_divergence":bull_rsi,"bullish_macd_divergence":bull_macd,
