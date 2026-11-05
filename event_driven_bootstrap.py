@@ -7588,6 +7588,7 @@ class EventDrivenSystem:
                         "kind": "re_entry_rearm",
                     },
                 )
+            # safe-fallback: optional re-entry event logging cannot affect the already-gated re-entry path.
             except Exception:
                 pass
         except Exception as exc:
