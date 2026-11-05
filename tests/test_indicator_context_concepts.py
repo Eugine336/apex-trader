@@ -35,3 +35,23 @@ def test_indicator_context_does_not_invent_volume_weighted_average_without_volum
     moving = next(item for item in readings if item.concept == "moving_averages")
     assert moving.facts["vwma20"] is None
     assert moving.facts["volume_available"] is False
+
+
+def test_atr14_uses_wilder_recursive_smoothing_not_simple_rolling_mean():
+    bars = _history()
+    true_ranges = []
+    for i, bar in enumerate(bars):
+        previous_close = bars[i - 1]["close"] if i else bar["close"]
+        true_ranges.append(max(
+            bar["high"] - bar["low"],
+            abs(bar["high"] - previous_close),
+            abs(bar["low"] - previous_close),
+        ))
+    expected_sum = sum(true_ranges[:14])
+    for value in true_ranges[14:]:
+        expected_sum = expected_sum - expected_sum / 14.0 + value
+    expected_atr = expected_sum / 14.0
+    readings = IndicatorContextConcepts().read("TEST", {"H1": bars})
+    atr = next(item for item in readings if item.concept == "atr_true_range")
+    assert abs(atr.facts["atr14"] - expected_atr) < 1e-10
+    assert atr.facts["definition"] == "wilder_atr14_and_history_percentile_v1"
