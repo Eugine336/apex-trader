@@ -1402,7 +1402,7 @@ class SystemContext:
                         int(getattr(cog_cfg, "concept_history_bars", 120)
                             if cog_cfg is not None else 120),
                     )
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
                     _concept_history_bars = 120
 
                 def _concept_market_source(symbol: str) -> list:
