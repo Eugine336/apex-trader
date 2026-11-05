@@ -84,6 +84,7 @@ class SizingFactors:
         for _name, value in self.as_ordered():
             try:
                 p *= float(value)
+# SAFE-FALLBACK: malformed optional multiplier is excluded from the product rather than coerced to a synthetic value.
             except (TypeError, ValueError):
                 continue
         return p
@@ -132,6 +133,7 @@ def normalize_book(book: Optional[Sequence[Any]]) -> list[OpenPositionView]:
                     risk_pct=risk,
                 )
             )
+# SAFE-FALLBACK: malformed portfolio leg is excluded; it is never assigned fabricated risk or sizing.
         except Exception:  # noqa: BLE001 — never let book parsing break sizing
             continue
     return out
