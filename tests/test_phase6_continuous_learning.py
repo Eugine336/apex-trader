@@ -19,7 +19,6 @@ import time
 
 import pytest
 
-import brain.decision_core as dc
 from adaptive.adaptive_scheduler import AdaptiveSchedulerLoop
 from adaptive.adaptive_weight_provider import AdaptiveWeightProvider
 from adaptive.recommendation_applier import RecommendationApplier
@@ -156,33 +155,8 @@ def test_get_weights_fallback_on_provider_fault():
     assert out == p._defaults  # transparent fallback to static defaults
 
 
-# ── decision_core hook ───────────────────────────────────────────────────
-
-
-def test_decision_core_uses_registered_provider():
-    class _StubProvider:
-        def get_weights(self):
-            return {"H1": 1.0}
-
-    try:
-        dc.set_evidence_weight_provider(_StubProvider())
-        assert dc._active_weights() == {"H1": 1.0}
-    finally:
-        dc.set_evidence_weight_provider(None)
-    # Cleared → static defaults.
-    assert dc._active_weights() is dc._EVIDENCE_WEIGHTS
-
-
-def test_decision_core_falls_back_when_provider_raises():
-    class _Boom:
-        def get_weights(self):
-            raise RuntimeError("nope")
-
-    try:
-        dc.set_evidence_weight_provider(_Boom())
-        assert dc._active_weights() is dc._EVIDENCE_WEIGHTS
-    finally:
-        dc.set_evidence_weight_provider(None)
+# Per-timeframe directional-weight hook removed: observations remain uncollapsed
+# until the Cognitive Brain forms and challenges competing hypotheses.
 
 
 # ── RecommendationApplier ────────────────────────────────────────────────
