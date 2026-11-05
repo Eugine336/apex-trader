@@ -113,23 +113,83 @@ class IndicatorContextConcepts:
         return out
 
     def _trend(self,tf,bars,ref,ref_tf):
-        closes=[b["close"] for b in bars]
+        closes=[b["close"] for b in bars]; highs=[b["high"] for b in bars]; lows=[b["low"] for b in bars]
         ema20=_ema(closes,20); ema50=_ema(closes,50)
         if not ema20 or not ema50: return []
         e20,e50=ema20[-1],ema50[-1]
-        wma20=sum(v*w for w,v in enumerate(closes[-20:],1))/210.0
+        def wma(values):
+            n=len(values)
+            return sum(v*w for w,v in enumerate(values,1))/(n*(n+1)/2.0) if n else None
+        wma20=wma(closes[-20:]); sma20=mean(closes[-20:])
+        hma_diffs=[]
+        for end in range(len(closes)-3,len(closes)):
+            series=closes[:end+1]
+            hma_diffs.append(2*wma(series[-10:])-wma(series[-20:]))
+        hma20=wma(hma_diffs[-4:])
+        volumes=[finite(b.get("volume")) for b in bars[-20:]]
+        vwma20=None
+        if all(v is not None and v>=0 for v in volumes) and sum(volumes)>0:
+            vwma20=sum(p*v for p,v in zip(closes[-20:],volumes))/sum(volumes)
         side=LONG if e20>e50 and closes[-1]>e20 else SHORT if e20<e50 and closes[-1]<e20 else FLAT
         aligned=side in (LONG,SHORT)
-        return [_read(
+        out=[_read(
             "moving_averages",tf,EvidenceDomain.MOMENTUM,bars,ref,ref_tf,
-            f"EMA20={e20:.10g}; EMA50={e50:.10g}; WMA20={wma20:.10g}; close={closes[-1]:.10g}; alignment={side}.",
+            f"SMA20={sma20:.10g}; EMA20={e20:.10g}; EMA50={e50:.10g}; WMA20={wma20:.10g}; HMA20={hma20:.10g}; VWMA20={vwma20}; alignment={side}.",
             [_imp(side,f"{side} moving-average alignment" if aligned else "Moving averages are mixed or unaligned",
                   aligned,("confirmed market structure","trend persistence and volatility context"))],
-            {"ema20":e20,"ema50":e50,"wma20":wma20,"close":closes[-1],
-             "ema20_minus_ema50":e20-e50,"alignment":side,
-             "definition":"ema20_ema50_wma20_sma_seed_v1"},
-            ("Moving averages lag and can whipsaw in ranges; alignment is not an independent market vote.",)
+            {"sma20":sma20,"ema20":e20,"ema50":e50,"wma20":wma20,"hma20":hma20,
+             "vwma20":vwma20,"volume_available":vwma20 is not None,
+             "volume_source":bars[-1].get("volume_source","unknown") if vwma20 is not None else None,
+             "close":closes[-1],"ema20_minus_ema50":e20-e50,"alignment":side,
+             "definition":"sma20_ema20_ema50_wma20_hma20_optional_vwma20_v1"},
+            ("Moving averages lag and can whipsaw in ranges; VWMA is omitted without a declared volume series.",)
         )]
+        # Wilder directional movement and ADX; strength is separated from direction.
+        tr=_true_ranges(bars); plus_dm=[0.0]; minus_dm=[0.0]
+        for prev,current in zip(bars,bars[1:]):
+            up=current["high"]-prev["high"]; down=prev["low"]-current["low"]
+            plus_dm.append(up if up>down and up>0 else 0.0)
+            minus_dm.append(down if down>up and down>0 else 0.0)
+        tr_s,plus_s,minus_s=_wilder(tr,14),_wilder(plus_dm,14),_wilder(minus_dm,14)
+        dx=[]
+        for a,b,d in zip(tr_s,plus_s,minus_s):
+            if a is None or b is None or d is None or a<=0: continue
+            pdi,mdi=100*b/a,100*d/a
+            dx.append(100*abs(pdi-mdi)/(pdi+mdi) if pdi+mdi>0 else 0.0)
+        if dx:
+            adx=mean(dx[-14:]); pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
+            mdi=100*minus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
+            di_side=LONG if pdi>mdi else SHORT if mdi>pdi else FLAT
+            strong=adx>=25.0
+            out.append(_read(
+                "adx_directional",tf,EvidenceDomain.MOMENTUM,bars,ref,ref_tf,
+                f"ADX14={adx:.2f}; +DI={pdi:.2f}; -DI={mdi:.2f}; strength={'stronger' if strong else 'weak_or_mixed'}; direction={di_side}.",
+                [_imp(di_side,f"{di_side} directional movement with ADX14={adx:.2f}",strong and di_side!=FLAT,
+                      ("price structure and regime context",))],
+                {"adx14":adx,"plus_di14":pdi,"minus_di14":mdi,"direction":di_side,
+                 "strength_state":"stronger" if strong else "weak_or_mixed",
+                 "conventional_strength_reference":25.0,"definition":"wilder_adx14_v1"},
+                ("ADX measures trend strength, not direction; 25 is a conventional reference, not a universal edge threshold.",)
+            ))
+        # Aroon locates recent extrema; TRIX describes triple-smoothed momentum.
+        period=25; wh=highs[-period:]; wl=lows[-period:]
+        aroon_up=100.0*wh.index(max(wh))/(period-1)
+        aroon_down=100.0*wl.index(min(wl))/(period-1)
+        ema1=[x for x in _ema(closes,15) if x is not None]
+        ema2=[x for x in _ema(ema1,15) if x is not None]
+        ema3=_ema(ema2,15)
+        trix=((ema3[-1]/ema3[-2])-1.0)*100.0 if len(ema3)>=2 and ema3[-2] else 0.0
+        aroon_side=LONG if aroon_up>aroon_down and trix>0 else SHORT if aroon_down>aroon_up and trix<0 else FLAT
+        out.append(_read(
+            "aroon_trix",tf,EvidenceDomain.MOMENTUM,bars,ref,ref_tf,
+            f"Aroon up={aroon_up:.2f}; Aroon down={aroon_down:.2f}; TRIX15={trix:.5f}%; combined state={aroon_side}.",
+            [_imp(aroon_side,f"{aroon_side} Aroon/TRIX alignment" if aroon_side!=FLAT else "Aroon and TRIX are mixed",
+                  aroon_side!=FLAT,("confirmed price structure","volatility and transaction-cost context"))],
+            {"aroon_up25":aroon_up,"aroon_down25":aroon_down,"trix15_percent":trix,
+             "directional_state":aroon_side,"definition":"aroon25_and_triple_ema_trix15_v1"},
+            ("Aroon and TRIX are lagging price transforms and are not independent confirmations.",)
+        ))
+        return out
 
     def _momentum(self,tf,bars,ref,ref_tf):
         closes=[b["close"] for b in bars]; highs=[b["high"] for b in bars]; lows=[b["low"] for b in bars]
