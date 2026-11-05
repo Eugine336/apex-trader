@@ -160,12 +160,14 @@ def _ed_store_sizes_mb(cfg: Any) -> dict:
             path = getattr(sub, key, None) if sub is not None else None
             if path and Path(path).exists():
                 sizes[label] = round(Path(path).stat().st_size / (1024.0 * 1024.0), 3)
+# SAFE-FALLBACK: one inaccessible optional store is omitted from the diagnostic size summary.
         except Exception:  # noqa: BLE001
             continue
     try:
         p = Path("data/post_close_tracker.db")
         if p.exists():
             sizes["post_close_tracker"] = round(p.stat().st_size / (1024.0 * 1024.0), 3)
+# SAFE-FALLBACK: store-size telemetry is optional; inaccessible files are omitted from the diagnostic snapshot.
     except Exception:  # noqa: BLE001
         pass
     return sizes
@@ -202,6 +204,7 @@ class HealthMixin:
                 broker["mt5"] = any(bool(f) for f in flags)
                 deriv = getattr(pm, "deriv", None)
                 broker["deriv"] = bool(deriv is not None and getattr(deriv, "is_connected", lambda: False)())
+# SAFE-FALLBACK: connector health is independently reported as disconnected when the aggregate probe fails.
             except Exception:
                 pass
 
@@ -209,6 +212,7 @@ class HealthMixin:
         try:
             positions = pm.get_all_open_positions() if pm else []
             open_positions = len(positions) if positions else 0
+# SAFE-FALLBACK: position count is dashboard telemetry only; execution and risk gates read the broker book directly.
         except Exception:
             pass
 
@@ -222,6 +226,7 @@ class HealthMixin:
                 watchdog_state = ctx.process_watchdog.get_state()
                 if watchdog_state.get("stalled"):
                     warnings.append("tick stall detected")
+# SAFE-FALLBACK: watchdog details are optional telemetry; the broker connection warning remains independent.
             except Exception:
                 pass
 
@@ -231,6 +236,7 @@ class HealthMixin:
                 for w in getattr(hw_report, "warnings", []):
                     if "RL" in w:
                         warnings.append(w)
+# SAFE-FALLBACK: health-watchdog enrichment is optional; its failure cannot authorize or change a trade.
             except Exception:
                 pass
 
@@ -239,6 +245,7 @@ class HealthMixin:
             try:
                 dd = ctx.drawdown_guard.get_status(datetime.now(timezone.utc))
                 drawdown = {"source": "drawdown_guard", "mode": str(getattr(dd, "mode", "NORMAL"))}
+# SAFE-FALLBACK: drawdown decoration is optional telemetry; execution uses the drawdown guard directly.
             except Exception:
                 pass
 
@@ -251,6 +258,7 @@ class HealthMixin:
             from ops.lifecycle import _process_memory_mb
 
             memory_mb = _process_memory_mb()
+# SAFE-FALLBACK: process-memory telemetry is optional and cannot affect health or execution decisions.
         except Exception:
             pass
 
