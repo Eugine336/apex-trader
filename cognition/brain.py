@@ -1514,6 +1514,7 @@ class CognitiveBrain:
                             f"higher-EV {ac} opportunity ({new_ev:.4f}R) dominates weaker "
                             f"existing position(s) {', '.join(sorted(set(weak)))} — "
                             "consider trimming to free capital")
+# SAFE-FALLBACK: optional portfolio-trim rationale is metadata only; failure does not change the Brain's decision.
                     except Exception:  # noqa: BLE001
                         pass
 
@@ -1567,6 +1568,7 @@ class CognitiveBrain:
             output.decision.risk_rationale = rationale
             try:
                 output.decision.questions_answered["portfolio_decision"] = rationale
+# SAFE-FALLBACK: portfolio rationale is supplementary metadata; inability to attach it cannot authorize or alter a campaign.
             except Exception:  # noqa: BLE001
                 pass
             output.campaign = None
@@ -2506,6 +2508,7 @@ class CognitiveBrain:
                     development_return = float(artifact.expected_return_r)
                     holdout_return = float(artifact.holdout_expected_return_r)
                     expected_return_gap = float(artifact.expected_return_gap)
+# SAFE-FALLBACK: malformed calibration artifact metrics are excluded from the candidate comparison.
                 except (TypeError, ValueError, OverflowError):
                     continue
                 if (
@@ -3268,12 +3271,14 @@ class CognitiveBrain:
             if callable(iso):
                 try:
                     return iso()
+# SAFE-FALLBACK: unsupported ISO conversion falls through to the object's next JSON-safe representation.
                 except Exception:
                     pass
             item = getattr(value, "item", None)
             if callable(item):
                 try:
                     return json_safe(item())
+# SAFE-FALLBACK: unsupported scalar conversion falls through to numeric/string JSON-safe handling.
                 except Exception:
                     pass
             try:
