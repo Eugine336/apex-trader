@@ -1396,10 +1396,14 @@ class SystemContext:
                     for item in (_configured_concept_timeframes or _default_concept_timeframes)
                     if str(item or "").strip().upper() in {"M1", "M5", "M15", "H1", "H4", "D1"}
                 )) or _default_concept_timeframes
-                _concept_history_bars = max(
-                    100,
-                    int(getattr(cog_cfg, "concept_history_bars", 120) if cog_cfg is not None else 120),
-                )
+                try:
+                    _concept_history_bars = max(
+                        100,
+                        int(getattr(cog_cfg, "concept_history_bars", 120)
+                            if cog_cfg is not None else 120),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    _concept_history_bars = 120
 
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
