@@ -108,7 +108,7 @@ class StructurePatternConcepts:
                     tags.append("inverse_head_and_shoulders")
                     direction, invalid, neckline = LONG, c[2], (b[2]+d[2])/2
         # Triangles: the last four pivots alternate and their high/low envelopes converge.
-        if len(selected) >= 4:
+        if len(selected) >= 4 and not tags:
             tail = selected[-4:]
             highs = [p[2] for p in tail if p[0] == "H"]
             lows = [p[2] for p in tail if p[0] == "L"]
@@ -148,13 +148,17 @@ class StructurePatternConcepts:
         )]
 
     def _zones(self, tf, bars, ref, ref_tf):
-        ranges = [x["high"] - x["low"] for x in bars[-20:] if x["high"] > x["low"]]
-        if len(ranges) < 10:
-            return []
-        baseline = sorted(ranges)[len(ranges)//2]
-        if baseline <= 0:
-            return []
         for impulse_i in range(len(bars)-1, max(4, len(bars)-12), -1):
+            prior_ranges = [
+                x["high"] - x["low"]
+                for x in bars[max(0, impulse_i-20):impulse_i]
+                if x["high"] > x["low"]
+            ]
+            if len(prior_ranges) < 10:
+                continue
+            baseline = sorted(prior_ranges)[len(prior_ranges)//2]
+            if baseline <= 0:
+                continue
             impulse = bars[impulse_i]
             span = impulse["high"] - impulse["low"]
             if span < 1.5 * baseline:
