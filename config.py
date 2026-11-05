@@ -4447,6 +4447,7 @@ def get_trading_hours(symbol: str) -> str:
     """Return the trading_hours string from the registry: '24/5', '24/7', or 'specific'."""
     try:
         return get_instrument(symbol).trading_hours
+# SAFE-FALLBACK: unknown symbols receive the conservative FX schedule; this metadata does not authorize execution.
     except KeyError:
         return "24/5"
 
