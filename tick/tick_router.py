@@ -95,7 +95,7 @@ class TickRouter:
         with self._lock:
             try:
                 self._callbacks.remove(callback)
-            except ValueError:
+            except ValueError:  # SAFE-FALLBACK: unregister is idempotent when callback is already absent
                 pass
 
     def start(self) -> None:
