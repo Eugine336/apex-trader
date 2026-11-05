@@ -1410,7 +1410,9 @@ class SystemContext:
                     frames = platform_manager.fetch_market_data(
                         symbol,
                         timeframes=list(_concept_timeframes),
-                        count=_concept_history_bars,
+                        # Request one extra broker row because the final
+                        # forming candle is excluded by analyze_market_frames.
+                        count=_concept_history_bars + 1,
                         include_forming=True,
                     )
                     from cognition.market_lenses import analyze_market_frames
