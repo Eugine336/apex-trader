@@ -48,3 +48,51 @@ def test_failed_reader_emits_non_directional_runtime_diagnostic_and_continues(mo
         "non_market_evidence": True,
     }
     assert "internal details" not in diagnostic.observation
+
+
+
+def test_brain_surfaces_reader_failure_as_unknown_not_negative_market_evidence():
+    from cognition.brain_reasoning import BrainReasoner
+    from cognition.contracts import Evidence, EvidenceDomain, MarketState
+
+    state = MarketState(symbol="EURUSD")
+    diagnostic = Evidence(
+        source_module="concept_runtime.broken_reader",
+        domain=EvidenceDomain.OTHER,
+        symbol="EURUSD",
+        observation="A registered concept reader failed; its market interpretation is unavailable.",
+        confidence=0.0,
+        uncertainty=1.0,
+        polarity=0.0,
+        measurements={
+            "source_kind": "concept_runtime_diagnostic",
+            "concept_module": "broken_reader",
+            "status": "reader_failed",
+            "exception_type": "ArithmeticError",
+            "reading_unavailable": True,
+            "non_market_evidence": True,
+        },
+        relevance_horizon_seconds=300.0,
+        data_basis="runtime_health_diagnostic",
+        provisional=True,
+        independence_group="concept_runtime_health:broken_reader",
+    )
+    state.add(diagnostic)
+
+    analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
+
+    assert any(
+        "Concept analysis unavailable: broken_reader reader failed (ArithmeticError)" == item
+        for item in analysis.missing_information
+    )
+    assert any(
+        "registered concept reader(s) failed" in item
+        for item in analysis.observations
+    )
+    assert analysis.market_context["concept_runtime_failures"] == [{
+        "module": "broken_reader",
+        "status": "reader_failed",
+        "exception_type": "ArithmeticError",
+        "evidence_id": diagnostic.evidence_id,
+    }]
+    assert "other" not in analysis.informative_domains
