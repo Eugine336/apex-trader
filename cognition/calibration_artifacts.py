@@ -335,7 +335,7 @@ class CalibrationProducer:
                 candidate_id = str(payload.get("candidate_id", "") or "")
                 try:
                     horizon = int(payload.get("horizon_seconds", 0) or 0)
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: ignore malformed outcome horizon key
                     continue
                 key = (candidate_id, horizon)
                 if candidate_id and horizon > 0:
