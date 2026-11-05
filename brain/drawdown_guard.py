@@ -154,6 +154,7 @@ class DrawdownGuard:
             try:
                 from loguru import logger
                 logger.debug("[drawdown-guard] mode-change callback failed: {}", exc)
+# SAFE-FALLBACK: logging the callback failure is optional; the original drawdown transition remains committed.
             except Exception:
                 pass
 
