@@ -325,9 +325,10 @@ class IndicatorContextConcepts:
         highs=[b["high"] for b in bars]
         lows=[b["low"] for b in bars]
         trs=_true_ranges(bars)
-        atrs=[]
-        for end in range(14,len(trs)+1):
-            atrs.append(mean(trs[end-14:end]))
+        # Wilder ATR: seed with the first 14-TR sum, then apply
+        # Wilder's recursive smoothing. _wilder returns smoothed sums.
+        atr_sums=_wilder(trs,14)
+        atrs=[value/14.0 for value in atr_sums if value is not None]
         atr=atrs[-1]
         atr_rank=percentile_rank(atr,atrs[:-1])
         window=closes[-20:]
@@ -347,7 +348,7 @@ class IndicatorContextConcepts:
             "atr_true_range",tf,EvidenceDomain.VOLATILITY,bars,ref,ref_tf,
             f"ATR14={atr:.10g}; relative percentile={atr_rank}; state={state}.",
             [_imp(FLAT,"ATR measures range magnitude, not direction",True,("instrument price scale and execution costs",))],
-            {"atr14":atr,"atr_percentile":atr_rank,"state":state,"definition":"simple_rolling_atr14_and_history_percentile_v1"},
+            {"atr14":atr,"atr_percentile":atr_rank,"state":state,"definition":"wilder_atr14_and_history_percentile_v1"},
             ("ATR percentile requires sufficient prior ATR observations; it is not a volatility forecast.",)
         ),_read(
             "bollinger",tf,EvidenceDomain.VOLATILITY,bars,ref,ref_tf,
