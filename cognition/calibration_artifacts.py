@@ -335,6 +335,7 @@ class CalibrationProducer:
                 candidate_id = str(payload.get("candidate_id", "") or "")
                 try:
                     horizon = int(payload.get("horizon_seconds", 0) or 0)
+# SAFE-FALLBACK: malformed horizon identity is excluded; it cannot be assigned to a calibration bucket.
                 except (TypeError, ValueError, OverflowError):
                     continue
                 key = (candidate_id, horizon)
