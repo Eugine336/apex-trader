@@ -62,6 +62,7 @@ class BrainMixin:
                             if wm is not None:
                                 results.append(wm)
                         return results
+# SAFE-FALLBACK: an unavailable optional history source contributes no dashboard rows; Brain state is not modified.
                     except Exception:
                         pass
         return []
