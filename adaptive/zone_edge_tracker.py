@@ -227,6 +227,7 @@ class ZoneEdgeTracker:
                 if os.path.exists(tmp):
                     try:
                         os.remove(tmp)
+# SAFE-FALLBACK: temporary-file cleanup is best-effort; the primary persistence error is logged by the outer handler.
                     except OSError:
                         pass
         except Exception as exc:  # noqa: BLE001
