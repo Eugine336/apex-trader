@@ -21,7 +21,7 @@ def test_indicator_context_reads_all_registered_price_indicator_families():
     readings = IndicatorContextConcepts().read("TEST", {"H1": _history()})
     concepts = {item.concept for item in readings}
     assert concepts == {
-        "moving_averages", "adx_directional", "aroon_trix",
+        "moving_averages", "adx_directional", "aroon_trix", "divergence",
         "rsi", "macd", "stochastic", "cci_williams", "roc_momentum",
         "atr_true_range", "bollinger", "keltner_donchian",
         "realized_volatility", "zscore_mean",
