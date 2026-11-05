@@ -353,8 +353,8 @@ class CalibrationProducer:
                     event_seq = int(row.get("seq", 0) or 0)
                 except (TypeError, ValueError, OverflowError):
                     event_seq = 0
-                current = disposition_map.get(candidate_id)
-                if current is None or event_seq > current.get("_event_seq", -1):
+                existing_disposition = disposition_map.get(candidate_id)
+                if existing_disposition is None or event_seq > existing_disposition.get("_event_seq", -1):
                     payload["_event_seq"] = event_seq
                     disposition_map[candidate_id] = payload
 
