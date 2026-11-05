@@ -603,7 +603,7 @@ class ProcessManager:
         except (ProcessLookupError, OSError):
             try:
                 proc.send_signal(sig)
-            except OSError:
+            except OSError:  # SAFE-FALLBACK: process may have exited between liveness check and signal
                 pass
 
     @staticmethod
@@ -612,7 +612,7 @@ class ProcessManager:
             try:
                 inst.log_handle.flush()
                 inst.log_handle.close()
-            except OSError:
+            except OSError:  # SAFE-FALLBACK: log descriptor cleanup must not block process teardown
                 pass
             inst.log_handle = None
 
