@@ -151,6 +151,8 @@ def _ed_store_sizes_mb(cfg: Any) -> dict:
     """On-disk size (MB) of each known SQLite store from config paths."""
     from pathlib import Path
 
+from loguru import logger
+
     sizes: dict[str, float] = {}
     if cfg is None:
         return sizes
@@ -194,6 +196,7 @@ class HealthMixin:
         ctx = getattr(self, "_system_context", None)
         pm = getattr(self, "_platform_manager", None)
 
+        warnings: list[str] = []
         broker = {"any_connected": False, "mt5": False, "deriv": False}
         if pm is not None:
             try:
@@ -202,17 +205,18 @@ class HealthMixin:
                 broker["mt5"] = any(bool(f) for f in flags)
                 deriv = getattr(pm, "deriv", None)
                 broker["deriv"] = bool(deriv is not None and getattr(deriv, "is_connected", lambda: False)())
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.append("broker health unavailable")
+                logger.warning("[dashboard-health] broker health query failed: {}", exc)
 
         open_positions = 0
         try:
             positions = pm.get_all_open_positions() if pm else []
             open_positions = len(positions) if positions else 0
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.append("open positions unavailable")
+            logger.warning("[dashboard-health] open-position query failed: {}", exc)
 
-        warnings: list[str] = []
         if not broker["any_connected"]:
             warnings.append("no broker connected")
 
@@ -222,8 +226,9 @@ class HealthMixin:
                 watchdog_state = ctx.process_watchdog.get_state()
                 if watchdog_state.get("stalled"):
                     warnings.append("tick stall detected")
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.append("process watchdog status unavailable")
+                logger.warning("[dashboard-health] process watchdog query failed: {}", exc)
 
         if ctx is not None and getattr(ctx, "health_watchdog", None) is not None:
             try:
@@ -231,16 +236,19 @@ class HealthMixin:
                 for w in getattr(hw_report, "warnings", []):
                     if "RL" in w:
                         warnings.append(w)
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.append("health watchdog status unavailable")
+                logger.warning("[dashboard-health] health watchdog query failed: {}", exc)
 
         drawdown = {"source": "none"}
         if ctx is not None and ctx.drawdown_guard is not None:
             try:
                 dd = ctx.drawdown_guard.get_status(datetime.now(timezone.utc))
                 drawdown = {"source": "drawdown_guard", "mode": str(getattr(dd, "mode", "NORMAL"))}
-            except Exception:
-                pass
+            except Exception as exc:
+                drawdown = {"source": "unavailable", "mode": "UNKNOWN"}
+                warnings.append("drawdown status unavailable")
+                logger.warning("[dashboard-health] drawdown status query failed: {}", exc)
 
         status = "ok" if not warnings else "degraded"
         stats = ed.stats() if hasattr(ed, "stats") else {}
@@ -251,8 +259,8 @@ class HealthMixin:
             from ops.lifecycle import _process_memory_mb
 
             memory_mb = _process_memory_mb()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[dashboard-health] process memory metric unavailable: {}", exc)
 
         return {
             "status": status,
