@@ -618,6 +618,7 @@ class SystemContext:
             if ctx.post_close_tracker is not None:
                 try:
                     ctx.ml_adapter.pair_learner.set_post_close_tracker(ctx.post_close_tracker)
+# SAFE-FALLBACK: post-close tracker wiring is optional learning enrichment; it cannot affect order execution.
                 except Exception:
                     pass
         except Exception as exc:
@@ -1266,6 +1267,7 @@ class SystemContext:
                                 realized_pnl=float(data.get("realized_pnl", 0.0) or 0.0),
                                 evidence_ref=str(data.get("campaign_id", "") or ""),
                             )
+# SAFE-FALLBACK: campaign outcome enrichment is observational; the committed campaign close remains authoritative.
                         except Exception:  # noqa: BLE001
                             pass
                     # Part VIII — credit/debit the evidence sources that backed
@@ -1276,6 +1278,7 @@ class SystemContext:
                             try:
                                 _influence.observe_many(
                                     stitched.get("supporting_sources") or [], won)
+# SAFE-FALLBACK: influence updates are learning telemetry; failure cannot change the closed campaign outcome.
                             except Exception:  # noqa: BLE001
                                 pass
                         if _calibration is not None:
@@ -1283,6 +1286,7 @@ class SystemContext:
                             if ec is not None:
                                 try:
                                     _calibration.observe(ec, won)
+# SAFE-FALLBACK: calibration observation is post-outcome learning; failure cannot change the already-closed trade.
                                 except Exception:  # noqa: BLE001
                                     pass
 
@@ -1421,6 +1425,7 @@ class SystemContext:
                             syms = list((st.get("theses") or {}).keys())
                             if syms:
                                 return syms
+# SAFE-FALLBACK: thesis lookup is optional; configured enabled symbols are the explicit fallback below.
                     except Exception:  # noqa: BLE001
                         pass
                     try:
