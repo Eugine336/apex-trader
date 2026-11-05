@@ -89,6 +89,7 @@ class EvidenceConsolidator:
         reasoning: Optional[Any] = None,
         knowledge: Optional[Any] = None,
         execution_cost_source: Optional[Callable[[str], Any]] = None,
+        concept_source: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._ctx = ctx
         self._developing_source = developing_source
@@ -105,6 +106,9 @@ class EvidenceConsolidator:
         # cost (Part XXIV/XXV). May return a float (total cost in R) or a dict
         # with estimated_spread_r / estimated_slippage_r / estimated_total_cost_r.
         self._execution_cost_source = execution_cost_source
+        # Completed multi-timeframe OHLC -> contextual concept readings.
+        # This is a first-class evidence source, not a detached diagnostic.
+        self._concept_source = concept_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
         # Market detectors add one neutral evidence record; they are not trade authorities.
@@ -126,6 +130,14 @@ class EvidenceConsolidator:
         the Brain also sees the fresher between-close read. Fail-safe callable.
         """
         self._developing_source = developing_source
+
+    def set_concept_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire the live multi-timeframe concept-reading source.
+
+        The callable returns read-only Evidence derived from completed broker bars.
+        Concept modules cannot choose directions or authorize execution.
+        """
+        self._concept_source = source
 
     def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
         """Wire (or clear) the live portfolio-assessment source (Part XVIII Art 11).
@@ -247,6 +259,35 @@ class EvidenceConsolidator:
                     logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
                     failed_sources.append("price")
                     _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
+            # System 1 — full native concept intelligence. The source fetches
+            # broker OHLC(V), excludes the forming candle and returns both raw
+            # market observations and contextual ConceptReading Evidence.
+            if self._concept_source is not None:
+                attempted_sources += 1
+                try:
+                    concept_evidence = list(self._concept_source(ms.symbol) or [])
+                    concept_readings = [
+                        item for item in concept_evidence
+                        if isinstance(getattr(item, "measurements", None), dict)
+                        and item.measurements.get("source_kind") == "concept_reading"
+                    ]
+                    for item in concept_evidence:
+                        ms.add(item)
+                    if not concept_readings:
+                        failed_sources.append("concept_market_intelligence")
+                        _integrity(
+                            "FULL CONCEPT READINGS UNAVAILABLE — broker OHLC history "
+                            "or verified timeframe context is insufficient"
+                        )
+                except Exception as exc:  # noqa: BLE001 — missing intelligence must be visible
+                    logger.warning(
+                        "[consolidator] concept market intelligence FAILED (%s): %s",
+                        symbol, exc,
+                    )
+                    failed_sources.append("concept_market_intelligence")
+                    _integrity(
+                        "FULL CONCEPT READINGS FAILED — market intelligence is degraded"
+                    )
             # One unified market-read evidence object per instrument. Pattern
             # detectors do not choose a direction or compete for authority; the
             # Brain interprets their factual observations alongside the chart.
