@@ -1202,6 +1202,9 @@ def test_concept_source_evidence_is_added_to_market_state_for_brain():
         polarity=0.0,
         measurements={
             "source_kind": "concept_reading",
+            "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "provisional": False,
             "concept": "crt",
             "timeframe": "H1",
             "applicable": True,
@@ -1254,5 +1257,35 @@ def test_concept_source_fault_is_visible_and_does_not_break_consolidation():
     ).build("XAUUSD")
     assert any(
         "FULL CONCEPT READINGS FAILED" in item.observation
+        for item in market_state.evidence
+    )
+
+
+def test_unverified_concept_reading_does_not_satisfy_market_intelligence_integrity():
+    unverified = Evidence(
+        source_module="concept.crt.h1",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="XAUUSD",
+        observation="CRT reading without broker source-time attestation",
+        confidence=0.7,
+        uncertainty=0.3,
+        polarity=0.0,
+        measurements={
+            "source_kind": "concept_reading",
+            "source_timestamp_known": False,
+            "data_basis": "completed_ohlc",
+            "provisional": False,
+            "concept": "crt",
+            "timeframe": "H1",
+        },
+        source_timestamp_verified=False,
+        source_timestamp_epoch=None,
+    )
+    market_state = EvidenceConsolidator(
+        ctx=None, concept_source=lambda symbol: [unverified],
+    ).build("XAUUSD")
+    assert unverified in market_state.evidence
+    assert any(
+        "FULL CONCEPT READINGS UNAVAILABLE" in item.observation
         for item in market_state.evidence
     )
