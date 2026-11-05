@@ -189,8 +189,8 @@ class ShadowStore:
             if self._conn is not None:
                 try:
                     self._conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[shadow-store] database close failed: %s", exc)
             self._conn = None
 
     @property
@@ -209,9 +209,9 @@ class ShadowStore:
             return
         try:
             self._conn.execute(_MIGRATE_SOURCE)
-        except Exception:
-            # Column already exists — nothing to do.
-            pass
+        except Exception as exc:
+            # SAFE-FALLBACK: idempotent migration tolerates an already-present column.
+            logger.debug("[shadow-store] optional migration skipped: %s", exc)
 
     def insert_contract(self, contract: ShadowContract) -> Optional[str]:
         if self._conn is None:
