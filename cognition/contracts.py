@@ -516,7 +516,7 @@ class MarketState:
             if isinstance(measurements, dict):
                 source_kind = measurements.get("source_kind")
                 if (
-                    source_kind in {"market_lens", "m1_price_action"}
+                    source_kind in {"market_lens", "m1_price_action", "concept_reading"}
                     and measurements.get("source_timestamp_known") is not True
                 ):
                     continue

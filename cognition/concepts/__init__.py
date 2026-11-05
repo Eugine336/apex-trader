@@ -14,6 +14,12 @@ from cognition.concepts.liquidity import LiquidityPools
 from cognition.concepts.market_structure import MarketStructure
 from cognition.concepts.price_delivery import PriceDeliveryConcepts
 from cognition.concepts.price_action import PriceActionConcepts
+from cognition.concepts.swing_geometry import SwingGeometryConcepts
+from cognition.concepts.structure_patterns import StructurePatternConcepts
+from cognition.concepts.indicator_context import IndicatorContextConcepts
+from cognition.concepts.pivot_points import PivotPointConcepts
+from cognition.concepts.power_of_three import PowerOfThreeConcepts
+from cognition.concepts.regime_switching import RegimeSwitchingConcepts
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -24,6 +30,12 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     LiquidityPools(),
     PriceDeliveryConcepts(),
     PriceActionConcepts(),
+    SwingGeometryConcepts(),
+    StructurePatternConcepts(),
+    IndicatorContextConcepts(),
+    PivotPointConcepts(),
+    PowerOfThreeConcepts(),
+    RegimeSwitchingConcepts(),
 )
 
 

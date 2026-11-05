@@ -81,7 +81,7 @@ def _day_week_levels(bars_by_tf: dict[str, list[dict]]) -> list[tuple[str, str, 
 class LiquidityPools:
     key = "liquidity"
     family = "liquidity"
-    covers_methods = ("liquidity_pools", "liquidity_sweep")
+    covers_methods = ("liquidity_pools", "liquidity_sweep", "inducement")
     covers_lenses: tuple[str, ...] = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -97,7 +97,71 @@ class LiquidityPools:
             reading = self._reading(symbol, tf, bars, day_week, ref_close, ref_tf)
             if reading is not None:
                 readings.append(reading)
+            inducement = self._inducement_reading(tf, bars, ref_close, ref_tf)
+            if inducement is not None:
+                readings.append(inducement)
         return readings
+
+
+    def _inducement_reading(self, tf, bars, ref_close, ref_tf):
+        # A local internal pool is swept while the outer confirmed swing range
+        # remains intact. This is a price-action proxy, not proof of intent.
+        swings = fractal_swings(bars[:-1])
+        highs = [s for s in swings if s[1] == "H"]
+        lows = [s for s in swings if s[1] == "L"]
+        if len(highs) < 2 or len(lows) < 2:
+            return None
+        external_high = max(highs, key=lambda s: s[2])
+        external_low = min(lows, key=lambda s: s[2])
+        last = bars[-1]
+        candidates = []
+        for pool in swings:
+            # An inducement candidate must still be a resting internal pool
+            # immediately before the latest completed bar acts on it.
+            if not _untouched(bars[:-1], pool[0], pool[1], pool[2]):
+                continue
+            if pool[1] == "H" and pool[0] != external_high[0] and last["high"] > pool[2] and last["close"] < pool[2]:
+                if last["high"] <= external_high[2]:
+                    candidates.append(("buy_side", SHORT, pool))
+            elif pool[1] == "L" and pool[0] != external_low[0] and last["low"] < pool[2] and last["close"] > pool[2]:
+                if last["low"] >= external_low[2]:
+                    candidates.append(("sell_side", LONG, pool))
+        if not candidates:
+            return None
+        side_name, direction, pool = max(
+            candidates,
+            key=lambda item: abs(last["high"]-item[2][2]) if item[0]=="buy_side"
+            else abs(item[2][2]-last["low"]),
+        )
+        epoch = finite(last.get("timestamp_epoch")) if last.get("source_timestamp_verified") is True else None
+        return ConceptReading(
+            concept="inducement", timeframe=tf, domain=EvidenceDomain.LIQUIDITY,
+            applicable=True,
+            applicability_reason="An internal confirmed swing pool was swept and reclaimed while the external swing boundary remained intact",
+            observation=(f"{tf} internal {side_name} inducement proxy at {pool[2]:.10g} was swept and reclaimed; "
+                         f"external range {external_low[2]:.10g}–{external_high[2]:.10g} remains intact."),
+            implications=(Implication(
+                direction=direction,
+                statement=f"{direction} hypothesis after internal {side_name} liquidity inducement and reclaim",
+                strength=None, activated=True,
+                activation_reason="The latest completed bar swept the internal pool and closed back inside while preserving the external boundary",
+                invalidation_price=last["high"] if direction==SHORT else last["low"],
+                invalidation_reason="A completed close through the sweep extreme invalidates the reclaim",
+                requires=("lower-timeframe structure shift", "verify an external draw on liquidity"),
+                conflicts_with=(),
+                management={"reassess_on":"next completed bar","external_high":external_high[2],
+                            "external_low":external_low[2]},
+            ),),
+            facts={
+                "internal_pool_kind":side_name,"internal_pool_price":pool[2],
+                "internal_pool_index":pool[0],"direction":direction,
+                "external_swing_high":external_high[2],"external_swing_low":external_low[2],
+                "external_boundary_preserved":True,
+                "definition":"internal_fractal_pool_sweep_reclaim_with_external_range_intact_v1",
+            },
+            source_bar_epoch=epoch,reference_close=ref_close,reference_timeframe=ref_tf,
+            unknowns=("Inducement is inferred from price geometry; participant intent and stop orders are not directly observed.",),
+        )
 
     # ------------------------------------------------------------------
     def _reading(self, symbol, tf, bars, day_week, ref_close, ref_tf):
