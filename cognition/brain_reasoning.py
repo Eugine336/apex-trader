@@ -438,6 +438,34 @@ class BrainReasoner:
         # Preserve explicit unknowns and epistemic limits. This context is
         # descriptive evidence, not a strategy selector or action authority.
         market_context = analyze_market_context(fresh, getattr(market_state, "symbol", ""))
+        # Reader failures are explicit unknowns, not absent concepts or neutral
+        # market observations. Carry them into the Brain's ordinary reasoning
+        # record so downstream hypothesis and decision logic sees the outage.
+        concept_runtime_failures = []
+        for item in fresh:
+            measurements = getattr(item, "measurements", {})
+            if not isinstance(measurements, dict):
+                continue
+            if measurements.get("source_kind") != "concept_runtime_diagnostic":
+                continue
+            module_key = str(measurements.get("concept_module", "unknown") or "unknown")
+            exception_type = str(measurements.get("exception_type", "UnknownError") or "UnknownError")
+            failure = {
+                "module": module_key,
+                "status": str(measurements.get("status", "reader_failed") or "reader_failed"),
+                "exception_type": exception_type,
+                "evidence_id": str(getattr(item, "evidence_id", "") or ""),
+            }
+            concept_runtime_failures.append(failure)
+            unknown = f"Concept analysis unavailable: {module_key} reader failed ({exception_type})"
+            if unknown not in missing:
+                missing.append(unknown)
+        if concept_runtime_failures:
+            observations.append(
+                f"{len(concept_runtime_failures)} registered concept reader(s) failed; "
+                "their interpretations are unavailable and must not be treated as negative readings"
+            )
+            market_context["concept_runtime_failures"] = concept_runtime_failures
         # Surface these unknowns in the Brain's normal reasoning record too;
         # a separate diagnostic blob that the reasoning chain ignores is not enough.
         for item in market_context.get("missing_information", []):

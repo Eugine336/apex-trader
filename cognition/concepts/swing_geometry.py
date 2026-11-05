@@ -75,7 +75,23 @@ class SwingGeometryConcepts:
                 pivots.append(("high", i, bars[i]["high"]))
             if bars[i]["low"] < bars[i-1]["low"] and bars[i]["low"] <= bars[i+1]["low"]:
                 pivots.append(("low", i, bars[i]["low"]))
-        return sorted(pivots, key=lambda x: x[1])
+        ordered = sorted(pivots, key=lambda x: x[1])
+        # Collapse consecutive same-side extrema to the most extreme confirmed
+        # pivot. Otherwise a weaker intervening high can incorrectly become the
+        # impulse endpoint while a later, stronger high is ignored.
+        alternating = []
+        for pivot in ordered:
+            if alternating and alternating[-1][0] == pivot[0]:
+                previous = alternating[-1]
+                more_extreme = (
+                    pivot[2] >= previous[2] if pivot[0] == "high"
+                    else pivot[2] <= previous[2]
+                )
+                if more_extreme:
+                    alternating[-1] = pivot
+                continue
+            alternating.append(pivot)
+        return alternating
 
     def _fibonacci_ote(self, tf, bars, close, close_tf):
         pivots = self._pivots(bars)

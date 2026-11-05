@@ -83,15 +83,21 @@ class StructurePatternConcepts:
         tolerance = (sum(ranges) / len(ranges)) * 0.35 if ranges else 0.0
         selected = pivots[-5:]
         tags, direction, invalid, neckline = [], FLAT, None, None
-        # Double top / bottom: alternating pivot sequence H-L-H or L-H-L.
-        if len(selected) >= 3:
-            a, b, c = selected[-3:]
+        # Double top / bottom: select the latest valid alternating triple.
+        # Require at least two bars between each pivot; adjacent one-bar noise
+        # must not manufacture a second equal-high/equal-low formation.
+        for start in range(len(selected) - 3, -1, -1):
+            a, b, c = selected[start:start + 3]
+            if b[1] - a[1] < 2 or c[1] - b[1] < 2:
+                continue
             if a[0] == c[0] == "H" and b[0] == "L" and abs(a[2]-c[2]) <= tolerance:
                 tags.append("double_top")
                 direction, invalid, neckline = SHORT, max(a[2], c[2]), b[2]
-            elif a[0] == c[0] == "L" and b[0] == "H" and abs(a[2]-c[2]) <= tolerance:
+                break
+            if a[0] == c[0] == "L" and b[0] == "H" and abs(a[2]-c[2]) <= tolerance:
                 tags.append("double_bottom")
                 direction, invalid, neckline = LONG, min(a[2], c[2]), b[2]
+                break
         # Head-and-shoulders / inverse: H-L-H-L-H or its mirror.
         if len(selected) == 5:
             a, b, c, d, e = selected
@@ -196,6 +202,6 @@ class StructurePatternConcepts:
                      "impulse_index": impulse_i, "impulse_range_multiple": span/baseline,
                      "impulse_body_ratio": body_ratio, "mitigated": mitigated,
                      "invalidated": invalid, "definition": "two_to_five_bar_base_before_relative_impulse_v1"},
-                    ("Supply/demand zone is a price-action proxy; OHLC cannot reveal hidden limit orders or institutional ownership.",)
+                    ("Supply/demand zone is a price-action proxy; it does not prove hidden limit orders or institutional ownership.",)
                 )]
         return []
