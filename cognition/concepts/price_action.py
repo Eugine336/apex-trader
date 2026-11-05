@@ -48,9 +48,8 @@ def _imp(direction, statement, active, invalidation, *, stop=None, requires=(), 
 class PriceActionConcepts:
     key = "price_action"
     family = "price_action"
-    covers_methods = ("candlestick_patterns", "candle_microstructure", "support_resistance",
-                      "failed_auction")
-    covers_lenses = ("candle_price_action", "support_resistance")
+    covers_methods = ("candlestick_patterns", "support_resistance", "failed_auction")
+    covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         ref, ref_tf = reference_price(bars_by_tf)
