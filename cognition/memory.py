@@ -90,6 +90,7 @@ def fingerprint_from_market_state(market_state: Any, *, now: Optional[float] = N
             c = _clampf(getattr(e, "confidence", 0.0), 0.0, 1.0)
             dom_conf.setdefault(str(dom), []).append(c)
             confs.append(c)
+# SAFE-FALLBACK: malformed evidence is excluded from aggregate memory statistics; no confidence is fabricated.
         except Exception:  # noqa: BLE001
             continue
     domains = {d: round(sum(v) / len(v), 4) for d, v in dom_conf.items() if v}
@@ -325,6 +326,7 @@ class CampaignMemoryStore:
                             ec = spec.get("confidence")
                             if ec is not None:
                                 stitched["entry_confidence"] = _clampf(ec, 0.0, 1.0, 0.0)
+# SAFE-FALLBACK: invalid optional confidence is omitted; campaign closure remains recorded independently.
                     except (TypeError, ValueError):
                         pass
                     self._conn.execute(
@@ -410,6 +412,7 @@ class CampaignMemoryStore:
             for (cid, rsym, rdir, fpj, won, pnl, verdict, rq, state) in rows:
                 try:
                     other = json.loads(fpj) if fpj else {}
+# SAFE-FALLBACK: malformed stored fingerprint JSON is excluded from similarity matching.
                 except (TypeError, ValueError):
                     continue
                 sim = fingerprint_similarity(fp, other)
@@ -459,6 +462,7 @@ class CampaignMemoryStore:
                 with self._lock:
                     self._conn.commit()
                     self._conn.close()
+# SAFE-FALLBACK: closing a stale SQLite connection is best-effort during memory-store teardown.
             except Exception:  # noqa: BLE001
                 pass
             self._conn = None
