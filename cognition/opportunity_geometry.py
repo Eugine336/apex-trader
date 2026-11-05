@@ -58,6 +58,12 @@ class OpportunityGeometry:
     identity: str = IDENTITY_STATEMENT
     symbol: str = ""
     evidence_timestamp_epoch: float = 0.0
+    # Set when a full concept reading supplied the geometry: the concept, the
+    # timeframe of its range, and the first milestones the concept expects before
+    # the objective (management consumes them).
+    concept: str = ""
+    concept_timeframe: str = ""
+    milestones: tuple[float, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,7 +85,100 @@ class OpportunityGeometry:
             "entry_timeframe": self.entry_timeframe,
             "stop_timeframe": self.stop_timeframe,
             "target_timeframe": self.target_timeframe,
+            "concept": self.concept,
+            "concept_timeframe": self.concept_timeframe,
+            "milestones": list(self.milestones),
         }
+
+
+def _concept_reading_record(item: Any, measurements: dict, now: Optional[float]) -> Optional[dict]:
+    """A fresh, completed-bar concept reading with a known source time, or None."""
+    if (
+        measurements.get("source_timestamp_known") is not True
+        or measurements.get("data_basis") != "completed_ohlc"
+        or measurements.get("provisional") is True
+        or measurements.get("applicable") is not True
+    ):
+        return None
+    source_time = _finite(measurements.get("source_bar_epoch"))
+    decision_time = _finite(now) if now is not None else time.time()
+    horizon = _finite(getattr(item, "relevance_horizon_seconds", None))
+    if (
+        source_time is None or decision_time is None or source_time > decision_time
+        or horizon is None or horizon <= 0.0 or decision_time - source_time > horizon
+    ):
+        return None
+    reference = _finite_positive(measurements.get("reference_close"))
+    if reference is None:
+        return None
+    return {
+        "item": item,
+        "time": source_time,
+        "reference": reference,
+        "concept": str(measurements.get("concept", "") or ""),
+        "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
+        "reference_timeframe": str(measurements.get("reference_timeframe", "") or "").strip().upper(),
+        "implications": [i for i in (measurements.get("implications") or []) if isinstance(i, dict)],
+    }
+
+
+def _geometry_from_concept_readings(
+    readings: list[dict], side: str, symbol: str,
+) -> Optional[OpportunityGeometry]:
+    """Geometry from a full concept reading: its own invalidation is the stop and
+    its own objective is the target. The strongest satisfied reading wins; an
+    unknown strength ranks below any known strength. Nothing is invented."""
+    best: Optional[tuple] = None
+    for reading in readings:
+        entry = reading["reference"]
+        for imp in reading["implications"]:
+            if str(imp.get("direction", "")).upper() != side or imp.get("activated") is not True:
+                continue
+            stop = _finite_positive(imp.get("invalidation_price"))
+            target = _finite_positive(imp.get("objective_price"))
+            if stop is None or target is None:
+                continue
+            valid = (stop < entry < target) if side == "LONG" else (target < entry < stop)
+            if not valid:
+                continue
+            strength = _finite(imp.get("strength"))
+            rank = (strength if strength is not None else -1.0, reading["time"])
+            if best is None or rank > best[0]:
+                best = (rank, reading, imp, entry, stop, target)
+    if best is None:
+        return None
+    _rank, reading, imp, entry, stop, target = best
+    risk = entry - stop if side == "LONG" else stop - entry
+    reward = target - entry if side == "LONG" else entry - target
+    if not (isfinite(risk) and isfinite(reward) and risk > 0.0 and reward > 0.0):
+        return None
+    milestones = tuple(
+        float(m) for m in (imp.get("milestones") or [])
+        if _finite_positive(m) is not None
+        and ((entry < float(m) < target) if side == "LONG" else (target < float(m) < entry))
+    )
+    evidence_id = str(getattr(reading["item"], "evidence_id", "") or "")
+    return OpportunityGeometry(
+        direction=side,
+        entry_price=entry,
+        stop_price=stop,
+        target_price=target,
+        risk_distance=risk,
+        reward_distance=reward,
+        reward_r=reward / risk,
+        activated=True,
+        activation_reason=str(imp.get("activation_reason", "") or f"{reading['concept']} trigger satisfied"),
+        invalidation_reason=str(imp.get("invalidation_reason", "") or ""),
+        evidence_ids=(evidence_id,) if evidence_id else (),
+        entry_timeframe=reading["reference_timeframe"],
+        stop_timeframe=reading["timeframe"],
+        target_timeframe=reading["timeframe"],
+        symbol=symbol,
+        evidence_timestamp_epoch=reading["time"],
+        concept=reading["concept"],
+        concept_timeframe=reading["timeframe"],
+        milestones=milestones,
+    )
 
 
 def derive_opportunity_geometry(
@@ -115,6 +214,7 @@ def derive_opportunity_geometry(
     structures: list[dict[str, Any]] = []
     momenta: list[dict[str, Any]] = []
     liquidity: list[dict[str, Any]] = []
+    concept_readings: list[dict[str, Any]] = []
     for item in fresh:
         evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
         # Geometry is instrument-specific. Missing symbol identity is not safe
@@ -123,6 +223,11 @@ def derive_opportunity_geometry(
             continue
         measurements = getattr(item, "measurements", None)
         if not isinstance(measurements, dict):
+            continue
+        if measurements.get("source_kind") == "concept_reading":
+            reading = _concept_reading_record(item, measurements, now)
+            if reading is not None:
+                concept_readings.append(reading)
             continue
         # Only completed market-lens facts with known source timestamps can
         # define price levels or satisfy activation.
@@ -189,6 +294,10 @@ def derive_opportunity_geometry(
                 "high": _finite_positive(measurements.get("prior_range_high")),
                 "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
             })
+
+    concept_geometry = _geometry_from_concept_readings(concept_readings, side, state_symbol)
+    if concept_geometry is not None:
+        return concept_geometry
 
     structures = [record for record in structures if record["timeframe"]]
     momenta = [record for record in momenta if record["timeframe"]]

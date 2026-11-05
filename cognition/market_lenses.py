@@ -627,6 +627,7 @@ def analyze_market_frames(
     timeframe_signs: list[int] = []
     timeframe_scores: list[float] = []
     timeframe_observations: list[dict[str, Any]] = []
+    bars_by_timeframe: dict[str, list[dict[str, Any]]] = {}
     snapshot_cutoff_epoch = time.time()
 
     for raw_tf, frame in (frames or {}).items():
@@ -638,6 +639,13 @@ def analyze_market_frames(
         if len(bars) < 5:
             continue
 
+        # Concept modules rank a reading against the instrument's own history, so
+        # they receive every completed bar the connector supplied (not just the
+        # short window the raw lenses use).
+        full_rows = _rows(frame, limit=1_000_000, expected_symbol=symbol)
+        bars_by_timeframe[timeframe] = (
+            full_rows[:-1] if source_includes_forming_bar and len(full_rows) > 1 else full_rows
+        )
         current = bars[-1]
         source_epoch = (
             _safe_float(current.get("timestamp_epoch"))
@@ -917,6 +925,16 @@ def analyze_market_frames(
             },
             source_epoch=snapshot_cutoff_epoch if synchronized else None,
         ))
+
+    # Full concept readings (what an expert takes from each concept in context),
+    # layered on the raw facts above. They are evidence, never decisions.
+    try:
+        from cognition.concepts import run_concepts
+        output.extend(run_concepts(symbol, bars_by_timeframe))
+    except Exception as exc:  # noqa: BLE001 — concept faults never break observation
+        import logging as _logging
+        _logging.getLogger("apex.cognition.market_lenses").warning(
+            "[market-lenses] concept readings failed for %s: %s: %s", symbol, type(exc).__name__, exc)
 
     return output
 
