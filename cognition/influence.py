@@ -260,6 +260,7 @@ class CalibrationTracker:
                         c = _clampf(pair[0], 0.0, 1.0, 0.0)
                         self._samples.append((c, 1.0 if bool(pair[1]) else 0.0))
                         accepted += 1
+# SAFE-FALLBACK: malformed calibration sample is excluded; accepted samples retain their original values.
                     except Exception:  # noqa: BLE001
                         continue
                 if len(self._samples) > self._limit:
