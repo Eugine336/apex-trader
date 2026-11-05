@@ -86,6 +86,7 @@ def coerce_limits(source: object) -> "tuple[int, int, int, int]":
                 continue
             try:
                 iv = int(v)
+# SAFE-FALLBACK: malformed optional budget configuration is skipped; no unverified budget value is applied.
             except (TypeError, ValueError):
                 continue
             if iv > 0:
