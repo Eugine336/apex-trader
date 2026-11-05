@@ -68,6 +68,7 @@ class DecisionTraceMixin:
                 continue
             try:
                 payload = json.loads(pj) if isinstance(pj, str) else pj
+# SAFE-FALLBACK: malformed decision-trace JSON is omitted; valid persisted trace records continue to load.
             except Exception:
                 continue
             payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
@@ -126,6 +127,7 @@ class DecisionTraceMixin:
                     try:
                         conf_sum[stage] += float(sv.get("confidence", 0.0) or 0.0)
                         conf_cnt[stage] += 1
+# SAFE-FALLBACK: malformed optional confidence is excluded from the displayed stage average.
                     except (TypeError, ValueError):
                         pass
 
