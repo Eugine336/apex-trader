@@ -195,3 +195,24 @@ def test_unverified_concept_readings_do_not_count_as_current_market_domains():
     assert concepts
     assert all(e.source_timestamp_verified is False for e in concepts)
     assert state.consolidation()["market_domain_count"] == 0
+
+
+def test_faulted_concept_reader_is_preserved_as_runtime_health_evidence(monkeypatch):
+    import cognition.concepts as concepts
+
+    class BrokenConcept:
+        key = "broken_test_module"
+
+        def read(self, symbol, bars_by_tf):
+            raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(concepts, "CONCEPT_MODULES", (BrokenConcept(),))
+    evidence = concepts.run_concepts("XAUUSD", {"H1": []})
+    assert len(evidence) == 1
+    failure = evidence[0]
+    assert failure.source_module == "concept_runtime.broken_test_module"
+    assert failure.polarity == 0.0
+    assert failure.confidence == 0.0
+    assert failure.uncertainty == 1.0
+    assert failure.measurements["source_kind"] == "concept_runtime_diagnostic"
+    assert failure.measurements["non_market_evidence"] is True
