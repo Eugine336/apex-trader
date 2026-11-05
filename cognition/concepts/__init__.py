@@ -15,6 +15,7 @@ from cognition.concepts.market_structure import MarketStructure
 from cognition.concepts.price_delivery import PriceDeliveryConcepts
 from cognition.concepts.price_action import PriceActionConcepts
 from cognition.concepts.swing_geometry import SwingGeometryConcepts
+from cognition.concepts.structure_patterns import StructurePatternConcepts
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -26,6 +27,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     PriceDeliveryConcepts(),
     PriceActionConcepts(),
     SwingGeometryConcepts(),
+    StructurePatternConcepts(),
 )
 
 
