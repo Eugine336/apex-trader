@@ -31,7 +31,7 @@ def _apply_log_level(level: str) -> None:
     lvl = str(level or "INFO").upper()
     try:
         logger.remove()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — SAFE-FALLBACK: logger removal is optional before configuring stderr sink
         pass
     logger.add(sys.stderr, level=lvl)
 
@@ -196,8 +196,8 @@ def main() -> None:
         )
         try:
             sys_ctx._mark_safety_degraded("UnsafeDataRepositoryTopology")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.critical("[startup] could not mark unsafe data topology as degraded: {}", exc)
         _cog_loop = getattr(sys_ctx, "cognition_loop", None)
         if _cog_loop is not None:
             _cog_loop.broker_book_verified = False
