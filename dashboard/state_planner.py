@@ -75,7 +75,7 @@ class PlannerMixin:
                 continue
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError:  # SAFE-FALLBACK: skip malformed line in append-only plan journal
                 continue
             pid = rec.get("plan_id")
             if not pid:
@@ -125,7 +125,7 @@ class PlannerMixin:
                     try:
                         if float(oc.get("pnl_r", 0.0) or 0.0) > 0:
                             b["wins"] += 1
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError):  # SAFE-FALLBACK: omit malformed optional outcome PnL from dashboard stats
                         pass
             for b in counts.values():
                 b["win_rate"] = round(b["wins"] / b["completed"], 3) if b["completed"] else 0.0
