@@ -14,7 +14,7 @@ FULL 38 · MEASURED 28 · UNMEASURED 11
 | institutional_price_action | Candle Range Theory | `crt` | FULL |
 | institutional_price_action | Dealing range, premium and discount | `dealing_range` | FULL |
 | institutional_price_action | Fair Value Gap and imbalance | `fair_value_gap` | FULL |
-| institutional_price_action | ICT / Smart Money Concepts | `ict_smc` | MEASURED |
+| institutional_price_action | ICT / Smart Money Concepts | `ict_smc` | FULL |
 | institutional_price_action | Optimal Trade Entry geometry | `ote` | FULL |
 | institutional_price_action | Order blocks and mitigation | `order_blocks` | FULL |
 | institutional_price_action | Power of Three hypothesis | `power_of_three` | FULL |
@@ -100,7 +100,7 @@ FULL 1 · MEASURED 37 · UNMEASURED 0
 | Execution costs and fill quality | `execution_costs` | MEASURED |
 | Failed breakout / trap | `failed_breakout` | MEASURED |
 | Gaps / opening-range behaviour | `gap_opening_range` | MEASURED |
-| ICT / Smart Money Concepts | `ict_smc` | FULL |
+| ICT / Smart Money Concepts | `ict_smc` | MEASURED |
 | Intermarket / relative strength | `cross_asset` | MEASURED |
 | Macro / event-driven | `event_macro` | MEASURED |
 | Market profile / auction theory | `auction_market_profile` | MEASURED |
