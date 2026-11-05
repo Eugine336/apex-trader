@@ -32,6 +32,7 @@ def _row_value(row: Any, keys: tuple[str, ...]) -> float | None:
                 value = row[key]
             if value is not None:
                 return _number(value)
+# SAFE-FALLBACK: absent or malformed optional row fields are skipped; no price is inferred.
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     return None
@@ -46,6 +47,7 @@ def _timestamp_epoch(value: Any) -> float | None:
         try:
             parsed = float(stamp())
             return parsed if isfinite(parsed) and parsed > 0 else None
+# SAFE-FALLBACK: invalid callable timestamp falls through to the numeric and ISO parsers.
         except (TypeError, ValueError, OverflowError, OSError):
             pass
     try:
@@ -54,6 +56,7 @@ def _timestamp_epoch(value: Any) -> float | None:
             if numeric > 100_000_000_000:
                 numeric /= 1000.0
             return numeric
+# SAFE-FALLBACK: invalid numeric timestamp representation falls through to the next supported timestamp parser.
     except (TypeError, ValueError, OverflowError):
         pass
     try:
@@ -75,6 +78,7 @@ def _raw_row_value(row: Any, keys: tuple[str, ...]) -> Any:
             value = row.get(key, None) if callable(getattr(row, "get", None)) else row[key]
             if value is not None:
                 return value
+# SAFE-FALLBACK: absent or malformed optional row fields are skipped; no price is inferred.
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     return None
