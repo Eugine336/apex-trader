@@ -562,20 +562,20 @@ def _extract_levels(wm: Any, max_levels: int) -> "list[StructuralLevel]":
     levels: list[StructuralLevel] = []
     try:
         levels.extend(_fvg_levels(wm))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structural-interaction] FVG level reader failed: %s", exc)
     try:
         levels.extend(_order_block_levels(wm))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structural-interaction] order-block level reader failed: %s", exc)
     try:
         levels.extend(_liquidity_levels(wm))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structural-interaction] liquidity level reader failed: %s", exc)
     try:
         levels.extend(_structure_levels(wm))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structural-interaction] structure level reader failed: %s", exc)
     # De-duplicate by key, preserving first occurrence, and cap.
     seen: set[str] = set()
     out: list[StructuralLevel] = []

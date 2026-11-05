@@ -90,7 +90,7 @@ def fingerprint_from_market_state(market_state: Any, *, now: Optional[float] = N
             c = _clampf(getattr(e, "confidence", 0.0), 0.0, 1.0)
             dom_conf.setdefault(str(dom), []).append(c)
             confs.append(c)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — SAFE-FALLBACK: ignore malformed evidence in descriptive memory summary
             continue
     domains = {d: round(sum(v) / len(v), 4) for d, v in dom_conf.items() if v}
     mean_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
@@ -325,7 +325,7 @@ class CampaignMemoryStore:
                             ec = spec.get("confidence")
                             if ec is not None:
                                 stitched["entry_confidence"] = _clampf(ec, 0.0, 1.0, 0.0)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError):  # SAFE-FALLBACK: retain campaign record without malformed optional confidence
                         pass
                     self._conn.execute(
                         "UPDATE campaign_memory SET closed=1, closed_ms=?, outcome_won=?, "
@@ -410,7 +410,7 @@ class CampaignMemoryStore:
             for (cid, rsym, rdir, fpj, won, pnl, verdict, rq, state) in rows:
                 try:
                     other = json.loads(fpj) if fpj else {}
-                except (TypeError, ValueError):
+                except (TypeError, ValueError):  # SAFE-FALLBACK: skip malformed stored campaign fingerprint
                     continue
                 sim = fingerprint_similarity(fp, other)
                 if sim < min_similarity:
@@ -459,8 +459,8 @@ class CampaignMemoryStore:
                 with self._lock:
                     self._conn.commit()
                     self._conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[memory] database close failed: %s", exc)
             self._conn = None
 
 

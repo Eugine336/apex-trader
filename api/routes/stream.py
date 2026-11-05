@@ -210,7 +210,7 @@ async def build_snapshot(
         for p in open_positions_live:
             try:
                 open_pnl += float(p.get("pnl_dollars") or 0.0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # SAFE-FALLBACK: omit malformed PnL projection from dashboard stream
                 continue
 
     health = (ops or {}).get("health", {}) if isinstance(ops, dict) else {}

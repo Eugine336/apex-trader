@@ -809,7 +809,7 @@ class RiskEngine:
                 continue
             try:
                 bal = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # SAFE-FALLBACK: ignore malformed optional platform balance
                 continue
             if bal < 0:
                 continue

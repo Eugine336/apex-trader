@@ -36,7 +36,7 @@ class EventBus:
         with self._lock:
             try:
                 self._subscribers[event_type].remove(callback)
-            except ValueError:
+            except ValueError:  # SAFE-FALLBACK: unsubscribe is idempotent when callback is already absent
                 pass
 
     def publish(self, event_type: str, event: Any) -> None:

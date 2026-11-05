@@ -480,11 +480,11 @@ class ApexMultiTFTradingEnv:
         try:
             import fcntl
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: advisory unlock is best-effort; descriptor close follows
             pass
         try:
             fd.close()
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: descriptor close during teardown is best-effort
             pass
 
 

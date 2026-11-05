@@ -53,8 +53,8 @@ class TradesMixin(HelpersMixin):
                     tick = tick_store.get_latest(symbol)
                     if tick is not None:
                         current_price = tick.bid if direction == "SHORT" else tick.ask
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[dashboard-trades] tick-store quote unavailable; trying broker quote: {}", exc)
             if current_price == entry_price:
                 try:
                     tick = self._platform_manager.get_price(symbol)
@@ -62,8 +62,8 @@ class TradesMixin(HelpersMixin):
                         current_price = safe_float(getattr(tick, "bid", entry_price), entry_price)
                     elif direction == "SHORT":
                         current_price = safe_float(getattr(tick, "ask", entry_price), entry_price)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[dashboard-trades] broker quote unavailable for %s: %s", symbol, exc)
 
             pip_size = safe_float(get_pip_size(symbol), 0.0001)
             if pip_size <= 0:
@@ -111,8 +111,8 @@ class TradesMixin(HelpersMixin):
                             stage = "BREAKEVEN"
                         elif getattr(mgmt, "tp1_hit", False):
                             stage = "TP1_HIT"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[dashboard-trades] management stage unavailable for %s: %s", order_id, exc)
 
             # Multi-opportunity provenance — link the open position back to the
             # candidate (idea) that opened it, so management is visibly scoped to

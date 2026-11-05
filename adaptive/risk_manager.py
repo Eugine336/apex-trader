@@ -145,7 +145,7 @@ def _returns(closes: Sequence[float]) -> List[float]:
     for c in closes or []:
         try:
             f = float(c)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError):  # SAFE-FALLBACK: skip malformed historical close value
             continue
         if not math.isfinite(f):
             continue

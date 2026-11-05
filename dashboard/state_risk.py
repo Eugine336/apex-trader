@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from dashboard.state_helpers import HelpersMixin, safe_float, pct_to_fraction
+from loguru import logger
 
 
 class RiskMixin(HelpersMixin):
@@ -40,8 +41,8 @@ class RiskMixin(HelpersMixin):
         try:
             positions = self._platform_manager.get_all_open_positions()
             open_count = len(positions) if positions else 0
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[dashboard-risk] open-position count unavailable: {}", exc)
 
         max_open = 6
         max_daily = 5.0
@@ -50,8 +51,8 @@ class RiskMixin(HelpersMixin):
             if cfg is not None:
                 max_open = int(getattr(cfg.risk, "max_open_trades", 6))
                 max_daily = float(getattr(cfg.risk, "max_daily_drawdown_pct", 5.0))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[dashboard-risk] risk configuration unavailable: {}", exc)
 
         dd_mode = "NORMAL"
         daily_pnl_pct = 0.0
@@ -72,8 +73,8 @@ class RiskMixin(HelpersMixin):
                 score_threshold = int(getattr(dd, "current_score_threshold", 85))
                 consecutive_losses = int(getattr(dd, "consecutive_losses", 0))
                 consecutive_wins = int(getattr(dd, "consecutive_wins", 0))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[dashboard-risk] drawdown status unavailable: {}", exc)
 
         exposure_pct = ((open_count / max_open) * risk_pct) if max_open > 0 else 0.0
         result: dict[str, Any] = {
@@ -101,8 +102,8 @@ class RiskMixin(HelpersMixin):
                 result["avg_latency_ms"] = stats.avg_latency_ms
                 result["spread_is_wide"] = stats.spread_is_wide
                 result["requote_count"] = stats.requote_count
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[dashboard-risk] execution statistics unavailable: {}", exc)
 
         if ctx is not None and ctx.risk_reporter is not None and ctx.risk_engine is not None:
             try:
@@ -128,20 +129,20 @@ class RiskMixin(HelpersMixin):
                 result["win_rate_today"] = report.win_rate_today
                 result["profit_factor"] = report.profit_factor
                 result["max_drawdown_today"] = report.max_drawdown_today
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[dashboard-risk] risk report unavailable: {}", exc)
 
         if ctx is not None and ctx.account_risk is not None:
             try:
                 result["account_silos"] = ctx.account_risk.snapshot()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[dashboard-risk] account-risk snapshot unavailable: {}", exc)
 
         rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
         if rl is not None and hasattr(rl, "status"):
             try:
                 result["rl"] = rl.status()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[dashboard-risk] RL status unavailable: {}", exc)
 
         return result

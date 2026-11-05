@@ -771,7 +771,7 @@ class DerivConnector(BaseConnector):
                     continue
                 try:
                     broker_sym = self.symbol_map(apex_sym)
-                except Exception:
+                except Exception:  # SAFE-FALLBACK: skip symbol when broker mapping cannot be resolved
                     continue
                 if broker_sym:
                     mapped_enabled.add(broker_sym)
@@ -809,7 +809,7 @@ class DerivConnector(BaseConnector):
                         for v in contract.get(key, []) or []:
                             try:
                                 mults.add(int(v))
-                            except (TypeError, ValueError):
+                            except (TypeError, ValueError):  # SAFE-FALLBACK: ignore malformed broker multiplier value
                                 continue
                 if mults:
                     sorted_mults = sorted(mults)
@@ -892,8 +892,8 @@ class DerivConnector(BaseConnector):
                     if self._ws is not None:
                         try:
                             await self._ws.close()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Deriv websocket close during reconnect failed: {}", exc)
                         self._ws = None
                     logger.warning(
                         "Deriv reconnect attempt {}/{}",

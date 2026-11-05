@@ -401,12 +401,20 @@ class ShadowEngine:
             try:
                 from brain.session_engine import SessionEngine
                 self._session_engine = SessionEngine()
-            except Exception:
-                return True  # cannot evaluate — do not block
+            except Exception as exc:
+                _logger.warning(
+                    "ShadowEngine session gate unavailable; failing closed: %s",
+                    type(exc).__name__,
+                )
+                return False
         try:
             return bool(self._session_engine.get_status(now).is_tradeable)
-        except Exception:
-            return True
+        except Exception as exc:
+            _logger.warning(
+                "ShadowEngine session status unavailable; failing closed: %s",
+                type(exc).__name__,
+            )
+            return False
 
     # ── Qualification check ───────────────────────────────────────────────
 

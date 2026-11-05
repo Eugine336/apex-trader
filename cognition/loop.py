@@ -89,6 +89,7 @@ class EvidenceConsolidator:
         reasoning: Optional[Any] = None,
         knowledge: Optional[Any] = None,
         execution_cost_source: Optional[Callable[[str], Any]] = None,
+        concept_source: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._ctx = ctx
         self._developing_source = developing_source
@@ -105,6 +106,9 @@ class EvidenceConsolidator:
         # cost (Part XXIV/XXV). May return a float (total cost in R) or a dict
         # with estimated_spread_r / estimated_slippage_r / estimated_total_cost_r.
         self._execution_cost_source = execution_cost_source
+        # Completed multi-timeframe OHLC -> contextual concept readings.
+        # This is a first-class evidence source, not a detached diagnostic.
+        self._concept_source = concept_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
         # Market detectors add one neutral evidence record; they are not trade authorities.
@@ -126,6 +130,14 @@ class EvidenceConsolidator:
         the Brain also sees the fresher between-close read. Fail-safe callable.
         """
         self._developing_source = developing_source
+
+    def set_concept_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire the live multi-timeframe concept-reading source.
+
+        The callable returns read-only Evidence derived from completed broker bars.
+        Concept modules cannot choose directions or authorize execution.
+        """
+        self._concept_source = source
 
     def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
         """Wire (or clear) the live portfolio-assessment source (Part XVIII Art 11).
@@ -247,6 +259,42 @@ class EvidenceConsolidator:
                     logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
                     failed_sources.append("price")
                     _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
+            # System 1 — full native concept intelligence. The source fetches
+            # broker OHLC(V), excludes the forming candle and returns both raw
+            # market observations and contextual ConceptReading Evidence.
+            if self._concept_source is not None:
+                attempted_sources += 1
+                try:
+                    concept_evidence = list(self._concept_source(ms.symbol) or [])
+                    concept_readings = [
+                        item for item in concept_evidence
+                        if isinstance(getattr(item, "measurements", None), dict)
+                        and item.measurements.get("source_kind") == "concept_reading"
+                        and item.measurements.get("source_timestamp_known") is True
+                        and item.measurements.get("data_basis") == "completed_ohlc"
+                        and item.measurements.get("provisional") is False
+                        and getattr(item, "source_timestamp_verified", False) is True
+                        and isinstance(getattr(item, "source_timestamp_epoch", None), (int, float))
+                        and not isinstance(getattr(item, "source_timestamp_epoch", None), bool)
+                        and item.source_timestamp_epoch > 0.0
+                    ]
+                    for item in concept_evidence:
+                        ms.add(item)
+                    if not concept_readings:
+                        failed_sources.append("concept_market_intelligence")
+                        _integrity(
+                            "FULL CONCEPT READINGS UNAVAILABLE — broker OHLC history "
+                            "or verified timeframe context is insufficient"
+                        )
+                except Exception as exc:  # noqa: BLE001 — missing intelligence must be visible
+                    logger.warning(
+                        "[consolidator] concept market intelligence FAILED (%s): %s",
+                        symbol, exc,
+                    )
+                    failed_sources.append("concept_market_intelligence")
+                    _integrity(
+                        "FULL CONCEPT READINGS FAILED — market intelligence is degraded"
+                    )
             # One unified market-read evidence object per instrument. Pattern
             # detectors do not choose a direction or compete for authority; the
             # Brain interprets their factual observations alongside the chart.
@@ -941,13 +989,13 @@ class CognitionLoop:
                 if callable(iso):
                     try:
                         return iso()
-                    except Exception:
+                    except Exception:  # SAFE-FALLBACK: try scalar conversion after ISO conversion fails
                         pass
                 item = getattr(value, "item", None)
                 if callable(item):
                     try:
                         return _json_safe(item())
-                    except Exception:
+                    except Exception:  # SAFE-FALLBACK: try numeric conversion after item conversion fails
                         pass
                 try:
                     number = float(value)
@@ -992,7 +1040,7 @@ class CognitionLoop:
             for item in fresh_items:
                 try:
                     source_epoch = float(getattr(item, "source_timestamp_epoch", None))
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed source-time evidence
                     continue
                 evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
                 evidence_id = str(getattr(item, "evidence_id", "") or "")
@@ -1070,7 +1118,7 @@ class CognitionLoop:
                             "source_module": str(getattr(item, "source_module", "") or ""),
                             "evidence_id": evidence_id,
                         })
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed quote fields
                     continue
             reference_quote = max(
                 quote_candidates,
@@ -1365,7 +1413,7 @@ class CognitionLoop:
                             "source_module": str(getattr(evidence, "source_module", "") or ""),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: skip malformed candidate evidence row
                     continue
             if not quote_rows:
                 return
@@ -1394,7 +1442,7 @@ class CognitionLoop:
                         event_type = str(event.get("event_type", "") or "")
                         try:
                             event_payload = json.loads(event.get("payload_json") or "{}")
-                        except (TypeError, ValueError, json.JSONDecodeError):
+                        except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed persisted event payload
                             continue
                         if not isinstance(event_payload, dict):
                             continue
@@ -1465,7 +1513,7 @@ class CognitionLoop:
                         event_candidate_id = str(event_payload.get("candidate_id", "") or "")
                         if event_candidate_id:
                             snapshots.append((event_candidate_id, event_payload))
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed candidate event
                         continue
                 for row in outcome_rows:
                     try:
@@ -1474,7 +1522,7 @@ class CognitionLoop:
                             str(event_payload.get("candidate_id", "")),
                             int(event_payload.get("horizon_seconds", 0) or 0),
                         ))
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed outcome event
                         continue
 
             horizons = (300, 900, 3600, 14400, 86400)
@@ -1515,7 +1563,7 @@ class CognitionLoop:
                             if math.isfinite(candidate_deviation) and candidate_deviation <= 0.25:
                                 risk_distance = candidate_risk
                                 entry_deviation_r = candidate_deviation
-                except (TypeError, ValueError, json.JSONDecodeError):
+                except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip candidate with invalid numeric fields
                     continue
 
                 for horizon in horizons:
@@ -1671,7 +1719,7 @@ class CognitionLoop:
                 for row in snapshot_rows:
                     try:
                         snapshot = json.loads(row.get("payload_json") or "{}")
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed snapshot payload
                         continue
                     if not isinstance(snapshot, dict):
                         continue
@@ -2126,8 +2174,8 @@ class CognitionLoop:
                 if sources:
                     spec = dict(spec)
                     spec["supporting_sources"] = sources
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[cognition-loop] optional supporting-source enrichment unavailable: %s", exc)
             self._memory.record_open(
                 symbol=symbol, direction=direction, fingerprint=fp,
                 campaign_id=str(getattr(campaign, "campaign_id", "") or ""), spec=spec,
@@ -2365,8 +2413,8 @@ class CognitionLoop:
                             sym, direction, "reallocate",
                             confidence=0.0, uncertainty=0.0, now=now,
                         )
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[cognition-loop] reallocation audit record failed: %s", exc)
             return issued
         except Exception as exc:  # noqa: BLE001 — reallocation must never break the loop
             logger.debug("[cognition-loop] reallocation fault: %s", exc)

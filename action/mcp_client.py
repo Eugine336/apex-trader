@@ -60,11 +60,11 @@ def _urllib_mcp_transport(url: str, headers: dict, body: bytes, timeout: float) 
         hdrs = {}
         try:
             detail = exc.read().decode("utf-8", "replace")[:400]
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — SAFE-FALLBACK: HTTP status remains available without response body text
             pass
         try:
             hdrs = {str(k).lower(): str(v) for k, v in exc.headers.items()}
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — SAFE-FALLBACK: request can still report status without optional headers
             pass
         return int(exc.code or 0), hdrs, detail
     except Exception as exc:  # noqa: BLE001
@@ -93,7 +93,7 @@ def _extract_jsonrpc_messages(text: str, content_type: str) -> "list[dict]":
                 continue
             try:
                 obj = json.loads(payload)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — SAFE-FALLBACK: skip malformed JSON-RPC response fragment
                 continue
             if isinstance(obj, dict):
                 out.append(obj)

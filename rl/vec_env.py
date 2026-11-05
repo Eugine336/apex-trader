@@ -149,17 +149,17 @@ def _worker(remote, env_kwargs: dict):
                 break
             else:
                 raise RuntimeError(f"[vec_env worker] unknown command: {cmd}")
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError):  # SAFE-FALLBACK: worker exits cleanly when parent closes its pipe
         pass
     except Exception as exc:  # pragma: no cover - surfaced to parent for restart
         try:
             remote.send(("__error__", repr(exc)))
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: parent may already have closed the error-report pipe
             pass
     finally:
         try:
             remote.close()
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: remote pipe may already be closed during worker teardown
             pass
 
 
@@ -204,12 +204,12 @@ class SubprocVecEnv:
             if proc is not None:
                 proc.terminate()
                 proc.join(timeout=5)
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: failed worker termination must not block pipe cleanup/restart
             pass
         try:
             if self.remotes[i] is not None:
                 self.remotes[i].close()
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: remote may already be closed after worker failure
             pass
         self._spawn(i)
 
@@ -293,26 +293,26 @@ class SubprocVecEnv:
         for r in self.remotes:
             try:
                 r.send(("close", None))
-            except Exception:
+            except Exception:  # SAFE-FALLBACK: worker may have exited before shutdown command
                 pass
         for p in self.processes:
             try:
                 p.join(timeout=5)
                 if p.is_alive():
                     p.terminate()
-            except Exception:
+            except Exception:  # SAFE-FALLBACK: join/terminate is best-effort during environment shutdown
                 pass
         for r in self.remotes:
             try:
                 r.close()
-            except Exception:
+            except Exception:  # SAFE-FALLBACK: pipe close is best-effort after worker shutdown
                 pass
         self.closed = True
 
     def __del__(self):
         try:
             self.close()
-        except Exception:
+        except Exception:  # SAFE-FALLBACK: destructor cannot raise during interpreter teardown
             pass
 
 

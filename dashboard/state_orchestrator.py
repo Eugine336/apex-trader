@@ -81,7 +81,7 @@ class OrchestratorMixin:
                     continue
                 try:
                     payload = json.loads(pj) if isinstance(pj, str) else pj
-                except Exception:
+                except Exception:  # SAFE-FALLBACK: skip malformed persisted orchestrator proposal
                     continue
                 payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
                 proposals.append(payload)
@@ -123,7 +123,7 @@ class OrchestratorMixin:
             try:
                 size_sum += float(p.get("size_multiplier", 0.0) or 0.0)
                 size_cnt += 1
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # SAFE-FALLBACK: omit malformed optional proposal size from aggregate
                 pass
             for d in p.get("dimensions") or []:
                 name = d.get("name", "")
@@ -133,7 +133,7 @@ class OrchestratorMixin:
                 try:
                     acc[0] += float(d.get("multiplier", 1.0) or 1.0)
                     acc[1] += 1
-                except (TypeError, ValueError):
+                except (TypeError, ValueError):  # SAFE-FALLBACK: omit malformed optional dimension multiplier
                     pass
         dimensions = [
             {"name": n, "avg_multiplier": round(s / c, 4) if c else 0.0, "count": c}

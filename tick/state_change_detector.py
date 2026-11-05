@@ -311,7 +311,7 @@ class TickStateChangeDetector:
             for lvl in (self._level_source(symbol) or []):  # type: ignore[misc]
                 try:
                     p = float(lvl)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError):  # SAFE-FALLBACK: ignore malformed optional structural level
                     continue
                 if lo <= p <= hi:
                     return True

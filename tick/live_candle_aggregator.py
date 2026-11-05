@@ -254,7 +254,7 @@ class LiveCandleAggregator:
         for row in df.itertuples(index=False):
             try:
                 row_epoch = pd.Timestamp(row.time).timestamp()
-            except Exception:
+            except Exception:  # SAFE-FALLBACK: skip malformed broker candle row during warm seed
                 continue
             seeded_rows.append(
                 {

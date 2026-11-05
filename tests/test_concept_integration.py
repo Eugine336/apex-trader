@@ -227,3 +227,23 @@ def test_concept_pipeline_import_failure_is_preserved_as_non_market_unknown(monk
     assert diagnostic.provisional is True
     assert diagnostic.measurements["status"] == "pipeline_failed"
     assert diagnostic.measurements["exception_type"] == "ImportError"
+
+def test_faulted_concept_reader_is_preserved_as_runtime_health_evidence(monkeypatch):
+    import cognition.concepts as concepts
+
+    class BrokenConcept:
+        key = "broken_test_module"
+
+        def read(self, symbol, bars_by_tf):
+            raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(concepts, "CONCEPT_MODULES", (BrokenConcept(),))
+    evidence = concepts.run_concepts("XAUUSD", {"H1": []})
+    assert len(evidence) == 1
+    failure = evidence[0]
+    assert failure.source_module == "concept_runtime.broken_test_module"
+    assert failure.polarity == 0.0
+    assert failure.confidence == 0.0
+    assert failure.uncertainty == 1.0
+    assert failure.measurements["source_kind"] == "concept_runtime_diagnostic"
+    assert failure.measurements["non_market_evidence"] is True
