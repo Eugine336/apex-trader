@@ -402,11 +402,11 @@ class ShadowEngine:
                 from brain.session_engine import SessionEngine
                 self._session_engine = SessionEngine()
             except Exception:
-                return True  # cannot evaluate — do not block
+                return False  # unknown session state is not tradeable
         try:
             return bool(self._session_engine.get_status(now).is_tradeable)
         except Exception:
-            return True
+            return False  # session status failure must not be treated as tradeable
 
     # ── Qualification check ───────────────────────────────────────────────
 
