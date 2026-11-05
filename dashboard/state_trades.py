@@ -53,6 +53,7 @@ class TradesMixin(HelpersMixin):
                     tick = tick_store.get_latest(symbol)
                     if tick is not None:
                         current_price = tick.bid if direction == "SHORT" else tick.ask
+# SAFE-FALLBACK: dashboard PnL enrichment is best-effort; unavailable tick data is not converted into a market signal.
                 except Exception:
                     pass
             if current_price == entry_price:
@@ -62,6 +63,7 @@ class TradesMixin(HelpersMixin):
                         current_price = safe_float(getattr(tick, "bid", entry_price), entry_price)
                     elif direction == "SHORT":
                         current_price = safe_float(getattr(tick, "ask", entry_price), entry_price)
+# SAFE-FALLBACK: dashboard PnL enrichment is best-effort; unavailable tick data is not converted into a market signal.
                 except Exception:
                     pass
 
@@ -111,6 +113,7 @@ class TradesMixin(HelpersMixin):
                             stage = "BREAKEVEN"
                         elif getattr(mgmt, "tp1_hit", False):
                             stage = "TP1_HIT"
+# SAFE-FALLBACK: management-stage decoration is display-only; a missing stage does not alter position management.
                 except Exception:
                     pass
 
