@@ -40,6 +40,7 @@ class RiskMixin(HelpersMixin):
         try:
             positions = self._platform_manager.get_all_open_positions()
             open_count = len(positions) if positions else 0
+# SAFE-FALLBACK: this position count is dashboard telemetry only; live risk and sizing use the broker book independently.
         except Exception:
             pass
 
@@ -50,6 +51,7 @@ class RiskMixin(HelpersMixin):
             if cfg is not None:
                 max_open = int(getattr(cfg.risk, "max_open_trades", 6))
                 max_daily = float(getattr(cfg.risk, "max_daily_drawdown_pct", 5.0))
+# SAFE-FALLBACK: dashboard configuration decoration keeps display defaults; execution consumes validated risk configuration.
         except Exception:
             pass
 
@@ -72,6 +74,7 @@ class RiskMixin(HelpersMixin):
                 score_threshold = int(getattr(dd, "current_score_threshold", 85))
                 consecutive_losses = int(getattr(dd, "consecutive_losses", 0))
                 consecutive_wins = int(getattr(dd, "consecutive_wins", 0))
+# SAFE-FALLBACK: failed drawdown decoration does not change the drawdown guard or authorize an order.
             except Exception:
                 pass
 
@@ -101,6 +104,7 @@ class RiskMixin(HelpersMixin):
                 result["avg_latency_ms"] = stats.avg_latency_ms
                 result["spread_is_wide"] = stats.spread_is_wide
                 result["requote_count"] = stats.requote_count
+# SAFE-FALLBACK: execution-quality fields are optional telemetry and are omitted when the monitor is unavailable.
             except Exception:
                 pass
 
@@ -128,12 +132,14 @@ class RiskMixin(HelpersMixin):
                 result["win_rate_today"] = report.win_rate_today
                 result["profit_factor"] = report.profit_factor
                 result["max_drawdown_today"] = report.max_drawdown_today
+# SAFE-FALLBACK: risk-report enrichment is dashboard-only; the risk engine's own gates remain authoritative.
             except Exception:
                 pass
 
         if ctx is not None and ctx.account_risk is not None:
             try:
                 result["account_silos"] = ctx.account_risk.snapshot()
+# SAFE-FALLBACK: account-silo snapshot is optional reporting and is not used to calculate order risk.
             except Exception:
                 pass
 
@@ -141,6 +147,7 @@ class RiskMixin(HelpersMixin):
         if rl is not None and hasattr(rl, "status"):
             try:
                 result["rl"] = rl.status()
+# SAFE-FALLBACK: RL status is optional reporting and cannot grant trade authority.
             except Exception:
                 pass
 
