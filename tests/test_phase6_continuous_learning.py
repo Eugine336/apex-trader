@@ -20,7 +20,6 @@ import time
 import pytest
 
 from adaptive.adaptive_scheduler import AdaptiveSchedulerLoop
-from adaptive.adaptive_weight_provider import AdaptiveWeightProvider
 from adaptive.recommendation_applier import RecommendationApplier
 from adaptive.recommendations import (
     LearningRecommendation,
@@ -30,133 +29,7 @@ from adaptive.recommendations import (
 )
 
 
-# ── AdaptiveWeightProvider ───────────────────────────────────────────────
-
-
-def test_cold_start_returns_static_defaults():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=30)
-    # No trades recorded yet → defaults verbatim.
-    assert p.get_weights() == p._defaults
-    assert abs(sum(p.get_weights().values()) - 1.0) < 1e-6
-
-
-def test_disabled_provider_always_returns_defaults():
-    p = AdaptiveWeightProvider(enabled=False, min_trades=1)
-    for _ in range(50):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)
-    p.recompute()
-    assert p.get_weights() == p._defaults
-
-
-def test_min_trades_gate_blocks_adaptation():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=10)
-    for _ in range(5):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)
-    assert p.recompute() is False
-    assert p.get_weights() == p._defaults
-
-
-def test_weights_stay_bounded_and_normalized():
-    p = AdaptiveWeightProvider(
-        enabled=True, min_trades=5, min_weight=0.05, max_weight=0.40,
-        max_shift_per_cycle=0.03,
-    )
-    # H1 perfect, D1 always loses — strongly skewed signal.
-    for _ in range(40):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)
-        p.record_observation_outcome({"D1": "BULLISH"}, False)
-    for _ in range(50):  # many cycles to push toward the envelope edges
-        p.recompute()
-    w = p.get_weights()
-    assert abs(sum(w.values()) - 1.0) < 1e-9
-    for tf, v in w.items():
-        assert 0.05 - 1e-9 <= v <= 0.40 + 1e-9, (tf, v)
-
-
-def test_max_shift_per_cycle_is_respected():
-    p = AdaptiveWeightProvider(
-        enabled=True, min_trades=5, max_shift_per_cycle=0.03,
-    )
-    for _ in range(40):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)
-        p.record_observation_outcome({"D1": "BULLISH"}, False)
-    before = dict(p.get_weights())
-    p.recompute()
-    after = p.get_weights()
-    for tf in after:
-        assert abs(after[tf] - before[tf]) <= 0.03 + 1e-9, tf
-
-
-def test_accuracy_drives_direction_of_adaptation():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=5, max_shift_per_cycle=0.03)
-    for _ in range(40):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)   # winner
-        p.record_observation_outcome({"D1": "BULLISH"}, False)  # loser
-    p.recompute()
-    w = p.get_weights()
-    assert w["H1"] >= p._defaults["H1"] - 1e-9
-    assert w["D1"] <= p._defaults["D1"] + 1e-9
-
-
-def test_observation_scored_regardless_of_direction():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=1)
-    # A definite observation is scored on the opportunity's OUTCOME, never on
-    # whether its direction matched the taken trade (Constitution §XXIX). H1
-    # produced a confident structural read, so it IS scored even though the
-    # trade lost / the direction differed.
-    p.record_observation_outcome({"H1": "BEARISH"}, False)
-    st = p.status()
-    assert st["samples"]["H1"] == 1
-
-
-def test_silent_timeframe_is_not_scored():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=1)
-    # A timeframe that produced NO observation (empty / neutral read) contributes
-    # nothing that cycle — only observed timeframes are scored.
-    p.record_observation_outcome({"H1": "", "H4": "NEUTRAL"}, True)
-    st = p.status()
-    assert st["samples"]["H1"] == 0
-    assert st["samples"]["H4"] == 0
-
-
-def test_reset_to_defaults():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=5)
-    for _ in range(40):
-        p.record_observation_outcome({"H1": "BULLISH"}, True)
-    p.recompute()
-    p.reset_to_defaults()
-    assert p.get_weights() == p._defaults
-    assert p.status()["total_trades"] == 0
-
-
-def test_persistence_round_trip(tmp_path):
-    path = str(tmp_path / "weights.json")
-    p1 = AdaptiveWeightProvider(enabled=True, min_trades=5, state_path=path)
-    for _ in range(40):
-        p1.record_observation_outcome({"H1": "BULLISH"}, True)
-        p1.record_observation_outcome({"D1": "BULLISH"}, False)
-    p1.recompute()
-    saved = p1.get_weights()
-    # New instance loads the persisted vector + trade count.
-    p2 = AdaptiveWeightProvider(enabled=True, min_trades=5, state_path=path)
-    assert p2.status()["total_trades"] >= 80
-    loaded = p2.get_weights()
-    for tf in saved:
-        assert abs(loaded[tf] - saved[tf]) < 1e-6
-
-
-def test_get_weights_fallback_on_provider_fault():
-    p = AdaptiveWeightProvider(enabled=True, min_trades=1)
-    # Open the min-trades gate so get_weights reaches the live-vector branch,
-    # then corrupt the vector so the copy raises — must fall back, never raise.
-    p.record_observation_outcome({"H1": "BULLISH"}, True)
-    p._weights = None  # type: ignore[assignment]
-    out = p.get_weights()
-    assert out == p._defaults  # transparent fallback to static defaults
-
-
-# Per-timeframe directional-weight hook removed: observations remain uncollapsed
-# until the Cognitive Brain forms and challenges competing hypotheses.
+# Per-timeframe weighting is intentionally not a Brain decision input.
 
 
 # ── RecommendationApplier ────────────────────────────────────────────────
