@@ -128,7 +128,7 @@ class IndicatorContextConcepts:
         wma20=wma(closes[-20:])
         sma20=mean(closes[-20:])
         hma_diffs=[]
-        for end in range(len(closes)-3,len(closes)):
+        for end in range(len(closes)-4,len(closes)):
             series=closes[:end+1]
             hma_diffs.append(2*wma(series[-10:])-wma(series[-20:]))
         hma20=wma(hma_diffs[-4:])
