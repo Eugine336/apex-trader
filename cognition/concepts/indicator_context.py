@@ -41,8 +41,8 @@ def _rsi(values, period=14):
     changes=[b-a for a,b in zip(values,values[1:])]
     gains=[max(x,0.0) for x in changes]
     losses=[max(-x,0.0) for x in changes]
-avg_gain=mean(gains[:period])
-     avg_loss=mean(losses[:period])
+    avg_gain=mean(gains[:period])
+    avg_loss=mean(losses[:period])
     for gain,loss in zip(gains[period:],losses[period:]):
         avg_gain=(avg_gain*(period-1)+gain)/period
         avg_loss=(avg_loss*(period-1)+loss)/period
@@ -102,8 +102,8 @@ class IndicatorContextConcepts:
     covers_lenses=()
 
     def read(self,symbol: str,bars_by_tf: dict[str,list[dict]]) -> list[ConceptReading]:
-ref,ref_tf=reference_price(bars_by_tf)
-         out=[]
+        ref,ref_tf=reference_price(bars_by_tf)
+        out=[]
         for tf,raw in bars_by_tf.items():
             if tf not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[tf]<300: continue
             bars=_clean(raw)
@@ -115,20 +115,20 @@ ref,ref_tf=reference_price(bars_by_tf)
         return out
 
     def _trend(self,tf,bars,ref,ref_tf):
-closes=[b["close"] for b in bars]
+        closes=[b["close"] for b in bars]
         highs=[b["high"] for b in bars]
-         lows=[b["low"] for b in bars]
-ema20=_ema(closes,20)
-         ema50=_ema(closes,50)
+        lows=[b["low"] for b in bars]
+        ema20=_ema(closes,20)
+        ema50=_ema(closes,50)
         if not ema20 or not ema50: return []
         e20,e50=ema20[-1],ema50[-1]
         def wma(values):
             n=len(values)
             return sum(v*w for w,v in enumerate(values,1))/(n*(n+1)/2.0) if n else None
-wma20=wma(closes[-20:])
-         sma20=mean(closes[-20:])
+        wma20=wma(closes[-20:])
+        sma20=mean(closes[-20:])
         hma_diffs=[]
-        for end in range(len(closes)-4,len(closes)):
+        for end in range(len(closes)-3,len(closes)):
             series=closes[:end+1]
             hma_diffs.append(2*wma(series[-10:])-wma(series[-20:]))
         hma20=wma(hma_diffs[-4:])
@@ -151,12 +151,12 @@ wma20=wma(closes[-20:])
             ("Moving averages lag and can whipsaw in ranges; VWMA is omitted without a declared volume series.",)
         )]
         # Wilder directional movement and ADX; strength is separated from direction.
-tr=_true_ranges(bars)
+        tr=_true_ranges(bars)
         plus_dm=[0.0]
-         minus_dm=[0.0]
+        minus_dm=[0.0]
         for prev,current in zip(bars,bars[1:]):
-up=current["high"]-prev["high"]
-             down=prev["low"]-current["low"]
+            up=current["high"]-prev["high"]
+            down=prev["low"]-current["low"]
             plus_dm.append(up if up>down and up>0 else 0.0)
             minus_dm.append(down if down>up and down>0 else 0.0)
         tr_s,plus_s,minus_s=_wilder(tr,14),_wilder(plus_dm,14),_wilder(minus_dm,14)
@@ -166,9 +166,9 @@ up=current["high"]-prev["high"]
             pdi,mdi=100*b/a,100*d/a
             dx.append(100*abs(pdi-mdi)/(pdi+mdi) if pdi+mdi>0 else 0.0)
         if dx:
-adx_series=_wilder(dx,14)
+            adx_series=_wilder(dx,14)
             adx=adx_series[-1]/14.0 if adx_series and adx_series[-1] is not None else mean(dx[-14:])
-             pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
+            pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             mdi=100*minus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             di_side=LONG if pdi>mdi else SHORT if mdi>pdi else FLAT
             strong=adx>=25.0
@@ -183,9 +183,9 @@ adx_series=_wilder(dx,14)
                 ("ADX measures trend strength, not direction; 25 is a conventional reference, not a universal edge threshold.",)
             ))
         # Aroon locates recent extrema; TRIX describes triple-smoothed momentum.
-period=25
+        period=25
         wh=highs[-period:]
-         wl=lows[-period:]
+        wl=lows[-period:]
         aroon_up=100.0*(wh.index(max(wh))+1)/period
         aroon_down=100.0*(wl.index(min(wl))+1)/period
         ema1=[x for x in _ema(closes,15) if x is not None]
@@ -205,29 +205,29 @@ period=25
         return out
 
     def _momentum(self,tf,bars,ref,ref_tf):
-closes=[b["close"] for b in bars]
+        closes=[b["close"] for b in bars]
         highs=[b["high"] for b in bars]
-         lows=[b["low"] for b in bars]
+        lows=[b["low"] for b in bars]
         rsi=_rsi(closes,14)
         e12,e26=_ema(closes,12),_ema(closes,26)
         macd=[a-b for a,b in zip(e12,e26) if a is not None and b is not None]
         signal=_ema(macd,9)
         hist=macd[-1]-signal[-1] if signal and signal[-1] is not None else None
-hh=max(highs[-14:])
-         ll=min(lows[-14:])
+        hh=max(highs[-14:])
+        ll=min(lows[-14:])
         stoch=(100*(closes[-1]-ll)/(hh-ll)) if hh>ll else 50.0
         k_values=[]
         for i in range(len(bars)-14,len(bars)):
-hi=max(highs[i-13:i+1])
-             lo=min(lows[i-13:i+1])
+            hi=max(highs[i-13:i+1])
+            lo=min(lows[i-13:i+1])
             k_values.append(100*(closes[i]-lo)/(hi-lo) if hi>lo else 50.0)
         stoch_d=mean(k_values[-3:])
         typical=[(b["high"]+b["low"]+b["close"])/3 for b in bars[-20:]]
-tp_mean=mean(typical)
-         mean_dev=mean(abs(x-tp_mean) for x in typical)
+        tp_mean=mean(typical)
+        mean_dev=mean(abs(x-tp_mean) for x in typical)
         cci=(typical[-1]-tp_mean)/(0.015*mean_dev) if mean_dev>0 else 0.0
-highest=max(highs[-14:])
-         lowest=min(lows[-14:])
+        highest=max(highs[-14:])
+        lowest=min(lows[-14:])
         williams=-100*(highest-closes[-1])/(highest-lowest) if highest>lowest else -50.0
         roc=(closes[-1]/closes[-13]-1.0)*100.0 if closes[-13] else None
         macd_side=LONG if hist is not None and hist>0 else SHORT if hist is not None and hist<0 else FLAT
@@ -275,18 +275,18 @@ highest=max(highs[-14:])
         )]
 
     def _volatility(self,tf,bars,ref,ref_tf):
-closes=[b["close"] for b in bars]
+        closes=[b["close"] for b in bars]
         highs=[b["high"] for b in bars]
-         lows=[b["low"] for b in bars]
-trs=_true_ranges(bars)
-         atrs=[]
+        lows=[b["low"] for b in bars]
+        trs=_true_ranges(bars)
+        atrs=[]
         for end in range(14,len(trs)+1):
             atrs.append(mean(trs[end-14:end]))
-atr=atrs[-1]
-         atr_rank=percentile_rank(atr,atrs[:-1])
-window=closes[-20:]
+        atr=atrs[-1]
+        atr_rank=percentile_rank(atr,atrs[:-1])
+        window=closes[-20:]
         centre=mean(window)
-         sigma=pstdev(window)
+        sigma=pstdev(window)
         upper,lower=centre+2*sigma,centre-2*sigma
         width=(upper-lower)/centre if centre else None
         ema20=_ema(closes,20)[-1]
@@ -331,14 +331,14 @@ window=closes[-20:]
         )]
 
     def _statistics(self,tf,bars,ref,ref_tf):
-closes=[b["close"] for b in bars]
-         window=closes[-20:]
-centre=mean(window)
-         sigma=pstdev(window)
+        closes=[b["close"] for b in bars]
+        window=closes[-20:]
+        centre=mean(window)
+        sigma=pstdev(window)
         z=(closes[-1]-centre)/sigma if sigma>0 else 0.0
         # A rolling distribution comparison is a diagnostic, not a formal stationarity test.
-first=closes[-40:-20]
-         second=closes[-20:]
+        first=closes[-40:-20]
+        second=closes[-20:]
         mean_shift=mean(second)-mean(first)
         vol_ratio=(pstdev(second)/pstdev(first)) if pstdev(first)>0 else None
         stretched=abs(z)>=2.0
