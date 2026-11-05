@@ -180,7 +180,7 @@ class KnowledgeSource:
             u = getattr(self._adapter, "usable", True)
             return bool(u() if callable(u) else u)
         except Exception:  # noqa: BLE001
-            return True
+            return False  # an unverified adapter is unavailable; no evidence is requested
 
     def _resolve_action(self, capability: str, preferred: str = "") -> str:
         """Turn a semantic capability into its provider action string.
