@@ -1514,8 +1514,8 @@ class CognitiveBrain:
                             f"higher-EV {ac} opportunity ({new_ev:.4f}R) dominates weaker "
                             f"existing position(s) {', '.join(sorted(set(weak)))} — "
                             "consider trimming to free capital")
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[brain] portfolio comparison annotation failed: %s", exc)
 
             # Return every output ranked by EV (demoted ones retain their EV).
             return sorted(outputs, key=self._output_ev, reverse=True)
@@ -1567,8 +1567,8 @@ class CognitiveBrain:
             output.decision.risk_rationale = rationale
             try:
                 output.decision.questions_answered["portfolio_decision"] = rationale
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[brain] decision rationale annotation failed: %s", exc)
             output.campaign = None
             output.direction = FLAT
         except Exception as exc:  # noqa: BLE001
@@ -2506,7 +2506,7 @@ class CognitiveBrain:
                     development_return = float(artifact.expected_return_r)
                     holdout_return = float(artifact.holdout_expected_return_r)
                     expected_return_gap = float(artifact.expected_return_gap)
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: ignore malformed calibration artifact values
                     continue
                 if (
                     favourable_probability is None or favourable_probability > 1.0
@@ -3268,13 +3268,13 @@ class CognitiveBrain:
             if callable(iso):
                 try:
                     return iso()
-                except Exception:
+                except Exception:  # SAFE-FALLBACK: try scalar conversion after ISO conversion fails
                     pass
             item = getattr(value, "item", None)
             if callable(item):
                 try:
                     return json_safe(item())
-                except Exception:
+                except Exception:  # SAFE-FALLBACK: try numeric conversion after item conversion fails
                     pass
             try:
                 numeric = float(value)
