@@ -148,6 +148,7 @@ def find_confirmed_close_deals(
             continue
         try:
             entry_type = int(raw.get("entry", -1))
+# SAFE-FALLBACK: malformed persisted entry type is discarded; it cannot be replayed as a valid domain event.
         except (TypeError, ValueError, OverflowError):
             continue
         if entry_type not in (1, 3):
