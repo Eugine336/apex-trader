@@ -53,7 +53,7 @@ class PriceDeliveryConcepts:
     """Read fair-value gaps, order blocks, balanced ranges and dealing-range location."""
     key = "price_delivery"
     family = "institutional_price_action"
-    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range", "break_retest")
+    covers_methods = ("fair_value_gap", "order_blocks", "balanced_price_range", "dealing_range", "break_retest", "gap_analysis")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -70,6 +70,7 @@ class PriceDeliveryConcepts:
             readings.extend(self._bpr(tf, bars, close, close_tf))
             readings.append(self._dealing_range(tf, bars, close, close_tf))
             readings.extend(self._break_retest(tf, bars, close, close_tf))
+            readings.extend(self._gaps(tf, bars, close, close_tf))
         return readings
 
     def _fvg(self, tf, bars, close, close_tf):
@@ -245,6 +246,51 @@ class PriceDeliveryConcepts:
                  "lookback_bars": 20, "definition": "prior_20_bar_close_break_then_post_break_retest_v1"},
                 bars, close, close_tf,
                 ("A 20-bar boundary is an explicit mechanical reference, not necessarily a major market swing.",)
+            )]
+        return []
+
+
+    def _gaps(self, tf, bars, close, close_tf):
+        seconds = TIMEFRAME_SECONDS.get(tf)
+        if seconds is None:
+            return []
+        for i in range(len(bars)-1, 0, -1):
+            previous, current = bars[i-1], bars[i]
+            if not (previous.get("source_timestamp_verified") is True
+                    and current.get("source_timestamp_verified") is True):
+                continue
+            t0 = finite(previous.get("timestamp_epoch"))
+            t1 = finite(current.get("timestamp_epoch"))
+            if t0 is None or t1 is None or t1 <= t0 or t1-t0 < seconds*1.5:
+                continue
+            prior_close, opening = previous["close"], current["open"]
+            if opening == prior_close:
+                continue
+            side = LONG if opening > prior_close else SHORT
+            lo, hi = sorted((prior_close, opening))
+            later = bars[i+1:]
+            filled = any(x["low"] <= lo for x in later) if side == LONG else any(x["high"] >= hi for x in later)
+            invalid = any(x["close"] < lo for x in later) if side == LONG else any(x["close"] > hi for x in later)
+            accepted = bars[-1]["close"] > hi if side == LONG else bars[-1]["close"] < lo
+            active = not filled and not invalid and accepted
+            return [_record(
+                "gap_analysis", tf, EvidenceDomain.STRUCTURE,
+                f"{side} timestamped discontinuity after {t1-t0:.0f}s; prior close={prior_close:.10g}; "
+                f"next open={opening:.10g}; gap zone={lo:.10g}–{hi:.10g}; "
+                f"filled={filled}; accepted={accepted}; invalidated={invalid}.",
+                [_imp(side, f"{side} gap remains unfilled with price accepted beyond the gap",
+                      active, "A completed close through the opposite gap boundary invalidates the directional gap read",
+                      stop=lo if side == LONG else hi,
+                      requires=("continued acceptance and follow-through", "verify venue/session cause"),
+                      conflicts=("gap has been filled or rejected",) if filled or invalid else ()),
+                 _imp(FLAT, "A time discontinuity can be a session closure or missing feed data, not a price imbalance thesis",
+                      True, "Not applicable", requires=("verify trading calendar and broker feed continuity",))],
+                {"direction": side, "gap_low": lo, "gap_high": hi, "previous_close": prior_close,
+                 "next_open": opening, "elapsed_seconds": t1-t0, "timeframe_seconds": seconds,
+                 "filled": filled, "accepted": accepted, "invalidated": invalid,
+                 "definition": "verified_time_gap_and_open_close_discontinuity_v1"},
+                bars, close, close_tf,
+                ("Without venue calendar and feed-health context, a timestamp gap cannot be attributed to a scheduled session close.",)
             )]
         return []
 
