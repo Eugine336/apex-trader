@@ -210,6 +210,7 @@ async def build_snapshot(
         for p in open_positions_live:
             try:
                 open_pnl += float(p.get("pnl_dollars") or 0.0)
+# SAFE-FALLBACK: malformed PnL on one position is excluded rather than inventing a numeric value for the stream.
             except (TypeError, ValueError):
                 continue
 
