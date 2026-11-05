@@ -49,7 +49,7 @@ def _timestamp_epoch(value: Any) -> float | None:
                 return None
             parsed = float(stamp())
             return parsed if isfinite(parsed) and parsed > 0 else None
-        except (TypeError, ValueError, OverflowError, OSError):
+        except (TypeError, ValueError, OverflowError, OSError):  # SAFE-FALLBACK: try numeric timestamp parsing next
             pass
     numeric = _safe_float(value)
     if numeric is not None and numeric > 0:
@@ -103,7 +103,7 @@ def _rows(
                 for name in names:
                     try:
                         return row.get(name, None) if callable(getattr(row, "get", None)) else row[name]
-                    except (KeyError, TypeError, IndexError, ValueError):
+                    except (KeyError, TypeError, IndexError, ValueError):  # SAFE-FALLBACK: try the next provider column alias
                         continue
                 return None
 
@@ -112,7 +112,7 @@ def _rows(
                 for name in names:
                     try:
                         raw = row.get(name, None) if callable(getattr(row, "get", None)) else row[name]
-                    except (KeyError, TypeError, IndexError, ValueError):
+                    except (KeyError, TypeError, IndexError, ValueError):  # SAFE-FALLBACK: try the next provider value alias
                         continue
                     parsed = _safe_float(raw)
                     if parsed is not None:
