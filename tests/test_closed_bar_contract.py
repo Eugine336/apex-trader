@@ -203,8 +203,11 @@ def test_wyckoff_spring_and_upthrust_are_mirrored_without_symbol_bias():
     })
     original = pd.DataFrame(rows)
     mirrored = original.copy()
-    for column in ("open", "high", "low", "close"):
-        mirrored[column] = 200.0 - original[column]
+    mirrored["open"] = 200.0 - original["open"]
+    mirrored["close"] = 200.0 - original["close"]
+    # Reflection swaps extrema: new high is reflected old low, and vice versa.
+    mirrored["high"] = 200.0 - original["low"]
+    mirrored["low"] = 200.0 - original["high"]
     engine = WyckoffEngine(pip_size=0.01)
     high, low, _ = engine._range_state(original)
     m_high, m_low, _ = engine._range_state(mirrored)
