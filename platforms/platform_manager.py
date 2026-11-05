@@ -831,7 +831,7 @@ class PlatformManager:
         for key, info in self.get_account_summary().items():
             try:
                 bal = float(info.balance)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # SAFE-FALLBACK: omit account with malformed balance from summary
                 continue
             if bal >= 0:
                 balances[key] = bal
