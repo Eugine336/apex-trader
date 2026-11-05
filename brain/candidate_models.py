@@ -44,6 +44,7 @@ def _opportunity_score(opportunity: Any) -> float:
         if v is not None:
             try:
                 return float(v)
+# SAFE-FALLBACK: malformed optional candidate feature is excluded; the explicit zero default below is conservative.
             except (TypeError, ValueError):
                 continue
     return 0.0
