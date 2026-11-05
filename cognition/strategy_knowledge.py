@@ -47,6 +47,8 @@ class StrategyLensAssessment:
             "reasons": list(self.reasons),
             "missing_context": list(self.missing_context),
             "data_requirements": list(self.data_requirements),
+            "validation_requirements_not_verified": list(self.data_requirements),
+            "validation_state": "relevance_only_not_strategy_validation",
             "limitation": self.limitation,
         }
 
