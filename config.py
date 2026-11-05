@@ -3793,6 +3793,10 @@ class CognitionConfig:
     degrade_on_unknown_council: bool = True
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
+    # Native concept intelligence fetches completed OHLCV independently of
+    # optional advisors. Defaults are bounded for broker/API throughput.
+    concept_timeframes: tuple[str, ...] = ("D1", "H4", "H1", "M5")
+    concept_history_bars: int = 100
     emit_operator_notifications: bool = True
     # Event-driven "breathing" (Part XII): when enabled, a meaningful shift in a
     # symbol's forming-bar read wakes the Brain to reason on THAT symbol at once,
