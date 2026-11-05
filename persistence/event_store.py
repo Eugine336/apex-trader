@@ -170,6 +170,7 @@ class EventStore:
             )
             try:
                 self._conn.close()
+# SAFE-FALLBACK: close failure must not prevent quarantining a corrupt database.
             except Exception:
                 pass
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -201,6 +202,7 @@ class EventStore:
                 )
                 try:
                     self._conn.close()
+# SAFE-FALLBACK: close failure must not prevent quarantining a corrupt database.
                 except Exception:
                     pass
                 try:
@@ -225,6 +227,7 @@ class EventStore:
             )
             try:
                 self._conn.close()
+# SAFE-FALLBACK: close failure must not prevent quarantining a corrupt database.
             except Exception:
                 pass
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
