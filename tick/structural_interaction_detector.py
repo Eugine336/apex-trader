@@ -562,18 +562,22 @@ def _extract_levels(wm: Any, max_levels: int) -> "list[StructuralLevel]":
     levels: list[StructuralLevel] = []
     try:
         levels.extend(_fvg_levels(wm))
+# SAFE-FALLBACK: this independent FVG reader contributes no levels on fault; other structural sources still run.
     except Exception:  # noqa: BLE001
         pass
     try:
         levels.extend(_order_block_levels(wm))
+# SAFE-FALLBACK: this independent order-block reader contributes no levels on fault; other structural sources still run.
     except Exception:  # noqa: BLE001
         pass
     try:
         levels.extend(_liquidity_levels(wm))
+# SAFE-FALLBACK: this independent liquidity reader contributes no levels on fault; other structural sources still run.
     except Exception:  # noqa: BLE001
         pass
     try:
         levels.extend(_structure_levels(wm))
+# SAFE-FALLBACK: this independent structure reader contributes no levels on fault; other structural sources still run.
     except Exception:  # noqa: BLE001
         pass
     # De-duplicate by key, preserving first occurrence, and cap.
