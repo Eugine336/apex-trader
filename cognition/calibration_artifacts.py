@@ -544,6 +544,16 @@ class CalibrationProducer:
                         "NON_ORIGINATION_DECISION",
                     }
                 )
+                point_in_time_valid = self._valid_point_in_time(payload)
+                # Calibration refreshes are atomic across the directional ledger.
+                # A broken quote, evidence lineage or disposition on any matured
+                # candidate invalidates the refresh instead of allowing a clean
+                # sibling family to conceal a partial/corrupt source.
+                if (
+                    decision_epoch + 300 <= current
+                    and (not quote_valid or not point_in_time_valid or not disposition_valid)
+                ):
+                    invalid_directional_candidates += 1
                 row = {
                     "candidate_id": candidate_id,
                     "decision_id": decision_id,
@@ -554,7 +564,7 @@ class CalibrationProducer:
                     "payload": payload,
                     "quote_valid": quote_valid,
                     "risk_distance": risk_distance if quote_valid else None,
-                    "provenance_valid": self._valid_point_in_time(payload),
+                    "provenance_valid": point_in_time_valid,
                     "disposition_valid": disposition_valid,
                 }
                 groups.setdefault((decision_id, direction, candidate_family), []).append(row)
