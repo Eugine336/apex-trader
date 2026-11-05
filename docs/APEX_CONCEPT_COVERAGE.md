@@ -133,11 +133,11 @@ FULL 1 · MEASURED 37 · UNMEASURED 0
 
 ## Registered concept modules
 
-- `swing_geometry` (structure_geometry) — methods: fibonacci, ote, trend_channels; lenses: -
-- `structure_patterns` (classical_structure) — methods: chart_patterns, supply_demand; lenses: -
-- `indicator_context` (technical_indicator_context) — methods: moving_averages, rsi, macd, stochastic, cci_williams, roc_momentum, adx_directional, aroon_trix, atr_true_range, bollinger, keltner_donchian, realized_volatility, zscore_mean; lenses: -
 - `crt` (ict_smc_named_models) — methods: crt; lenses: crt
 - `market_structure` (structure) — methods: market_structure, internal_external_structure; lenses: -
 - `liquidity` (liquidity) — methods: liquidity_pools, liquidity_sweep; lenses: -
 - `price_delivery` (institutional_price_action) — methods: fair_value_gap, order_blocks, balanced_price_range, dealing_range, break_retest, gap_analysis; lenses: -
 - `price_action` (price_action) — methods: candlestick_patterns, candle_microstructure, support_resistance, failed_auction; lenses: -
+- `swing_geometry` (structure_geometry) — methods: fibonacci, ote, trend_channels; lenses: -
+- `structure_patterns` (classical_structure) — methods: chart_patterns, supply_demand; lenses: -
+- `indicator_context` (technical_indicator_context) — methods: moving_averages, rsi, macd, stochastic, cci_williams, roc_momentum, adx_directional, aroon_trix, atr_true_range, bollinger, keltner_donchian, realized_volatility, zscore_mean; lenses: -
