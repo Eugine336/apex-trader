@@ -31,6 +31,7 @@ def _apply_log_level(level: str) -> None:
     lvl = str(level or "INFO").upper()
     try:
         logger.remove()
+# SAFE-FALLBACK: removing a missing logger sink is idempotent; the stderr sink is installed immediately afterward.
     except Exception:  # noqa: BLE001
         pass
     logger.add(sys.stderr, level=lvl)
