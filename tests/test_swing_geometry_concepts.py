@@ -18,7 +18,7 @@ def _history():
     rows[23]["high"] = 103.0
     rows[24].update({"open": 108.0, "high": 110.0, "low": 107.0, "close": 109.0})
     rows[25]["high"] = 103.0
-    rows[-1].update({"open": 101.0, "high": 103.0, "low": 100.5, "close": 102.0})
+    rows[-1].update({"open": 100.1, "high": 100.5, "low": 99.5, "close": 100.0})
     return rows
 
 
