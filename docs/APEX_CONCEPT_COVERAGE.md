@@ -11,6 +11,7 @@ FULL 41 · MEASURED 28 · UNMEASURED 10
 |---|---|---|---|
 | execution | Spread, commission, slippage and financing | `execution_cost` | MEASURED |
 | institutional_price_action | Balanced Price Range | `balanced_price_range` | FULL |
+| institutional_price_action | Breaker block role reversal | `breaker_block` | FULL |
 | institutional_price_action | Candle Range Theory | `crt` | FULL |
 | institutional_price_action | Dealing range, premium and discount | `dealing_range` | FULL |
 | institutional_price_action | Fair Value Gap and imbalance | `fair_value_gap` | FULL |
@@ -18,6 +19,7 @@ FULL 41 · MEASURED 28 · UNMEASURED 10
 | institutional_price_action | Optimal Trade Entry geometry | `ote` | FULL |
 | institutional_price_action | Order blocks and mitigation | `order_blocks` | FULL |
 | institutional_price_action | Power of Three hypothesis | `power_of_three` | FULL |
+| institutional_price_action | Relative-range displacement | `displacement` | FULL |
 | instrument_mechanics | Contract, tick, margin and trading constraints | `instrument_economics` | MEASURED |
 | instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | UNMEASURED |
 | instrument_mechanics | Futures and options context | `derivatives` | MEASURED |
