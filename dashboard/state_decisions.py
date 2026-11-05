@@ -137,6 +137,7 @@ class DecisionMixin:
                         continue
                     try:
                         records.append(json.loads(line))
+# SAFE-FALLBACK: malformed decision-log JSON is skipped; only parseable persisted decisions are displayed.
                     except json.JSONDecodeError:
                         continue
                     if len(records) >= max_records:
