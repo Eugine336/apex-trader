@@ -1,9 +1,7 @@
 """APEX TRADER — Dashboard Adaptive Learning Mixin (Phase 6).
 
-Surfaces the continuous-learning closure: the bounded adaptive evidence weights
-(vs their static defaults), the per-timeframe predictive accuracy that drives
-them, the recommendation applier's recent bounded changes, and the adaptive
-scheduler's run counts. Read-only — never makes or mutates a decision.
+Surfaces approved recommendation-application activity, adaptive scheduler
+runs, and registered tuning agents. Read-only — never makes or mutates a decision.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from loguru import logger
 
 
 class AdaptiveLearningMixin:
-    """get_adaptive_learning() — weights, accuracy, applier + scheduler state."""
+    """get_adaptive_learning() — applier, scheduler and tuner state."""
 
     def get_adaptive_learning(self) -> dict:
         ctx = getattr(self, "_system_context", None)
