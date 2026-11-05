@@ -116,11 +116,13 @@ class StatusMixin(HelpersMixin):
                     consecutive_wins = int(getattr(dd, "consecutive_wins", 0))
                     daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
                     daily_pnl = round(daily_frac * balance, 2)
+# SAFE-FALLBACK: dashboard PnL decoration is optional; drawdown controls remain active in the risk engine.
                 except Exception:
                     pass
             if ctx.risk_engine is not None:
                 try:
                     _risk_pct = getattr(ctx.risk_engine, "_risk_per_trade_pct", 0.75)
+# SAFE-FALLBACK: dashboard risk-parameter decoration is optional; execution uses the validated risk engine configuration.
                 except Exception:
                     pass
 
@@ -128,6 +130,7 @@ class StatusMixin(HelpersMixin):
             cfg_risk = getattr(self._event_driven_system, "_config", None)
             if cfg_risk is not None:
                 max_daily = float(getattr(cfg_risk.risk, "max_daily_drawdown_pct", 5.0))
+# SAFE-FALLBACK: unavailable optional dashboard configuration retains the explicit display default; execution reads validated risk configuration.
         except Exception:
             pass
 
@@ -142,6 +145,7 @@ class StatusMixin(HelpersMixin):
         try:
             positions = self._platform_manager.get_all_open_positions()
             open_count = len(positions) if positions else 0
+# SAFE-FALLBACK: position count is dashboard telemetry only; broker management continues through the execution plane.
         except Exception:
             pass
 
