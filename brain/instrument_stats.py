@@ -495,6 +495,7 @@ class InstrumentStatsStore:
                 try:
                     self._store[str(sym).upper()] = InstrumentStats.from_dict(blob)
                     loaded += 1
+# SAFE-FALLBACK: corrupt per-instrument statistics are excluded; valid instruments continue to load independently.
                 except Exception:  # noqa: BLE001 — skip a corrupt entry
                     continue
         return loaded
