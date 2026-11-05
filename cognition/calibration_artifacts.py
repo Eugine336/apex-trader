@@ -343,6 +343,15 @@ class CalibrationProducer:
                         duplicate_outcome_keys.add(key)
                     else:
                         outcome_map[key] = payload
+            # Duplicate outcome identities make the event ledger ambiguous.
+            # Do not issue partial artifacts for unaffected families: a partial
+            # refresh would conceal a corrupted/inconsistent calibration source.
+            if duplicate_outcome_keys:
+                _LOG.error(
+                    "Calibration refresh rejected for %s: %d duplicate candidate/horizon outcome key(s)",
+                    sym, len(duplicate_outcome_keys),
+                )
+                return []
             disposition_map = {}
             for row in dispositions:
                 payload = self._payload(row)
