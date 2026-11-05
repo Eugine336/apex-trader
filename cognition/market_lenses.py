@@ -49,6 +49,7 @@ def _timestamp_epoch(value: Any) -> float | None:
                 return None
             parsed = float(stamp())
             return parsed if isfinite(parsed) and parsed > 0 else None
+# SAFE-FALLBACK: invalid callable timestamp falls through to the verified numeric timestamp parser.
         except (TypeError, ValueError, OverflowError, OSError):
             pass
     numeric = _safe_float(value)
@@ -103,6 +104,7 @@ def _rows(
                 for name in names:
                     try:
                         return row.get(name, None) if callable(getattr(row, "get", None)) else row[name]
+# SAFE-FALLBACK: absent optional row field is skipped; no market value is synthesized.
                     except (KeyError, TypeError, IndexError, ValueError):
                         continue
                 return None
@@ -112,6 +114,7 @@ def _rows(
                 for name in names:
                     try:
                         raw = row.get(name, None) if callable(getattr(row, "get", None)) else row[name]
+# SAFE-FALLBACK: absent optional numeric field is skipped; no market value is synthesized.
                     except (KeyError, TypeError, IndexError, ValueError):
                         continue
                     parsed = _safe_float(raw)
