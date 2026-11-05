@@ -97,3 +97,18 @@ def test_absent_evidence_marks_all_lenses_not_evaluable():
     assert len(results) == len(STRATEGY_LENSES)
     assert all(item["status"] == "not_evaluable" for item in results)
     assert all(item["limitation"] for item in results)
+
+
+def test_relevant_lens_does_not_claim_its_full_validation_requirements_are_satisfied():
+    evidence = _evidence(
+        "structure",
+        "market_lenses.m5.structure",
+        "support resistance swing high",
+    )
+    result = next(
+        item for item in assess_strategy_lenses([evidence])
+        if item["key"] == "support_resistance"
+    )
+    assert result["status"] == "relevant"
+    assert result["validation_state"] == "relevance_only_not_strategy_validation"
+    assert result["validation_requirements_not_verified"] == result["data_requirements"]
