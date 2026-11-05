@@ -20,6 +20,7 @@ from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
 from cognition.concepts.power_of_three import PowerOfThreeConcepts
 from cognition.concepts.regime_switching import RegimeSwitchingConcepts
+from cognition.contracts import Evidence, EvidenceDomain
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -50,9 +51,30 @@ def run_concepts(symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[Any]:
         try:
             for reading in module.read(symbol, bars_by_tf):
                 evidence.append(reading_to_evidence(symbol, reading))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — one failed lens must not stop other readers
+            module_key = str(getattr(module, "key", "unknown") or "unknown")
             logger.warning("[concepts] %s failed for %s: %s: %s",
-                           getattr(module, "key", "?"), symbol, type(exc).__name__, exc)
+                           module_key, symbol, type(exc).__name__, exc)
+            evidence.append(Evidence(
+                source_module=f"concepts.integrity.{module_key}",
+                domain=EvidenceDomain.OTHER,
+                symbol=symbol,
+                observation=(
+                    f"Concept module {module_key} failed for {symbol}; its analytical "
+                    "coverage is unavailable for this market read."
+                ),
+                confidence=0.0,
+                uncertainty=1.0,
+                polarity=0.0,
+                measurements={
+                    "source_kind": "concept_module_failure",
+                    "concept_module": module_key,
+                    "exception_type": type(exc).__name__,
+                    "failure_is_not_market_evidence": True,
+                },
+                data_basis="concept_module_integrity",
+                independence_group=f"concept_module_failure:{symbol}:{module_key}",
+            ))
     return evidence
 
 
