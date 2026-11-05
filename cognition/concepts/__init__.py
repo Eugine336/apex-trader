@@ -10,12 +10,14 @@ from cognition.concepts.base import (
     percentile_rank, reading_to_evidence,
 )
 from cognition.concepts.crt import CandleRangeTheory
+from cognition.concepts.market_structure import MarketStructure
 
 logger = logging.getLogger("apex.cognition.concepts")
 
 # Every concept module registers here. Order is not priority: the Brain weighs readings.
 CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     CandleRangeTheory(),
+    MarketStructure(),
 )
 
 
