@@ -203,6 +203,7 @@ def _closes(candles: Sequence) -> List[float]:
             v = getattr(c, "close", None)
         try:
             f = float(v)
+# SAFE-FALLBACK: malformed individual close is excluded; regime statistics use only valid finite prices.
         except (TypeError, ValueError):
             continue
         if math.isfinite(f):
