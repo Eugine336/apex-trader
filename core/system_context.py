@@ -1382,6 +1382,44 @@ class SystemContext:
                                 "cost_verified": False,
                                 "cost_source": "configured fallback; live quote unavailable"}
 
+                # System 1 — feed every completed broker timeframe through the
+                # native concept registry. This is deliberately independent of
+                # the optional AI advisor and does not create execution authority.
+                _default_concept_timeframes = ("D1", "H4", "H1", "M15", "M5", "M1")
+                _configured_concept_timeframes = getattr(
+                    cog_cfg, "concept_timeframes", _default_concept_timeframes,
+                ) if cog_cfg is not None else _default_concept_timeframes
+                if isinstance(_configured_concept_timeframes, str):
+                    _configured_concept_timeframes = _configured_concept_timeframes.split(",")
+                _concept_timeframes = tuple(dict.fromkeys(
+                    str(item or "").strip().upper()
+                    for item in (_configured_concept_timeframes or _default_concept_timeframes)
+                    if str(item or "").strip().upper() in {"M1", "M5", "M15", "H1", "H4", "D1"}
+                )) or _default_concept_timeframes
+                try:
+                    _concept_history_bars = max(
+                        100,
+                        int(getattr(cog_cfg, "concept_history_bars", 120)
+                            if cog_cfg is not None else 120),
+                    )
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
+                    _concept_history_bars = 120
+
+                def _concept_market_source(symbol: str) -> list:
+                    """Fetch source-attested OHLCV and emit native concept evidence."""
+                    frames = platform_manager.fetch_market_data(
+                        symbol,
+                        timeframes=list(_concept_timeframes),
+                        count=_concept_history_bars,
+                        include_forming=True,
+                    )
+                    from cognition.market_lenses import analyze_market_frames
+                    return analyze_market_frames(
+                        symbol,
+                        frames,
+                        source_includes_forming_bar=True,
+                    )
+
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
                     per_module=bool(
@@ -1398,6 +1436,7 @@ class SystemContext:
                     reasoning=_reasoning_orch,
                     knowledge=ctx.knowledge_source,
                     execution_cost_source=_execution_cost_source,
+                    concept_source=_concept_market_source,
                 )
                 # Part XXI — record + grade every council consultation.
                 if ctx.consultation_ledger is not None:
