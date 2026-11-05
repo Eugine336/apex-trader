@@ -1139,12 +1139,13 @@ class BrainReasoner:
                 trend_timeframes = int(regime.get("trend_timeframes", 0) or 0)
             except (TypeError, ValueError):
                 trend_timeframes = 0
-            has_directional_thesis = any(
-                h.direction_implication in (LONG, SHORT) for h in hyps
-            )
+            # Do not suppress a regime-derived continuation explanation merely
+            # because another branch already produced a directional thesis.
+            # In particular, a mean-reversion reading must be challenged by an
+            # independently observed prevailing trend, and vice versa. Both
+            # alternatives remain hypotheses for Brain comparison, not votes.
             if (
-                not has_directional_thesis
-                and trend_timeframes >= 2
+                trend_timeframes >= 2
                 and trend_context in ("uptrend", "downtrend")
             ):
                 direction = LONG if trend_context == "uptrend" else SHORT
