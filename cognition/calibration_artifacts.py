@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import threading
 import time
@@ -25,6 +26,7 @@ _REGISTRY: dict[str, "CalibrationArtifact"] = {}
 _REGISTRY_LOCK = threading.RLock()
 _DEFAULT_PRODUCER: Optional["CalibrationProducer"] = None
 _DEFAULT_LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
 
 _CANDIDATE_EVENT = "COGNITIVE_CANDIDATE_SNAPSHOT"
 _OUTCOME_EVENT = "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
@@ -849,7 +851,11 @@ class CalibrationProducer:
                         _register_artifact(artifact)
                         artifacts.append(artifact)
             return artifacts
-        except Exception:
+        except Exception as exc:
+            _LOG.exception(
+                "Calibration artifact refresh failed for %s (%s)",
+                sym, type(exc).__name__,
+            )
             return []
 
     def evidence_for(self, symbol: str, *, now: Optional[float] = None) -> list[Evidence]:
