@@ -107,7 +107,7 @@ class StructurePatternConcepts:
             confirmed_candidates = [item for item in double_candidates if item[0]]
             chosen = max(
                 confirmed_candidates or double_candidates,
-                key=lambda item: (item[1], item[2]),
+                key=lambda item: (item[0], item[2] == "double_top", item[1]),
             )
             _, _, pattern_tag, direction, invalid, neckline = chosen
             tags.append(pattern_tag)
