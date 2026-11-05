@@ -60,10 +60,12 @@ def _urllib_mcp_transport(url: str, headers: dict, body: bytes, timeout: float) 
         hdrs = {}
         try:
             detail = exc.read().decode("utf-8", "replace")[:400]
+# SAFE-FALLBACK: an unreadable error body is omitted; HTTP status and transport failure remain available.
         except Exception:  # noqa: BLE001
             pass
         try:
             hdrs = {str(k).lower(): str(v) for k, v in exc.headers.items()}
+# SAFE-FALLBACK: missing response headers are omitted; callers still receive the HTTP status and parsed body.
         except Exception:  # noqa: BLE001
             pass
         return int(exc.code or 0), hdrs, detail
@@ -93,6 +95,7 @@ def _extract_jsonrpc_messages(text: str, content_type: str) -> "list[dict]":
                 continue
             try:
                 obj = json.loads(payload)
+# SAFE-FALLBACK: malformed stream fragments are discarded; only valid JSON objects enter the message list.
             except Exception:  # noqa: BLE001
                 continue
             if isinstance(obj, dict):
