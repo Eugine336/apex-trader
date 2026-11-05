@@ -18,6 +18,7 @@ from cognition.concepts.swing_geometry import SwingGeometryConcepts
 from cognition.concepts.structure_patterns import StructurePatternConcepts
 from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
+from cognition.concepts.power_of_three import PowerOfThreeConcepts
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -32,6 +33,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     StructurePatternConcepts(),
     IndicatorContextConcepts(),
     PivotPointConcepts(),
+    PowerOfThreeConcepts(),
 )
 
 
