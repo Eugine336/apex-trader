@@ -148,6 +148,7 @@ def configure_structured_logging(
             parent = _os.path.dirname(str(_p))
             if parent:
                 _os.makedirs(parent, exist_ok=True)
+# SAFE-FALLBACK: file-sink directory creation is optional; the logging setup retains its configured non-file sinks.
         except Exception:  # noqa: BLE001
             pass
 
