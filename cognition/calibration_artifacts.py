@@ -358,6 +358,16 @@ class CalibrationProducer:
                     payload["_event_seq"] = event_seq
                     disposition_map[candidate_id] = payload
 
+            # Duplicate candidate or outcome records make the dataset ambiguous.
+            # Fail the entire refresh closed rather than issuing artifacts for
+            # unaffected cohorts while the shared ledger is known to be corrupt.
+            if duplicate_candidate_ids or duplicate_outcome_keys:
+                _LOG.error(
+                    "Calibration refresh rejected for %s: duplicate candidate IDs=%d, duplicate outcome keys=%d",
+                    sym, len(duplicate_candidate_ids), len(duplicate_outcome_keys),
+                )
+                return []
+
             groups: dict[tuple[str, str, str], list[dict]] = {}
             invalid_directional_candidates = 0
             for candidate_id, payload in candidate_map.items():
