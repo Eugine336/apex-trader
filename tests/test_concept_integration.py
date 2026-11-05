@@ -68,7 +68,8 @@ def _state(frames):
 
 def test_candles_produce_a_concept_reading_in_the_live_evidence_path():
     state = _state({"H1": _crt_frame()})
-    readings = [e for e in state.evidence if e.measurements.get("source_kind") == "concept_reading"]
+    readings = [e for e in state.evidence if e.measurements.get("source_kind") == "concept_reading"
+                and e.measurements.get("concept") == "crt"]
     assert [e.source_module for e in readings] == ["concept.crt.h1"]
     imp = readings[0].measurements["implications"][0]
     assert imp["direction"] == "LONG" and imp["activated"] is True

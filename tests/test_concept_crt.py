@@ -166,7 +166,8 @@ def test_uses_only_completed_bars_removing_the_last_bar_changes_the_phase():
 
 
 def test_evidence_carries_the_full_reading_and_is_not_a_vote():
-    evidence = run_concepts("EURUSD", {"H1": _with_bullish_crt()})
+    evidence = [e for e in run_concepts("EURUSD", {"H1": _with_bullish_crt()})
+                if e.measurements["concept"] == "crt"]
     assert len(evidence) == 1
     ev = evidence[0]
     m = ev.measurements
