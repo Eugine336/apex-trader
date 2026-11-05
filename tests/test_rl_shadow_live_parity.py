@@ -172,6 +172,25 @@ class TestSessionGate:
         eng.open_shadow_trade("EURUSD", _signal("EURUSD", 1), 1.1000, 0.0020, 0.0001)
         assert "EURUSD" not in eng.open_trades
 
+
+
+    def test_session_gate_fails_closed_when_session_engine_cannot_initialize(self, tmp_path, monkeypatch):
+        import builtins
+
+        eng = _engine(tmp_path)
+        eng.session_filter_enabled = True
+        eng._session_engine = None
+        original_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "brain.session_engine":
+                raise ImportError("simulated session module failure")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        eng.open_shadow_trade("EURUSD", _signal("EURUSD", 1), 1.1000, 0.0020, 0.0001)
+        assert "EURUSD" not in eng.open_trades
+
     def test_tradeable_session_allows_fx_entry(self, tmp_path):
         eng = _engine(tmp_path)
         eng.session_filter_enabled = True
