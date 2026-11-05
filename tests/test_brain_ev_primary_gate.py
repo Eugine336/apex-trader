@@ -57,6 +57,8 @@ class _Reasoner:
 
 def _state(
     symbol: str = "EURUSD", polarity: float = 0.8, expected_return_r: float = 0.8,
+    *, brier_score: float = 0.17, reliability_gap: float = 0.08,
+    probability: float = 0.7,
 ) -> MarketState:
     # Two market-analysis domains plus explicit reasoning/council metadata. Tests
     # should not accidentally rely on missing coverage being treated as healthy.
@@ -102,7 +104,8 @@ def _state(
     from test_support.calibration import register_test_calibration
     artifact = register_test_calibration(
         symbol, side, horizon_seconds=300,
-        probability=0.7, expected_return_r=expected_return_r,
+        probability=probability, brier_score=brier_score,
+        reliability_gap=reliability_gap, expected_return_r=expected_return_r,
         holdout_expected_return_r=expected_return_r,
         expected_return_gap=0.0,
     )
@@ -203,3 +206,19 @@ def test_positive_ev_does_not_authorize_when_execution_cost_is_unverified():
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
     assert "UNVERIFIED" in out.decision.questions_answered["execution_cost_verification"]
+
+
+def test_calibration_quality_does_not_veto_positive_historical_expectancy():
+    # Calibration is a risk-sizing input, not an independent permission gate.
+    # Historical expectancy remains producer-attested and positive on both
+    # development and untouched holdout samples.
+    state = _state(
+        expected_return_r=0.45,
+        brier_score=0.95,
+        reliability_gap=0.90,
+        probability=0.01,
+    )
+    out = _brain(0.45).reason(state)
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.decision.expected_value > 0.0
+    assert out.campaign is not None
