@@ -145,6 +145,7 @@ def _returns(closes: Sequence[float]) -> List[float]:
     for c in closes or []:
         try:
             f = float(c)
+# SAFE-FALLBACK: malformed individual close is excluded; invalid prices never enter risk statistics.
         except (TypeError, ValueError):
             continue
         if not math.isfinite(f):
