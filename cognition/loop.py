@@ -989,13 +989,13 @@ class CognitionLoop:
                 if callable(iso):
                     try:
                         return iso()
-                    except Exception:
+                    except Exception:  # SAFE-FALLBACK: try scalar conversion after ISO conversion fails
                         pass
                 item = getattr(value, "item", None)
                 if callable(item):
                     try:
                         return _json_safe(item())
-                    except Exception:
+                    except Exception:  # SAFE-FALLBACK: try numeric conversion after item conversion fails
                         pass
                 try:
                     number = float(value)
@@ -1040,7 +1040,7 @@ class CognitionLoop:
             for item in fresh_items:
                 try:
                     source_epoch = float(getattr(item, "source_timestamp_epoch", None))
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed source-time evidence
                     continue
                 evidence_symbol = str(getattr(item, "symbol", "") or "").strip().upper()
                 evidence_id = str(getattr(item, "evidence_id", "") or "")
@@ -1118,7 +1118,7 @@ class CognitionLoop:
                             "source_module": str(getattr(item, "source_module", "") or ""),
                             "evidence_id": evidence_id,
                         })
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed quote fields
                     continue
             reference_quote = max(
                 quote_candidates,
@@ -1413,7 +1413,7 @@ class CognitionLoop:
                             "source_module": str(getattr(evidence, "source_module", "") or ""),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: skip malformed candidate evidence row
                     continue
             if not quote_rows:
                 return
@@ -1442,7 +1442,7 @@ class CognitionLoop:
                         event_type = str(event.get("event_type", "") or "")
                         try:
                             event_payload = json.loads(event.get("payload_json") or "{}")
-                        except (TypeError, ValueError, json.JSONDecodeError):
+                        except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed persisted event payload
                             continue
                         if not isinstance(event_payload, dict):
                             continue
@@ -1513,7 +1513,7 @@ class CognitionLoop:
                         event_candidate_id = str(event_payload.get("candidate_id", "") or "")
                         if event_candidate_id:
                             snapshots.append((event_candidate_id, event_payload))
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed candidate event
                         continue
                 for row in outcome_rows:
                     try:
@@ -1522,7 +1522,7 @@ class CognitionLoop:
                             str(event_payload.get("candidate_id", "")),
                             int(event_payload.get("horizon_seconds", 0) or 0),
                         ))
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed outcome event
                         continue
 
             horizons = (300, 900, 3600, 14400, 86400)
@@ -1563,7 +1563,7 @@ class CognitionLoop:
                             if math.isfinite(candidate_deviation) and candidate_deviation <= 0.25:
                                 risk_distance = candidate_risk
                                 entry_deviation_r = candidate_deviation
-                except (TypeError, ValueError, json.JSONDecodeError):
+                except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip candidate with invalid numeric fields
                     continue
 
                 for horizon in horizons:
@@ -1719,7 +1719,7 @@ class CognitionLoop:
                 for row in snapshot_rows:
                     try:
                         snapshot = json.loads(row.get("payload_json") or "{}")
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except (TypeError, ValueError, json.JSONDecodeError):  # SAFE-FALLBACK: skip malformed snapshot payload
                         continue
                     if not isinstance(snapshot, dict):
                         continue
@@ -2174,8 +2174,8 @@ class CognitionLoop:
                 if sources:
                     spec = dict(spec)
                     spec["supporting_sources"] = sources
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[cognition-loop] optional supporting-source enrichment unavailable: %s", exc)
             self._memory.record_open(
                 symbol=symbol, direction=direction, fingerprint=fp,
                 campaign_id=str(getattr(campaign, "campaign_id", "") or ""), spec=spec,
@@ -2413,8 +2413,8 @@ class CognitionLoop:
                             sym, direction, "reallocate",
                             confidence=0.0, uncertainty=0.0, now=now,
                         )
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[cognition-loop] reallocation audit record failed: %s", exc)
             return issued
         except Exception as exc:  # noqa: BLE001 — reallocation must never break the loop
             logger.debug("[cognition-loop] reallocation fault: %s", exc)
