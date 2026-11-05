@@ -79,6 +79,7 @@ class PositionHealthMixin:
                     continue
                 try:
                     payload = json.loads(pj) if isinstance(pj, str) else pj
+# SAFE-FALLBACK: malformed historical position-health JSON is omitted; valid records remain available.
                 except Exception:
                     continue
                 payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
@@ -175,6 +176,7 @@ class PositionHealthMixin:
             try:
                 health_sum += float(r.get("health_score", 0.0) or 0.0)
                 health_cnt += 1
+# SAFE-FALLBACK: malformed health score is excluded from the displayed average.
             except (TypeError, ValueError):
                 pass
             for name, mult in (r.get("dimension_scores") or {}).items():
@@ -182,6 +184,7 @@ class PositionHealthMixin:
                 try:
                     acc[0] += float(mult)
                     acc[1] += 1
+# SAFE-FALLBACK: malformed optional dimension score is excluded from the displayed average.
                 except (TypeError, ValueError):
                     pass
         dimensions = [
