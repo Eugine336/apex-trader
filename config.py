@@ -4442,7 +4442,7 @@ def is_session_gated(symbol: str) -> bool:
     try:
         info = get_instrument(symbol)
         return info.category == InstrumentCategory.FOREX
-    except KeyError as exc:
+    except KeyError as exc:  # SAFE-FALLBACK: unknown symbols are session-gated, restricting eligibility
         logger.debug("[config] instrument lookup failed for symbol, treating as forex: {}", exc)
         return True  # unknown instrument — treat conservatively as FX
 
