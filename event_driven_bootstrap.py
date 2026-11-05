@@ -439,6 +439,7 @@ class PositionEvaluator:
                     for _field, _value in _stale.items():
                         try:
                             setattr(mgmt, _field, _value)
+                        # safe-fallback: compatibility-only rollback fields are best-effort; warning records the failed optimistic move.
                         except Exception:
                             pass
                     logger.warning(
@@ -844,6 +845,7 @@ class PositionEvaluator:
         """Stop the per-symbol evaluation worker pool (called on system stop)."""
         try:
             self._pool.shutdown(wait=False)
+        # safe-fallback: executor shutdown is best-effort; process teardown continues.
         except Exception:
             pass
 
@@ -1001,6 +1003,7 @@ class PositionEvaluator:
                 try:
                     de_result.evidence = list(getattr(de_result, "evidence", []) or [])
                     de_result.evidence.append(f"developing advisory: {warn} (no safe tighten)")
+                # safe-fallback: advisory text is optional; the protective-stop decision is preserved.
                 except Exception:
                     pass
                 return de_result
@@ -1010,6 +1013,7 @@ class PositionEvaluator:
             try:
                 de_result.evidence = list(getattr(de_result, "evidence", []) or [])
                 de_result.evidence.append(f"developing advisory: {warn}")
+            # safe-fallback: advisory text is optional; the protective-stop decision is preserved.
             except Exception:
                 pass
             prior_reason = str(getattr(de_result, "reason", "") or "")
@@ -1739,6 +1743,7 @@ class EventDrivenSystem:
             if ctx.ml_adapter is not None:
                 try:
                     return ctx.ml_adapter.get_trade_history()
+                # safe-fallback: missing optional trade-history data disables this learning input.
                 except Exception:
                     pass
             return []
@@ -1808,6 +1813,7 @@ class EventDrivenSystem:
                     if ctx.outcome_logger is not None:
                         try:
                             return ctx.outcome_logger.get_completed_trades()
+                        # safe-fallback: missing optional outcome history disables calibration input, not live risk controls.
                         except Exception:
                             pass
                     return []
@@ -3586,6 +3592,7 @@ class EventDrivenSystem:
                                 continue
                             try:
                                 _routed_platform = self._pm.get_platform_name(_symbol)
+                            # safe-fallback: skip symbols whose platform cannot be resolved; never guess a broker route.
                             except Exception:
                                 continue
                             if str(_routed_platform).lower() == "mt5":
@@ -4230,41 +4237,49 @@ class EventDrivenSystem:
         if getattr(self, "_developing_loop", None) is not None:
             try:
                 self._developing_loop.stop()
+            # safe-fallback: optional service shutdown must not prevent later services from stopping.
             except Exception:
                 pass
         if getattr(self, "_adaptive_scheduler", None) is not None:
             try:
                 self._adaptive_scheduler.stop()
+            # safe-fallback: optional service shutdown must not prevent later services from stopping.
             except Exception:
                 pass
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            # safe-fallback: optional service shutdown must not prevent later services from stopping.
             except Exception:
                 pass
         if getattr(self, "_structural_interaction_detector", None) is not None:
             try:
                 self._structural_interaction_detector.shutdown()
+            # safe-fallback: optional service shutdown must not prevent later services from stopping.
             except Exception:
                 pass
         if getattr(self, "_llm_worker", None) is not None:
             try:
                 self._llm_worker.stop()
+            # safe-fallback: optional advisor shutdown must not prevent native services from stopping.
             except Exception:
                 pass
         if self._ctx is not None and getattr(self._ctx, "cognition_loop", None) is not None:
             try:
                 self._ctx.cognition_loop.stop()
+            # safe-fallback: optional cognition shutdown must not prevent remaining cleanup.
             except Exception:
                 pass
         if self._ctx is not None and getattr(self._ctx, "campaign_memory", None) is not None:
             try:
                 self._ctx.campaign_memory.close()
+            # safe-fallback: memory close is best-effort; remaining cleanup must continue.
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:
             try:
                 self._opportunity_queue.stop()
+            # safe-fallback: optional queue shutdown must not prevent core tick services from stopping.
             except Exception:
                 pass
         self._tick_router.stop()
@@ -4276,6 +4291,7 @@ class EventDrivenSystem:
             self._tick_router.unregister_callback(
                 self._live_candle_aggregator.on_tick
             )
+        # safe-fallback: optional listener detachment must not prevent remaining shutdown work.
         except Exception:
             pass
         # Persist learned calibration so warmup history survives a restart.
@@ -4295,6 +4311,7 @@ class EventDrivenSystem:
                 logger.warning("[event-driven] news-impact save failed: {}", exc)
         try:
             self._entry_pool.shutdown(wait=False)
+        # safe-fallback: worker-pool shutdown is best-effort; remaining cleanup must continue.
         except Exception:
             pass
         self._event_bus.clear()
@@ -4352,6 +4369,7 @@ class EventDrivenSystem:
         try:
             while self._running:
                 _time.sleep(1.0)
+        # safe-fallback: KeyboardInterrupt is the expected operator shutdown path; finally stops services.
         except KeyboardInterrupt:
             pass
         finally:
@@ -5268,6 +5286,7 @@ class EventDrivenSystem:
                     ctx.shadow_store.resolve_contract(
                         getattr(shadow, "contract_id", ""), resolution,
                     )
+                # safe-fallback: shadow resolution is optional bookkeeping; the outer handler logs failure.
                 except Exception:
                     pass
         except Exception as exc:
@@ -5831,6 +5850,7 @@ class EventDrivenSystem:
                 pip_size = 0.0001
                 try:
                     pip_size = get_pip_size(resolve_to_internal(getattr(pos, "symbol", "")))
+                # safe-fallback: pip-size enrichment is optional; stored broker stop values remain authoritative.
                 except Exception:
                     pass
                 self._mgmt_store.get_or_create(
@@ -5916,6 +5936,7 @@ class EventDrivenSystem:
                 value = float(spec.get("pip_size", 0) or 0)
                 if value > 0:
                     return value
+        # safe-fallback: profile lookup is optional; the static/internal pip-size fallback below remains.
         except Exception:  # noqa: BLE001 — fall back to the static table below
             pass
         try:
@@ -6174,6 +6195,7 @@ class EventDrivenSystem:
         try:
             if is_always_open(symbol):
                 return True
+        # safe-fallback: failed 24/7 classification falls through to the session engine's tradeability check.
         except Exception:
             pass
         try:
@@ -6238,10 +6260,12 @@ class EventDrivenSystem:
         try:
             if is_always_open(symbol):
                 return True
+        # safe-fallback: continue polling when market-hours metadata is unavailable; polling is not order authority.
         except Exception:
             return True
         try:
             return not self._is_fx_market_closed()
+        # safe-fallback: avoid starving a potentially open feed; entry admission independently checks tradeability.
         except Exception:
             return True
 
@@ -6327,6 +6351,7 @@ class EventDrivenSystem:
         try:
             if is_always_open(symbol):
                 return True, "24/7"
+        # safe-fallback: connector lookup below provides a second 24/7 classification source.
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -6417,6 +6442,7 @@ class EventDrivenSystem:
         if getattr(ctx, "health_watchdog", None) is not None:
             try:
                 ctx.health_watchdog.record_scan_success()
+            # safe-fallback: health telemetry is optional and cannot affect thesis generation.
             except Exception:
                 pass
 
