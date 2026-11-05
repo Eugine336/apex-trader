@@ -195,3 +195,35 @@ def test_unverified_concept_readings_do_not_count_as_current_market_domains():
     assert concepts
     assert all(e.source_timestamp_verified is False for e in concepts)
     assert state.consolidation()["market_domain_count"] == 0
+
+
+def test_concept_pipeline_import_failure_is_preserved_as_non_market_unknown(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "cognition.concepts":
+            raise ImportError("simulated registry initialization failure")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    evidence = analyze_market_frames("EURUSD", {"H1": _crt_frame()})
+    diagnostics = [
+        item for item in evidence
+        if item.measurements.get("source_kind") == "concept_runtime_diagnostic"
+        and item.measurements.get("concept_module") == "pipeline"
+    ]
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.source_module == "concept_runtime.pipeline"
+    assert diagnostic.domain.value == "other"
+    assert diagnostic.confidence == 0.0
+    assert diagnostic.uncertainty == 1.0
+    assert diagnostic.polarity == 0.0
+    assert diagnostic.source_timestamp_verified is False
+    assert diagnostic.source_timestamp_epoch is None
+    assert diagnostic.provisional is True
+    assert diagnostic.measurements["status"] == "pipeline_failed"
+    assert diagnostic.measurements["exception_type"] == "ImportError"
