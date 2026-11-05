@@ -311,6 +311,7 @@ class TickStateChangeDetector:
             for lvl in (self._level_source(symbol) or []):  # type: ignore[misc]
                 try:
                     p = float(lvl)
+# SAFE-FALLBACK: a malformed optional level is excluded; only valid numeric levels are compared.
                 except (TypeError, ValueError):
                     continue
                 if lo <= p <= hi:
