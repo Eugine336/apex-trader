@@ -217,22 +217,27 @@ def _rows(
                 )
             result.append(row_data)
             if return_tail_limit > 0 and (window_start is None or ordinal >= window_start):
-                tail_result.append(row_data)
+                tail_result.append(dict(row_data))
         if source_attested:
-            source_epochs = [row.get("timestamp_epoch") for row in result]
-            ordered = (
-                len(source_epochs) == len(result)
-                and all(
-                    isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
-                    for epoch in source_epochs
+            def ordered(rows: list[dict[str, Any]]) -> bool:
+                source_epochs = [row.get("timestamp_epoch") for row in rows]
+                return (
+                    len(source_epochs) == len(rows)
+                    and all(
+                        isinstance(epoch, (int, float)) and math.isfinite(float(epoch))
+                        for epoch in source_epochs
+                    )
+                    and all(
+                        float(right) > float(left)
+                        for left, right in zip(source_epochs, source_epochs[1:])
+                    )
                 )
-                and all(
-                    float(right) > float(left)
-                    for left, right in zip(source_epochs, source_epochs[1:])
-                )
-            )
-            if not ordered:
+
+            if not ordered(result):
                 for row in result:
+                    row["source_timestamp_verified"] = False
+            if return_tail_limit > 0 and not ordered(tail_result):
+                for row in tail_result:
                     row["source_timestamp_verified"] = False
         return (result, tail_result) if return_tail_limit > 0 else result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
