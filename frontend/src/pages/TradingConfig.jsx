@@ -8,6 +8,7 @@ const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"];
 
 export default function TradingConfig() {
   const [form, setForm] = useState({
+    universe_mode: "all",
     enabled_categories: [],
     enabled_symbols_override: "",
     risk_per_trade_pct: "",
@@ -26,6 +27,7 @@ export default function TradingConfig() {
     try {
       const cfg = await getConfig();
       setForm({
+        universe_mode: cfg.universe_mode || (cfg.enabled_symbols_override?.length ? "selected" : "all"),
         enabled_categories: cfg.enabled_categories || [],
         enabled_symbols_override: (cfg.enabled_symbols_override || []).join(", "),
         risk_per_trade_pct: cfg.risk_per_trade_pct ?? "",
@@ -69,10 +71,12 @@ export default function TradingConfig() {
       .filter(Boolean);
 
     const payload = {
+      universe_mode: form.universe_mode,
       enabled_categories: form.enabled_categories.length
         ? form.enabled_categories
         : null,
-      enabled_symbols_override: symbols.length ? symbols : null,
+      enabled_symbols_override:
+        form.universe_mode === "all" ? null : symbols.length ? symbols : null,
       risk_per_trade_pct:
         form.risk_per_trade_pct === "" ? null : Number(form.risk_per_trade_pct),
       max_daily_drawdown_pct:
@@ -129,6 +133,30 @@ export default function TradingConfig() {
         className="space-y-6 rounded-lg border border-gray-700 bg-gray-800 p-6 shadow-lg"
       >
         <div>
+          <label className="mb-1 block text-sm font-medium text-gray-300">
+            Trading Universe
+          </label>
+          <select
+            value={form.universe_mode}
+            onChange={(e) =>
+              setForm((s) => ({
+                ...s,
+                universe_mode: e.target.value,
+                enabled_symbols_override: e.target.value === "all" ? "" : s.enabled_symbols_override,
+              }))
+            }
+            className={inputClass}
+          >
+            <option value="all">All eligible instruments</option>
+            <option value="selected">Selected instruments (any number)</option>
+            <option value="single">One instrument only</option>
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            Owner selection defines the trading scope. Broker availability and risk checks still apply.
+          </p>
+        </div>
+
+        <div>
           <label className="mb-2 block text-sm font-medium text-gray-300">
             Enabled Categories
           </label>
@@ -166,11 +194,16 @@ export default function TradingConfig() {
             onChange={(e) =>
               setForm((s) => ({ ...s, enabled_symbols_override: e.target.value }))
             }
-            placeholder="EURUSD, GBPUSD, XAUUSD"
+            disabled={form.universe_mode === "all"}
+            placeholder={form.universe_mode === "single" ? "XAUUSD" : "EURUSD, GBPUSD, XAUUSD"}
             className={inputClass}
           />
           <p className="mt-1 text-xs text-gray-500">
-            Comma-separated. Overrides categories when set.
+            {form.universe_mode === "single"
+              ? "Enter exactly one broker symbol."
+              : form.universe_mode === "selected"
+                ? "Comma-separated broker symbols. Every requested symbol must be available."
+                : "Disabled in all-instruments mode."}
           </p>
         </div>
 
