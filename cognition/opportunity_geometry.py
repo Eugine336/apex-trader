@@ -161,10 +161,18 @@ def _geometry_from_concept_readings(
             order_type = str(implication.get("order_type", "MARKET") or "MARKET").strip().upper()
             if order_type not in {"MARKET", "LIMIT", "STOP"}:
                 continue
-            explicit_entry = _finite_positive(implication.get("entry_price"))
-            zone_low = _finite_positive(implication.get("entry_zone_low"))
-            zone_high = _finite_positive(implication.get("entry_zone_high"))
-            if (zone_low is None) != (zone_high is None):
+            raw_entry = implication.get("entry_price")
+            raw_zone_low = implication.get("entry_zone_low")
+            raw_zone_high = implication.get("entry_zone_high")
+            explicit_entry = _finite_positive(raw_entry)
+            zone_low = _finite_positive(raw_zone_low)
+            zone_high = _finite_positive(raw_zone_high)
+            if (
+                (raw_entry is not None and explicit_entry is None)
+                or (raw_zone_low is not None and zone_low is None)
+                or (raw_zone_high is not None and zone_high is None)
+                or (zone_low is None) != (zone_high is None)
+            ):
                 continue
             if zone_low is not None and zone_low > zone_high:
                 continue
