@@ -332,7 +332,13 @@ def assess_strategy_lenses(
             item for item in items
             if isinstance(getattr(item, "measurements", None), dict)
             and item.measurements.get("source_kind") == "concept_reading"
-            and item.measurements.get("concept") == lens.key
+            and (
+                item.measurements.get("lens_key") == lens.key
+                or (
+                    lens.key in {"crt", "market_regime_transition"}
+                    and item.measurements.get("concept") == lens.key
+                )
+            )
         ]
         lens_applicable = [
             item for item in lens_readings
