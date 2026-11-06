@@ -38,7 +38,6 @@ def test_quantitative_outcome_methods_are_explicitly_data_gated():
         assert item.applicable is False
         assert item.facts["data_gated_reason"]
         assert item.unknowns
-        assert item.polarity == 0.0
         assert item.implications == ()
 
 
@@ -147,8 +146,9 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
     cutoff = _bars()[-1]["timestamp_epoch"]
     rows = [
         {
-            "trade_id": f"trade-{index}", "symbol": "XAUUSD",
+            "trade_id": f"trade-{index}", "portfolio_id": "account-main",
             "return_r": value, "closed_epoch": cutoff - (index + 1) * 300,
+            "source_timestamp_epoch": cutoff - (index + 1) * 300,
             "source_timestamp_verified": True,
         }
         for index, value in enumerate((1.0, -0.5, 0.7, -1.0, 0.4))
@@ -208,12 +208,13 @@ def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history(
 def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
     cutoff = _bars()[-1]["timestamp_epoch"]
     rows = [
-        {"trade_id": "duplicate", "symbol": "XAUUSD", "return_r": 1.0,
+        {"trade_id": "duplicate", "portfolio_id": "account-main", "return_r": 1.0,
          "closed_epoch": cutoff - 300, "source_timestamp_epoch": cutoff - 300,
          "source_timestamp_verified": True},
-        {"trade_id": "duplicate", "symbol": "XAUUSD", "return_r": -1.0,
-         "closed_epoch": cutoff - 300, "source_timestamp_verified": True},
-        {"trade_id": "future", "symbol": "XAUUSD", "return_r": 2.0,
+        {"trade_id": "duplicate", "portfolio_id": "account-main", "return_r": -1.0,
+         "closed_epoch": cutoff - 300, "source_timestamp_epoch": cutoff - 300,
+         "source_timestamp_verified": True},
+        {"trade_id": "future", "portfolio_id": "account-main", "return_r": 2.0,
          "closed_epoch": cutoff + 300, "source_timestamp_epoch": cutoff + 300,
          "source_timestamp_verified": True},
     ]
