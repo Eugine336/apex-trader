@@ -2688,7 +2688,11 @@ class EventDrivenSystem:
             # A management stop must come from the Brain's explicit concept or
             # structural level. Never synthesize a price fraction or breakeven.
             try:
-                is_long = str(getattr(pos, "direction", "") or "").upper() == "LONG"
+                held_side = str(getattr(pos, "direction", "") or "").upper()
+                is_long = held_side in {"LONG", "BUY"}
+                is_short = held_side in {"SHORT", "SELL"}
+                if not (is_long or is_short):
+                    return None
                 cur_sl = float(getattr(pos, "sl", 0.0) or 0.0)
                 entry = float(getattr(pos, "open_price", 0.0) or 0.0)
                 price = float(getattr(pos, "current_price", 0.0) or 0.0)
@@ -2701,11 +2705,11 @@ class EventDrivenSystem:
                         return None
                     if is_long and candidate < entry:
                         return None
-                    if not is_long and candidate > entry:
+                    if is_short and candidate > entry:
                         return None
                 if is_long and (cur_sl <= 0.0 or candidate > cur_sl) and candidate < price:
                     return candidate
-                if (not is_long) and (cur_sl <= 0.0 or candidate < cur_sl) and candidate > price:
+                if is_short and (cur_sl <= 0.0 or candidate < cur_sl) and candidate > price:
                     return candidate
                 return None
             except (TypeError, ValueError, OverflowError):
