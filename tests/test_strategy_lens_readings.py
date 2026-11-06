@@ -353,7 +353,9 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     assert lens.facts["method_implications"].get("anomaly_detection") == []
     assert "anomaly_detection" in lens.facts["future_dated_method_readings"]
     assert lens.source_bar_epoch is None
-    assert lens.independence_group == ""
+    # The surviving method has an explicit group; it does not imply that the
+    # omitted future method contributed to the composition.
+    assert lens.independence_group == "ohlc:XAUUSD:M5"
     assert any(
         "future-dated method readings excluded" in item
         for item in lens.unknowns
