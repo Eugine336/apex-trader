@@ -339,24 +339,27 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
         store.close()
 
 
-def test_risk_domain_invalidation_does_not_count_as_market_coverage():
+def test_invalidation_requires_two_verified_independent_source_lineages():
     manager = NativePositionManager()
-    # Construct only two genuine market domains. The normal _state fixture
-    # includes three domains by default, so using it here would already satisfy
-    # the market-coverage floor even when the risk telemetry is correctly ignored.
     state = MarketState(symbol="EURUSD")
-    for domain in ("structure", "momentum"):
+    for domain, group in (("structure", "ohlc:M15:source-a"),
+                          ("momentum", "ticks:source-b")):
+        stamp = time.time()
         state.add(Evidence(
             source_module=f"native.{domain}",
             domain=domain,
             symbol="EURUSD",
-            observation=f"fresh {domain} evidence",
+            observation=f"fresh {domain} campaign invalidation",
             confidence=0.9,
             uncertainty=0.1,
             measurements={
                 "campaign_id": "campaign-1",
                 "native_thesis_state": "invalidated",
+                "independence_group": group,
             },
+            source_timestamp_epoch=stamp,
+            source_timestamp_verified=True,
+            independence_group=group,
             relevance_horizon_seconds=900.0,
         ))
     state.add(Evidence(
@@ -374,11 +377,40 @@ def test_risk_domain_invalidation_does_not_count_as_market_coverage():
     ))
     result = manager.assess(
         _position(), state, campaign_context=_context(),
-        consolidation={"aggregate_uncertainty": 0.1, "market_domain_count": 3},
+        consolidation={"aggregate_uncertainty": 0.1},
+    )
+    assert result.action == "exit"
+    assert result.thesis_state == "invalidated"
+
+
+def test_unknown_or_shared_source_lineage_cannot_manufacture_invalidation_confirmation():
+    manager = NativePositionManager()
+    state = MarketState(symbol="EURUSD")
+    for domain in ("structure", "momentum"):
+        state.add(Evidence(
+            source_module=f"native.{domain}",
+            domain=domain,
+            symbol="EURUSD",
+            observation=f"fresh {domain} evidence",
+            confidence=0.9,
+            uncertainty=0.1,
+            measurements={
+                "campaign_id": "campaign-1",
+                "native_thesis_state": "invalidated",
+                "independence_group": "same-source:ohlc",
+            },
+            source_timestamp_epoch=time.time(),
+            source_timestamp_verified=True,
+            independence_group="same-source:ohlc",
+            relevance_horizon_seconds=900.0,
+        ))
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.1},
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
-    assert "market-domain coverage" in result.reason
+    assert "independent invalidation lineages" in result.reason
 
 
 def test_process_local_thesis_is_not_reused_across_campaign_ids():
