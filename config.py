@@ -4382,7 +4382,10 @@ class AppConfig:
             if str(symbol).strip()
         ))
         if mode == "all" and self.enabled_symbols_override:
-            raise ValueError("enabled_symbols_override must be empty in all mode")
+            # Backward compatibility for direct AppConfig construction. The
+            # authenticated API rejects contradictory all+symbols requests.
+            mode = "selected"
+            self.universe_mode = mode
         if mode == "selected" and not self.enabled_symbols_override:
             raise ValueError("selected universe requires at least one symbol")
         if mode == "single" and len(self.enabled_symbols_override) != 1:
