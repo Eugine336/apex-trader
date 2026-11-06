@@ -231,14 +231,17 @@ class CrossAssetReadings:
                         "minimum_return_samples": MIN_RETURN_SAMPLES,
                         "directional_decision_emitted": False,
                     },
-                    source_bar_epoch=latest_epoch,
-                    reference_close=target[latest_epoch]["close"],
+                    source_bar_epoch=None,
+                    source_timestamp_epoch=None,
+                    source_timestamp_verified=False,
+                    reference_close=None,
                     reference_timeframe=timeframe,
                     unknowns=(
-                        "Synchronized peer-symbol history is unavailable or shorter than the declared sample floor.",
+                        "No source-verified peer pair with the declared minimum synchronized return sample is available.",
+                        "No target-only timestamp is promoted to a multi-symbol observation.",
                         "No fixed pair list or unsynchronized substitute is used.",
                     ),
-                    data_basis="synchronized_multi_symbol_completed_ohlc",
+                    data_basis="no_synchronized_peer_data",
                     relevance_horizon_seconds=3 * TIMEFRAME_SECONDS[timeframe],
                 ))
         return readings
