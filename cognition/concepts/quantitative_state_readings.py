@@ -61,21 +61,10 @@ def _state_vector(bars: list[dict[str, Any]], end: int) -> tuple[float, ...] | N
         (float(item["high"]) - float(item["low"])) / float(item["close"])
         for item in window
     ]
-    volume_values = [
-        float(item["volume"]) for item in window
-        if item.get("volume") is not None and float(item["volume"]) > 0.0
-    ]
-    volume_ratio = (
-        float(window[-1]["volume"]) / median(volume_values[:-1])
-        if len(volume_values) > 1 and window[-1].get("volume") is not None
-        and median(volume_values[:-1]) > 0.0
-        else None
-    )
     return (
         sum(returns[-5:]),
         pstdev(returns),
         median(ranges),
-        volume_ratio if volume_ratio is not None else 0.0,
     )
 
 
@@ -223,7 +212,7 @@ def _analogue_reading(
             observation=f"{timeframe} nearest-state analysis is unavailable; no analogues are fabricated.",
             implications=(),
             facts={
-                "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range", "relative_volume"],
+                "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range"],
                 "current_state": list(current) if current is not None else None,
                 "historical_analogue_count": len(historical),
                 "nearest_historical_states": [],
