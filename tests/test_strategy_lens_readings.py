@@ -36,7 +36,8 @@ def _bars(count: int = 180) -> list[dict]:
 def _lens_evidence():
     return [
         item for item in run_concepts("XAUUSD", {"M5": _bars()})
-        if item.measurements.get("concept") in set(LENS_METHODS) | {"crt", "market_regime_transition"}
+        if item.measurements.get("lens_key") in set(LENS_METHODS)
+        or item.measurements.get("concept") in {"crt", "market_regime_transition"}
     ]
 
 
@@ -63,13 +64,13 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
     concepts = {
         item.measurements.get("concept")
         for item in evidence
-        if item.measurements.get("source_module", "").startswith("concept.")
+        if item.measurements.get("lens_key") or item.measurements.get("concept") in {"crt", "market_regime_transition"}
     }
 
     assert set(LENS_METHODS) | {"crt", "market_regime_transition"} <= concepts
     trend = next(
         item for item in evidence
-        if item.measurements.get("concept") == "trend_following"
+        if item.measurements.get("lens_key") == "trend_following"
     )
     assert trend.measurements["source_kind"] == "concept_reading"
     assert trend.measurements["required_methods"] == [
@@ -116,7 +117,7 @@ def test_data_gated_lens_does_not_claim_full_when_external_inputs_are_absent():
     evidence = _lens_evidence()
     event = next(
         item for item in evidence
-        if item.measurements.get("concept") == "event_macro"
+        if item.measurements.get("lens_key") == "event_macro"
     )
 
     assert event.measurements["data_gated_reason"] == DATA_GATED_LENSES["event_macro"]
