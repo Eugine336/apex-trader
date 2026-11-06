@@ -274,12 +274,15 @@ class StrategyLensReadings:
                     value for value in source_epochs
                     if value is not None and value > 0.0
                 }
+                valid_epoch_count = sum(
+                    value is not None and value > 0.0 for value in source_epochs
+                )
                 source_epoch = (
                     next(iter(epochs))
-                    if selected and len(epochs) == 1 and len(epochs) == len(selected)
+                    if selected and len(epochs) == 1 and valid_epoch_count == len(selected)
                     else None
                 )
-                if len(epochs) > 1 or (epochs and len(epochs) != len(selected)):
+                if len(epochs) > 1 or (epochs and valid_epoch_count != len(selected)):
                     unknowns.append(
                         "underlying method readings are not all synchronized to one verified completed-bar timestamp"
                     )
@@ -297,10 +300,10 @@ class StrategyLensReadings:
                 groups = {group for group in source_groups if group}
                 independence_group = (
                     next(iter(groups))
-                    if selected and len(groups) == 1 and len(groups) == len(selected)
+                    if selected and len(groups) == 1 and all(source_groups)
                     else ""
                 )
-                if len(groups) > 1 or (groups and len(groups) != len(selected)):
+                if len(groups) > 1 or (groups and not all(source_groups)):
                     unknowns.append(
                         "composite lens spans multiple or incomplete source groups; no single independence group is asserted"
                     )
