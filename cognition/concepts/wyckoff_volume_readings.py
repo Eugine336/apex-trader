@@ -556,6 +556,33 @@ def _wyckoff_facts(
         accumulation["invalidation_level"] = range_low
     if distribution.get("invalidation_level") is None:
         distribution["invalidation_level"] = range_high
+
+    # A sequence can remain historically identifiable after it has failed.
+    # Its current hypothesis status must nevertheless be invalidated by a
+    # completed close through the actual structural boundary.
+    latest_close = bars[-1]["close"] if bars else None
+    accumulation["invalidated"] = bool(
+        accumulation["phase"] is not None
+        and latest_close is not None
+        and accumulation.get("invalidation_level") is not None
+        and latest_close < accumulation["invalidation_level"]
+    )
+    distribution["invalidated"] = bool(
+        distribution["phase"] is not None
+        and latest_close is not None
+        and distribution.get("invalidation_level") is not None
+        and latest_close > distribution["invalidation_level"]
+    )
+    accumulation["current_status"] = (
+        "invalidated" if accumulation["invalidated"] else
+        "supported_for_brain_examination" if accumulation["phase"] is not None else
+        "not_supported_by_current_observations"
+    )
+    distribution["current_status"] = (
+        "invalidated" if distribution["invalidated"] else
+        "supported_for_brain_examination" if distribution["phase"] is not None else
+        "not_supported_by_current_observations"
+    )
     selected_events = {item["event"] for item in selected.get("events", [])}
     expected = {"SC", "AR", "ST", "Spring", "SOS", "LPS_BU"} if selected is accumulation else {"BC", "AR", "ST", "UTAD", "SOW", "LPSY"}
     completeness = len(selected_events.intersection(expected)) / len(expected) if expected else None
@@ -593,12 +620,14 @@ def _wyckoff_facts(
             "accumulation_or_markup": {
                 "supporting_observations": acc_support,
                 "invalidation_level": accumulation.get("invalidation_level"),
-                "status": "supported_for_brain_examination" if accumulation["phase"] else "not_supported_by_current_observations",
+                "status": accumulation["current_status"],
+                "invalidated_by_completed_close": accumulation["invalidated"],
             },
             "distribution_or_markdown": {
                 "supporting_observations": dist_support,
                 "invalidation_level": distribution.get("invalidation_level"),
-                "status": "supported_for_brain_examination" if distribution["phase"] else "not_supported_by_current_observations",
+                "status": distribution["current_status"],
+                "invalidated_by_completed_close": distribution["invalidated"],
             },
         },
         "current_auction_events": {
@@ -609,6 +638,7 @@ def _wyckoff_facts(
             "event_confirmation": "completed OHLCV and confirmed pivot sequence; not confirmed order flow",
         },
         "interpretation_state": interpretation, "phase": phase,
+        "selected_hypothesis_invalidated": bool(selected.get("invalidated", False)),
         "phase_sequence_completeness": completeness,
         "phase_sequence_strength_percentile": phase_strength,
         "phase_confidence_semantics": "own-history percentile rank of event-sequence completeness; not a calibrated probability",
@@ -645,9 +675,15 @@ def _wyckoff_implications(
     long_events = {item["event"] for item in accumulation["events"]}
     short_events = {item["event"] for item in distribution["events"]}
     long_supported, short_supported = accumulation["phase"] is not None, distribution["phase"] is not None
+    long_invalidated = accumulation.get("invalidated") is True
+    short_invalidated = distribution.get("invalidated") is True
     requirements = tuple(item for item in unknowns if any(
         token in item.lower() for token in ("volume", "sequence", "aggressor", "point-of-control")
     ))
+    if long_invalidated:
+        requirements += ("a new completed accumulation sequence after the prior structural invalidation",)
+    if short_invalidated:
+        requirements += ("a new completed distribution sequence after the prior structural invalidation",)
     strength = facts.get("phase_sequence_strength_percentile")
     close = bars[-1]["close"] if bars else None
     long_milestones, short_milestones = (), ()
@@ -662,26 +698,40 @@ def _wyckoff_implications(
     return (
         _structural_implication(
             LONG, statement="Accumulation/markup is supported only to the extent the completed SC–AR–ST–Spring–SOS–LPS sequence is present.",
-            strength=strength if long_supported else None,
-            activated=bool(long_supported and long_events.intersection({"Spring", "SOS", "LPS_BU"})),
-            activation_reason="A completed Spring, SOS or LPS/backup follows the accumulation sequence." if long_supported and long_events.intersection({"Spring", "SOS", "LPS_BU"}) else "The accumulation sequence has not reached a completed current trigger.",
+            strength=strength if long_supported and not long_invalidated else None,
+            activated=bool(long_supported and not long_invalidated and long_events.intersection({"Spring", "SOS", "LPS_BU"})),
+            activation_reason=(
+                "A completed close breached the accumulation invalidation level; this historical sequence is cancelled."
+                if long_invalidated else
+                "A completed Spring, SOS or LPS/backup follows the accumulation sequence."
+                if long_supported and long_events.intersection({"Spring", "SOS", "LPS_BU"}) else
+                "The accumulation sequence has not reached a completed current trigger."
+            ),
             requires=requirements,
             conflicts_with=("distribution/markdown sequence also present",) if short_supported else (),
             invalidation_price=accumulation.get("invalidation_level"),
             invalidation_reason="A completed close below the spring/climax structural low invalidates the accumulation hypothesis.",
-            objective_price=accumulation.get("objective_price"), milestones=long_milestones,
+            objective_price=None if long_invalidated else accumulation.get("objective_price"),
+            milestones=() if long_invalidated else long_milestones,
             management={"trail_reference": "confirmed higher lows after SOS/LPS", "reassess_on": "completed close below structural invalidation or a newer distribution sequence"},
         ),
         _structural_implication(
             SHORT, statement="Distribution/markdown is supported only to the extent the completed BC–AR–ST–UTAD–SOW–LPSY sequence is present.",
-            strength=strength if short_supported else None,
-            activated=bool(short_supported and short_events.intersection({"UTAD", "SOW", "LPSY"})),
-            activation_reason="A completed UTAD, SOW or LPSY follows the distribution sequence." if short_supported and short_events.intersection({"UTAD", "SOW", "LPSY"}) else "The distribution sequence has not reached a completed current trigger.",
+            strength=strength if short_supported and not short_invalidated else None,
+            activated=bool(short_supported and not short_invalidated and short_events.intersection({"UTAD", "SOW", "LPSY"})),
+            activation_reason=(
+                "A completed close breached the distribution invalidation level; this historical sequence is cancelled."
+                if short_invalidated else
+                "A completed UTAD, SOW or LPSY follows the distribution sequence."
+                if short_supported and short_events.intersection({"UTAD", "SOW", "LPSY"}) else
+                "The distribution sequence has not reached a completed current trigger."
+            ),
             requires=requirements,
             conflicts_with=("accumulation/markup sequence also present",) if long_supported else (),
             invalidation_price=distribution.get("invalidation_level"),
             invalidation_reason="A completed close above the UTAD/climax structural high invalidates the distribution hypothesis.",
-            objective_price=distribution.get("objective_price"), milestones=short_milestones,
+            objective_price=None if short_invalidated else distribution.get("objective_price"),
+            milestones=() if short_invalidated else short_milestones,
             management={"trail_reference": "confirmed lower highs after SOW/LPSY", "reassess_on": "completed close above structural invalidation or a newer accumulation sequence"},
         ),
         _structural_implication(
