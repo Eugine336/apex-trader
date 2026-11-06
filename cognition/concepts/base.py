@@ -170,10 +170,8 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         if explicit_uncertainty is not None else
         (min(1.0, max(0.0, 1.0 - confidence)) if strengths or explicit_confidence is not None else 1.0)
     )
-    evidence_source_module = str(
-        reading.facts.get("evidence_source_module", "")
-        if isinstance(reading.facts, dict) else ""
-    ).strip()
+    facts = dict(reading.facts) if isinstance(reading.facts, dict) else {}
+    evidence_source_module = str(facts.pop("evidence_source_module", "") or "").strip()
     return Evidence(
         source_module=(
             evidence_source_module
@@ -189,7 +187,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             # Keep source facts available both as a nested audit record and as
             # measurements consumed by method assessment and the Brain's
             # existing cost gate. Reserved adapter fields below remain canonical.
-            **dict(reading.facts),
+            **facts,
             "source_kind": "concept_reading",
             "concept": reading.concept,
             "timeframe": reading.timeframe,
@@ -204,7 +202,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             "reference_close": reading.reference_close,
             "reference_timeframe": reading.reference_timeframe,
             "implications": [i.to_dict() for i in reading.implications],
-            "facts": dict(reading.facts),
+            "facts": facts,
             "unknowns": list(reading.unknowns),
         },
         timestamp_epoch=sampled_at,
