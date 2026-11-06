@@ -76,6 +76,19 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
     }
 
     assert set(LENS_METHODS) | {"crt", "market_regime_transition"} <= concepts
+    full_lens_readings = [
+        item for item in evidence
+        if item.measurements.get("lens_key") in FULL_LENSES
+    ]
+    assert {item.measurements["lens_key"] for item in full_lens_readings} == set(FULL_LENSES)
+    assert all(
+        not item.measurements["missing_methods"]
+        for item in full_lens_readings
+    ), {
+        item.measurements["lens_key"]: item.measurements["missing_methods"]
+        for item in full_lens_readings
+        if item.measurements["missing_methods"]
+    }
     trend = next(
         item for item in evidence
         if item.measurements.get("lens_key") == "trend_following"
