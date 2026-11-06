@@ -47,7 +47,7 @@ def test_geometry_uses_most_protective_stop_and_nearest_real_objective():
     assert geometry.independence_groups == ("ohlc:EURUSD:M5",)
 
 
-def test_materially_conflicting_concept_stops_fail_closed():
+def test_distinct_structural_levels_select_the_most_protective_invalidation():
     geometry = _geometry_from_concept_readings(
         [
             _reading("crt", "e1", 99.0, 105.0),
@@ -56,7 +56,10 @@ def test_materially_conflicting_concept_stops_fail_closed():
         "LONG",
         "EURUSD",
     )
-    assert geometry is None
+
+    assert geometry is not None
+    assert geometry.stop_price == 99.0
+    assert geometry.target_price == 105.0
 
 
 def test_geometry_does_not_merge_different_timeframes_or_source_bars():
