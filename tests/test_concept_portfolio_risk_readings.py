@@ -105,6 +105,33 @@ def test_portfolio_risk_rejects_partial_platform_book_and_future_return_rows():
     assert any("failed platforms" in reason for reason in item.unknowns)
 
 
+
+def test_portfolio_risk_rejects_unsynchronized_or_stale_pairwise_correlations():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    snapshot = _snapshot(cutoff)
+    snapshot["correlation_pairs"][0]["source_timestamp_epoch"] = cutoff - 30.0
+    item = _read({
+        "analysis_epoch": cutoff + 60.0,
+        "portfolio_risk_snapshot": snapshot,
+    })
+    assert item.applicable is False
+    assert item.facts["max_absolute_pairwise_correlation"] is None
+    assert any("synchronized to one timestamp" in reason for reason in item.unknowns)
+
+
+def test_portfolio_risk_rejects_position_rows_from_mixed_snapshot_epochs():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    snapshot = _snapshot(cutoff)
+    snapshot["positions"][1]["source_timestamp_epoch"] = cutoff
+    item = _read({
+        "analysis_epoch": cutoff + 60.0,
+        "portfolio_risk_snapshot": snapshot,
+    })
+    assert item.applicable is False
+    assert item.facts["positions_complete"] is False
+    assert item.facts["open_risk_account_ccy"] is None
+
+
 def test_portfolio_risk_carries_only_verified_monte_carlo_ruin_probability():
     from cognition.concepts.base import ConceptReading
     from cognition.contracts import EvidenceDomain

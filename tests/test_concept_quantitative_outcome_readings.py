@@ -242,6 +242,38 @@ def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history(
     assert any("timestamped after" in item for item in item.unknowns)
 
 
+
+def test_monte_carlo_positive_only_trade_paths_do_not_report_phantom_drawdown():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    rows = [
+        {
+            "trade_id": f"positive-{index}", "portfolio_id": "account-main",
+            "return_r": value, "closed_epoch": cutoff - (index + 1) * 300,
+            "source_timestamp_epoch": cutoff - (index + 1) * 300,
+            "source_timestamp_verified": True,
+        }
+        for index, value in enumerate((0.5, 0.7, 0.2))
+    ]
+    item = next(
+        reading for reading in _readings({
+            "trade_outcome_samples": rows,
+            "portfolio_plan": {
+                "portfolio_id": "account-main", "portfolio_scope": "whole_book",
+                "equity": 10000.0, "risk_fraction": 0.01,
+                "planned_trade_count": 12,
+                "plan_as_of_epoch": cutoff + 30.0, "plan_attested": True,
+            },
+            "analysis_epoch": cutoff + 60.0,
+            "monte_carlo_iterations": 300,
+        })
+        if reading.concept == "monte_carlo"
+    )
+    assert item.applicable is True
+    assert item.facts["monte_carlo_drawdown_95pct_r"] == 0.0
+    assert item.facts["portfolio_drawdown_95pct_fraction"] == 0.0
+    assert item.facts["probability_of_ruin"] == 0.0
+
+
 def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
     cutoff = _bars()[-1]["timestamp_epoch"]
     rows = [

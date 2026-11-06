@@ -436,7 +436,6 @@ def _monte_carlo_reading(
                         portfolio_equity = 0.0
                         ruined = True
                     portfolio_peak = max(portfolio_peak, portfolio_equity)
-                    drawdown_r = max(drawdown_r, historical_r - min(historical_r, 0.0))
                     if portfolio_peak > 0.0:
                         drawdown_fraction = max(
                             drawdown_fraction,

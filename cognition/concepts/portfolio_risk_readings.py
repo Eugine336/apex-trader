@@ -102,7 +102,7 @@ def _read_portfolio(
             if (
                 not position_id or position_id in ids
                 or row.get("source_timestamp_verified") is not True
-                or row_epoch is None or snapshot_epoch is None or row_epoch > snapshot_epoch
+                or row_epoch is None or snapshot_epoch is None or row_epoch != snapshot_epoch
                 or risk is None or risk < 0.0 or notional is None or notional < 0.0
                 or net is None or not isinstance(currency, dict)
                 or any(not str(code).strip() or finite(value) is None for code, value in currency.items())
@@ -139,6 +139,7 @@ def _read_portfolio(
 
     pairs: list[dict[str, Any]] = []
     pair_keys: set[tuple[str, str]] = set()
+    pair_epochs: set[float] = set()
     pairs_raw = snapshot.get("correlation_pairs") if isinstance(snapshot, dict) else None
     if isinstance(pairs_raw, list) and snapshot_valid:
         for row in pairs_raw:
@@ -152,17 +153,24 @@ def _read_portfolio(
             if (
                 not left or not right or left == right or key in pair_keys
                 or row.get("source_timestamp_verified") is not True
-                or stamp is None or snapshot_epoch is None or stamp > snapshot_epoch
+                or stamp is None or snapshot_epoch is None or stamp < (cutoff or 0.0)
+                or stamp > snapshot_epoch
                 or correlation is None or not -1.0 <= correlation <= 1.0
             ):
                 continue
             pair_keys.add(key)
+            pair_epochs.add(stamp)
             pairs.append({"symbol_a": key[0], "symbol_b": key[1], "correlation": correlation})
     symbols = sorted({item["symbol"] for item in positions if item["symbol"]})
     expected_pairs = len(symbols) * (len(symbols) - 1) // 2
-    correlations_valid = len(pair_keys) == expected_pairs
+    correlations_valid = (
+        expected_pairs == 0
+        or (len(pair_keys) == expected_pairs and len(pair_epochs) == 1)
+    )
     if not correlations_valid:
-        unknowns.append("complete pairwise synchronized correlation history for every distinct open-position symbol")
+        unknowns.append(
+            "complete pairwise correlations for every distinct open-position symbol, all synchronized to one timestamp at or after the completed-bar cutoff"
+        )
 
     open_risk = sum(item["risk"] for item in positions) if positions_valid else None
     gross = sum(item["notional"] for item in positions) if positions_valid else None
