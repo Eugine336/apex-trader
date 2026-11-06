@@ -422,3 +422,53 @@ def test_expected_holding_horizon_triggers_reassessment_not_automatic_exit():
     assert result.action == "hold"
     assert result.thesis_state == "time_decay_review"
     assert result.management_plan["elapsed_ratio"] == 2.0
+
+
+
+def test_campaign_geometry_completed_close_invalidation_is_an_exit_verdict():
+    import time
+
+    now = time.time()
+    state = _state()
+    state.add(Evidence(
+        source_module="market_lenses.h1.structure",
+        domain="structure",
+        symbol="EURUSD",
+        observation="completed H1 close breached the campaign's original concept invalidation",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "source_kind": "market_lens",
+            "source_timestamp_known": True,
+            "data_basis": "completed_ohlc",
+            "provisional": False,
+            "completed": True,
+            "timeframe": "H1",
+            "source_bar_epoch": now - 10.0,
+            "current_close": 97.9,
+            "prior_range_low": 97.5,
+        },
+        timestamp_epoch=now - 10.0,
+        relevance_horizon_seconds=900.0,
+    ))
+    context = _context()
+    context["concept_geometry"] = {
+        "concept": "market_structure",
+        "concept_timeframe": "H1",
+        "entry_price": 100.0,
+        "stop_price": 98.0,
+        "target_price": 106.0,
+        "milestones": [102.0, 104.0],
+        "evidence_timestamp_epoch": now - 60.0,
+        "symbol": "EURUSD",
+        "direction": "LONG",
+    }
+
+    result = NativePositionManager().assess(
+        _position(), state, campaign_context=context, now=now,
+    )
+
+    assert result.action == "exit"
+    assert result.thesis_state == "concept_invalidation_confirmed"
+    assert result.management_plan["kind"] == "invalidation_exit"
+    assert result.management_plan["action_id"].startswith("campaign-1:concept-invalidation:")
