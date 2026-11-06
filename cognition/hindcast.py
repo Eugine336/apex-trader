@@ -8,6 +8,7 @@ ambiguous and excluded from calibration.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
@@ -35,6 +36,85 @@ _TIMEFRAME_SECONDS = {
 
 class HindcastDataError(ValueError):
     """Historical dataset or provenance manifest is invalid."""
+
+
+def _source_timestamp_epoch(raw: Any, *, timeframe: str, row_number: int) -> float:
+    """Parse only explicit UTC ISO timestamps or absolute numeric UTC epochs."""
+    if isinstance(raw, bool) or raw is None:
+        raise HindcastDataError(f"{timeframe} row {row_number}: missing/invalid timestamp")
+    if isinstance(raw, (int, float)):
+        value = _finite(raw)
+        if value is None or value <= 0.0:
+            raise HindcastDataError(f"{timeframe} row {row_number}: invalid numeric epoch")
+        return value / 1000.0 if value > 1e11 else value
+    value = str(raw).strip()
+    if not value:
+        raise HindcastDataError(f"{timeframe} row {row_number}: empty timestamp")
+    try:
+        epoch = float(value)
+    except ValueError:
+        iso = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+        try:
+            parsed = datetime.fromisoformat(iso)
+        except ValueError as exc:
+            raise HindcastDataError(
+                f"{timeframe} row {row_number}: unparseable timestamp"
+            ) from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise HindcastDataError(
+                f"{timeframe} row {row_number}: timestamp must carry an explicit UTC offset"
+            )
+        if parsed.utcoffset().total_seconds() != 0:
+            raise HindcastDataError(
+                f"{timeframe} row {row_number}: timestamp offset is not UTC"
+            )
+        return parsed.timestamp()
+    if not math.isfinite(epoch) or epoch <= 0.0:
+        raise HindcastDataError(f"{timeframe} row {row_number}: invalid numeric epoch")
+    return epoch / 1000.0 if epoch > 1e11 else epoch
+
+
+def _validate_source_file_timestamps(path: Path, timeframe: str) -> None:
+    """Reject naive, non-UTC, duplicate, or reordered source timestamps pre-loader."""
+    previous = None
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HindcastDataError(f"{timeframe}: cannot parse JSON timestamps") from exc
+        if isinstance(payload, dict):
+            payload = payload.get("candles") or payload.get("data") or []
+        if not isinstance(payload, list):
+            raise HindcastDataError(f"{timeframe}: JSON candle payload must be a list")
+        rows = payload
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                raise HindcastDataError(f"{timeframe} row {index}: candle must be an object")
+            raw = next((row[key] for key in row if str(key).strip().lower() in {
+                "time", "timestamp", "datetime", "date"
+            }), None)
+            stamp = _source_timestamp_epoch(raw, timeframe=timeframe, row_number=index)
+            if previous is not None and stamp <= previous:
+                raise HindcastDataError(f"{timeframe}: source timestamps are not strictly increasing")
+            previous = stamp
+        return
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise HindcastDataError(f"{timeframe}: empty CSV")
+        time_key = next((
+            field for field in reader.fieldnames
+            if field.strip().lower() in {"time", "timestamp", "datetime", "date"}
+        ), None)
+        if time_key is None:
+            raise HindcastDataError(f"{timeframe}: CSV requires a time/timestamp column")
+        for index, row in enumerate(reader, start=2):
+            stamp = _source_timestamp_epoch(
+                row.get(time_key), timeframe=timeframe, row_number=index,
+            )
+            if previous is not None and stamp <= previous:
+                raise HindcastDataError(f"{timeframe}: source timestamps are not strictly increasing")
+            previous = stamp
 
 
 def _sha256_file(path: Path) -> str:
@@ -185,6 +265,7 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
         actual_hash = _sha256_file(source_file)
         if actual_hash != expected_hash:
             raise HindcastDataError(f"{timeframe}: SHA-256 mismatch for {filename}")
+        _validate_source_file_timestamps(source_file, timeframe)
         candles = loader.load(source_file, pair=symbol, validate=True)
         if semantics == "bar_open" and timeframe == "D1":
             raise HindcastDataError(
