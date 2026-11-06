@@ -335,8 +335,12 @@ def assess_strategy_lenses(
             and (
                 item.measurements.get("lens_key") == lens.key
                 or (
-                    lens.key in {"crt", "market_regime_transition"}
-                    and item.measurements.get("concept") == lens.key
+                    (
+                        lens.key == "crt" and item.measurements.get("concept") == "crt"
+                    ) or (
+                        lens.key == "market_regime_transition"
+                        and item.measurements.get("concept") == "regime_switching"
+                    )
                 )
             )
         ]
