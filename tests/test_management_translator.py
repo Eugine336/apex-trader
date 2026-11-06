@@ -50,6 +50,7 @@ def test_scale_out_requires_concept_milestone_fraction_and_identity():
         "milestone_price": 1.082,
         "partial_fraction": 0.4,
         "stop_price": 1.081,
+        "action_id": "campaign-7:milestone:crt:H1:1:1.082:1000",
     }
     action = translate_management(
         _out(DecisionType.SCALE_OUT, management_plan=plan), _pos(),
@@ -58,6 +59,7 @@ def test_scale_out_requires_concept_milestone_fraction_and_identity():
     assert action.fraction == 0.4
     assert action.milestone_id == "crt:H1:1:1.082"
     assert action.stop_price == 1.081
+    assert action.action_id == "campaign-7:milestone:crt:H1:1:1.082:1000"
 
 
 def test_protect_and_tighten_require_explicit_structure_stop_levels():
@@ -135,3 +137,17 @@ def test_management_action_prefers_brain_decision_opportunity_provenance():
     assert action.decision_id == "dec-1"
     assert action.campaign_id == "brain-campaign-4"
     assert action.opportunity_id == "brain-opportunity-12"
+
+
+
+def test_exit_preserves_concept_invalidation_action_id():
+    action_id = "campaign-7:concept-invalidation:H1:1000:98"
+    plan = {"kind": "invalidation_exit", "action_id": action_id}
+    action = translate_management(
+        _out(DecisionType.EXIT, management_plan=plan), _pos(),
+    )
+
+    assert action is not None
+    assert action.kind == "close"
+    assert action.action_id == action_id
+    assert action.to_dict()["action_id"] == action_id
