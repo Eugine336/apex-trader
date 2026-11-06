@@ -74,8 +74,9 @@ The runner:
   visible at that cutoff, and one level resolves first;
 - selects non-overlapping Brain outcome windows by decision time, independent
   of their eventual labels;
-- records unlabelable readings, module faults, unresolved outcomes and ambiguous
-  outcomes rather than converting them into losses or wins.
+- records per-concept applicability, source-time verification, missing-data
+  unknowns and reader faults, alongside unresolved and ambiguous outcomes,
+  rather than converting them into losses or wins.
 
 Concept strength is retained as uncalibrated reasoning strength, never treated as
 a probability. Per-concept win rates are descriptive historical rates, not
