@@ -745,8 +745,9 @@ class _ManageBrain:
 
     available = True
 
-    def __init__(self, decision_type):
+    def __init__(self, decision_type, management_plan=None):
         self._dt = decision_type
+        self.management_plan = management_plan
         self.managed = 0
 
     def reason(self, market_state, now=None):
@@ -756,12 +757,18 @@ class _ManageBrain:
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
+        questions = {}
+        if self.management_plan is not None:
+            questions["native_management_baseline"] = {
+                "management_plan": dict(self.management_plan),
+            }
         dec = SimpleNamespace(
             decision_type=self._dt, symbol=position.symbol,
             confidence=0.8, thesis="mgmt", decision_id="d1",
             identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
             campaign_id=getattr(position, "campaign_id", ""),
             preferred_opportunity_id=getattr(position, "opportunity_id", ""),
+            questions_answered=questions,
         )
         return SimpleNamespace(decision=dec, direction=position.direction)
 
@@ -1019,20 +1026,20 @@ def test_portfolio_evidence_reaches_market_state():
 
 
 def _pos_r(symbol, direction="LONG", profit_r=0.0):
-    return SimpleNamespace(symbol=symbol, direction=direction,
-                           profit_r=profit_r, size=0.01)
+    return SimpleNamespace(
+        symbol=symbol, direction=direction, profit_r=profit_r, size=0.01,
+        lots=0.01, campaign_id=f"campaign-{symbol}", opportunity_id=f"opportunity-{symbol}",
+    )
 
 
-def test_reallocation_trims_weakest_correlated_via_sink():
-    """Art 11/XXVII — an over-concentrated correlated book trims its weakest
-    campaign through the SAME management sink (partial_close), but ONLY once the
-    Brain's reasoned verdict de-risks the candidate (SCALE_OUT here)."""
+def test_reallocation_candidate_cannot_create_a_partial_without_brain_plan():
+    """A SCALE_OUT label alone is not authority to invent a reduction fraction."""
     from brain.campaign import CampaignRegistry
     reg = CampaignRegistry(enabled=True)
     positions = [
         _pos_r("EURUSD", "LONG", profit_r=2.0),
         _pos_r("GBPUSD", "LONG", profit_r=1.0),
-        _pos_r("AUDUSD", "LONG", profit_r=-0.5),   # weakest USD-correlated campaign
+        _pos_r("AUDUSD", "LONG", profit_r=-0.5),
     ]
     calls = []
     loop = CognitionLoop(
@@ -1042,10 +1049,52 @@ def test_reallocation_trims_weakest_correlated_via_sink():
     )
     loop.set_management_sink(lambda action, pos: calls.append(action))
     loop.run_once()
-    trims = [a for a in calls if a.kind == "partial_close"]
-    assert trims, "no reallocation trim was issued"
-    assert any(a.symbol == "AUDUSD" for a in trims)
-    assert loop.get_status()["reallocations"] >= 1
+    assert calls == []
+    assert loop.get_status()["reallocations"] == 0
+
+
+def test_reallocation_executes_only_the_brain_authored_concept_plan():
+    from brain.campaign import CampaignRegistry
+    from cognition.memory import CampaignMemoryStore
+    plan = {
+        "kind": "milestone_partial",
+        "milestone_id": "market_structure:H1:1:1.105",
+        "milestone_price": 1.105,
+        "partial_fraction": 0.25,
+        "action_id": "campaign-AUDUSD:milestone:market_structure:H1:1:1.105",
+    }
+    reg = CampaignRegistry(enabled=True)
+    positions = [
+        _pos_r("EURUSD", "LONG", profit_r=2.0),
+        _pos_r("GBPUSD", "LONG", profit_r=1.0),
+        _pos_r("AUDUSD", "LONG", profit_r=-0.5),
+    ]
+    for pos in positions:
+        reg.record_management(
+            pos.symbol, pos.direction, "hold", confidence=0.6,
+            ev_over_flat=pos.profit_r,
+        )
+    memory = CampaignMemoryStore(db_path=":memory:")
+    memory.record_open(
+        symbol="AUDUSD", direction="LONG", campaign_id="campaign-AUDUSD",
+        fingerprint={}, spec={"thesis": "campaign thesis"}, now_ms=1_000,
+    )
+    brain = _ManageBrain(DecisionType.SCALE_OUT, management_plan=plan)
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: [], management_mode="live",
+        campaign_registry=reg, reallocation_enabled=True, memory=memory,
+        clock=_ManualClock(),
+    )
+    calls = []
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    issued = loop._maybe_reallocate(positions, now=100.0)
+    assert issued == 1
+    assert len(calls) == 1
+    assert calls[0].symbol == "AUDUSD"
+    assert calls[0].fraction == 0.25
+    assert calls[0].action_id == plan["action_id"]
+    assert loop.get_status()["reallocations"] == 1
+    memory.close()
 
 
 def test_reallocation_brain_veto_prevents_mechanical_trim():
@@ -1154,9 +1203,8 @@ def _reallocation_book():
     ]
 
 
-def test_reallocation_review_runs_on_native_verdict_when_advisor_down():
-    """Provider outage is not a market conclusion: a native de-risking verdict
-    approves the concentration trim even with no external advisor."""
+def test_reallocation_native_scale_out_without_concept_plan_does_not_invent_trim():
+    """Advisor outage falls back to Brain, but a SCALE_OUT label has no fraction."""
     from brain.campaign import CampaignRegistry
     calls = []
     brain = _AdvisorDownBrain(DecisionType.SCALE_OUT)
@@ -1169,10 +1217,8 @@ def test_reallocation_review_runs_on_native_verdict_when_advisor_down():
     loop.set_management_sink(lambda action, pos: calls.append(action))
     loop.run_once()
     assert brain.managed >= 1, "native review was never consulted"
-    # The reallocation-specific counter, not ordinary per-position management
-    # (which also emits partial_close), proves the concentration review ran.
-    assert loop.get_status()["reallocations"] >= 1
-    assert any(a.kind == "partial_close" and a.symbol == "AUDUSD" for a in calls)
+    assert calls == []
+    assert loop.get_status()["reallocations"] == 0
 
 
 def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():

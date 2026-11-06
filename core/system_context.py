@@ -1629,10 +1629,6 @@ class SystemContext:
                         getattr(cog_cfg, "reallocation_concentration_limit", 0.6)
                         if cog_cfg is not None else 0.6
                     ),
-                    reallocation_trim_fraction=float(
-                        getattr(cog_cfg, "reallocation_trim_fraction", 0.5)
-                        if cog_cfg is not None else 0.5
-                    ),
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(

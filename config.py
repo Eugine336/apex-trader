@@ -3824,16 +3824,13 @@ class CognitionConfig:
     allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
-    # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
-    # over-concentrated in one correlated leg (concentration >= the limit) the
-    # weakest campaign(s) in a cluster carrying more than
-    # ``reallocation_max_per_component`` campaigns are trimmed to free capital
-    # for higher-EV opportunities. Realised through the Brain's own management
-    # sink (management_mode must be "live"); default on.
+    # Part XVIII Art 11 — portfolio capital reallocation. Concentrated,
+    # correlated campaigns are candidates for Brain reassessment. The registry
+    # never supplies an execution kind or reduction fraction; any live action
+    # must come from the Brain's current concept-derived management plan.
     reallocation_enabled: bool = True
     reallocation_max_per_component: int = 2
     reallocation_concentration_limit: float = 0.6
-    reallocation_trim_fraction: float = 0.5
     # Part XIX Art 1/7/8 — opportunity qualification. The market is presumed
     # noise: a Brain-originated entry (and a scale-in) only proceeds if its
     # expected NET value after real round-trip cost (spread + commission +

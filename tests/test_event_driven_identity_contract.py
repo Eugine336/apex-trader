@@ -140,7 +140,7 @@ def test_brain_management_identity_and_provenance_reach_execution_intents():
     module = _parse("event_driven_bootstrap.py")
     factory = _function(module, "_make_management_sink")
     sink = _function(factory, "_sink")
-    required = {"decision_id", "campaign_id", "opportunity_id", "identity_version", "identity"}
+    required = {"decision_id", "campaign_id", "opportunity_id", "action_id", "identity_version", "identity"}
     for method in ("close", "partial_close", "modify_sl"):
         calls = _calls(sink, attribute=method)
         assert calls, f"expected a management {method} intent site"
