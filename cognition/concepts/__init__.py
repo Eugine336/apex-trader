@@ -76,9 +76,13 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
 )
 
 
-_READING_CACHE: OrderedDict[tuple[str, str, str], tuple[ConceptReading, ...]] = OrderedDict()
+# One latest completed-bar result per module/symbol. This covers a 67-instrument
+# universe without retaining obsolete fingerprints after every new candle.
+_READING_CACHE: OrderedDict[
+    tuple[str, str], tuple[str, tuple[ConceptReading, ...]]
+] = OrderedDict()
 _READING_CACHE_LOCK = threading.RLock()
-_READING_CACHE_MAX_ENTRIES = 256
+_READING_CACHE_MAX_ENTRIES = 4096
 
 
 def _bars_fingerprint(symbol: str, bars_by_tf: dict[str, list[dict]]) -> str:
@@ -139,15 +143,16 @@ def read_concept_readings(
             not callable(contextual_reader)
             and not getattr(module, "consumes_concept_readings", False)
         )
-        cache_key = (module_key, str(symbol or "").strip().upper(), fingerprint)
+        cache_key = (module_key, str(symbol or "").strip().upper())
         module_started = time.perf_counter()
         try:
             produced = None
             cache_hit = False
             if cacheable:
                 with _READING_CACHE_LOCK:
-                    if cache_key in _READING_CACHE:
-                        produced = _READING_CACHE[cache_key]
+                    cached = _READING_CACHE.get(cache_key)
+                    if cached is not None and cached[0] == fingerprint:
+                        produced = cached[1]
                         _READING_CACHE.move_to_end(cache_key)
                         cache_hit = True
                         cache_hits += 1
@@ -176,7 +181,7 @@ def read_concept_readings(
                         )
                 if cacheable:
                     with _READING_CACHE_LOCK:
-                        _READING_CACHE[cache_key] = produced
+                        _READING_CACHE[cache_key] = (fingerprint, produced)
                         _READING_CACHE.move_to_end(cache_key)
                         while len(_READING_CACHE) > _READING_CACHE_MAX_ENTRIES:
                             _READING_CACHE.popitem(last=False)
