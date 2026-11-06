@@ -542,7 +542,6 @@ class NativePositionManager:
             # counter-hypotheses as a conservative *risk-reduction-only* fallback.
             # Generic adverse patterns can never authorize EXIT.
             native_patterns: set[str] = set()
-            analysis_domains: set[str] = set()
             analysis_uncertainty = uncertainty
             analysis_contradictions: list[str] = []
             try:
@@ -552,16 +551,6 @@ class NativePositionManager:
                     pattern_name(item)
                     for item in list(getattr(analysis, "detected_patterns", []) or [])
                 }
-                coverage = getattr(analysis, "domain_coverage", {}) or {}
-                if isinstance(coverage, dict):
-                    # Keep the fallback's coverage denominator consistent with
-                    # the source-aware filtering above. Domain normalisation maps
-                    # several non-market producers to OTHER, so a key-name-only
-                    # filter is insufficient.
-                    analysis_domains = {
-                        str(domain).lower() for domain in coverage
-                        if str(domain).lower() in market_domains
-                    }
                 analysis_uncertainty = max(
                     uncertainty,
                     _clamp01(getattr(analysis, "evidence_uncertainty", uncertainty)),
@@ -576,7 +565,6 @@ class NativePositionManager:
                     symbol, exc,
                 )
                 native_patterns = set()
-                analysis_domains = set()
                 analysis_contradictions = []
 
             adverse_patterns = native_patterns & {
@@ -618,20 +606,16 @@ class NativePositionManager:
                 ):
                     directional_challengers.append((hypothesis_confidence, hypothesis))
 
-            sufficient_native_coverage = len(analysis_domains) >= required_domains
-            uncertainty_acceptable = analysis_uncertainty <= max_unc
-            if (
-                sufficient_native_coverage
-                and uncertainty_acceptable
-                and (
-                    len(adverse_patterns) >= 2
-                    or "execution_degraded" in adverse_patterns
-                    or (
-                        directional_challengers
-                        and bool(analysis_contradictions)
-                    )
-                )
-            ):
+            # This fallback can only reduce existing risk; it cannot EXIT or
+            # add/reverse exposure. Do not make protective de-risking wait for an
+            # arbitrary domain count or a low-uncertainty reading. The pattern or
+            # contradicted challenger must still be present in this fresh native
+            # analysis; full EXIT remains reserved for campaign-linked invalidation
+            # or the originating concept's verified geometry boundary.
+            has_adverse_evidence = bool(adverse_patterns) or bool(
+                directional_challengers and analysis_contradictions
+            )
+            if has_adverse_evidence:
                 profit_r = _finite_number(getattr(position, "profit_r", None))
                 action = "scale_out" if profit_r is not None and profit_r > 0.0 else "tighten_risk"
                 challenger = (
