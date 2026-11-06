@@ -560,6 +560,16 @@ def test_measured_regime_fit_rules_cover_each_supported_style_without_directiona
     assert _lens_regime_fit("carry_funding", {"momentum": "accelerating"})[0] == "unknown"
 
 
+
+def test_every_lens_reports_unknown_regime_fit_when_no_measured_field_supports_it():
+    from cognition.strategy_knowledge import _lens_regime_fit
+
+    for lens in STRATEGY_LENSES:
+        fit, explanation = _lens_regime_fit(lens.key, {})
+        assert fit == "unknown"
+        assert explanation.strip(), lens.key
+
+
 def test_measured_regime_challenges_style_without_vetoing_native_lens():
     reading = ConceptReading(
         concept="trend_following",
