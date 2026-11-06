@@ -75,7 +75,8 @@ export default function TradingConfig() {
       enabled_categories: form.enabled_categories.length
         ? form.enabled_categories
         : null,
-      enabled_symbols_override: symbols.length ? symbols : null,
+      enabled_symbols_override:
+        form.universe_mode === "all" ? null : symbols.length ? symbols : null,
       risk_per_trade_pct:
         form.risk_per_trade_pct === "" ? null : Number(form.risk_per_trade_pct),
       max_daily_drawdown_pct:
