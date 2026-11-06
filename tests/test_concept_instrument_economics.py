@@ -5,11 +5,15 @@ from __future__ import annotations
 import math
 import time
 from types import SimpleNamespace
+from types import SimpleNamespace
 
 import pandas as pd
 
+from cognition.concepts import CONCEPT_MODULES
 from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
 from cognition.market_lenses import analyze_market_frames
+from platforms.mt5 import mt5_connector as mt5_connector_module
+from platforms.mt5.mt5_connector import MT5Connector
 from platforms.mt5 import mt5_connector as mt5_connector_module
 from platforms.mt5.mt5_connector import MT5Connector
 
@@ -40,7 +44,13 @@ def _spec(**overrides):
         "currency_margin": "USD",
         "swap_long": -2.5,
         "swap_short": 0.8,
-        "swap_mode": 1,
+        "swap_mode": 32,
+        "swap_mode_name": "points",
+        "swap_rollover3days": 3,
+        "swap_schedule": {
+            "sunday": 0, "monday": 1, "tuesday": 1, "wednesday": 3,
+            "thursday": 1, "friday": 1, "saturday": 0,
+        },
         "broker_session_timezone_verified": False,
         "broker_holiday_calendar_verified": False,
         "broker_trading_sessions": [],
@@ -77,10 +87,19 @@ def _frame():
     return frame
 
 
-def _reading(spec):
-    return InstrumentEconomicsReadings().read_with_context(
+def _readings(spec):
+    readings = InstrumentEconomicsReadings().read_with_context(
         "XAUUSD", {}, {"symbol_spec": spec},
-    )[0]
+    )
+    return {reading.concept: reading for reading in readings}
+
+
+def _reading(spec):
+    return _readings(spec)["instrument_economics"]
+
+
+def _carry(spec):
+    return _readings(spec)["carry"]
 
 
 def test_broker_verified_contract_spec_is_read_as_independent_neutral_evidence():
@@ -139,11 +158,21 @@ def test_live_market_lens_passes_broker_spec_into_brain_with_independent_lineage
         source_includes_forming_bar=False,
         concept_context={"symbol_spec": _spec()},
     )
-    item = next(
-        ev for ev in evidence
+    selected = {
+        ev.measurements["concept"]: ev
+        for ev in evidence
         if ev.measurements.get("source_kind") == "concept_reading"
-        and ev.measurements.get("concept") == "instrument_economics"
-    )
+        and ev.measurements.get("concept") in {"instrument_economics", "carry"}
+    }
+    assert set(selected) == {"instrument_economics", "carry"}
+    item = selected["instrument_economics"]
+    carry = selected["carry"]
+    assert carry.polarity == 0.0
+    assert carry.data_basis == "broker_symbol_specification"
+    assert carry.independence_group == item.independence_group
+    assert carry.source_timestamp_verified is False
+    assert carry.source_timestamp_epoch is None
+    assert carry.measurements["facts"]["swap_mode_name"] == "points"
     assert item.polarity == 0.0
     assert item.data_basis == "broker_symbol_specification"
     assert item.independence_group == "broker_symbol_spec:mt5.symbol_info:XAUUSD"
@@ -196,3 +225,90 @@ def test_mt5_swap_mode_resolution_uses_the_installed_package_constants(monkeypat
     assert MT5Connector._swap_mode_name(37) == "interest_current"
     assert MT5Connector._swap_mode_name(40) == "reopen_bid"
     assert MT5Connector._swap_mode_name(999) is None
+
+
+def test_instrument_and_carry_method_registration_is_explicit():
+    module = next(item for item in CONCEPT_MODULES if item.key == "instrument_economics_readings")
+    assert set(module.covers_methods) == {"instrument_economics"}
+    assert module.covers_lenses == ()
+    assert _carry(_spec()).facts["coverage_status"] == "PARTIAL"
+    assert "position-specific cash financing amount after broker contract volume and calculation mode are applied" in _carry(_spec()).facts["unimplemented_components"]
+
+
+def test_carry_points_mode_interprets_units_without_fabricating_cash_cost():
+    facts = _carry(_spec(swap_mode_name="points", swap_long=2.5, swap_short=-1.0)).facts
+
+    assert facts["swap_units"] == "points"
+    assert facts["long"]["price_unit_equivalent"] == 0.025
+    assert facts["short"]["price_unit_equivalent"] == -0.01
+    assert facts["long"]["cash_amount"] is None
+    assert facts["long"]["unit_note"].startswith("price-unit equivalent only")
+    assert facts["rollover"]["triple_swap_weekday"] == "wednesday"
+    assert facts["rollover"]["daily_multiplier"]["wednesday"] == 3.0
+    assert facts["cash_carry_cost_calculated"] is False
+    assert facts["execution_authorization_emitted"] is False
+    assert any("provider-originated financing specification timestamp" in item for item in _carry(_spec()).unknowns)
+
+
+def test_carry_currency_modes_keep_the_declared_currency_denominator():
+    cases = (
+        ("currency_symbol", "XAU", "money_in_symbol_base_currency"),
+        ("currency_margin", "USD", "money_in_symbol_margin_currency"),
+        ("currency_profit", "USD", "money_in_symbol_profit_currency"),
+    )
+    for mode, currency, units in cases:
+        facts = _carry(_spec(swap_mode_name=mode)).facts
+        assert facts["swap_units"] == units
+        assert facts["long"]["currency_code"] == currency
+        assert facts["short"]["currency_code"] == currency
+
+
+def test_carry_deposit_currency_mode_does_not_guess_the_account_currency():
+    facts = _carry(_spec(swap_mode_name="currency_deposit")).facts
+    assert facts["swap_units"] == "money_in_client_deposit_currency"
+    assert facts["long"]["currency_code"] is None
+    assert facts["long"]["currency_label"].startswith("client deposit currency")
+
+
+def test_carry_interest_modes_use_documented_360_day_basis_without_cash_conversion():
+    for mode in ("interest_current", "interest_open"):
+        facts = _carry(_spec(
+            swap_mode_name=mode, swap_long=2.5, swap_short=-1.25,
+        )).facts
+        assert facts["interest_year_basis_days"] == 360
+        assert facts["long"]["annual_interest_percent"] == 2.5
+        assert math.isclose(
+            facts["long"]["daily_rate_fraction_360_day_basis"],
+            2.5 / 100.0 / 360.0,
+        )
+        assert facts["cash_carry_cost_calculated"] is False
+
+
+def test_carry_reopen_modes_preserve_forced_reopen_semantics():
+    expected = {
+        "reopen_current": "previous_session_close",
+        "reopen_bid": "new_day_bid",
+    }
+    for mode, reference in expected.items():
+        facts = _carry(_spec(swap_mode_name=mode)).facts
+        assert facts["forced_reopen_at_session_end"] is True
+        assert facts["long"]["forced_reopen"] is True
+        assert facts["long"]["reopen_reference"] == reference
+
+
+def test_unknown_carry_enum_and_incomplete_rollover_schedule_remain_unknown():
+    unknown_mode = _carry(_spec(swap_mode_name=None))
+    assert unknown_mode.applicable is False
+    assert unknown_mode.facts["status"] == "verified_but_incomplete"
+    assert any("swap calculation mode resolved" in item for item in unknown_mode.unknowns)
+
+    incomplete = _carry(_spec(swap_schedule={}))
+    assert incomplete.applicable is True
+    assert any("complete broker weekday swap-multiplier schedule" in item for item in incomplete.unknowns)
+
+
+def test_disabled_carry_mode_is_explicitly_no_charge():
+    facts = _carry(_spec(swap_mode_name="disabled")).facts
+    assert facts["swap_units"] == "no_swap_charge"
+    assert facts["long"]["charge"] == "none"
+    assert facts["short"]["charge"] == "none"

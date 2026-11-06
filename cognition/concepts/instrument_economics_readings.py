@@ -49,7 +49,7 @@ def _step_aligned(value: float, step: float) -> bool:
 class InstrumentEconomicsReadings:
     key = "instrument_economics_readings"
     family = "instrument_mechanics"
-    covers_methods = ("instrument_economics", "carry")
+    covers_methods = ("instrument_economics",)
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -300,6 +300,12 @@ class InstrumentEconomicsReadings:
             unknowns.append(
                 "swap calculation mode resolved by the installed MetaTrader5 enum constants"
             )
+        if verified:
+            unknowns.extend([
+                "position-specific cash financing amount using actual volume, contract calculation mode and holding interval",
+                "account-currency conversion for broker swap modes denominated outside the deposit currency",
+                "funding-rate or borrow-rate source for non-MT5 financing instruments",
+            ])
 
         def number(field: str) -> float | None:
             return _number(spec.get(field)) if verified else None
@@ -432,6 +438,13 @@ class InstrumentEconomicsReadings:
                 "documented_multiplier_values": [0.0, 1.0, 3.0],
             },
             "interest_year_basis_days": year_basis,
+            "coverage_status": "PARTIAL",
+            "unimplemented_components": [
+                "position-specific cash financing amount after broker contract volume and calculation mode are applied",
+                "account-currency conversion for swaps denominated outside the account deposit currency",
+                "holding-period cash projection across the broker rollover calendar",
+                "funding-rate and borrow-rate feeds for instruments without MT5 symbol swap fields",
+            ],
             "cash_carry_cost_calculated": False,
             "position_context_required_for_cash_cost": [
                 "position volume and contract calculation mode",

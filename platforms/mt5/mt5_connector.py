@@ -495,10 +495,13 @@ class MT5Connector(BaseConnector):
             try:
                 lookup[int(raw_value)] = label
             except (TypeError, ValueError, OverflowError):
+                # SAFE-FALLBACK: malformed optional MT5 enum constants are ignored;
+                # the corresponding swap mode remains explicitly unresolved.
                 continue
         try:
             return lookup.get(int(value)) if value is not None else None
         except (TypeError, ValueError, OverflowError):
+            # SAFE-FALLBACK: an unknown swap-mode value is not interpreted.
             return None
 
     def get_symbol_spec(self, symbol: str) -> dict:
