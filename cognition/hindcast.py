@@ -231,14 +231,27 @@ def _finite(value: Any) -> Optional[float]:
 
 
 def _market_state_tag(readings: list[ConceptReading]) -> str:
-    """Use an explicitly emitted regime/state label; otherwise preserve unknown."""
+    """Use explicit concept regime facts; never infer a state from price prose."""
     keys = ("market_regime", "regime_label", "regime_name", "regime_state", "regime")
+    explicit_labels = set()
+    transition_flags = set()
     for reading in readings:
         facts = reading.facts if isinstance(reading.facts, dict) else {}
         for key in keys:
             value = facts.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip().lower()[:80]
+                explicit_labels.add(value.strip().lower()[:60])
+        transition = facts.get("possible_transition")
+        if isinstance(transition, bool):
+            transition_flags.add(transition)
+    if explicit_labels:
+        return "|".join(sorted(explicit_labels))[:120]
+    if transition_flags == {True}:
+        return "distribution_transition_warning"
+    if transition_flags == {False}:
+        return "no_distribution_transition_warning"
+    if transition_flags == {True, False}:
+        return "mixed_distribution_transition_state"
     return "unknown"
 
 
