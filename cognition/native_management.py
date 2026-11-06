@@ -344,6 +344,25 @@ class NativePositionManager:
                 context, held_side, position, fresh, symbol, now=now,
             )
 
+            # The originating concept's completed-close invalidation and
+            # objective are campaign-defining boundaries. They take precedence
+            # over conflicting secondary assessments and risk-review states.
+            if concept_action is not None and concept_action.get("kind") in {
+                "objective_exit", "invalidation_exit",
+            }:
+                plan_kind = str(concept_action.get("kind", "") or "")
+                thesis_state = (
+                    "objective_reached" if plan_kind == "objective_exit"
+                    else "concept_invalidation_confirmed"
+                )
+                return NativeManagementVerdict(
+                    action="exit",
+                    thesis_state=thesis_state,
+                    reason=str(concept_action.get("reason", "concept geometry boundary reached")),
+                    management_plan=concept_action,
+                    **base,
+                )
+
             # A campaign-scoped, explicit portfolio-risk breach only de-risks the
             # position. It never creates an add or reversal.
             if any(state in {"breach", "critical", "exceeded", "over_limit"}
@@ -398,23 +417,10 @@ class NativePositionManager:
                     **base,
                 )
 
-            # The concept that originated this thesis says the first milestone has
-            # been delivered: protect the profit. This only de-risks and uses the
-            # concept's own level; it never exits or adds.
+            # Fresh concept anchors and milestones de-risk the existing campaign;
+            # they never create an add or reversal.
             if concept_action is not None:
                 plan_kind = str(concept_action.get("kind", "") or "")
-                if plan_kind in {"objective_exit", "invalidation_exit"}:
-                    thesis_state = (
-                        "objective_reached" if plan_kind == "objective_exit"
-                        else "concept_invalidation_confirmed"
-                    )
-                    return NativeManagementVerdict(
-                        action="exit",
-                        thesis_state=thesis_state,
-                        reason=str(concept_action.get("reason", "concept geometry boundary reached")),
-                        management_plan=concept_action,
-                        **base,
-                    )
                 if plan_kind == "trailing_stop_update":
                     return NativeManagementVerdict(
                         action="tighten_risk",
