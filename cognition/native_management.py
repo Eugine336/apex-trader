@@ -695,15 +695,17 @@ class NativePositionManager:
             return None
         geometry_symbol = str(geometry.get("symbol", "") or "").strip().upper()
         geometry_direction = str(geometry.get("direction", "") or "").strip().upper()
-        if geometry_symbol and geometry_symbol != symbol.strip().upper():
-            return None
-        if geometry_direction and geometry_direction != held_side:
+        if geometry_symbol != symbol.strip().upper() or geometry_direction != held_side:
             return None
 
         decision_time = _finite_number(now) if now is not None else None
         if decision_time is None:
             decision_time = time.time()
         entry_epoch = _finite_number(geometry.get("evidence_timestamp_epoch"))
+        # Without the original completed-bar timestamp, a later fresh bar
+        # cannot be proven to belong to this campaign's post-entry lifecycle.
+        if entry_epoch is None or entry_epoch <= 0.0:
+            return None
         campaign_id = str(context.get("campaign_id", "") or "").strip()
         pending_milestone = bool(context.get("pending_milestone_id"))
         completed = {
