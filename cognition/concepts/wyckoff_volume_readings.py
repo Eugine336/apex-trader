@@ -313,7 +313,6 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
     )
     obv_slope = _slope(obv, min(10, len(obv)))
     mfi_history = [value for value in mfi if value is not None]
-    cmf_history = [value for value in cmf if value is not None]
     divergence = {
         "obv": _volume_divergence(clean, obv),
         "mfi": _volume_divergence(clean, mfi),
