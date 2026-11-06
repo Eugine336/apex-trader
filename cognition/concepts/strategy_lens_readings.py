@@ -62,6 +62,7 @@ DATA_GATED_LENSES: dict[str, str] = {
     "event_macro": "timestamped economic calendar with actual/forecast/previous and macro series",
     "cross_asset": "synchronized multi-symbol bars with verified common-cutoff timestamps",
     "statistical_quant": "point-in-time per-concept outcome labels for Bayesian posterior updates",
+    "microstructure": "source-timestamped bid/ask tick stream and broker DOM/depth where exposed",
     "gap_opening_range": "authoritative venue session calendar with per-bar session identifiers",
     "relative_value": "synchronized multi-symbol histories and stable relationship samples",
     "carry_funding": "verified direction-specific broker swap, funding and rollover data",
