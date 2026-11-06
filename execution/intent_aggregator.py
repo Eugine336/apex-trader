@@ -130,7 +130,9 @@ class IntentAggregator:
             return []
 
         opens = [i for i in buffer if i.intent_type == IntentType.OPEN]
-        managed = [i for i in buffer if i.intent_type != IntentType.OPEN]
+        managed = self._deduplicate_action_ids([
+            i for i in buffer if i.intent_type != IntentType.OPEN
+        ])
 
         by_position: dict[str, list[Intent]] = defaultdict(list)
         for intent in managed:
@@ -155,9 +157,6 @@ class IntentAggregator:
         intents: list[Intent],
         info: Optional[_PositionInfo],
     ) -> list[Intent]:
-        intents = self._deduplicate_action_ids(intents)
-        if not intents:
-            return []
         closes = [i for i in intents if i.intent_type == IntentType.CLOSE]
         if closes:
             return [min(closes, key=lambda i: i.timestamp)]
