@@ -72,6 +72,56 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
 )
 
 
+def read_concept_readings(
+    symbol: str,
+    bars_by_tf: dict[str, list[dict]],
+    context: dict[str, Any] | None = None,
+    *,
+    modules: tuple[ConceptModule, ...] | None = None,
+) -> tuple[list[ConceptReading], list[dict[str, str]]]:
+    """Run registered concept readers and return full readings plus visible faults.
+
+    This is the shared reader path for live evidence conversion and offline
+    hindcasts. Callers must supply completed bars only. A failed module is
+    recorded and skipped; it is never represented as a negative market reading.
+    """
+    readings: list[ConceptReading] = []
+    faults: list[dict[str, str]] = []
+    reader_context = context if isinstance(context, dict) else {}
+    for module in modules if modules is not None else CONCEPT_MODULES:
+        module_key = str(getattr(module, "key", "unknown") or "unknown")
+        try:
+            contextual_reader = getattr(module, "read_with_context", None)
+            module_context = reader_context
+            if getattr(module, "consumes_concept_readings", False):
+                module_context = {
+                    **reader_context,
+                    "concept_readings": tuple(readings),
+                }
+            produced = (
+                contextual_reader(symbol, bars_by_tf, module_context)
+                if callable(contextual_reader)
+                else module.read(symbol, bars_by_tf)
+            )
+            for reading in produced or ():
+                if not isinstance(reading, ConceptReading):
+                    raise TypeError(
+                        f"{module_key} returned {type(reading).__name__}, expected ConceptReading"
+                    )
+                readings.append(reading)
+        except Exception as exc:  # noqa: BLE001 — preserve per-module availability
+            logger.warning(
+                "[concepts] %s failed for %s: %s: %s",
+                module_key, symbol, type(exc).__name__, exc,
+            )
+            faults.append({
+                "module": module_key,
+                "exception_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            })
+    return readings, faults
+
+
 def run_concepts(
     symbol: str,
     bars_by_tf: dict[str, list[dict]],
@@ -82,61 +132,36 @@ def run_concepts(
     A module that faults is logged and represented by a non-directional runtime
     diagnostic. Subsequent modules still run; no market reading is fabricated.
     """
-    evidence: list[Any] = []
-    concept_readings: list[ConceptReading] = []
-    reader_context = context if isinstance(context, dict) else {}
-    for module in CONCEPT_MODULES:
-        try:
-            contextual_reader = getattr(module, "read_with_context", None)
-            module_context = reader_context
-            if getattr(module, "consumes_concept_readings", False):
-                module_context = {
-                    **reader_context,
-                    "concept_readings": tuple(concept_readings),
-                }
-            readings = (
-                contextual_reader(symbol, bars_by_tf, module_context)
-                if callable(contextual_reader)
-                else module.read(symbol, bars_by_tf)
-            )
-            for reading in readings:
-                if isinstance(reading, ConceptReading):
-                    concept_readings.append(reading)
-                evidence.append(reading_to_evidence(symbol, reading))
-        except Exception as exc:  # noqa: BLE001
-            module_key = str(getattr(module, "key", "unknown") or "unknown")
-            logger.warning("[concepts] %s failed for %s: %s: %s",
-                           module_key, symbol, type(exc).__name__, exc)
-            # A failed reader is a data-availability failure, not evidence that
-            # its concept is absent. Preserve the failure in the same evidence
-            # stream so the Brain can distinguish unavailable analysis from a
-            # genuine negative/neutral market observation. This diagnostic is
-            # explicitly non-directional and carries no verified market time.
-            evidence.append(Evidence(
-                source_module=f"concept_runtime.{module_key}",
-                domain=EvidenceDomain.OTHER,
-                symbol=str(symbol or ""),
-                observation="A registered concept reader failed; its market interpretation is unavailable.",
-                confidence=0.0,
-                uncertainty=1.0,
-                polarity=0.0,
-                measurements={
-                    "source_kind": "concept_runtime_diagnostic",
-                    "concept_module": module_key,
-                    "status": "reader_failed",
-                    "exception_type": type(exc).__name__,
-                    "reading_unavailable": True,
-                    "non_market_evidence": True,
-                },
-                relevance_horizon_seconds=300.0,
-                data_basis="runtime_health_diagnostic",
-                provisional=True,
-                independence_group=f"concept_runtime_health:{module_key}",
-            ))
+    readings, faults = read_concept_readings(symbol, bars_by_tf, context)
+    evidence = [reading_to_evidence(symbol, reading) for reading in readings]
+    for fault in faults:
+        module_key = fault["module"]
+        evidence.append(Evidence(
+            source_module=f"concept_runtime.{module_key}",
+            domain=EvidenceDomain.OTHER,
+            symbol=str(symbol or ""),
+            observation="A registered concept reader failed; its market interpretation is unavailable.",
+            confidence=0.0,
+            uncertainty=1.0,
+            polarity=0.0,
+            measurements={
+                "source_kind": "concept_runtime_diagnostic",
+                "concept_module": module_key,
+                "status": "reader_failed",
+                "exception_type": fault["exception_type"],
+                "exception_message": fault["message"],
+                "reading_unavailable": True,
+                "non_market_evidence": True,
+            },
+            relevance_horizon_seconds=300.0,
+            data_basis="runtime_health_diagnostic",
+            provisional=True,
+            independence_group=f"concept_runtime_health:{module_key}",
+        ))
     return evidence
 
 
 __all__ = [
     "CONCEPT_MODULES", "ConceptModule", "ConceptReading", "Implication", "FLAT", "LONG", "SHORT",
-    "percentile_rank", "reading_to_evidence", "run_concepts",
+    "percentile_rank", "reading_to_evidence", "read_concept_readings", "run_concepts",
 ]
