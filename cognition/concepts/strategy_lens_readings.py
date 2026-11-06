@@ -267,34 +267,43 @@ class StrategyLensReadings:
                     else "partial_method_context" if selected
                     else "not_evaluable"
                 )
+                # A completed-bar epoch is trusted only when each method reading
+                # explicitly verifies its source timestamp. Never promote a merely
+                # present timestamp into verified provenance.
                 source_epochs = [
-                    finite(item.source_bar_epoch) for item in selected.values()
+                    (
+                        finite(item.source_bar_epoch)
+                        if item.source_timestamp_verified is True
+                        and finite(item.source_bar_epoch) is not None
+                        and finite(item.source_bar_epoch) > 0.0
+                        else None
+                    )
+                    for item in selected.values()
                 ]
                 epochs = {
-                    value for value in source_epochs
-                    if value is not None and value > 0.0
+                    value for value in source_epochs if value is not None
                 }
-                valid_epoch_count = sum(
-                    value is not None and value > 0.0 for value in source_epochs
-                )
                 source_epoch = (
                     next(iter(epochs))
-                    if selected and len(epochs) == 1 and valid_epoch_count == len(selected)
+                    if selected and len(epochs) == 1 and all(
+                        value is not None for value in source_epochs
+                    )
                     else None
                 )
-                if len(epochs) > 1 or (epochs and valid_epoch_count != len(selected)):
+                if selected and source_epoch is None:
                     unknowns.append(
-                        "underlying method readings are not all synchronized to one verified completed-bar timestamp"
+                        "underlying method readings do not all provide one synchronized, source-verified completed-bar timestamp"
                     )
+
+                # Do not synthesize independence for a composition. A shared
+                # group is valid only when every input explicitly declares the
+                # same OHLC group and every input is OHLC-based.
                 source_groups = [
-                    str(
-                        item.independence_group
-                        or (
-                            f"ohlc:{str(symbol or '').upper()}:{item.timeframe}"
-                            if (item.data_basis or "completed_ohlc") == "completed_ohlc"
-                            else ""
-                        )
-                    ).strip()
+                    (
+                        str(item.independence_group or "").strip()
+                        if (item.data_basis or "completed_ohlc") == "completed_ohlc"
+                        else ""
+                    )
                     for item in selected.values()
                 ]
                 groups = {group for group in source_groups if group}
@@ -345,6 +354,12 @@ class StrategyLensReadings:
                     "known_failure_modes": [lens.limitation],
                     "data_requirements": list(lens.data_requirements),
                     "data_gated_reason": data_gate,
+                    "source_provenance_verified": bool(
+                        selected and source_epoch is not None
+                    ),
+                    "independence_group_verified": bool(
+                        selected and independence_group
+                    ),
                     "style_is_not_selected_or_authorized": True,
                     "directional_decision_emitted": False,
                     "entry_authorization_emitted": False,

@@ -293,3 +293,92 @@ def test_unsynchronized_method_composition_is_watch_not_relevant():
     assert lens.source_bar_epoch is None
     assert assessment["status"] == "watch"
     assert any("not all synchronized" in item for item in assessment["missing_context"])
+
+def test_composite_lens_does_not_promote_unverified_method_timestamps():
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="novelty",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+            source_timestamp_verified=False,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="analogue",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+    evidence = reading_to_evidence("XAUUSD", lens)
+
+    assert lens.source_bar_epoch is None
+    assert evidence.source_timestamp_verified is False
+    assert evidence.measurements["source_timestamp_known"] is False
+    assert lens.independence_group == "ohlc:XAUUSD:M5"
+    assert any(
+        "source-verified completed-bar timestamp" in item
+        for item in lens.unknowns
+    )
+
+
+def test_mixed_source_lens_never_receives_synthetic_ohlc_independence_group():
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="OHLC-derived",
+            observation="novelty",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="non-candle source",
+            observation="analogue",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+            source_timestamp_verified=True,
+            data_basis="historical_outcome",
+            independence_group="",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+    evidence = reading_to_evidence("XAUUSD", lens)
+
+    assert lens.independence_group == ""
+    assert evidence.independence_group == ""
+    assert evidence.measurements["independence_group_verified"] is False
+

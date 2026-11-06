@@ -219,7 +219,11 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         # An interpretation of the same OHLC is not independent of that OHLC.
         independence_group=(
             reading.independence_group
-            or f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}"
+            or (
+                f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}"
+                if (reading.data_basis or "completed_ohlc") == "completed_ohlc"
+                else ""
+            )
         ),
         measurement_version=MEASUREMENT_VERSION,
     )
