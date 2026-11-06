@@ -76,16 +76,19 @@ def test_geometry_does_not_merge_different_timeframes_or_source_bars():
 def test_geometry_prefers_independent_sources_when_ranking_candidate_groups():
     geometry = _geometry_from_concept_readings(
         [
-            _reading("crt", "e1", 98.0, 104.0, independence_group="ohlc:EURUSD:M5"),
-            _reading("order_book", "e2", 99.0, 105.0, independence_group="dom:EURUSD"),
+            _reading("crt", "e1", 98.0, 104.0, timeframe="M5", independence_group="ohlc:EURUSD:M5"),
+            _reading("market_structure", "e2", 99.0, 105.0, timeframe="M5", independence_group="ohlc:EURUSD:M5"),
+            _reading("order_book", "e3", 98.0, 104.0, timeframe="H1", independence_group="dom:EURUSD"),
+            _reading("crt_h1", "e4", 99.0, 105.0, timeframe="H1", independence_group="ohlc:EURUSD:H1"),
         ],
         "LONG",
         "EURUSD",
     )
 
     assert geometry is not None
+    assert geometry.stop_timeframe == "H1"
     assert geometry.independent_source_count == 2
-    assert geometry.independence_groups == ("dom:EURUSD", "ohlc:EURUSD:M5")
+    assert geometry.independence_groups == ("dom:EURUSD", "ohlc:EURUSD:H1")
 
 
 def test_short_geometry_uses_most_protective_stop_and_nearest_objective():
