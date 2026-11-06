@@ -83,6 +83,7 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         "trend_following", "roc_momentum", "momentum_breakout",
     ]
     assert "method_summaries" in trend.measurements
+    assert trend.independence_group == "ohlc:XAUUSD:M5"
     assert trend.polarity == 0.0
     assert trend.measurements["directional_decision_emitted"] is False
     assert trend.measurements["entry_authorization_emitted"] is False
