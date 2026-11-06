@@ -27,6 +27,8 @@ async def get_trading_config(
 ) -> TradingConfig:
     raw = db.get_user_config(int(user["id"]))
     data = json.loads(raw) if raw else {}
+    if "universe_mode" not in data and data.get("enabled_symbols_override"):
+        data["universe_mode"] = "selected"
     return TradingConfig(**{k: v for k, v in data.items() if k in TradingConfig.model_fields})
 
 
