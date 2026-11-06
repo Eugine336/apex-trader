@@ -67,8 +67,6 @@ class Intent:
     decision_id: str = ""
     campaign_id: str = ""
     opportunity_id: str = ""
-    # Stable Brain management-plan identity for downstream audit/deduplication.
-    action_id: str = ""
     # Evidence-backed payoff geometry travels through the shared execution sink.
     payoff_geometry: Optional[dict] = None
     # Exact decision-time evidence snapshot; descriptive only until independently validated.
@@ -78,6 +76,8 @@ class Intent:
     order_type: str = "MARKET"
     entry_zone_low: Optional[float] = None
     entry_zone_high: Optional[float] = None
+    # Appended to preserve positional compatibility of existing Intent callers.
+    action_id: str = ""
 
     @staticmethod
     def close(
