@@ -122,9 +122,14 @@ def test_wyckoff_interpretation_is_symmetric_under_price_reflection():
     assert bool(original["distribution_or_markdown"]["supporting_observations"]) == bool(
         reflected["accumulation_or_markup"]["supporting_observations"]
     )
-    assert original["accumulation_or_markup"]["invalidation_level"] == (
-        500.0 - reflected["distribution_or_markdown"]["invalidation_level"]
-        if reflected["distribution_or_markdown"]["invalidation_level"] is not None else None
+    original_invalidation = original["accumulation_or_markup"]["invalidation_level"]
+    reflected_invalidation = reflected["distribution_or_markdown"]["invalidation_level"]
+    assert original_invalidation is not None and reflected_invalidation is not None
+    assert math.isclose(
+        original_invalidation,
+        500.0 - reflected_invalidation,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
     )
 
 
@@ -191,6 +196,8 @@ def test_live_market_lens_preserves_tick_and_real_volume_as_separate_fields():
     for item in selected.values():
         assert item.polarity == 0.0
         assert item.source_timestamp_verified is True
-        assert item.measurements["facts"]["volume_basis"] == "tick_volume_proxy"
+    for key in ("wyckoff_effort_result", "volume_indicators"):
+        assert selected[key].measurements["facts"]["volume_basis"] == "tick_volume_proxy"
+    assert selected["wyckoff"].measurements["facts"]["coverage_status"] == "PARTIAL"
     facts = selected["volume_indicators"].measurements["facts"]
     assert facts["real_volume"]["complete_for_recent_window"] is False
