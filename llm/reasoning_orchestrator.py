@@ -22,6 +22,7 @@ opinions, never an exception.
 """
 
 from __future__ import annotations
+import logging
 
 import threading
 import time
@@ -311,6 +312,7 @@ class ReasoningEngine:
         try:
             return bool(fn(symbol))
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in llm/reasoning_orchestrator.py:313", exc_info=True)
             return True
 
     @property
