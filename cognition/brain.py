@@ -1062,8 +1062,10 @@ class CognitiveBrain:
             and str(getattr(item, "symbol", "") or "").strip().upper()
                 == str(symbol or "").strip().upper()
             and getattr(item, "provisional", False) is False
-            and getattr(item, "source_timestamp_verified", False) is True
-            and str(getattr(item, "data_basis", "") or "").lower() == "completed_ohlc"
+            and isinstance(getattr(item, "measurements", None), dict)
+            and item.measurements.get("source_timestamp_known") is True
+            and str(item.measurements.get("data_basis", "") or "").lower() == "completed_ohlc"
+            and _finite_number(item.measurements.get("source_bar_epoch")) is not None
             for item in geometry_items
         )
         independence_groups = sorted({
@@ -2976,9 +2978,15 @@ class CognitiveBrain:
                 in {"structure", "liquidity", "momentum", "volatility", "volume",
                     "order_flow", "multi_timeframe", "correlation", "session", "macro"}
             ]
+            evidence_index_ids = {
+                str(item.get("evidence_id", ""))
+                for item in (analysis.evidence_index or [])
+                if isinstance(item, dict) and item.get("measurement_keys")
+            }
+            required_support_ids = lead_support_ids or evidence_index_ids
             informative_facts = [
                 item for item in market_evidence
-                if str(getattr(item, "evidence_id", "") or "") in lead_support_ids
+                if (not required_support_ids or str(getattr(item, "evidence_id", "") or "") in required_support_ids)
                 and str(getattr(item, "symbol", "") or "").strip().upper()
                     == str(symbol or "").strip().upper()
                 and isinstance(getattr(item, "measurements", None), dict)
