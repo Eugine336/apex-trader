@@ -1,5 +1,7 @@
 import math
 
+import pandas as pd
+
 from cognition.concepts.cross_asset_readings import CrossAssetReadings
 from cognition.market_lenses import analyze_market_frames
 
@@ -22,6 +24,18 @@ def _bars_from_returns(returns, *, base_price=100.0, start_epoch=1_780_000_000.0
             "source_symbol": symbol,
         })
     return rows
+
+
+def _frame(rows, symbol):
+    frame = pd.DataFrame(rows)
+    frame.attrs.update({
+        "source_symbol": symbol,
+        "source_timestamp_verified": True,
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+    })
+    return frame
 
 
 def _returns(count=90):
@@ -104,9 +118,9 @@ def test_market_lenses_passes_only_completed_peer_bars_into_cross_asset_reader()
 
     evidence = analyze_market_frames(
         "XAUUSD",
-        {"M5": target},
+        {"M5": _frame(target, "XAUUSD")},
         concept_context={
-            "related_symbol_frames": {"EURUSD": {"M5": peer}},
+            "related_symbol_frames": {"EURUSD": {"M5": _frame(peer, "EURUSD")}},
         },
     )
     pair = next(
