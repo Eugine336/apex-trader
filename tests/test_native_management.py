@@ -25,9 +25,11 @@ def _state(*, markers=(), uncertainty=0.1, add_cost=False):
         measurements = {}
         if index < len(markers):
             marker_state = markers[index].get("state", "intact")
+            source_group = f"verified-test-source:{domain}"
             measurements = {
                 "campaign_id": "campaign-1",
                 "native_thesis_state": marker_state,
+                "independence_group": source_group,
             }
             if markers[index].get("ev") is not None:
                 measurements["expected_value_after_cost_r"] = markers[index]["ev"]
@@ -39,6 +41,11 @@ def _state(*, markers=(), uncertainty=0.1, add_cost=False):
             confidence=0.9,
             uncertainty=uncertainty,
             measurements=measurements,
+            source_timestamp_epoch=time.time() if measurements else None,
+            source_timestamp_verified=bool(measurements),
+            independence_group=(
+                str(measurements.get("independence_group", "")) if measurements else ""
+            ),
             relevance_horizon_seconds=900.0,
         ))
     if add_cost:
