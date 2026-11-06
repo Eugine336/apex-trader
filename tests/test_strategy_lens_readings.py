@@ -647,6 +647,9 @@ def test_measured_regime_fit_rules_cover_each_supported_style_without_directiona
         "mean_reversion": ({"trend_context": "range"}, "supports"),
         "range_auction": ({"trend_context": "uptrend"}, "challenges"),
         "momentum": ({"momentum": "accelerating"}, "supports"),
+        "breakout": ({"volatility": "expanding"}, "supports"),
+        "volatility_breakout": ({"volatility": "compressing"}, "challenges"),
+        "volatility_regime": ({"volatility": "compressing"}, "supports"),
         "order_flow_auction": ({"order_flow": "buying"}, "supports"),
     }
     for lens_key, (regime, expected) in cases.items():

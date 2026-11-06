@@ -316,6 +316,13 @@ _LENS_REGIME_FIT_RULES = {
     # Momentum-dependent styles use the Brain's independently aggregated
     # momentum state. These are compatibility observations, not entry signals.
     "momentum": ("momentum", {"accelerating"}, {"decelerating"}),
+    # Breakout styles require measured expansion; compression is a challenge
+    # to an active breakout interpretation, not a directional short signal.
+    "breakout": ("volatility", {"expanding"}, {"compressing"}),
+    "volatility_breakout": ("volatility", {"expanding"}, {"compressing"}),
+    # This lens describes both sides of the volatility state rather than
+    # preferring expansion or contraction.
+    "volatility_regime": ("volatility", {"compressing", "expanding"}, set()),
 
     # Order-flow auction interpretation consumes the Brain's aggregated flow
     # state. Buying/selling means directional activity is present; it does not
