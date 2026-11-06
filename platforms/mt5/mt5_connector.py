@@ -369,7 +369,12 @@ class MT5Connector(BaseConnector):
             volume_min = float(getattr(item, "volume_min", 0.0) or 0.0)
             volume_max = float(getattr(item, "volume_max", 0.0) or 0.0)
             volume_step = float(getattr(item, "volume_step", 0.0) or 0.0)
-            tick_value = float(getattr(item, "trade_tick_value", 0.0) or 0.0)
+            tick_value = float(
+                getattr(item, "trade_tick_value", 0.0)
+                or getattr(item, "trade_tick_value_profit", 0.0)
+                or getattr(item, "trade_tick_value_loss", 0.0)
+                or 0.0
+            )
             spec_complete = all(value > 0 for value in (
                 tick_size, tick_value, point, contract_size, volume_min, volume_max, volume_step
             ))
@@ -447,6 +452,8 @@ class MT5Connector(BaseConnector):
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
                 "trade_tick_value": getattr(si, "trade_tick_value", None),
+                "trade_tick_value_profit": getattr(si, "trade_tick_value_profit", None),
+                "trade_tick_value_loss": getattr(si, "trade_tick_value_loss", None),
                 "trade_tick_size": getattr(si, "trade_tick_size", None),
                 "trade_contract_size": getattr(si, "trade_contract_size", None),
                 "trade_mode": getattr(si, "trade_mode", None),
