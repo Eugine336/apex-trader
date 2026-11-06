@@ -147,11 +147,21 @@ def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral(
     ]
     assert method_evidence
     for item in method_evidence:
-        assert item.measurements["concept"] in full_methods
+        measurements = item.measurements
+        assert measurements["concept"] in full_methods
         assert item.polarity == 0.0
-        assert item.measurements["source_timestamp_known"] is True
-        assert item.measurements["source_bar_epoch"] == cutoff
-        assert item.measurements["source_timestamp_verified"] is True
+        if measurements["timeframe"] == "SPEC":
+            # Broker contract/carry readings are not candle observations. With
+            # no provider-attested specification timestamp in this OHLC-only
+            # cycle they must remain explicitly time-unknown, never borrow the
+            # latest M5 candle cutoff as fabricated provenance.
+            assert measurements["source_timestamp_known"] is False
+            assert measurements["source_timestamp_epoch"] is None
+            assert measurements["source_timestamp_verified"] is False
+            continue
+        assert measurements["source_timestamp_known"] is True
+        assert measurements["source_bar_epoch"] == cutoff
+        assert measurements["source_timestamp_verified"] is True
 
 
 def test_lens_composition_preserves_method_geometry_and_failure_modes():
