@@ -67,6 +67,8 @@ class Intent:
     decision_id: str = ""
     campaign_id: str = ""
     opportunity_id: str = ""
+    # Stable Brain management-plan identity for downstream audit/deduplication.
+    action_id: str = ""
     # Evidence-backed payoff geometry travels through the shared execution sink.
     payoff_geometry: Optional[dict] = None
     # Exact decision-time evidence snapshot; descriptive only until independently validated.
@@ -88,6 +90,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -103,6 +106,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.CLOSE,
@@ -183,6 +187,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -198,6 +203,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.MODIFY_SL,
@@ -214,6 +220,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -229,6 +236,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.MODIFY_TP,
@@ -245,6 +253,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -260,6 +269,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.PARTIAL_CLOSE,
