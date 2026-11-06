@@ -167,23 +167,42 @@ def _rows(
                     metadata_value = attrs.get(metadata_key)
                 if metadata_value is not None:
                     row_data[metadata_key] = metadata_value
-            volume = value("volume", "tick_volume", "real_volume")
-            if volume is not None and volume >= 0:
+            # Preserve native broker volume fields independently. MT5's
+            # compatibility "volume" column is explicitly a tick-volume alias;
+            # true real_volume is never collapsed into or inferred from it.
+            tick_volume = value("tick_volume")
+            real_volume = value("real_volume")
+            provider_volume = value("volume")
+            if tick_volume is not None and tick_volume >= 0:
+                row_data["tick_volume"] = tick_volume
+            if real_volume is not None and real_volume >= 0:
+                row_data["real_volume"] = real_volume
+            declared_volume_source = raw_value("volume_source")
+            mt5_tick_alias = (
+                str(attrs.get("volume_basis") or "").strip().lower()
+                == "tick_volume_alias_with_real_volume_preserved"
+            )
+            if mt5_tick_alias and tick_volume is not None:
+                volume = tick_volume
+                inferred_volume_source = "tick_volume_proxy"
+            elif provider_volume is not None and provider_volume >= 0:
+                volume = provider_volume
+                inferred_volume_source = "provider_volume"
+            elif tick_volume is not None and tick_volume >= 0:
+                volume = tick_volume
+                inferred_volume_source = "tick_volume_proxy"
+            elif real_volume is not None and real_volume >= 0:
+                volume = real_volume
+                inferred_volume_source = "real_volume"
+            else:
+                volume = None
+                inferred_volume_source = "unavailable"
+            if volume is not None:
                 row_data["volume"] = volume
-                volume_source = next(
-                    (
-                        alias for alias in ("volume", "tick_volume", "real_volume")
-                        if value(alias) is not None
-                    ),
-                    "unknown_volume",
-                )
-                declared_volume_source = raw_value("volume_source")
                 row_data["volume_source"] = (
                     str(declared_volume_source).strip().lower()
-                    if declared_volume_source is not None else (
-                        "tick_volume_proxy" if volume_source == "tick_volume"
-                        else "provider_volume"
-                    )
+                    if declared_volume_source is not None and not mt5_tick_alias
+                    else inferred_volume_source
                 )
             result.append(row_data)
         if source_attested:
