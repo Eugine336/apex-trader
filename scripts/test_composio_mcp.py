@@ -199,6 +199,9 @@ def _suggested_slug(data: object) -> str:
             if sug:
                 return str(sug[0])
     except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug(
+            "Unable to read Composio HTTP error response body", exc_info=True
+        )
         pass
     return ""
 
