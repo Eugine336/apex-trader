@@ -76,6 +76,12 @@ class Implication:
     requires: tuple[str, ...] = ()       # confirmations still missing
     conflicts_with: tuple[str, ...] = () # what would weaken it
     management: dict = field(default_factory=dict)
+    # Missing entry instructions mean market-at-reference. Non-market orders
+    # require an explicit price or a zone containing the reference price.
+    entry_price: Optional[float] = None
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
+    order_type: str = "MARKET"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +93,10 @@ class Implication:
             "invalidation_price": self.invalidation_price,
             "invalidation_reason": self.invalidation_reason,
             "objective_price": self.objective_price,
+            "entry_price": self.entry_price,
+            "entry_zone_low": self.entry_zone_low,
+            "entry_zone_high": self.entry_zone_high,
+            "order_type": self.order_type,
             "milestones": list(self.milestones),
             "requires": list(self.requires),
             "conflicts_with": list(self.conflicts_with),

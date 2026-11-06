@@ -71,6 +71,11 @@ class Intent:
     payoff_geometry: Optional[dict] = None
     # Exact decision-time evidence snapshot; descriptive only until independently validated.
     decision_feature_snapshot: Optional[dict] = None
+    # Typed Brain entry instructions. Pending orders remain blocked until the
+    # broker adapter implements and reconciles their lifecycle.
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
 
     @staticmethod
     def close(
@@ -124,6 +129,9 @@ class Intent:
         identity: str = IDENTITY_STATEMENT,
         payoff_geometry: Optional[dict] = None,
         decision_feature_snapshot: Optional[dict] = None,
+        order_type: str = "MARKET",
+        entry_zone_low: Optional[float] = None,
+        entry_zone_high: Optional[float] = None,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         """An intent to OPEN a new position.
@@ -158,6 +166,9 @@ class Intent:
                 copy.deepcopy(decision_feature_snapshot)
                 if isinstance(decision_feature_snapshot, dict) else None
             ),
+            order_type=str(order_type or "MARKET").upper(),
+            entry_zone_low=entry_zone_low,
+            entry_zone_high=entry_zone_high,
             priority=IntentType.OPEN,
         )
 

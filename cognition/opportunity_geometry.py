@@ -68,6 +68,9 @@ class OpportunityGeometry:
     geometry_sources: tuple[str, ...] = ()
     independent_source_count: int = 0
     independence_groups: tuple[str, ...] = ()
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +99,9 @@ class OpportunityGeometry:
             "geometry_sources": list(self.geometry_sources),
             "independent_source_count": self.independent_source_count,
             "independence_groups": list(self.independence_groups),
+            "order_type": self.order_type,
+            "entry_zone_low": self.entry_zone_low,
+            "entry_zone_high": self.entry_zone_high,
         }
 
 
@@ -152,9 +158,43 @@ def _geometry_from_concept_readings(
                 continue
             stop = _finite_positive(implication.get("invalidation_price"))
             target = _finite_positive(implication.get("objective_price"))
+            order_type = str(implication.get("order_type", "MARKET") or "MARKET").strip().upper()
+            if order_type not in {"MARKET", "LIMIT", "STOP"}:
+                continue
+            raw_entry = implication.get("entry_price")
+            raw_zone_low = implication.get("entry_zone_low")
+            raw_zone_high = implication.get("entry_zone_high")
+            explicit_entry = _finite_positive(raw_entry)
+            zone_low = _finite_positive(raw_zone_low)
+            zone_high = _finite_positive(raw_zone_high)
+            if (
+                (raw_entry is not None and explicit_entry is None)
+                or (raw_zone_low is not None and zone_low is None)
+                or (raw_zone_high is not None and zone_high is None)
+                or (zone_low is None) != (zone_high is None)
+            ):
+                continue
+            if zone_low is not None and zone_low > zone_high:
+                continue
+            candidate_entry = explicit_entry if explicit_entry is not None else entry
+            if order_type != "MARKET" and explicit_entry is None:
+                if zone_low is None or not zone_low <= entry <= zone_high:
+                    continue
+            if zone_low is not None and not zone_low <= candidate_entry <= zone_high:
+                continue
+            if order_type == "LIMIT" and (
+                (side == "LONG" and candidate_entry > entry)
+                or (side == "SHORT" and candidate_entry < entry)
+            ):
+                continue
+            if order_type == "STOP" and (
+                (side == "LONG" and candidate_entry < entry)
+                or (side == "SHORT" and candidate_entry > entry)
+            ):
+                continue
             if stop is None or target is None:
                 continue
-            valid = (stop < entry < target) if side == "LONG" else (target < entry < stop)
+            valid = (stop < candidate_entry < target) if side == "LONG" else (target < candidate_entry < stop)
             if not valid:
                 continue
             candidates.setdefault((
@@ -162,9 +202,12 @@ def _geometry_from_concept_readings(
             ), []).append({
                 "reading": reading,
                 "implication": implication,
-                "entry": entry,
+                "entry": candidate_entry,
                 "stop": stop,
                 "target": target,
+                "order_type": order_type,
+                "entry_zone_low": zone_low,
+                "entry_zone_high": zone_high,
                 "strength": _finite(implication.get("strength")),
                 "independence_group": reading.get("independence_group", ""),
             })
@@ -172,9 +215,12 @@ def _geometry_from_concept_readings(
     best: Optional[dict] = None
     for (timeframe, reference_timeframe, source_time), members in candidates.items():
         entries = [member["entry"] for member in members]
-        # Same symbol, reference timeframe and completed source instant must
-        # agree on the entry close. Do not invent a tolerance for disagreement.
-        if any(value != entries[0] for value in entries[1:]):
+        # Same source instant must agree on both entry and order semantics.
+        if (
+            any(value != entries[0] for value in entries[1:])
+            or len({member["order_type"] for member in members}) != 1
+            or len({(member["entry_zone_low"], member["entry_zone_high"]) for member in members}) != 1
+        ):
             continue
         entry = entries[0]
         stops = [member["stop"] for member in members]
@@ -243,6 +289,9 @@ def _geometry_from_concept_readings(
             "risk": risk, "reward": reward, "timeframe": timeframe, "reference_timeframe": reference_timeframe,
             "source_time": source_time, "concepts": concepts,
             "evidence_ids": evidence_ids, "milestones": milestones,
+            "order_type": members[0]["order_type"],
+            "entry_zone_low": members[0]["entry_zone_low"],
+            "entry_zone_high": members[0]["entry_zone_high"],
             "geometry_sources": geometry_sources, "invalidations": invalidations,
             "activation_reasons": activation_reasons,
             "independence_groups": independence_groups,
@@ -286,6 +335,9 @@ def _geometry_from_concept_readings(
         geometry_sources=best["geometry_sources"],
         independent_source_count=len(best["independence_groups"]),
         independence_groups=best["independence_groups"],
+        order_type=best["order_type"],
+        entry_zone_low=best["entry_zone_low"],
+        entry_zone_high=best["entry_zone_high"],
     )
 
 

@@ -225,6 +225,21 @@ class ActionExecutor:
             return "market_payoff_geometry_direction_mismatch"
         if geometry.get("activated") is not True:
             return "market_payoff_geometry_not_activated"
+        order_type = str(getattr(intent, "order_type", "MARKET") or "MARKET").upper()
+        geometry_order_type = str(geometry.get("order_type", "MARKET") or "MARKET").upper()
+        if order_type not in {"MARKET", "LIMIT", "STOP"} or geometry_order_type != order_type:
+            return "market_payoff_geometry_order_type_mismatch"
+        zone_low_raw = getattr(intent, "entry_zone_low", None)
+        zone_high_raw = getattr(intent, "entry_zone_high", None)
+        geometry_zone_low = geometry.get("entry_zone_low")
+        geometry_zone_high = geometry.get("entry_zone_high")
+        if (
+            (zone_low_raw is None) != (zone_high_raw is None)
+            or (geometry_zone_low is None) != (geometry_zone_high is None)
+            or zone_low_raw != geometry_zone_low
+            or zone_high_raw != geometry_zone_high
+        ):
+            return "market_payoff_geometry_entry_zone_mismatch"
         evidence_ids = geometry.get("evidence_ids")
         if not isinstance(evidence_ids, (list, tuple)) or not any(
             str(item or "").strip() for item in evidence_ids
@@ -266,6 +281,22 @@ class ActionExecutor:
         intent_target = finite_positive(intent.new_tp)
         if None in (entry, stop, target, risk, reward, reward_r, live_entry, intent_stop, intent_target):
             return "market_payoff_geometry_contains_invalid_price_or_distance"
+        if order_type != "MARKET":
+            # The current shared broker adapter only supports market submission.
+            # Never silently reinterpret a Brain-authored pending order as market.
+            return "pending_order_type_not_supported_by_broker_adapter"
+        if zone_low_raw is not None:
+            try:
+                zone_low = float(zone_low_raw)
+                zone_high = float(zone_high_raw)
+            except (TypeError, ValueError, OverflowError):
+                return "market_payoff_geometry_entry_zone_invalid"
+            if (
+                not math.isfinite(zone_low) or not math.isfinite(zone_high)
+                or zone_low <= 0.0 or zone_high < zone_low
+                or not zone_low <= entry <= zone_high
+            ):
+                return "market_payoff_geometry_entry_outside_zone"
 
         tolerance = max(1e-9, abs(entry) * 1e-8)
         if (

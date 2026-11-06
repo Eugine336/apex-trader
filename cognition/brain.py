@@ -800,6 +800,9 @@ class CognitiveBrain:
             candidate.reward_distance = candidate_geometry.reward_distance
             candidate.reward_r = candidate_geometry.reward_r
             candidate.geometry_evidence_ids = list(candidate_geometry.evidence_ids)
+            candidate.order_type = candidate_geometry.order_type
+            candidate.entry_zone_low = candidate_geometry.entry_zone_low
+            candidate.entry_zone_high = candidate_geometry.entry_zone_high
             candidate.target_logic = (
                 f"Market-derived target {candidate_geometry.target_price:.10g}; "
                 f"entry {candidate_geometry.entry_price:.10g}; "
@@ -1420,7 +1423,8 @@ class CognitiveBrain:
             desired_exposure=desired_exposure,
             expected_value=expected_value,
             initial_execution_intent={
-                "kind": "market",
+                "kind": (geometry.order_type.lower() if geometry is not None else "market"),
+                "order_type": (geometry.order_type if geometry is not None else "MARKET"),
                 "confidence": round(eff_conf, 4),
                 "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                 **({
@@ -1429,6 +1433,9 @@ class CognitiveBrain:
                     "tp": geometry.target_price,
                     "payoff_geometry": geometry.to_dict(),
                     "geometry_evidence_ids": list(geometry.evidence_ids),
+                    "order_type": geometry.order_type,
+                    "entry_zone_low": geometry.entry_zone_low,
+                    "entry_zone_high": geometry.entry_zone_high,
                 } if geometry is not None else {}),
             },
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,

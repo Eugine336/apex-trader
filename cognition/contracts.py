@@ -710,11 +710,14 @@ class Opportunity:
     reward_distance: Optional[float] = None
     reward_r: Optional[float] = None
     geometry_evidence_ids: list[str] = field(default_factory=list)
-    # Append new metadata after existing fields to preserve positional callers.
+    # Append metadata after all existing fields to preserve positional callers.
     identity: str = IDENTITY_STATEMENT
     # Explicit analytical family used to keep calibration conditional. Unknown
     # families remain uncalibrated; thesis prose is never mined for a family label.
     candidate_family: str = "unclassified"
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.identity_version = IDENTITY_VERSION
@@ -799,6 +802,9 @@ class Opportunity:
             reward_distance=_positive_optional_number(data.get("reward_distance")),
             reward_r=_positive_optional_number(data.get("reward_r")),
             geometry_evidence_ids=_lst("geometry_evidence_ids"),
+            order_type=str(data.get("order_type", "MARKET") or "MARKET").upper(),
+            entry_zone_low=_positive_optional_number(data.get("entry_zone_low")),
+            entry_zone_high=_positive_optional_number(data.get("entry_zone_high")),
             quality=_clamp01(data.get("quality")),
             asymmetry=_clamp01(data.get("asymmetry")),
             urgency=_clamp01(data.get("urgency")),
@@ -834,6 +840,9 @@ class Opportunity:
             "reward_distance": self.reward_distance,
             "reward_r": self.reward_r,
             "geometry_evidence_ids": list(self.geometry_evidence_ids),
+            "order_type": self.order_type,
+            "entry_zone_low": self.entry_zone_low,
+            "entry_zone_high": self.entry_zone_high,
             "quality": round(self.quality, 4),
             "asymmetry": round(self.asymmetry, 4),
             "urgency": round(self.urgency, 4),
