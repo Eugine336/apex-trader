@@ -1,3 +1,4 @@
+from collections import namedtuple
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -16,7 +17,23 @@ class FakeMT5:
 
     @staticmethod
     def symbol_info(symbol):
-        return type("SymbolInfo", (), {"visible": True})()
+        return type("SymbolInfo", (), {
+            "visible": True,
+            "trade_tick_size": 0.01,
+            "point": 0.01,
+        })()
+
+    @staticmethod
+    def symbol_info_tick(symbol):
+        tick_type = namedtuple(
+            "Tick",
+            "time time_msc bid ask last volume volume_real flags",
+        )
+        return tick_type(
+            int(datetime.now(timezone.utc).timestamp()),
+            int(datetime.now(timezone.utc).timestamp() * 1000),
+            100.0, 100.02, 100.01, 3, 3.0, 16,
+        )
 
     @staticmethod
     def symbol_select(symbol, enabled):
@@ -134,3 +151,15 @@ def test_broker_profit_and_margin_calculations_use_native_mt5_functions(monkeypa
     margin = connector.calculate_margin("EURUSD", "BUY", 0.2, 1.1)
     assert profit == pytest.approx(2.0)
     assert margin == pytest.approx(0.0022)
+
+
+def test_unregistered_broker_symbol_quote_preserves_raw_tick_and_uses_tick_units(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    tick = connector.get_price("BROKER_CUSTOM")
+
+    assert tick.spread == pytest.approx(2.0)
+    assert tick.spread_unit == "ticks"
+    assert tick.raw_fields["flags"] == 16
+    assert tick.raw_fields["volume"] == 3
+    assert tick.source_timestamp_verified is True
