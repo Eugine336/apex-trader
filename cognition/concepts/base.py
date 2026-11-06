@@ -170,8 +170,15 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         if explicit_uncertainty is not None else
         (min(1.0, max(0.0, 1.0 - confidence)) if strengths or explicit_confidence is not None else 1.0)
     )
+    evidence_source_module = str(
+        reading.facts.get("evidence_source_module", "")
+        if isinstance(reading.facts, dict) else ""
+    ).strip()
     return Evidence(
-        source_module=f"concept.{reading.concept}.{reading.timeframe.lower()}",
+        source_module=(
+            evidence_source_module
+            or f"concept.{reading.concept}.{reading.timeframe.lower()}"
+        ),
         domain=reading.domain,
         symbol=str(symbol or ""),
         observation=reading.observation[:1400],
