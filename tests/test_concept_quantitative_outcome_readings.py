@@ -159,7 +159,7 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
             "portfolio_id": "account-main", "portfolio_scope": "whole_book",
             "equity": 10000.0, "risk_fraction": 0.01,
             "planned_trade_count": 10,
-            "source_timestamp_epoch": cutoff, "source_timestamp_verified": True,
+            "source_timestamp_epoch": cutoff + 30.0, "source_timestamp_verified": True,
         },
         "monte_carlo_iterations": 500,
     }
@@ -172,6 +172,37 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
     assert first.facts["current_portfolio_plan_stressed"] is True
     assert first.facts["portfolio_scope"] == "whole_book"
     assert first.facts["probability_of_ruin"] is not None
+
+
+
+def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    rows = [
+        {
+            "trade_id": f"trade-{index}", "portfolio_id": "account-main",
+            "return_r": value, "closed_epoch": cutoff - (index + 1) * 300,
+            "source_timestamp_epoch": cutoff - (index + 1) * 300,
+            "source_timestamp_verified": True,
+        }
+        for index, value in enumerate((1.0, -0.5, 0.7))
+    ]
+    item = next(
+        reading for reading in _readings({
+            "trade_outcome_samples": rows,
+            "portfolio_plan": {
+                "portfolio_id": "account-main", "portfolio_scope": "whole_book",
+                "equity": 10000.0, "risk_fraction": 0.01,
+                "planned_trade_count": 10,
+                "source_timestamp_epoch": cutoff - 30.0,
+                "source_timestamp_verified": True,
+            },
+        })
+        if reading.concept == "monte_carlo"
+    )
+    assert item.applicable is False
+    assert item.facts["simulation_count"] == 0
+    assert item.facts["current_portfolio_plan_stressed"] is False
+    assert any("timestamped at or after" in item for item in item.unknowns)
 
 
 def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():

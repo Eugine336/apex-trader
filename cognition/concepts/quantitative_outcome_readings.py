@@ -391,7 +391,7 @@ def _monte_carlo_reading(
         and plan.get("portfolio_scope") == "whole_book"
         and plan.get("source_timestamp_verified") is True
         and portfolio_id
-        and cutoff is not None and plan_epoch is not None and plan_epoch <= cutoff
+        and cutoff is not None and plan_epoch is not None and plan_epoch >= cutoff
         and equity is not None and equity > 0.0
         and risk_fraction is not None and 0.0 < risk_fraction <= 1.0
         and raw_trade_count is not None and raw_trade_count.is_integer()
@@ -455,7 +455,7 @@ def _monte_carlo_reading(
         unknowns.append("at least two distinct broker-truth whole-book trade R outcomes with verified close timestamps")
     if not plan_valid:
         unknowns.append(
-            "source-verified whole-book portfolio plan with equity, risk fraction and planned trade count"
+            "source-verified whole-book portfolio plan, timestamped at or after the completed-bar cutoff, with equity, risk fraction and planned trade count"
         )
     if rejected:
         unknowns.append(f"{rejected} trade outcome row(s) rejected for duplicate, invalid or future provenance")
@@ -481,6 +481,7 @@ def _monte_carlo_reading(
             "trade_sample_count": len(returns),
             "simulation_count": len(terminal_returns),
             "planned_trade_count": planned_trade_count,
+            "portfolio_plan_epoch": plan_epoch if plan_valid else None,
             "risk_fraction": risk_fraction if plan_valid else None,
             "bootstrap_terminal_return_r_mean": mean(terminal_returns) if terminal_returns else None,
             "bootstrap_terminal_return_r_5pct": tail,
