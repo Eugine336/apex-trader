@@ -1604,6 +1604,40 @@ class MT5Connector(BaseConnector):
             return []
         return [self._to_position_info(p) for p in positions]
 
+    def get_position_snapshots(self, symbol: Optional[str] = None) -> list[dict]:
+        """Return unabridged MT5 position records for audit/reconciliation."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol) if symbol else None
+        positions = mt5.positions_get(symbol=mapped) if mapped else mt5.positions_get()
+        if positions is None:
+            raise RuntimeError(f"MT5 positions_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(position),
+                "source": "mt5.positions_get",
+                "source_verified": True,
+                "connector_broker": self._broker_name,
+            }
+            for position in positions
+        ]
+
+    def get_pending_order_snapshots(self, symbol: Optional[str] = None) -> list[dict]:
+        """Return unabridged MT5 pending-order records for audit/reconciliation."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol) if symbol else None
+        orders = mt5.orders_get(symbol=mapped) if mapped else mt5.orders_get()
+        if orders is None:
+            raise RuntimeError(f"MT5 orders_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(order),
+                "source": "mt5.orders_get",
+                "source_verified": True,
+                "connector_broker": self._broker_name,
+            }
+            for order in orders
+        ]
+
     def get_position_info(self, order_id: str) -> Optional[PositionInfo]:
         self._require_connection()
         position = self._find_position(order_id)
@@ -1737,7 +1771,12 @@ class MT5Connector(BaseConnector):
                 elif btype in (1, 3):
                     side = "ask"
                 else:
-                    continue
+                    side = "unknown"
+                raw_fields = (
+                    dict(item._asdict())
+                    if callable(getattr(item, "_asdict", None))
+                    else {}
+                )
                 out.append({
                     "price": price,
                     "volume": volume,
@@ -1746,6 +1785,7 @@ class MT5Connector(BaseConnector):
                     "volume_basis": "volume_real" if real_volume > 0 else "volume",
                     "side": side,
                     "book_type": btype,
+                    "raw_fields": raw_fields,
                     "source": "mt5.market_book_get",
                     "source_verified": True,
                 })
