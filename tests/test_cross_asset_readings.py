@@ -4,7 +4,7 @@ from cognition.concepts.cross_asset_readings import CrossAssetReadings
 from cognition.market_lenses import analyze_market_frames
 
 
-def _bars_from_returns(returns, *, base_price=100.0, start_epoch=1_780_000_000.0):
+def _bars_from_returns(returns, *, base_price=100.0, start_epoch=1_780_000_000.0, symbol="XAUUSD"):
     rows = []
     close = base_price
     for index, value in enumerate(returns):
@@ -19,7 +19,7 @@ def _bars_from_returns(returns, *, base_price=100.0, start_epoch=1_780_000_000.0
             "timestamp_epoch": start_epoch + index * 300.0,
             "source_timestamp_verified": True,
             "source_timestamp_origin": "broker_server_time",
-            "source_symbol": "XAUUSD",
+            "source_symbol": symbol,
         })
     return rows
 
@@ -38,9 +38,9 @@ def test_cross_asset_reader_ranks_measured_correlations_from_common_timestamps()
     peer_returns = [value * 0.8 + 0.00003 * math.sin(i * 0.73) for i, value in enumerate(target_returns)]
     inverse_returns = [-value * 0.9 + 0.00002 * math.cos(i * 0.41) for i, value in enumerate(target_returns)]
     target = _bars_from_returns(target_returns)
-    positive = _bars_from_returns(peer_returns, base_price=1.1)
-    negative = _bars_from_returns(inverse_returns, base_price=150.0)
-    misaligned = _bars_from_returns(peer_returns, base_price=0.9, start_epoch=1_780_000_150.0)
+    positive = _bars_from_returns(peer_returns, base_price=1.1, symbol="EURUSD")
+    negative = _bars_from_returns(inverse_returns, base_price=150.0, symbol="USDJPY")
+    misaligned = _bars_from_returns(peer_returns, base_price=0.9, start_epoch=1_780_000_150.0, symbol="GBPUSD")
 
     readings = CrossAssetReadings().read_with_context(
         "XAUUSD",
@@ -66,7 +66,7 @@ def test_cross_asset_reader_ranks_measured_correlations_from_common_timestamps()
 
 def test_cross_asset_reader_does_not_promote_missing_or_unsynchronized_peers():
     target = _bars_from_returns(_returns())
-    misaligned = _bars_from_returns(_returns(), base_price=1.1, start_epoch=1_780_000_150.0)
+    misaligned = _bars_from_returns(_returns(), base_price=1.1, start_epoch=1_780_000_150.0, symbol="EURUSD")
 
     readings = CrossAssetReadings().read_with_context(
         "XAUUSD",
@@ -99,7 +99,7 @@ def test_cross_asset_reader_requires_a_minimum_common_return_sample():
 
 def test_market_lenses_passes_only_completed_peer_bars_into_cross_asset_reader():
     target = _bars_from_returns(_returns())
-    peer = _bars_from_returns(_returns(), base_price=1.2)
+    peer = _bars_from_returns(_returns(), base_price=1.2, symbol="EURUSD")
     forming_epoch = target[-1]["timestamp_epoch"]
 
     evidence = analyze_market_frames(
