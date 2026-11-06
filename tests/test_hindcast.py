@@ -202,6 +202,41 @@ def test_hindcast_manifest_rejects_tampered_file_and_unattested_timestamps(tmp_p
         load_hindcast_dataset(path)
 
 
+@pytest.mark.parametrize(
+    "timestamps",
+    [
+        ["2026-01-01T00:00:00,1,1.1,0.9,1", "2026-01-01T00:01:00Z,1,1.1,0.9,1"],
+        ["2026-01-01T01:00:00+01:00,1,1.1,0.9,1", "2026-01-01T00:01:00Z,1,1.1,0.9,1"],
+        ["2026-01-01T00:01:00Z,1,1.1,0.9,1", "2026-01-01T00:00:00Z,1,1.1,0.9,1"],
+    ],
+)
+def test_hindcast_rejects_naive_non_utc_and_reordered_source_timestamps(tmp_path, timestamps):
+    csv_path = tmp_path / "EURUSD_M1.csv"
+    csv_path.write_text(
+        "time,open,high,low,close\n" + "\n".join(timestamps) + "\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema_version": 1,
+        "symbol": "EURUSD",
+        "source_reference": "broker export",
+        "attestation_basis": "provider metadata",
+        "source_timestamp_verified": True,
+        "timestamp_semantics": "bar_close",
+        "timestamp_timezone": "UTC",
+        "timeframes": {
+            "M1": {
+                "file": csv_path.name,
+                "sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+            }
+        },
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(HindcastDataError):
+        load_hindcast_dataset(path)
+
+
 def test_hindcast_never_exposes_future_bars_to_concepts_or_brain():
     bars = [
         _bar(60, close=100.0),
