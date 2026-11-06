@@ -155,6 +155,9 @@ class IntentAggregator:
         intents: list[Intent],
         info: Optional[_PositionInfo],
     ) -> list[Intent]:
+        intents = self._deduplicate_action_ids(intents)
+        if not intents:
+            return []
         closes = [i for i in intents if i.intent_type == IntentType.CLOSE]
         if closes:
             return [min(closes, key=lambda i: i.timestamp)]
@@ -178,6 +181,41 @@ class IntentAggregator:
             resolved.extend(self._resolve_partials(ticket, partial_intents))
 
         return resolved
+
+    @staticmethod
+    def _deduplicate_action_ids(intents: list[Intent]) -> list[Intent]:
+        """Collapse exact repeated Brain actions; drop conflicting ID reuse.
+
+        One management action may legitimately emit different intent types
+        (for example a partial close plus a protective stop), so the dedupe key
+        includes the intent type. Reuse of the same action/type ID with
+        conflicting payloads is ambiguous and fails closed by dropping that
+        keyed group.
+        """
+        unkeyed: list[Intent] = []
+        keyed: dict[tuple[str, IntentType], Intent] = {}
+        conflicted: set[tuple[str, IntentType]] = set()
+        for intent in intents:
+            action_id = str(getattr(intent, "action_id", "") or "").strip()
+            if not action_id:
+                unkeyed.append(intent)
+                continue
+            key = (action_id, intent.intent_type)
+            prior = keyed.get(key)
+            if prior is None and key not in conflicted:
+                keyed[key] = intent
+                continue
+            if prior is None:
+                continue
+            signature = lambda item: (
+                item.symbol, item.position_ticket, item.direction,
+                item.new_sl, item.new_tp, item.close_fraction,
+                item.decision_id, item.campaign_id, item.opportunity_id,
+            )
+            if signature(prior) != signature(intent):
+                keyed.pop(key, None)
+                conflicted.add(key)
+        return unkeyed + list(keyed.values())
 
     def _pick_tightest_sl(
         self,
