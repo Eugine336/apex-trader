@@ -1105,11 +1105,6 @@ class SystemContext:
                         getattr(cog_cfg, "min_advisors_for_action", 2)
                         if cog_cfg is not None else 2
                     ),
-                    # Article XXXIV — minimum evidence-domain coverage to act.
-                    min_evidence_domains=int(
-                        getattr(cog_cfg, "min_evidence_domains", 2)
-                        if cog_cfg is not None else 2
-                    ),
                     # Article XXI — attenuate confidence under degraded cognition.
                     degraded_confidence_multiplier=float(
                         getattr(cog_cfg, "degraded_confidence_multiplier", 0.7)
@@ -1611,10 +1606,6 @@ class SystemContext:
                     event_min_interval_seconds=float(
                         getattr(cog_cfg, "event_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
-                    ),
-                    event_confidence_delta=float(
-                        getattr(cog_cfg, "event_confidence_delta", 0.15)
-                        if cog_cfg is not None else 0.15
                     ),
                     campaign_registry=ctx.campaign_registry,
                     reallocation_enabled=bool(
