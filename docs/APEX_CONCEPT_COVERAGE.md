@@ -90,7 +90,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | volume_indicators | OBV MFI CMF A/D | `volume_indicators` | FULL |
 
 ## Strategy lenses (38)
-FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
+FULL 20 · DATA-GATED 18 · MEASURED 0 · UNMEASURED 0
 
 | Lens | Key | Level |
 |---|---|---|
@@ -124,7 +124,7 @@ FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 | Session / VWAP / intraday context | `session_intraday` | DATA-GATED — authoritative venue session calendar and verified session VWAP inputs |
 | Statistical / quantitative methods | `statistical_quant` | DATA-GATED — point-in-time per-concept outcome labels for Bayesian posterior updates |
 | Support / resistance and market structure | `support_resistance` | FULL |
-| Tick / spread / execution microstructure | `microstructure` | FULL |
+| Tick / spread / execution microstructure | `microstructure` | DATA-GATED — source-timestamped bid/ask tick stream and broker DOM/depth where exposed |
 | Trend following | `trend_following` | FULL |
 | Trend strength / ADX-style regime | `trend_strength` | FULL |
 | Verified news-event reaction | `news_event_reaction` | DATA-GATED — trusted timestamped event calendar and actual/forecast/previous values |
@@ -159,4 +159,4 @@ FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 - `order_book_readings` (microstructure) — methods: order_book; lenses: -
 - `tick_microstructure_readings` (microstructure) — methods: tick_microstructure; lenses: -
 - `quantitative_state_readings` (quantitative) — methods: time_series, clustering, anomaly_detection; lenses: -
-- `strategy_lens_readings` (strategy_lens_composition) — methods: -; lenses: ict_smc, trend_following, momentum, breakout, failed_breakout, mean_reversion, candle_price_action, volatility_regime, wyckoff, microstructure, support_resistance, moving_average, oscillator_divergence, trend_strength, fibonacci_geometry, volatility_breakout, seasonality_cycles, wyckoff_effort_result, pattern_discovery
+- `strategy_lens_readings` (strategy_lens_composition) — methods: -; lenses: ict_smc, trend_following, momentum, breakout, failed_breakout, mean_reversion, candle_price_action, volatility_regime, wyckoff, support_resistance, moving_average, oscillator_divergence, trend_strength, fibonacci_geometry, volatility_breakout, seasonality_cycles, wyckoff_effort_result, pattern_discovery
