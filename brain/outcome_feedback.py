@@ -139,7 +139,7 @@ class OutcomeFeedback:
                     try:
                         os.unlink(tmp_name)
                     except OSError:
-                        pass
+                        logging.getLogger(__name__).debug("Unable to remove temporary outcome journal file", exc_info=True)
             logger.info(
                 "[OutcomeFeedback] journal rotated — kept last {} of {} records",
                 self._max_records, len(lines),
