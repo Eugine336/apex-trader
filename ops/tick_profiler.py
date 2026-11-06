@@ -22,6 +22,7 @@ panel, while this attributes time to *individual components* within the tick.
 """
 
 from __future__ import annotations
+import logging
 
 import threading
 import time
@@ -157,6 +158,7 @@ class TickProfiler:
                     })
                 self._current_tick = {}
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/tick_profiler.py:159", exc_info=True)
             pass
 
     # ── Reporting ────────────────────────────────────────────────────────
@@ -279,6 +281,7 @@ class TickProfiler:
                 self._tick_count = 0
                 self._slow_tick_count = 0
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/tick_profiler.py:281", exc_info=True)
             pass
 
 
