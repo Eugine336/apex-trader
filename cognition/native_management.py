@@ -781,9 +781,10 @@ class NativePositionManager:
         if stop is not None:
             invalidated = close <= stop if held_side == "LONG" else close >= stop
             if invalidated:
+                # One stable id per campaign boundary: a still-open position
+                # must not create a new close request on every subsequent bar.
                 action_id = (
-                    f"{action_scope}:concept-invalidation:{timeframe}:"
-                    f"{latest_epoch:.6f}:{stop:.10g}"
+                    f"{action_scope}:concept-invalidation:{timeframe}:{stop:.10g}"
                 )
                 return {
                     "kind": "invalidation_exit",
@@ -802,8 +803,7 @@ class NativePositionManager:
             target_reached = close >= target if held_side == "LONG" else close <= target
             if target_reached:
                 action_id = (
-                    f"{action_scope}:concept-objective:{timeframe}:"
-                    f"{latest_epoch:.6f}:{target:.10g}"
+                    f"{action_scope}:concept-objective:{timeframe}:{target:.10g}"
                 )
                 return {
                     "kind": "objective_exit",
@@ -854,9 +854,7 @@ class NativePositionManager:
                 # Equal tranches are derived from the remaining concept milestones
                 # plus the terminal objective; no fixed partial fraction is used.
                 partial_fraction = 1.0 / (len(remaining) + 1)
-                action_id = (
-                    f"{action_scope}:milestone:{milestone_id}:{latest_epoch:.6f}"
-                )
+                action_id = f"{action_scope}:milestone:{milestone_id}"
                 return {
                     "kind": "milestone_partial",
                     "action_id": action_id,
@@ -878,10 +876,7 @@ class NativePositionManager:
             current_sl is None
             or (trailing_stop > current_sl if held_side == "LONG" else trailing_stop < current_sl)
         ):
-            action_id = (
-                f"{action_scope}:concept-trail:{timeframe}:"
-                f"{latest_epoch:.6f}:{trailing_stop:.10g}"
-            )
+            action_id = f"{action_scope}:concept-trail:{timeframe}:{trailing_stop:.10g}"
             return {
                 "kind": "trailing_stop_update",
                 "action_id": action_id,
