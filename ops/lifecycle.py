@@ -22,6 +22,7 @@ crash the loop, but it must always be logged (silent failure is worse).
 """
 
 from __future__ import annotations
+import logging
 
 import os
 import signal
@@ -104,6 +105,7 @@ class ShutdownManager:
         try:
             self._loop.running = False
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:106", exc_info=True)
             pass
 
     # ── Signal handlers ──────────────────────────────────────────────────
@@ -156,6 +158,7 @@ class ShutdownManager:
             try:
                 summary["open_positions"] = len(getattr(self._loop, "managed_positions", []) or [])
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:158", exc_info=True)
                 pass
 
             for label, attr in _ADAPTIVE_STORE_ATTRS:
@@ -276,16 +279,19 @@ class HealthCheck:
         try:
             out["any_connected"] = bool(getattr(pm, "any_connected", False))
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:278", exc_info=True)
             pass
         try:
             flags = getattr(pm, "_mt5_connected_flags", []) or []
             out["mt5"] = any(bool(f) for f in flags)
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:283", exc_info=True)
             pass
         try:
             deriv = getattr(pm, "deriv", None)
             out["deriv"] = bool(deriv is not None and getattr(deriv, "is_connected", lambda: False)())
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:288", exc_info=True)
             pass
         return out
 
@@ -321,6 +327,7 @@ class HealthCheck:
                 if path and Path(path).exists():
                     sizes[label] = round(Path(path).stat().st_size / (1024.0 * 1024.0), 3)
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:323", exc_info=True)
                 continue
         # The post-close tracker uses a fixed path.
         try:
@@ -328,6 +335,7 @@ class HealthCheck:
             if p.exists():
                 sizes["post_close_tracker"] = round(p.stat().st_size / (1024.0 * 1024.0), 3)
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:330", exc_info=True)
             pass
         return sizes
 
@@ -357,12 +365,14 @@ class HealthCheck:
                     "sizing_factor": st.get("sizing_factor"),
                 }
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:359", exc_info=True)
                 pass
         dd = getattr(self._loop, "drawdown", None)
         if dd is not None:
             try:
                 return {"source": "drawdown_guard", "mode": getattr(getattr(dd, "mode", None), "value", None)}
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:365", exc_info=True)
                 pass
         return {"source": "none"}
 
@@ -374,6 +384,7 @@ class HealthCheck:
         try:
             open_positions = len(getattr(self._loop, "managed_positions", []) or [])
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/lifecycle.py:376", exc_info=True)
             pass
         tick_age = self._last_tick_age()
         max_tick = float(getattr(self._cfg, "max_tick_duration_seconds", 60))
