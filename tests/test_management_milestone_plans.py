@@ -255,3 +255,32 @@ def test_short_completed_close_beyond_original_stop_invalidates_symmetrically():
     assert plan["kind"] == "invalidation_exit"
     assert plan["invalidation_price"] == 102.0
     assert plan["action_id"].startswith("campaign-short:concept-invalidation:")
+
+
+
+def test_invalidation_action_id_is_stable_across_repeated_completed_bars():
+    context = {
+        "campaign_id": "campaign-1",
+        "concept_geometry": {
+            "concept": "market_structure",
+            "concept_timeframe": "H1",
+            "stop_price": 98.0,
+            "target_price": 106.0,
+            "milestones": [102.0],
+            "evidence_timestamp_epoch": 800.0,
+            "symbol": "EURUSD",
+            "direction": "LONG",
+        },
+    }
+    position = SimpleNamespace(profit_r=-1.0, sl=98.0)
+    first = NativePositionManager._concept_milestone_guidance(
+        context, "LONG", position, [_evidence(97.0, 96.0, epoch=1000.0)],
+        "EURUSD", now=1000.0,
+    )
+    second = NativePositionManager._concept_milestone_guidance(
+        context, "LONG", position, [_evidence(96.5, 96.0, epoch=1100.0)],
+        "EURUSD", now=1100.0,
+    )
+
+    assert first["kind"] == second["kind"] == "invalidation_exit"
+    assert first["action_id"] == second["action_id"]
