@@ -79,6 +79,7 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         if item.measurements.get("lens_key") == "trend_following"
     )
     assert trend.measurements["source_kind"] == "concept_reading"
+    assert trend.source_module == "concept.strategy_lens.trend_following.m5"
     assert trend.measurements["required_methods"] == [
         "trend_following", "roc_momentum", "momentum_breakout",
     ]
