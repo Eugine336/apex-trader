@@ -176,3 +176,39 @@ def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
     )
 
     assert calls == [(1_000_000, "EURUSD")]
+
+def test_fractal_swings_incrementally_update_appended_and_rolling_history():
+    from cognition.concepts.market_structure import (
+        _fractal_swings_cached,
+        clear_fractal_swing_cache,
+        fractal_swing_cache_status,
+        fractal_swings,
+    )
+
+    clear_fractal_swing_cache()
+    base = [
+        {"high": 2.0, "low": 0.0},
+        {"high": 3.0, "low": 1.0},
+        {"high": 2.0, "low": -1.0},
+        {"high": 4.0, "low": 0.0},
+        {"high": 3.0, "low": -2.0},
+    ]
+    key = "incremental-test:EURUSD:M5"
+    first = fractal_swings(base, cache_key=key)
+    appended = base + [{"high": 5.0, "low": -1.0}]
+    second = fractal_swings(appended, cache_key=key)
+    second_reference = list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in appended
+    )))
+    assert second == second_reference
+
+    rolling = appended[1:] + [{"high": 4.5, "low": -3.0}]
+    third = fractal_swings(rolling, cache_key=key)
+    third_reference = list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in rolling
+    )))
+    assert third == third_reference
+    assert first == list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in base
+    )))
+    assert fractal_swing_cache_status()["incremental_updates"] == 2
