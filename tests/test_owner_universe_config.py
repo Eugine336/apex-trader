@@ -55,3 +55,25 @@ def test_selected_mode_fails_closed_when_any_requested_symbol_is_unavailable():
     config.broker_discovery_complete = True
     config.broker_enabled_symbols = ["EURUSD"]
     assert config.enabled_pairs == []
+
+
+def test_instance_override_applies_owner_universe_mode_and_normalizes_symbols():
+    from api.instance_config import apply_user_overrides
+
+    config = AppConfig()
+    apply_user_overrides(config, {
+        "universe_mode": "single",
+        "enabled_symbols_override": [" xauusd "],
+    })
+    assert config.universe_mode == "single"
+    assert config.enabled_symbols_override == ["XAUUSD"]
+    assert config.enabled_pairs == ["XAUUSD"]
+
+
+def test_legacy_instance_override_migrates_to_selected_universe():
+    from api.instance_config import apply_user_overrides
+
+    config = AppConfig()
+    apply_user_overrides(config, {"enabled_symbols_override": ["EURUSD"]})
+    assert config.universe_mode == "selected"
+    assert config.enabled_symbols_override == ["EURUSD"]
