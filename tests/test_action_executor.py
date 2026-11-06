@@ -53,6 +53,9 @@ def _positions(**overrides) -> dict[str, dict]:
             "platform": "mt5",
             "lots": 0.10,
             "remaining_lots": 0.10,
+            "volume_min": 0.01,
+            "volume_step": 0.01,
+            "volume_max": 100.0,
         },
     }
     base["12345"].update(overrides)
