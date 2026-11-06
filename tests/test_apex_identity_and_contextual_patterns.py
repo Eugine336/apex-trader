@@ -77,7 +77,7 @@ def test_identity_safe_configuration_uses_candidate_evidence_not_domain_floor(mo
     assert cfg.ev_primary_gate is True
     assert not hasattr(cfg, "min_evidence_domains")
     assert cfg.event_min_interval_seconds == 1.0
-    assert CognitiveBrain(reasoner=None).min_evidence_domains is None
+    assert not hasattr(CognitiveBrain(reasoner=None), "min_evidence_domains")
 
 
 def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
