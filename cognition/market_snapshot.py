@@ -583,6 +583,8 @@ def build_price_snapshot(
                 "ask": ask,
                 "mid": mid,
                 "spread": ask - bid,
+                "spread_unit": str(getattr(tick, "spread_unit", "unknown") or "unknown"),
+                "raw_fields": dict(getattr(tick, "raw_fields", {}) or {}),
                 "timestamp_epoch": tick_epoch,
                 "source_timestamp_verified": tick_source_verified,
             }
