@@ -10,7 +10,7 @@ def _reading(concept, direction, strength, evidence_id, *, activated=True, timef
         "source_timestamp_verified": True,
         "data_basis": "completed_ohlc",
         "provisional": False,
-        "independence_group": independence_group or f"ohlc:{timeframe}",
+        "independence_group": f"ohlc:{timeframe}" if independence_group is None else independence_group,
         "applicable": True,
         "implications": [{
             "direction": direction,
