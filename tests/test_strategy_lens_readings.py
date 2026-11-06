@@ -306,6 +306,38 @@ def test_unsynchronized_method_composition_is_watch_not_relevant():
 
 
 
+
+def test_measured_regime_challenges_style_without_vetoing_native_lens():
+    reading = ConceptReading(
+        concept="trend_following",
+        timeframe="M5",
+        domain=EvidenceDomain.OTHER,
+        applicable=True,
+        applicability_reason="complete trend-following method context",
+        observation="composed trend-following context",
+        implications=(),
+        facts={
+            "lens_key": "trend_following",
+            "missing_methods": [],
+            "data_gated_reason": None,
+        },
+        source_bar_epoch=1_780_000_000.0,
+        source_timestamp_verified=True,
+        data_basis="completed_ohlc",
+    )
+    assessment = next(
+        item for item in assess_strategy_lenses(
+            [reading_to_evidence("XAUUSD", reading)],
+            regime={"trend_context": "range"},
+        )
+        if item["key"] == "trend_following"
+    )
+
+    assert assessment["status"] == "relevant"
+    assert assessment["regime_fit"] == "challenges"
+    assert any("challenges this style" in reason for reason in assessment["reasons"])
+
+
 def test_verified_ohlcv_method_basis_can_support_complete_lens_provenance():
     reading = ConceptReading(
         concept="wyckoff_effort_result",
