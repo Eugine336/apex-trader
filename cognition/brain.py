@@ -241,7 +241,6 @@ class CognitiveBrain:
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
-        min_evidence_domains: int = 3,
         degraded_confidence_multiplier: float = 0.7,
         degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
@@ -287,11 +286,6 @@ class CognitiveBrain:
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
         self.min_advisors_for_action = max(1, int(min_advisors_for_action))
-        # Deprecated compatibility argument. A fixed market-domain count is not
-        # a valid evidence-independence test and must not qualify or veto a
-        # candidate. Entry qualification is tied to the selected opportunity's
-        # fresh, same-symbol, completed-bar geometry evidence and shared admission.
-        self.min_evidence_domains = None
         # Article XXI / V-013 — degraded cognition must be recognised AND
         # enforced. When the council under-delivers (most available advisors did
         # not respond) the Brain attenuates its effective conviction by this
