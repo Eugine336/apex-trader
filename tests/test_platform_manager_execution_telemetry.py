@@ -1,6 +1,8 @@
 """No-broker integration tests for PlatformManager telemetry wiring."""
 import threading
 from datetime import datetime, timezone
+
+import pytest
 from types import SimpleNamespace
 
 from brain.execution_monitor import ExecutionMonitor
