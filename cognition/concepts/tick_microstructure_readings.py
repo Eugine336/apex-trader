@@ -131,21 +131,29 @@ class TickMicrostructureReadings:
                 continue
             raw_time = None
             epoch = None
+            naive_timestamp_seen = False
             for time_field, time_unit in (
                 ("time_msc_datetime", "seconds"),
                 ("time", "seconds"),
                 ("time_msc", "milliseconds"),
             ):
                 candidate = row.get(time_field)
+                if candidate is None:
+                    continue
                 candidate_epoch = _epoch(candidate, unit=time_unit)
                 if candidate_epoch is not None:
                     raw_time = candidate
                     epoch = candidate_epoch
                     break
+                # Naive datetimes are rejected by _epoch. Retain that fact so
+                # the reading reports unverified source time, not zero activity.
+                has_timestamp = callable(getattr(candidate, "timestamp", None))
+                if has_timestamp and getattr(candidate, "tzinfo", None) is None:
+                    naive_timestamp_seen = True
             bid, ask = finite(row.get("bid")), finite(row.get("ask"))
             if epoch is None or bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
                 invalid_count += 1
-                if epoch is None and raw_time is not None:
+                if epoch is None and naive_timestamp_seen:
                     timestamp_unverified_count += 1
                 continue
             if start is not None and epoch < start:
@@ -182,6 +190,9 @@ class TickMicrostructureReadings:
                 "timestamp_verified": timestamp_verified,
             })
         valid.sort(key=lambda item: (item["epoch"], item["original_index"]))
+        timestamps_verified = bool(valid) and all(
+            item["timestamp_verified"] for item in valid
+        )
         unknowns: list[str] = []
         if not source_verified:
             unknowns.append("source-verified broker tick history with UTC source timestamps")
@@ -196,7 +207,10 @@ class TickMicrostructureReadings:
         if not rows:
             unknowns.append("broker returned no tick records in the requested window")
 
-        tick_rate = len(valid) / duration if duration is not None else None
+        tick_rate = (
+            len(valid) / duration
+            if duration is not None and timestamps_verified else None
+        )
         bid_updates = ask_updates = quote_updates = spread_changes = 0
         spreads = [item["spread"] for item in valid]
         quote_intervals: list[float] = []
@@ -218,9 +232,12 @@ class TickMicrostructureReadings:
                 if item["spread"] != previous["spread"]:
                     spread_changes += 1
             previous = item
-        quote_rate = quote_updates / duration if duration is not None else None
-        bid_rate = bid_updates / duration if duration is not None else None
-        ask_rate = ask_updates / duration if duration is not None else None
+        rate_is_measurable = (
+            duration is not None and len(valid) >= 2 and timestamps_verified
+        )
+        quote_rate = quote_updates / duration if rate_is_measurable else None
+        bid_rate = bid_updates / duration if rate_is_measurable else None
+        ask_rate = ask_updates / duration if rate_is_measurable else None
 
         spread_first = spreads[0] if spreads else None
         spread_last = spreads[-1] if spreads else None
@@ -255,14 +272,12 @@ class TickMicrostructureReadings:
             "these_are_event_counts_not_executed_volume": True,
         }
         latest_epoch = valid[-1]["epoch"] if valid else None
-        timestamps_verified = bool(valid) and all(
-            item["timestamp_verified"] for item in valid
-        )
         facts = {
             "status": (
                 "unavailable_or_unverified" if not source_verified
                 else "verified_tick_tape" if len(valid) >= 2 and duration is not None and timestamps_verified
-                else "verified_but_unverified_timestamps" if len(valid) >= 2 and duration is not None
+                else "verified_but_unverified_timestamps"
+                if timestamp_unverified_count or (valid and not timestamps_verified)
                 else "verified_but_insufficient_ticks"
             ),
             "source": source or None,
