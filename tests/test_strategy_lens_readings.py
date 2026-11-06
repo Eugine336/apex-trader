@@ -150,7 +150,17 @@ def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral(
         measurements = item.measurements
         assert measurements["concept"] in full_methods
         assert item.polarity == 0.0
-        if measurements["timeframe"] not in {"M1", "M5", "M15", "H1", "H4", "D1"}:
+        timeframe = measurements["timeframe"]
+        if timeframe in {"M1", "M5", "M15", "H1", "H4", "D1"} and timeframe not in {"M5"}:
+            # A reader may emit an explicit unavailable reading for a candle
+            # timeframe that this cycle did not supply. It must not borrow the
+            # M5 cutoff or claim that its own source time is known.
+            assert measurements["source_bar_epoch"] is None
+            assert measurements["source_timestamp_epoch"] is None
+            assert measurements["source_timestamp_known"] is False
+            assert measurements["source_timestamp_verified"] is False
+            continue
+        if timeframe not in {"M1", "M5", "M15", "H1", "H4", "D1"}:
             # BOOK, TICK and SPEC readings are provider/event channels, not
             # completed-candle observations. They must never borrow an OHLC
             # cutoff. A channel may carry its own provider-attested timestamp;
