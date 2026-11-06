@@ -54,9 +54,11 @@ def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
         config.enabled_categories = [str(c) for c in overrides["enabled_categories"]]
 
     if isinstance(overrides.get("enabled_symbols_override"), list):
-        config.enabled_symbols_override = [
-            str(s) for s in overrides["enabled_symbols_override"]
-        ]
+        config.enabled_symbols_override = list(dict.fromkeys(
+            str(symbol).strip().upper()
+            for symbol in overrides["enabled_symbols_override"]
+            if str(symbol).strip()
+        ))
 
     risk = getattr(config, "risk", None)
     if risk is not None:
