@@ -966,7 +966,35 @@ def analyze_market_frames(
     # layered on the raw facts above. They are evidence, never decisions.
     try:
         from cognition.concepts import run_concepts
-        output.extend(run_concepts(symbol, bars_by_timeframe, context=concept_context))
+        lens_context = dict(concept_context or {})
+        raw_related_frames = lens_context.pop("related_symbol_frames", {})
+        related_bars_by_symbol: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        if isinstance(raw_related_frames, dict):
+            for peer_symbol, peer_frames in raw_related_frames.items():
+                peer = str(peer_symbol or "").strip().upper()
+                if not peer or peer == str(symbol or "").strip().upper() or not isinstance(peer_frames, dict):
+                    continue
+                peer_timeframes: dict[str, list[dict[str, Any]]] = {}
+                for raw_peer_tf, peer_frame in peer_frames.items():
+                    peer_tf = str(raw_peer_tf or "").strip().upper()
+                    if peer_tf not in bars_by_timeframe:
+                        continue
+                    peer_rows = _rows(
+                        peer_frame, limit=1_000_000, expected_symbol=peer,
+                    )
+                    peer_bars = (
+                        peer_rows[:-1]
+                        if source_includes_forming_bar and len(peer_rows) > 1
+                        else peer_rows
+                    )
+                    if peer_bars:
+                        peer_timeframes[peer_tf] = peer_bars
+                if peer_timeframes:
+                    related_bars_by_symbol[peer] = peer_timeframes
+        lens_context["related_bars_by_symbol"] = related_bars_by_symbol
+        lens_context["target_symbol"] = str(symbol or "").strip().upper()
+        lens_context["related_symbol_count"] = len(related_bars_by_symbol)
+        output.extend(run_concepts(symbol, bars_by_timeframe, context=lens_context))
     except Exception as exc:  # noqa: BLE001 — concept faults never break observation
         import logging as _logging
         _logging.getLogger("apex.cognition.market_lenses").exception(
