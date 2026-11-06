@@ -76,7 +76,8 @@ The runner:
 
 Concept strength is retained as uncalibrated reasoning strength, never treated as
 a probability. Per-concept win rates are descriptive historical rates, not
-current-regime predictive probabilities.
+current-regime predictive probabilities. OHLC level-order labels do not include
+spread, slippage, financing or execution latency; they are not net-P&L claims.
 
 ## Calibration persistence
 
