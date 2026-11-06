@@ -199,6 +199,9 @@ class PlatformManager:
         # still checked live against _mt5_connected_flags, so routing stays
         # correct across disconnects/reconnects.
         self._broker_overrides_cache: dict[str, Optional[set]] = {}
+        # Read-only broker-native symbol catalog. It is refreshed on connection
+        # and never grants trading permission by itself.
+        self._mt5_symbol_catalog: list[dict] = []
 
         # Per-cycle price snapshot (thread-local). When the trading loop opens a
         # snapshot for its management pass, repeated get_price() calls for the
@@ -248,6 +251,13 @@ class PlatformManager:
 
         # Legacy key so callers checking results.get("mt5") still work
         results["mt5"] = self._mt5_connected
+
+        self._mt5_symbol_catalog = self.discover_mt5_symbols(refresh=True)
+        eligible_count = sum(1 for row in self._mt5_symbol_catalog if row.get("new_position_eligible"))
+        logger.info(
+            "[universe] MT5 discovered {} broker symbols; {} have complete specs and permit new positions",
+            len(self._mt5_symbol_catalog), eligible_count,
+        )
 
         logger.info("Connecting to Deriv…")
         self._deriv_connected = self.deriv.connect()
@@ -520,6 +530,26 @@ class PlatformManager:
         if isinstance(connector, DerivConnector):
             return str(getattr(connector, "_account_id", "") or "")
         return ""
+
+    def discover_mt5_symbols(self, *, refresh: bool = False) -> list[dict]:
+        """Return the current broker-native MT5 symbol catalog.
+
+        The catalog includes unsupported/disabled symbols with explicit flags.
+        It is descriptive only; owner selection, capability admission and risk
+        checks remain separate decisions.
+        """
+        if refresh:
+            catalog: list[dict] = []
+            for index, connector in enumerate(self.mt5_connectors):
+                if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                    continue
+                try:
+                    for row in connector.discover_symbols():
+                        catalog.append({**row, "connector_index": index})
+                except Exception as exc:
+                    _pm_logger.warning("[universe] MT5 symbol discovery failed for connector {}: {}", index, exc)
+            self._mt5_symbol_catalog = catalog
+        return [dict(row) for row in self._mt5_symbol_catalog]
 
     def get_typical_spreads(self, symbol: str) -> dict[str, float]:
         from config import INSTRUMENT_REGISTRY
