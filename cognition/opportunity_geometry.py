@@ -64,6 +64,8 @@ class OpportunityGeometry:
     concept: str = ""
     concept_timeframe: str = ""
     milestones: tuple[float, ...] = ()
+    supporting_concepts: tuple[str, ...] = ()
+    geometry_sources: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +90,8 @@ class OpportunityGeometry:
             "concept": self.concept,
             "concept_timeframe": self.concept_timeframe,
             "milestones": list(self.milestones),
+            "supporting_concepts": list(self.supporting_concepts),
+            "geometry_sources": list(self.geometry_sources),
         }
 
 
@@ -125,59 +129,148 @@ def _concept_reading_record(item: Any, measurements: dict, now: Optional[float])
 def _geometry_from_concept_readings(
     readings: list[dict], side: str, symbol: str,
 ) -> Optional[OpportunityGeometry]:
-    """Geometry from a full concept reading: its own invalidation is the stop and
-    its own objective is the target. The strongest satisfied reading wins; an
-    unknown strength ranks below any known strength. Nothing is invented."""
-    best: Optional[tuple] = None
+    """Synthesize compatible entry/stop/target levels across concept readings.
+
+    Readings are grouped only when they share timeframe and completed source
+    bar. Median geometry resists a single outlier; materially divergent
+    stop/target candidates invalidate the group instead of hiding disagreement.
+    No reward multiple is invented.
+    """
+    candidates: dict[tuple[str, float], list[dict]] = {}
     for reading in readings:
         entry = reading["reference"]
-        for imp in reading["implications"]:
-            if str(imp.get("direction", "")).upper() != side or imp.get("activated") is not True:
+        for implication in reading["implications"]:
+            if str(implication.get("direction", "")).upper() != side:
                 continue
-            stop = _finite_positive(imp.get("invalidation_price"))
-            target = _finite_positive(imp.get("objective_price"))
+            if implication.get("activated") is not True:
+                continue
+            stop = _finite_positive(implication.get("invalidation_price"))
+            target = _finite_positive(implication.get("objective_price"))
             if stop is None or target is None:
                 continue
             valid = (stop < entry < target) if side == "LONG" else (target < entry < stop)
             if not valid:
                 continue
-            strength = _finite(imp.get("strength"))
-            rank = (strength if strength is not None else -1.0, reading["time"])
-            if best is None or rank > best[0]:
-                best = (rank, reading, imp, entry, stop, target)
+            candidates.setdefault((reading["timeframe"], reading["time"]), []).append({
+                "reading": reading,
+                "implication": implication,
+                "entry": entry,
+                "stop": stop,
+                "target": target,
+                "strength": _finite(implication.get("strength")),
+            })
+
+    def median(values: list[float]) -> float:
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+    best: Optional[dict] = None
+    for (timeframe, source_time), members in candidates.items():
+        entries = [member["entry"] for member in members]
+        stops = [member["stop"] for member in members]
+        targets = [member["target"] for member in members]
+        entry, stop, target = median(entries), median(stops), median(targets)
+        risk = entry - stop if side == "LONG" else stop - entry
+        reward = target - entry if side == "LONG" else entry - target
+        if not (isfinite(risk) and isfinite(reward) and risk > 0.0 and reward > 0.0):
+            continue
+        stop_tolerance = max(0.75 * risk, entry * 1e-7)
+        target_tolerance = max(0.75 * reward, entry * 1e-7)
+        if max(stops) - min(stops) > stop_tolerance:
+            continue
+        if max(targets) - min(targets) > target_tolerance:
+            continue
+        if max(entries) - min(entries) > max(entry * 1e-6, risk * 0.1):
+            continue
+
+        unique_members: dict[str, dict] = {}
+        for member in members:
+            reading = member["reading"]
+            concept = str(reading.get("concept", "") or "")
+            evidence_id = str(getattr(reading["item"], "evidence_id", "") or "")
+            unique_members.setdefault(f"{concept}:{evidence_id}", member)
+        selected = list(unique_members.values())
+        concepts = tuple(sorted({
+            str(member["reading"].get("concept", "") or "")
+            for member in selected if member["reading"].get("concept")
+        }))
+        evidence_ids = tuple(dict.fromkeys(
+            str(getattr(member["reading"]["item"], "evidence_id", "") or "")
+            for member in selected
+            if getattr(member["reading"]["item"], "evidence_id", "")
+        ))
+        strengths = [
+            member["strength"] for member in selected
+            if member["strength"] is not None
+        ]
+        strongest = max(strengths, default=-1.0)
+        rank = (len(concepts), strongest, source_time)
+        milestones = tuple(sorted({
+            float(value)
+            for member in selected
+            for value in (member["implication"].get("milestones") or [])
+            if _finite_positive(value) is not None
+            and ((entry < float(value) < target) if side == "LONG" else (target < float(value) < entry))
+        }, reverse=side == "SHORT"))
+        geometry_sources = tuple(
+            f"{member['reading'].get('concept')}: entry={member['entry']:.10g}, "
+            f"stop={member['stop']:.10g}, target={member['target']:.10g}"
+            for member in selected
+        )
+        invalidations = tuple(dict.fromkeys(
+            str(member["implication"].get("invalidation_reason", "") or "")
+            for member in selected if member["implication"].get("invalidation_reason")
+        ))
+        activation_reasons = tuple(dict.fromkeys(
+            str(member["implication"].get("activation_reason", "") or "")
+            for member in selected if member["implication"].get("activation_reason")
+        ))
+        group = {
+            "rank": rank, "entry": entry, "stop": stop, "target": target,
+            "risk": risk, "reward": reward, "timeframe": timeframe,
+            "source_time": source_time, "concepts": concepts,
+            "evidence_ids": evidence_ids, "milestones": milestones,
+            "geometry_sources": geometry_sources, "invalidations": invalidations,
+            "activation_reasons": activation_reasons,
+        }
+        if best is None or rank > best["rank"]:
+            best = group
+
     if best is None:
         return None
-    _rank, reading, imp, entry, stop, target = best
-    risk = entry - stop if side == "LONG" else stop - entry
-    reward = target - entry if side == "LONG" else entry - target
-    if not (isfinite(risk) and isfinite(reward) and risk > 0.0 and reward > 0.0):
-        return None
-    milestones = tuple(
-        float(m) for m in (imp.get("milestones") or [])
-        if _finite_positive(m) is not None
-        and ((entry < float(m) < target) if side == "LONG" else (target < float(m) < entry))
-    )
-    evidence_id = str(getattr(reading["item"], "evidence_id", "") or "")
+    concepts = best["concepts"]
     return OpportunityGeometry(
         direction=side,
-        entry_price=entry,
-        stop_price=stop,
-        target_price=target,
-        risk_distance=risk,
-        reward_distance=reward,
-        reward_r=reward / risk,
+        entry_price=best["entry"],
+        stop_price=best["stop"],
+        target_price=best["target"],
+        risk_distance=best["risk"],
+        reward_distance=best["reward"],
+        reward_r=best["reward"] / best["risk"],
         activated=True,
-        activation_reason=str(imp.get("activation_reason", "") or f"{reading['concept']} trigger satisfied"),
-        invalidation_reason=str(imp.get("invalidation_reason", "") or ""),
-        evidence_ids=(evidence_id,) if evidence_id else (),
-        entry_timeframe=reading["reference_timeframe"],
-        stop_timeframe=reading["timeframe"],
-        target_timeframe=reading["timeframe"],
+        activation_reason=(
+            f"{len(concepts)} concept reading(s) jointly support the completed-bar setup: "
+            + (", ".join(concepts) or "unnamed concept")
+            + (("; " + "; ".join(best["activation_reasons"])) if best["activation_reasons"] else "")
+        ),
+        invalidation_reason=(
+            "; ".join(best["invalidations"])
+            or "The consolidated concept invalidation geometry is breached"
+        ),
+        evidence_ids=best["evidence_ids"],
+        entry_timeframe=best["timeframe"],
+        stop_timeframe=best["timeframe"],
+        target_timeframe=best["timeframe"],
         symbol=symbol,
-        evidence_timestamp_epoch=reading["time"],
-        concept=reading["concept"],
-        concept_timeframe=reading["timeframe"],
-        milestones=milestones,
+        evidence_timestamp_epoch=best["source_time"],
+        concept="+".join(concepts),
+        concept_timeframe=best["timeframe"],
+        milestones=best["milestones"],
+        supporting_concepts=concepts,
+        geometry_sources=best["geometry_sources"],
     )
 
 
