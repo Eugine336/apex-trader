@@ -231,7 +231,7 @@ def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
             observation="current state novelty is measured against prior states",
             implications=(),
             facts={"novelty_own_history_percentile": 0.72},
-            source_bar_epoch=1_780_000_000.0,
+            source_bar_epoch=_bars()[-1]["timestamp_epoch"],
             source_timestamp_verified=True,
             data_basis="completed_ohlc",
             independence_group="ohlc:XAUUSD:M5",
@@ -245,7 +245,7 @@ def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
             observation="nearest historical states are available",
             implications=(),
             facts={"historical_state_sample_count": 80},
-            source_bar_epoch=1_780_000_000.0,
+            source_bar_epoch=_bars()[-1]["timestamp_epoch"],
             source_timestamp_verified=True,
             data_basis="completed_ohlc",
             independence_group="ohlc:XAUUSD:M5",
@@ -260,7 +260,7 @@ def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
         if item["key"] == "pattern_discovery"
     )
 
-    assert lens.source_bar_epoch == 1_780_000_000.0
+    assert lens.source_bar_epoch == _bars()[-1]["timestamp_epoch"]
     assert lens.independence_group == "ohlc:XAUUSD:M5"
     assert assessment["status"] == "relevant"
 
