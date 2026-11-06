@@ -159,7 +159,7 @@ def _geometry_from_concept_readings(
             stop = _finite_positive(implication.get("invalidation_price"))
             target = _finite_positive(implication.get("objective_price"))
             order_type = str(implication.get("order_type", "MARKET") or "MARKET").strip().upper()
-            if order_type not in {"MARKET", "LIMIT", "STOP", "STOP_LIMIT"}:
+            if order_type not in {"MARKET", "LIMIT", "STOP"}:
                 continue
             explicit_entry = _finite_positive(implication.get("entry_price"))
             zone_low = _finite_positive(implication.get("entry_zone_low"))
@@ -173,6 +173,16 @@ def _geometry_from_concept_readings(
                 if zone_low is None or not zone_low <= entry <= zone_high:
                     continue
             if zone_low is not None and not zone_low <= candidate_entry <= zone_high:
+                continue
+            if order_type == "LIMIT" and (
+                (side == "LONG" and candidate_entry > entry)
+                or (side == "SHORT" and candidate_entry < entry)
+            ):
+                continue
+            if order_type == "STOP" and (
+                (side == "LONG" and candidate_entry < entry)
+                or (side == "SHORT" and candidate_entry > entry)
+            ):
                 continue
             if stop is None or target is None:
                 continue
