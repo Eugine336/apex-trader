@@ -710,14 +710,14 @@ class Opportunity:
     reward_distance: Optional[float] = None
     reward_r: Optional[float] = None
     geometry_evidence_ids: list[str] = field(default_factory=list)
-    order_type: str = "MARKET"
-    entry_zone_low: Optional[float] = None
-    entry_zone_high: Optional[float] = None
-    # Append new metadata after existing fields to preserve positional callers.
+    # Append metadata after all existing fields to preserve positional callers.
     identity: str = IDENTITY_STATEMENT
     # Explicit analytical family used to keep calibration conditional. Unknown
     # families remain uncalibrated; thesis prose is never mined for a family label.
     candidate_family: str = "unclassified"
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.identity_version = IDENTITY_VERSION
