@@ -126,7 +126,13 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
 
 
 
-def test_every_full_method_emits_a_current_cutoff_non_directional_reading():
+def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral():
+    # A FULL reader may be event-conditional or require a non-OHLC input channel.
+    # One synthetic M5-only cycle cannot require every registered method to emit:
+    # e.g. pivot points require a completed D1 bar and execution costs require a
+    # source-attested broker quote. Validate every reading that is actually
+    # emitted here; per-method applicability and prerequisite behavior belongs
+    # in the reader-specific tests and data-channel integration tests.
     cutoff = _bars()[-1]["timestamp_epoch"]
     evidence = run_concepts("XAUUSD", {"M5": _bars()})
     full_methods = {
@@ -139,9 +145,9 @@ def test_every_full_method_emits_a_current_cutoff_non_directional_reading():
         and item.measurements.get("source_kind") == "concept_reading"
         and item.measurements.get("concept") in full_methods
     ]
-    produced = {item.measurements["concept"] for item in method_evidence}
-    assert full_methods <= produced
+    assert method_evidence
     for item in method_evidence:
+        assert item.measurements["concept"] in full_methods
         assert item.polarity == 0.0
         assert item.measurements["source_timestamp_known"] is True
         assert item.measurements["source_bar_epoch"] == cutoff
