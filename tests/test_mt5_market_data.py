@@ -1,0 +1,93 @@
+from datetime import datetime, timezone
+
+import pandas as pd
+
+import platforms.mt5.mt5_connector as mt5_module
+from platforms.mt5.mt5_connector import MT5Connector
+
+
+class FakeMT5:
+    COPY_TICKS_ALL = 0
+    TICK_FLAG_BUY = 16
+    TICK_FLAG_SELL = 32
+
+    def copy_rates_from_pos(self, symbol, timeframe, start, count):
+        return [
+            {"time": 1_800_000_000, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1,
+             "tick_volume": 100, "real_volume": 25, "spread": 12},
+            {"time": 1_800_000_060, "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2,
+             "tick_volume": 120, "real_volume": 30, "spread": 14},
+        ]
+
+    def copy_ticks_range(self, symbol, start, end, flags):
+        return [
+            {"time": 1_800_000_000, "time_msc": 1_800_000_000_000, "bid": 1.0,
+             "ask": 1.1, "last": 1.05, "volume": 2, "volume_real": 2.0, "flags": 16},
+            {"time": 1_800_000_001, "time_msc": 1_800_000_001_000, "bid": 1.1,
+             "ask": 1.2, "last": 1.15, "volume": 3, "volume_real": 3.0, "flags": 32},
+        ]
+
+    @staticmethod
+    def last_error():
+        return (0, "ok")
+
+
+def _connected_connector(monkeypatch):
+    fake = FakeMT5()
+    monkeypatch.setattr(mt5_module, "mt5", fake)
+    connector = MT5Connector()
+    connector._connected = True
+    return connector
+
+
+def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    frame = connector.get_ohlcv("EURUSD", "M1", count=2)
+
+    assert list(frame.columns) == [
+        "time", "open", "high", "low", "close", "volume",
+        "tick_volume", "real_volume", "spread",
+    ]
+    assert frame["volume"].tolist() == [100, 120]
+    assert frame["tick_volume"].tolist() == [100, 120]
+    assert frame["real_volume"].tolist() == [25, 30]
+    assert frame["spread"].tolist() == [12, 14]
+    assert frame.attrs["source_timestamp_verified"] is True
+    assert frame.attrs["volume_basis"] == "tick_volume_alias_with_real_volume_preserved"
+
+
+def test_ohlcv_closed_bar_view_drops_only_forming_row(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    frame = connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["tick_volume"] == 100
+
+
+def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggressor_flags(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    frame = connector.get_ticks(
+        "EURUSD",
+        datetime(2027, 1, 15, tzinfo=timezone.utc),
+        datetime(2027, 1, 16, tzinfo=timezone.utc),
+    )
+
+    assert isinstance(frame, pd.DataFrame)
+    assert frame["aggressor_side"].tolist() == ["buy", "sell"]
+    assert frame["volume_real"].tolist() == [2.0, 3.0]
+    assert frame.attrs["source"] == "mt5.copy_ticks_range"
+    assert frame.attrs["source_verified"] is True
+
+
+def test_historical_ticks_reject_naive_datetimes(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    try:
+        connector.get_ticks("EURUSD", datetime(2027, 1, 15), datetime(2027, 1, 16))
+    except ValueError as exc:
+        assert "timezone-aware" in str(exc)
+    else:
+        raise AssertionError("naive datetimes must be rejected")
