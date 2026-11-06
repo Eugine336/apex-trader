@@ -125,6 +125,23 @@ class _Brain:
         return SimpleNamespace(decision=decision)
 
 
+def test_shared_concept_reader_path_surfaces_none_return_as_module_fault():
+    from cognition.concepts import read_concept_readings
+
+    class BrokenModule:
+        key = "broken.reader"
+
+        def read(self, symbol, bars_by_tf):
+            return None
+
+    readings, faults = read_concept_readings(
+        "EURUSD", {"M1": [_bar(60)]}, modules=(BrokenModule(),),
+    )
+    assert readings == []
+    assert faults[0]["module"] == "broken.reader"
+    assert faults[0]["exception_type"] == "TypeError"
+
+
 def test_hindcast_manifest_checks_hash_and_normalizes_bar_open_timestamps(tmp_path):
     csv_path = tmp_path / "EURUSD_M1.csv"
     csv_path.write_text(
