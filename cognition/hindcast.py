@@ -25,6 +25,8 @@ from cognition.concepts.base import ConceptModule, ConceptReading, reading_to_ev
 from cognition.contracts import MarketState
 from cognition.influence import CalibrationTracker
 
+HINDCAST_PROTOCOL_VERSION = 1
+
 _TIMEFRAME_SECONDS = {
     "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
     "H1": 3600, "H4": 14400, "D1": 86400,
@@ -670,10 +672,23 @@ def seed_calibration_tracker(
     tracker: CalibrationTracker,
     report: HindcastReport,
 ) -> int:
-    """Persist only outcome pairs from a source-time-attested hindcast report."""
-    if not report.source_timestamp_verified or not report.dataset_digest:
+    """Persist resolved pairs once per dataset and replay protocol.
+
+    Re-running the same dataset/horizon/stride must not overweight the tracker.
+    Increment HINDCAST_PROTOCOL_VERSION when the replay or label semantics change.
+    """
+    if (
+        not report.source_timestamp_verified or not report.dataset_digest
+        or not report.brain_calibration_pairs
+    ):
         return 0
-    source = f"hindcast:{report.dataset_digest[:16]}"
+    source = (
+        f"hindcast:v{HINDCAST_PROTOCOL_VERSION}:{report.dataset_digest[:16]}:"
+        f"{report.base_timeframe}:{report.max_horizon_seconds}:{report.decision_stride}"
+    )
+    existing = tracker.metrics().get("sources", {})
+    if isinstance(existing, dict) and int(existing.get(source, 0) or 0) > 0:
+        return 0
     return tracker.observe_many(report.brain_calibration_pairs, source=source)
 
 
