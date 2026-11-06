@@ -9,7 +9,7 @@ FULL 51 · DATA-GATED 4 · MEASURED 15 · UNMEASURED 9
 
 | Family | Method | Key | Level |
 |---|---|---|---|
-| execution | Spread, commission, slippage and financing | `execution_cost` | MEASURED |
+| execution | Spread, commission, slippage and financing | `execution_cost` | FULL |
 | institutional_price_action | Balanced Price Range | `balanced_price_range` | FULL |
 | institutional_price_action | Breaker block role reversal | `breaker_block` | FULL |
 | institutional_price_action | Candle Range Theory | `crt` | FULL |

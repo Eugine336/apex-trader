@@ -43,6 +43,36 @@ class ExecutionCostReadings:
         status = "verified_complete" if complete else (
             "partial_with_verified_quote" if quote_verified else "source_quote_unverified"
         )
+        facts = dict(payload)
+        quote = payload.get("quote")
+        quote_spread = (
+            quote.get("spread") if isinstance(quote, dict) else None
+        )
+        sample_floor_met = payload.get("market_entry_fill_rate_sample_floor_met") is True
+        # Short canonical measurement names satisfy the analytical registry,
+        # while explicit aliases retain units and whether data are entry-only.
+        facts.update({
+            "spread": quote_spread,
+            "spread_account_ccy_per_lot": payload.get(
+                "estimated_spread_account_ccy_per_lot"
+            ),
+            "commission": payload.get("estimated_commission_account_ccy_per_lot"),
+            "slippage": payload.get("observed_entry_abs_slippage_avg_pips"),
+            "slippage_scope": "market_entry_only",
+            "round_trip_slippage_account_ccy_per_lot": payload.get(
+                "estimated_round_trip_slippage_account_ccy_per_lot"
+            ),
+            "swap": payload.get("estimated_financing_account_ccy_per_lot"),
+            "latency": payload.get("observed_submit_response_latency_avg_ms"),
+            "fill_probability": (
+                payload.get("market_entry_fill_success_ratio")
+                if sample_floor_met else None
+            ),
+            "fill_probability_semantics": (
+                "observed market-entry success ratio after minimum sample floor; "
+                "not a predictive probability"
+            ),
+        })
         return [ConceptReading(
             concept="execution_cost",
             timeframe="SPEC",
@@ -58,7 +88,7 @@ class ExecutionCostReadings:
                 "spread, fees, financing, slippage and fill telemetry remain separately attributed."
             ),
             implications=(),
-            facts=dict(payload),
+            facts=facts,
             source_bar_epoch=None,
             unknowns=unknowns,
             data_basis="broker_quote_contract_spec_and_execution_attempt_history",

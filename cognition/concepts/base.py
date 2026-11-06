@@ -179,6 +179,10 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         uncertainty=uncertainty,
         polarity=0.0,   # a reading is not a vote; the Brain decides what it means
         measurements={
+            # Keep source facts available both as a nested audit record and as
+            # measurements consumed by method assessment and the Brain's
+            # existing cost gate. Reserved adapter fields below remain canonical.
+            **dict(reading.facts),
             "source_kind": "concept_reading",
             "concept": reading.concept,
             "timeframe": reading.timeframe,

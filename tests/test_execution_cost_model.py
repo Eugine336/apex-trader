@@ -112,3 +112,49 @@ def test_concept_reader_preserves_quote_timestamp_as_provider_time():
 
 def test_concept_reader_emits_nothing_without_source_payload():
     assert ExecutionCostReadings().read_with_context("EURUSD", {}, {}) == []
+
+
+
+def test_cost_evidence_exposes_brain_gate_and_analytical_measurements():
+    from cognition.analytical_knowledge import assess_analytical_knowledge
+
+    payload = build_execution_cost_reading(
+        "EURUSD", _quote(), _spec(),
+        commission_per_lot_round_trip=5.0,
+        commission_model_verified=True,
+        financing_per_lot_round_trip={"EURUSD": 1.0},
+        financing_model_verified=True,
+        execution_observations={
+            "market_entry_attempt_count": 20,
+            "market_entry_fill_success_ratio": 0.9,
+            "market_entry_fill_rate_sample_floor_met": True,
+            "market_entry_fill_probability_min_samples": 20,
+            "market_entry_fill_probability_sample_count": 20,
+            "observed_entry_abs_slippage_avg_pips": 0.2,
+            "observed_entry_slippage_sample_count": 20,
+            "observed_submit_response_latency_avg_ms": 120.0,
+            "observed_submit_response_latency_sample_count": 20,
+            "round_trip_slippage_verified": True,
+            "observed_round_trip_slippage_sample_count": 20,
+            "observed_round_trip_abs_slippage_avg_pips": 0.4,
+            "pip_size": 0.0001,
+        },
+        now_epoch=datetime.now(timezone.utc).timestamp(),
+    )
+    evidence = reading_to_evidence(
+        "EURUSD",
+        ExecutionCostReadings().read_with_context(
+            "EURUSD", {}, {"execution_cost": payload},
+        )[0],
+    )
+    # Brain reads these values at the top level, not only from measurements.facts.
+    assert evidence.measurements["cost_verified"] is True
+    assert evidence.measurements["cost_source"]
+    assert evidence.measurements["estimated_total_cost_account_ccy_per_lot"] == pytest.approx(30.0)
+    assert evidence.measurements["money_per_price_account_ccy_per_lot"] == pytest.approx(100000.0)
+
+    assessments = assess_analytical_knowledge([evidence])
+    cost_assessment = next(item for item in assessments if item["key"] == "execution_cost")
+    assert set(cost_assessment["matched_measurements"]) == {
+        "spread", "commission", "slippage", "swap", "latency", "fill_probability",
+    }
