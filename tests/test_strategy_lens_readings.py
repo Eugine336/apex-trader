@@ -81,18 +81,16 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         if item.measurements.get("lens_key") in FULL_LENSES
     ]
     assert {item.measurements["lens_key"] for item in full_lens_readings} == set(FULL_LENSES)
-    registered_methods = {
+    full_methods = {
         method for module in CONCEPT_MODULES
-        for method in (
-            *getattr(module, "covers_methods", ()),
-            *(getattr(module, "data_gated_methods", {}) or {}).keys(),
-        )
+        for method in getattr(module, "covers_methods", ())
     }
     declared_full_methods = {
         method for lens_key in FULL_LENSES
         for method in LENS_METHODS[lens_key]
     }
-    assert declared_full_methods <= registered_methods
+    assert declared_full_methods <= full_methods
+    assert set(FULL_LENSES).isdisjoint(DATA_GATED_LENSES)
     for item in full_lens_readings:
         required = set(item.measurements["required_methods"])
         available = set(item.measurements["available_methods"])
@@ -317,6 +315,40 @@ def test_unverified_method_timestamps_are_not_evaluable():
 
 
 
+
+def test_synchronized_but_stale_method_readings_cannot_claim_current_lens_applicability():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    stale_epoch = cutoff - 300.0
+    methods = [
+        ConceptReading(
+            concept=method,
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="historical method context",
+            observation="method evidence is one completed bar stale",
+            implications=(),
+            facts={},
+            source_bar_epoch=stale_epoch,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        )
+        for method in ("anomaly_detection", "clustering")
+    ]
+    lens = next(
+        item for item in StrategyLensReadings().read_with_context(
+            "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+        )
+        if item.concept == "pattern_discovery"
+    )
+    assert lens.facts["missing_methods"] == []
+    assert lens.facts["style_context_state"] == "stale_method_context"
+    assert lens.applicable is False
+    assert lens.source_bar_epoch == stale_epoch
+    assert any("stale relative to the latest completed-bar cutoff" in reason for reason in lens.unknowns)
+
+
 def test_method_readings_must_share_one_verified_timestamp_to_make_lens_applicable():
     cutoff = _bars()[-1]["timestamp_epoch"]
     methods = [
@@ -529,6 +561,15 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
             observation="future novelty evidence",
             implications=(),
             facts={"novelty_own_history_percentile": 0.99},
+            implications=(
+                Implication(
+                    direction="LONG", statement="future-only implication",
+                    strength=0.99, activated=True,
+                    activation_reason="must not enter the replay cutoff",
+                    invalidation_price=99.0, objective_price=110.0,
+                    milestones=(105.0,),
+                ),
+            ),
             source_bar_epoch=cutoff + 300.0,
             source_timestamp_epoch=cutoff + 300.0,
             source_timestamp_verified=True,
@@ -557,6 +598,10 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
 
     assert lens.facts["missing_methods"] == ["anomaly_detection"]
     assert lens.facts["method_implications"].get("anomaly_detection") == []
+    assert lens.facts["invalidation_candidates"] == []
+    assert lens.facts["objective_candidates"] == []
+    assert lens.facts["milestone_candidates"] == []
+    assert lens.facts["management_candidates"] == []
     assert "anomaly_detection" in lens.facts["future_dated_method_readings"]
     assert "beyond the cutoff" in lens.facts["missing_methods_semantics"]
     assert lens.source_bar_epoch is None

@@ -275,7 +275,7 @@ class StrategyLensReadings:
                     rows = [item for item in eligible_candidates if item.concept == method]
                     if rows:
                         selected[method] = max(
-                            rows, key=lambda item: finite(item.source_bar_epoch) or 0.0,
+                            rows, key=lambda item: _verified_bar_epoch(item) or 0.0,
                         )
                 missing = [method for method in required_methods if method not in selected]
                 applicable = [item for item in selected.values() if item.applicable]
@@ -381,16 +381,32 @@ class StrategyLensReadings:
                     unknowns.append(
                         "underlying method readings are not all synchronized to one source-verified completed-bar timestamp"
                     )
+                current_bar_synchronized = (
+                    source_bar_epoch is not None
+                    and cutoff_epoch is not None
+                    and source_bar_epoch == cutoff_epoch
+                )
+                if (
+                    selected and source_bar_epoch is not None
+                    and cutoff_epoch is not None
+                    and source_bar_epoch < cutoff_epoch
+                ):
+                    unknowns.append(
+                        "underlying method readings are synchronized to each other but stale relative to the latest completed-bar cutoff"
+                    )
                 lens_applicable = (
                     all_methods_applicable
                     and data_gate is None
-                    and source_bar_epoch is not None
+                    and current_bar_synchronized
                 )
                 style_state = (
                     "complete_method_context" if lens_applicable
                     else "data_gated" if data_gate
                     else "unsynchronized_method_context"
                     if all_methods_applicable and source_bar_epoch is None
+                    else "stale_method_context"
+                    if all_methods_applicable and source_bar_epoch is not None
+                    and cutoff_epoch is not None and source_bar_epoch < cutoff_epoch
                     else "partial_method_context" if selected
                     else "not_evaluable"
                 )
