@@ -397,9 +397,7 @@ class StrategyLensReadings:
                 groups = {group for group in source_groups if group}
                 independence_group = (
                     next(iter(groups))
-                    if selected and all_methods_available
-                    and len(selected) == len(required_methods)
-                    and len(groups) == 1 and all(source_groups)
+                    if selected and len(groups) == 1 and all(source_groups)
                     else ""
                 )
                 if len(groups) > 1 or (groups and not all(source_groups)):
@@ -440,8 +438,11 @@ class StrategyLensReadings:
                     "inapplicable_methods": sorted(inapplicable),
                     "method_summaries": summaries,
                     "method_implications": {
-                        method: [implication.to_dict() for implication in item.implications]
-                        for method, item in selected.items()
+                        method: (
+                            [implication.to_dict() for implication in selected[method].implications]
+                            if method in selected else []
+                        )
+                        for method in required_methods
                     },
                     "style_context_state": style_state,
                     "entry_zones": geometry["entry_zone_candidates"],

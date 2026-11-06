@@ -212,8 +212,11 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
         item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", composite)])
         if item["key"] == "wyckoff_effort_result"
     )
-    assert assessment["status"] == "watch"
-    assert any("not all synchronized" in item for item in assessment["missing_context"])
+    assert assessment["status"] == "not_evaluable"
+    assert any(
+        "method readings excluded because source timestamps are unverified" in item
+        for item in assessment["missing_context"]
+    )
 
 
 
@@ -262,7 +265,7 @@ def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
     assert assessment["status"] == "relevant"
 
 
-def test_unsynchronized_method_composition_is_watch_not_relevant():
+def test_unverified_method_timestamps_are_not_evaluable():
     methods = [
         ConceptReading(
             concept="anomaly_detection",
@@ -347,7 +350,7 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     lens = next(item for item in composed if item.concept == "pattern_discovery")
 
     assert lens.facts["missing_methods"] == ["anomaly_detection"]
-    assert lens.facts["method_implications"]["anomaly_detection"] == []
+    assert lens.facts["method_implications"].get("anomaly_detection") == []
     assert "anomaly_detection" in lens.facts["future_dated_method_readings"]
     assert lens.source_bar_epoch is None
     assert lens.independence_group == ""
