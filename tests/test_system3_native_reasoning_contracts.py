@@ -235,6 +235,46 @@ def test_relevant_strategy_lenses_become_evidence_linked_non_directional_candida
     )
 
 
+
+def test_brain_carries_regime_challenge_into_lens_hypothesis_without_direction():
+    state = MarketState(symbol="SYNTHETIC")
+    m15 = _evidence(
+        "structure",
+        {"source_kind": "market_lens", "timeframe": "M15",
+         "trend_state": "trend", "range_rotation": True},
+        source="market_lens.structure.m15",
+    )
+    h1 = _evidence(
+        "structure",
+        {"source_kind": "market_lens", "timeframe": "H1",
+         "trend_state": "trend", "range_rotation": True},
+        source="market_lens.structure.h1",
+    )
+    state.add(m15)
+    state.add(h1)
+
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    assessment = next(
+        item for item in analysis.strategy_lenses
+        if item["key"] == "trend_following"
+    )
+    assert analysis.regime_indicators["trend_context"] == "range"
+    assert assessment["status"] == "relevant"
+    assert assessment["regime_fit"] == "challenges"
+
+    hypotheses = reasoner.generate_hypotheses(analysis, "SYNTHETIC")
+    lens_hypothesis = next(
+        item for item in hypotheses
+        if item.hypothesis_kind == "strategy_lens:trend_following"
+    )
+    assert lens_hypothesis.direction_implication == FLAT
+    assert any(
+        "challenges this style" in item
+        for item in lens_hypothesis.unresolved_unknowns
+    )
+
+
 def test_self_criticism_does_not_apply_another_thesis_counter_to_this_thesis():
     from cognition.brain_reasoning import SHORT
     from cognition.brain_reasoning import EvidenceAnalysis

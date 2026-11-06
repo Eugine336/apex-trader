@@ -1524,6 +1524,12 @@ class BrainReasoner:
                         + 0.04 * min(3, len(assessment.get("reasons", []) or []))
                         + 0.02 * min(3, len(source_ids)),
                     )
+                    regime_fit_challenges = [
+                        str(reason)
+                        for reason in (assessment.get("reasons", []) or [])
+                        if "challenges this style" in str(reason)
+                        or "requires an unconflicted" in str(reason)
+                    ]
                     hyps.append(BrainHypothesis(
                         statement=(
                             f"{lens.name} is relevant to the current {symbol} evidence. "
@@ -1552,6 +1558,7 @@ class BrainReasoner:
                         ],
                         unresolved_unknowns=list(dict.fromkeys(
                             list(assessment.get("missing_context", []) or [])
+                            + regime_fit_challenges
                             + [lens.limitation]
                         )),
                         distinguishing_evidence=list(lens.data_requirements),
