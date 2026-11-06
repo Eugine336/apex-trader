@@ -24,7 +24,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | UNMEASURED |
 | instrument_mechanics | Futures and options context | `derivatives` | MEASURED |
 | instrument_mechanics | Synthetic instrument mechanics | `synthetic_market` | UNMEASURED |
-| intermarket | Cross-asset relationships | `cross_asset` | MEASURED |
+| intermarket | Cross-asset relationships | `cross_asset` | DATA-GATED — required source inputs are explicitly unavailable until connected |
 | intermarket | Currency and commodity relative strength | `currency_strength` | MEASURED |
 | intermarket | SMT divergence | `smt_divergence` | UNMEASURED |
 | liquidity | Buy-side and sell-side liquidity | `liquidity_pools` | FULL |
@@ -64,7 +64,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | strategy | Event-driven repricing | `event_driven` | MEASURED |
 | strategy | Mean reversion and statistical reversion | `mean_reversion` | FULL |
 | strategy | Momentum and volatility breakout | `momentum_breakout` | FULL |
-| strategy | Pairs, cointegration and relative value | `relative_value` | MEASURED |
+| strategy | Pairs, cointegration and relative value | `relative_value` | DATA-GATED — required source inputs are explicitly unavailable until connected |
 | strategy | Range rotation and auction balance | `range_rotation` | FULL |
 | strategy | Seasonality and calendar effects | `seasonality` | FULL |
 | strategy | Trend following and pullback continuation | `trend_following` | FULL |
@@ -90,48 +90,48 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | volume_indicators | OBV MFI CMF A/D | `volume_indicators` | FULL |
 
 ## Strategy lenses (38)
-FULL 2 · DATA-GATED 0 · MEASURED 36 · UNMEASURED 0
+FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 
 | Lens | Key | Level |
 |---|---|---|
 | Candle Range Theory | `crt` | FULL |
-| Candlestick / M1 price action | `candle_price_action` | MEASURED |
-| Carry / financing context | `carry_funding` | MEASURED |
-| Correlation and portfolio concentration | `correlation_exposure` | MEASURED |
-| Derivatives and contract-specific context | `derivatives_context` | MEASURED |
-| Execution costs and fill quality | `execution_costs` | MEASURED |
-| Failed breakout / trap | `failed_breakout` | MEASURED |
-| Gaps / opening-range behaviour | `gap_opening_range` | MEASURED |
-| ICT / Smart Money Concepts | `ict_smc` | MEASURED |
-| Intermarket / relative strength | `cross_asset` | MEASURED |
-| Macro / event-driven | `event_macro` | MEASURED |
-| Market profile / auction theory | `auction_market_profile` | MEASURED |
-| Mean reversion | `mean_reversion` | MEASURED |
-| Momentum / impulse | `momentum` | MEASURED |
-| Moving-average context | `moving_average` | MEASURED |
-| Novel pattern / anomaly discovery | `pattern_discovery` | MEASURED |
-| Order flow / volume auction | `order_flow_auction` | MEASURED |
-| Order-type and execution policy | `execution_order_types` | MEASURED |
-| Oscillator / momentum divergence | `oscillator_divergence` | MEASURED |
-| Outcome attribution and calibration | `learning_calibration` | MEASURED |
-| Range breakout / expansion | `breakout` | MEASURED |
-| Range trading / market auction | `range_auction` | MEASURED |
+| Candlestick / M1 price action | `candle_price_action` | FULL |
+| Carry / financing context | `carry_funding` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Correlation and portfolio concentration | `correlation_exposure` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Derivatives and contract-specific context | `derivatives_context` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Execution costs and fill quality | `execution_costs` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Failed breakout / trap | `failed_breakout` | FULL |
+| Gaps / opening-range behaviour | `gap_opening_range` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| ICT / Smart Money Concepts | `ict_smc` | FULL |
+| Intermarket / relative strength | `cross_asset` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Macro / event-driven | `event_macro` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Market profile / auction theory | `auction_market_profile` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Mean reversion | `mean_reversion` | FULL |
+| Momentum / impulse | `momentum` | FULL |
+| Moving-average context | `moving_average` | FULL |
+| Novel pattern / anomaly discovery | `pattern_discovery` | FULL |
+| Order flow / volume auction | `order_flow_auction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Order-type and execution policy | `execution_order_types` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Oscillator / momentum divergence | `oscillator_divergence` | FULL |
+| Outcome attribution and calibration | `learning_calibration` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Range breakout / expansion | `breakout` | FULL |
+| Range trading / market auction | `range_auction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
 | Regime transition / change-point | `market_regime_transition` | FULL |
-| Relative value / pair relationships | `relative_value` | MEASURED |
-| Retracement / measured-move geometry | `fibonacci_geometry` | MEASURED |
-| Risk of ruin / capital survival | `risk_of_ruin` | MEASURED |
-| Seasonality / cycle hypotheses | `seasonality_cycles` | MEASURED |
-| Session / VWAP / intraday context | `session_intraday` | MEASURED |
-| Statistical / quantitative methods | `statistical_quant` | MEASURED |
-| Support / resistance and market structure | `support_resistance` | MEASURED |
-| Tick / spread / execution microstructure | `microstructure` | MEASURED |
-| Trend following | `trend_following` | MEASURED |
-| Trend strength / ADX-style regime | `trend_strength` | MEASURED |
-| Verified news-event reaction | `news_event_reaction` | MEASURED |
-| Volatility contraction and expansion | `volatility_breakout` | MEASURED |
-| Volatility regime / compression | `volatility_regime` | MEASURED |
-| Wyckoff effort versus result | `wyckoff_effort_result` | MEASURED |
-| Wyckoff market-cycle analysis | `wyckoff` | MEASURED |
+| Relative value / pair relationships | `relative_value` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Retracement / measured-move geometry | `fibonacci_geometry` | FULL |
+| Risk of ruin / capital survival | `risk_of_ruin` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Seasonality / cycle hypotheses | `seasonality_cycles` | FULL |
+| Session / VWAP / intraday context | `session_intraday` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Statistical / quantitative methods | `statistical_quant` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Support / resistance and market structure | `support_resistance` | FULL |
+| Tick / spread / execution microstructure | `microstructure` | FULL |
+| Trend following | `trend_following` | FULL |
+| Trend strength / ADX-style regime | `trend_strength` | FULL |
+| Verified news-event reaction | `news_event_reaction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Volatility contraction and expansion | `volatility_breakout` | FULL |
+| Volatility regime / compression | `volatility_regime` | FULL |
+| Wyckoff effort versus result | `wyckoff_effort_result` | FULL |
+| Wyckoff market-cycle analysis | `wyckoff` | FULL |
 
 ## Registered concept modules
 
@@ -159,3 +159,4 @@ FULL 2 · DATA-GATED 0 · MEASURED 36 · UNMEASURED 0
 - `order_book_readings` (microstructure) — methods: order_book; lenses: -
 - `tick_microstructure_readings` (microstructure) — methods: tick_microstructure; lenses: -
 - `quantitative_state_readings` (quantitative) — methods: time_series, clustering, anomaly_detection; lenses: -
+- `strategy_lens_readings` (strategy_lens_composition) — methods: -; lenses: ict_smc, trend_following, momentum, breakout, failed_breakout, mean_reversion, candle_price_action, volatility_regime, wyckoff, microstructure, support_resistance, moving_average, oscillator_divergence, trend_strength, fibonacci_geometry, volatility_breakout, seasonality_cycles, wyckoff_effort_result, pattern_discovery
