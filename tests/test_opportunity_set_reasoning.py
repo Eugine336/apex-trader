@@ -377,7 +377,7 @@ def test_management_payload_surfaces_competing_opposing_opportunity():
     reasoner = _ManageCapture(_new_reply(opps, preferred="opp_1"))
     brain = CognitiveBrain(
         reasoner=reasoner, min_confidence_to_act=0.5,
-        min_advisors_for_action=0, min_evidence_domains=0,
+        min_advisors_for_action=0,
     )
     # 1) Originate so the Brain records the visible opportunity set for the symbol.
     brain.reason(_confident_state(symbol="ETHUSD", polarity=0.6))
