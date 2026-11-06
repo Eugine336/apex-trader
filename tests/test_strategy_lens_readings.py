@@ -114,8 +114,10 @@ def test_brain_strategy_lens_assessment_uses_composed_method_evidence():
         item["key"]: item for item in assess_strategy_lenses(evidence)
     }
 
-    assert assessments["trend_following"]["status"] == "relevant"
-    assert any("native method composition" in reason for reason in assessments["trend_following"]["reasons"])
+    assert assessments["pattern_discovery"]["status"] == "relevant"
+    assert any("native method composition" in reason for reason in assessments["pattern_discovery"]["reasons"])
+    assert assessments["trend_following"]["status"] == "watch"
+    assert any("not all synchronized" in item for item in assessments["trend_following"]["missing_context"])
     assert assessments["event_macro"]["status"] == "not_evaluable"
     assert any(
         "complete lens interpretation requires" in item
@@ -149,6 +151,7 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
             implications=(),
             facts={},
             source_bar_epoch=1_780_000_000.0,
+            data_basis="completed_ohlc",
         ),
         ConceptReading(
             concept="wyckoff",
@@ -160,6 +163,7 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
             implications=(),
             facts={},
             source_bar_epoch=None,
+            data_basis="completed_ohlc",
         ),
     ]
     readings = StrategyLensReadings().read_with_context(
