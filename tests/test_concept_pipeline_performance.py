@@ -142,3 +142,37 @@ def test_fractal_swings_are_shared_for_identical_completed_high_low_history():
     assert first == second
     assert after_first.misses == 1
     assert after_second.hits == 1
+
+def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
+    import pandas as pd
+    import cognition.market_lenses as market_lenses
+
+    original = market_lenses._rows
+    calls = []
+
+    def counted_rows(frame, limit=32, *, expected_symbol=""):
+        calls.append((limit, expected_symbol))
+        return original(frame, limit=limit, expected_symbol=expected_symbol)
+
+    monkeypatch.setattr(market_lenses, "_rows", counted_rows)
+    frame = pd.DataFrame({
+        "time": [1_800_000_000 + index * 300 for index in range(40)],
+        "open": [1.0 + index * 0.001 for index in range(40)],
+        "high": [1.1 + index * 0.001 for index in range(40)],
+        "low": [0.9 + index * 0.001 for index in range(40)],
+        "close": [1.05 + index * 0.001 for index in range(40)],
+        "volume": [100.0] * 40,
+    })
+    frame.attrs.update({
+        "source_symbol": "EURUSD",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+        "source_timestamp_verified": True,
+        "source_timestamp_unit": "unix_seconds",
+    })
+
+    market_lenses.analyze_market_frames(
+        "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
+    )
+
+    assert calls == [(1_000_000, "EURUSD")]
