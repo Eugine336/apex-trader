@@ -206,11 +206,13 @@ class IntentAggregator:
                 continue
             if prior is None:
                 continue
-            signature = lambda item: (
-                item.symbol, item.position_ticket, item.direction,
-                item.new_sl, item.new_tp, item.close_fraction,
-                item.decision_id, item.campaign_id, item.opportunity_id,
-            )
+            def signature(item: Intent) -> tuple:
+                return (
+                    item.symbol, item.position_ticket, item.direction,
+                    item.new_sl, item.new_tp, item.close_fraction,
+                    item.decision_id, item.campaign_id, item.opportunity_id,
+                )
+
             if signature(prior) != signature(intent):
                 keyed.pop(key, None)
                 conflicted.add(key)
