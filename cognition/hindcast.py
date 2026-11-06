@@ -74,6 +74,7 @@ class HindcastReport:
     concept_implications_not_activated: int = 0
     concept_outcomes: list[dict[str, Any]] = field(default_factory=list)
     brain_calibration_pairs: list[tuple[float, bool]] = field(default_factory=list)
+    brain_candidate_outcomes: list[dict[str, Any]] = field(default_factory=list)
     skipped_brain_candidates: int = 0
     unresolved_brain_candidates: int = 0
     ambiguous_brain_candidates: int = 0
@@ -110,6 +111,7 @@ class HindcastReport:
                 {"confidence": confidence, "won": won}
                 for confidence, won in self.brain_calibration_pairs
             ],
+            "brain_candidate_outcomes": list(self.brain_candidate_outcomes),
             "brain_calibration": dict(self.brain_calibration),
             "skipped_brain_candidates": self.skipped_brain_candidates,
             "unresolved_brain_candidates": self.unresolved_brain_candidates,
@@ -600,10 +602,19 @@ def run_hindcast(
         target = _finite(getattr(selected, "target_price", None))
         confidence = _finite(getattr(decision, "confidence", None))
         family = str(getattr(selected, "candidate_family", "") or "").strip().lower()
+        geometry_ids = [
+            str(item) for item in (getattr(selected, "geometry_evidence_ids", []) or [])
+            if str(item).strip()
+        ]
+        visible_evidence_ids = {
+            str(item.evidence_id) for item in market.evidence
+            if str(getattr(item, "evidence_id", "") or "").strip()
+        }
         if (
             direction not in {"LONG", "SHORT"} or order_type != "MARKET"
             or stop is None or target is None
             or confidence is None or family in {"", "unclassified", "unknown"}
+            or not geometry_ids or not set(geometry_ids).issubset(visible_evidence_ids)
         ):
             report.skipped_brain_candidates += 1
             continue
@@ -615,7 +626,7 @@ def run_hindcast(
         entry = _finite(getattr(selected, "entry_price", None))
         if entry is None:
             entry = _finite(base_bar.get("close"))
-        outcome, _ = _evaluate_levels(
+        outcome, resolved_at = _evaluate_levels(
             base_rows,
             after_epoch=cutoff,
             horizon_seconds=horizon,
@@ -624,6 +635,20 @@ def run_hindcast(
             invalidation_price=stop,
             reference_price=entry,
         )
+        report.brain_candidate_outcomes.append({
+            "decision_id": str(getattr(decision, "decision_id", "") or ""),
+            "opportunity_id": str(getattr(selected, "opportunity_id", "") or ""),
+            "candidate_family": family,
+            "direction": direction,
+            "confidence": confidence,
+            "entry_price": entry,
+            "stop_price": stop,
+            "target_price": target,
+            "geometry_evidence_ids": geometry_ids,
+            "decision_epoch": cutoff,
+            "resolved_at_epoch": resolved_at,
+            "outcome": outcome,
+        })
         if outcome == "OBJECTIVE_FIRST":
             report.brain_calibration_pairs.append((confidence, True))
         elif outcome == "INVALIDATION_FIRST":
