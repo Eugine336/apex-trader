@@ -1,13 +1,16 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `98f0786d`; active Phase 2 implementation is PR `#823` on
-`phase2/wp-j-strategy-lens-composition`. Source of truth for current coverage:
-`docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
-At the last fully green PR #823 baseline (`7e1ce8d`): **56/79 analytical methods FULL, 8 DATA-GATED,
-9 MEASURED and 6 UNMEASURED; 20/38 strategy lenses FULL and 18 DATA-GATED.**
-The full suite passed **4,146 tests** on both Python 3.11 and 3.12, with Ruff, coverage synchronization,
-canonical identity/safety audit and import checks green. Subsequent PR #823 commits add stricter stale-replay
-and whole-book risk contracts; their CI must pass before this baseline is advanced.
+Status baseline: `main` @ `618e1e0513f2238772f4d54d06b77eb176442425`.
+WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
+Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
+`python scripts/concept_coverage.py`).
+Current register: **56/79 analytical methods FULL, 8 DATA-GATED, 9 MEASURED and 6 UNMEASURED;
+20/38 strategy lenses FULL and 18 DATA-GATED.**
+PR #823 passed **4,151 tests** on both Python 3.11 and 3.12, Ruff, coverage synchronization,
+canonical identity/safety audit, import checks, GitGuardian and both Gold desk jobs.
+WP-J acceptance gates for current-cutoff freshness, no-look-ahead, mirror symmetry, Brain assessment
+and full CI passed. This accepts the composition/assessment layer; it does not claim all 79 methods
+are FULL or remove the explicitly named external-data gates.
 The RL package, nine RL-only test files, training tools and PyTorch dependency were retired in PR #813.
 The earlier audit-sandbox report and pre-PR #822 test counts are historical, not the current CI baseline.
 Every PR must run the full suite and compare with `main` (§9).
@@ -144,7 +147,7 @@ risk, correlated exposure, expected shortfall, risk of ruin). They inform Brain 
 limits (WP-B7).
 
 ### WP-J Strategy lenses (36 composed lenses; 18 FULL and 18 DATA-GATED at the last green baseline)
-PR #823 implements the composition reader and Brain-facing assessment contract. The 18 remaining specialist lenses (`crt` and `market_regime_transition`) are read by their dedicated modules; 18 composed lenses are currently FULL and 18 are DATA-GATED. WP-J is not accepted until the latest branch passes current-cutoff freshness, no-look-ahead, mirror-symmetry, Brain challenge and full CI gates.
+PR #823 implements the composition reader and Brain-facing assessment contract. The 18 remaining specialist lenses (`crt` and `market_regime_transition`) are read by their dedicated modules; 18 composed lenses are currently FULL and 18 are DATA-GATED. WP-J acceptance completed in PR #823: current-cutoff freshness, no-look-ahead, mirror-symmetry, Brain challenge and full CI gates passed. The composition layer remains bounded by its explicit method and feed prerequisites.
 
 A lens is the *style view* of its methods. Implement each as a composition module (no new measurement): which method
 readings it consumes, the market states in which that style is appropriate (from measured regime evidence), how that style
