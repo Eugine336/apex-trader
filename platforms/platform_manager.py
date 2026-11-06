@@ -732,6 +732,26 @@ class PlatformManager:
             return pd.DataFrame()
         return fetch(symbol, from_dt, to_dt)
 
+    def calculate_broker_profit(
+        self, symbol: str, direction: str, volume: float, price_open: float, price_close: float,
+    ) -> float:
+        """Return broker-calculated P&L in account currency where supported."""
+        connector = self.get_connector(symbol)
+        calculate = getattr(connector, "calculate_profit", None)
+        if not callable(calculate):
+            raise NotImplementedError(f"Broker profit calculation is unavailable for {symbol}")
+        return float(calculate(symbol, direction, volume, price_open, price_close))
+
+    def calculate_broker_margin(
+        self, symbol: str, direction: str, volume: float, price: float,
+    ) -> float:
+        """Return broker-calculated margin in account currency where supported."""
+        connector = self.get_connector(symbol)
+        calculate = getattr(connector, "calculate_margin", None)
+        if not callable(calculate):
+            raise NotImplementedError(f"Broker margin calculation is unavailable for {symbol}")
+        return float(calculate(symbol, direction, volume, price))
+
     def get_mt5_account_snapshots(self) -> list[dict]:
         """Return verified account snapshots from every connected MT5 account."""
         snapshots: list[dict] = []
