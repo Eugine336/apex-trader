@@ -1685,6 +1685,7 @@ class MT5Connector(BaseConnector):
             lots_closed=close_lots,
             pnl=position.profit,
             platform="mt5",
+            requested_price=price,
         )
 
     # ── Positions ────────────────────────────────────────────────────────

@@ -251,3 +251,49 @@ class TestBrokerAttemptTelemetry:
         assert abs(stats["observed_entry_abs_slippage_avg_pips"] - 1.0) < 1e-8
         assert stats["observed_entry_slippage_sample_count"] == 19
         assert stats["observed_submit_response_latency_avg_ms"] == 134.0
+
+
+
+class TestRoundTripSlippagePairing:
+    def test_partial_closes_are_weighted_and_only_complete_trade_is_sampled(self):
+        mon = ExecutionMonitor(window=50)
+        mon.record_order_attempt(
+            symbol="EURUSD", success=True, latency_ms=80.0,
+            requested_price=1.1000, fill_price=1.10005,
+            pip_size=0.0001, order_id="ticket-1", lots=0.2,
+            direction="BUY", platform="mt5",
+        )
+        mon.record_close_result(
+            order_id="ticket-1", platform="mt5", success=True,
+            requested_price=1.1010, fill_price=1.1009,
+            lots_closed=0.1,
+        )
+        partial = mon.get_cost_observations("EURUSD", min_samples=1)
+        assert partial["observed_round_trip_slippage_sample_count"] == 0
+        mon.record_close_result(
+            order_id="ticket-1", platform="mt5", success=True,
+            requested_price=1.1010, fill_price=1.1008,
+            lots_closed=0.1,
+        )
+        complete = mon.get_cost_observations("EURUSD", min_samples=1)
+        # Entry 0.5 pips + weighted exit mean 1.5 pips = 2.0 pips.
+        assert complete["observed_round_trip_abs_slippage_avg_pips"] == pytest.approx(2.0)
+        assert complete["observed_round_trip_slippage_sample_count"] == 1
+        assert complete["round_trip_slippage_verified"] is True
+        assert complete["pip_size"] == pytest.approx(0.0001)
+
+    def test_unmatched_or_payout_only_close_never_produces_round_trip_slippage(self):
+        mon = ExecutionMonitor(window=20)
+        mon.record_order_attempt(
+            symbol="EURUSD", success=True, latency_ms=80.0,
+            requested_price=1.1000, fill_price=1.1001,
+            pip_size=0.0001, order_id="ticket-2", lots=0.1,
+            direction="BUY", platform="deriv",
+        )
+        mon.record_close_result(
+            order_id="ticket-2", platform="deriv", success=True,
+            requested_price=None, fill_price=10.0, lots_closed=0.1,
+        )
+        observations = mon.get_cost_observations("EURUSD", min_samples=1)
+        assert observations["observed_round_trip_slippage_sample_count"] == 0
+        assert observations["round_trip_slippage_verified"] is False

@@ -56,6 +56,10 @@ class ExecutionMonitor:
         self._spreads: dict[str, deque] = {}
         self._requotes: dict[str, int] = {}
         self._order_attempts: dict[str, deque] = {}
+        # Per-ticket entry/exit pairing is observational and bounded by currently
+        # open broker tickets; completed samples use the same rolling window.
+        self._open_trade_telemetry: dict[str, dict] = {}
+        self._round_trip_slippages: dict[str, deque] = {}
 
     def _ensure_symbol(self, symbol: str) -> None:
         if symbol not in self._slippages:
@@ -64,6 +68,7 @@ class ExecutionMonitor:
             self._spreads[symbol] = deque(maxlen=self._window)
             self._requotes[symbol] = 0
             self._order_attempts[symbol] = deque(maxlen=self._window)
+            self._round_trip_slippages[symbol] = deque(maxlen=self._window)
 
     def record_order_attempt(
         self,
@@ -77,6 +82,10 @@ class ExecutionMonitor:
         spread: float | None = None,
         observed_epoch: float | None = None,
         order_type: str = "market",
+        order_id: str | None = None,
+        lots: float | None = None,
+        direction: str | None = None,
+        platform: str = "unknown",
     ) -> None:
         """Record one broker market-entry attempt; this does not affect execution.
 
@@ -121,12 +130,127 @@ class ExecutionMonitor:
             "order_type": str(order_type or "market").strip().lower(),
         }
         self._order_attempts[clean_symbol].append(record)
+        clean_order_id = str(order_id or "").strip()
+        clean_platform = str(platform or "unknown").strip().lower().split("_", 1)[0]
+        volume = finite_number(lots, positive=True)
+        if (
+            confirmed and clean_order_id and volume is not None
+            and pip is not None
+        ):
+            ticket_key = f"{clean_platform}:{clean_order_id}"
+            self._open_trade_telemetry[ticket_key] = {
+                "symbol": clean_symbol,
+                "open_lots": volume,
+                "closed_lots": 0.0,
+                "entry_slippage_pips": slippage,
+                "pip_size": pip,
+                "exit_slippage_weighted_pips": 0.0,
+                "exit_slippage_lots": 0.0,
+                "round_trip_valid": slippage is not None,
+                "direction": str(direction or "").strip().upper(),
+                "opened_epoch": observed,
+            }
         if latency is not None:
             self._latencies[clean_symbol].append(latency)
         if slippage is not None:
             self._slippages[clean_symbol].append(slippage)
         if spread_value is not None:
             self._spreads[clean_symbol].append(spread_value)
+
+    def record_close_result(
+        self,
+        *,
+        order_id: str,
+        platform: str,
+        success: bool,
+        requested_price: float | None,
+        fill_price: float | None,
+        lots_closed: float | None,
+        observed_epoch: float | None = None,
+    ) -> None:
+        """Pair an attributable broker close fill with its recorded entry fill.
+
+        Close slippage is measured against the exact price submitted by the
+        connector. A complete sample is emitted only after the entire recorded
+        position volume has closed and every partial close had valid prices.
+        Payout values without a comparable requested market price remain unknown.
+        """
+        if success is not True:
+            return
+        clean_order_id = str(order_id or "").strip()
+        clean_platform = str(platform or "unknown").strip().lower().split("_", 1)[0]
+        if not clean_order_id:
+            return
+        ticket_key = f"{clean_platform}:{clean_order_id}"
+        trade = self._open_trade_telemetry.get(ticket_key)
+        if not isinstance(trade, dict):
+            return
+
+        def finite_number(value: object, *, positive: bool = False) -> float | None:
+            if isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(number) or number < 0.0 or (positive and number <= 0.0):
+                return None
+            return number
+
+        volume = finite_number(lots_closed, positive=True)
+        if volume is None:
+            trade["round_trip_valid"] = False
+            return
+        remaining = max(float(trade["open_lots"]) - float(trade["closed_lots"]), 0.0)
+        tolerance = max(1e-8, float(trade["open_lots"]) * 1e-6)
+        if volume > remaining + tolerance:
+            trade["round_trip_valid"] = False
+            return
+
+        requested = finite_number(requested_price, positive=True)
+        filled = finite_number(fill_price, positive=True)
+        pip = finite_number(trade.get("pip_size"), positive=True)
+        close_slippage = None
+        if requested is not None and filled is not None and pip is not None:
+            close_slippage = abs(filled - requested) / pip
+            if not math.isfinite(close_slippage):
+                close_slippage = None
+
+        if close_slippage is None:
+            trade["round_trip_valid"] = False
+        else:
+            trade["exit_slippage_weighted_pips"] += close_slippage * volume
+            trade["exit_slippage_lots"] += volume
+
+        trade["closed_lots"] += volume
+        if float(trade["closed_lots"]) + tolerance < float(trade["open_lots"]):
+            return
+
+        completed_epoch = finite_number(observed_epoch, positive=True) or time.time()
+        all_exit_volume_measured = (
+            float(trade["exit_slippage_lots"]) + tolerance >= float(trade["open_lots"])
+        )
+        if trade.get("round_trip_valid") is True and all_exit_volume_measured:
+            avg_exit_slippage = (
+                float(trade["exit_slippage_weighted_pips"])
+                / float(trade["exit_slippage_lots"])
+            )
+            total_slippage = float(trade["entry_slippage_pips"]) + avg_exit_slippage
+            if math.isfinite(total_slippage):
+                symbol = str(trade["symbol"]).strip().upper()
+                self._ensure_symbol(symbol)
+                self._round_trip_slippages[symbol].append({
+                    "observed_epoch": completed_epoch,
+                    "slippage_pips": total_slippage,
+                    "pip_size": float(trade["pip_size"]),
+                    "order_id": clean_order_id,
+                    "platform": clean_platform,
+                    "lots": float(trade["open_lots"]),
+                })
+
+        # Once the broker reports the full volume closed, retain only the
+        # completed aggregate. An unmeasurable exit is discarded, not guessed.
+        self._open_trade_telemetry.pop(ticket_key, None)
 
     def get_cost_observations(
         self,
@@ -172,6 +296,22 @@ class ExecutionMonitor:
         ]
         latencies = [float(item["latency_ms"]) for item in outcomes if item.get("latency_ms") is not None]
         spreads = [float(item["spread"]) for item in outcomes if item.get("spread") is not None]
+        round_trip_samples = [
+            item for item in self._round_trip_slippages.get(clean_symbol, ())
+            if 0.0 <= now - float(item.get("observed_epoch", 0.0)) <= max_age
+        ]
+        pip_sizes = [
+            float(item["pip_size"]) for item in round_trip_samples
+            if item.get("pip_size") is not None
+        ]
+        common_pip_size = (
+            pip_sizes[0]
+            if pip_sizes and all(abs(value - pip_sizes[0]) <= 1e-12 for value in pip_sizes)
+            else None
+        )
+        round_trip_floor_met = (
+            len(round_trip_samples) >= sample_floor and common_pip_size is not None
+        )
         return {
             "market_entry_attempt_count": attempt_count,
             "market_entry_success_count": success_count,
@@ -191,6 +331,14 @@ class ExecutionMonitor:
             ),
             "entry_observation_max_age_seconds": max_age,
             "entry_observation_scope": "market_entry_attempts_only",
+            "observed_round_trip_slippage_sample_count": len(round_trip_samples),
+            "observed_round_trip_abs_slippage_avg_pips": (
+                float(np.mean([item["slippage_pips"] for item in round_trip_samples]))
+                if round_trip_samples else None
+            ),
+            "round_trip_slippage_verified": round_trip_floor_met,
+            "pip_size": common_pip_size,
+            "round_trip_slippage_scope": "paired_completed_broker_entry_and_exit_fills",
         }
 
     def record_execution(

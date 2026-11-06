@@ -682,6 +682,10 @@ class PlatformManager:
                         spread=spread,
                         observed_epoch=_time.time(),
                         order_type="market",
+                        order_id=getattr(result, "order_id", None),
+                        lots=getattr(result, "lots", lots),
+                        direction=getattr(result, "direction", direction),
+                        platform=str(getattr(result, "platform", platform) or platform),
                     )
                 except Exception as exc:  # noqa: BLE001 — monitor must never affect execution
                     _pm_logger.warning("[pm] execution telemetry failed for {}: {}", symbol, exc)
@@ -728,7 +732,23 @@ class PlatformManager:
         """
         connector = self._connector_by_platform_str(platform)
         with self._broker_write_lock:
-            return connector.close_order(order_id, lots)
+            result = connector.close_order(order_id, lots)
+        monitor = getattr(self, "execution_monitor", None)
+        if monitor is not None:
+            try:
+                clean_platform = str(platform or "unknown").strip().lower().split("_", 1)[0]
+                monitor.record_close_result(
+                    order_id=order_id,
+                    platform=clean_platform,
+                    success=getattr(result, "success", False) is True,
+                    requested_price=getattr(result, "requested_price", None),
+                    fill_price=getattr(result, "close_price", None),
+                    lots_closed=getattr(result, "lots_closed", None),
+                    observed_epoch=_time.time(),
+                )
+            except Exception as exc:  # noqa: BLE001 — monitoring cannot change close result
+                _pm_logger.warning("[pm] close telemetry failed for {}: {}", order_id, exc)
+        return result
 
     def get_realized_pnl(self, order_id: str, platform: str) -> Optional[float]:
         connector = self._connector_by_platform_str(platform)
