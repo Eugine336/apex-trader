@@ -43,7 +43,7 @@ def _lens_evidence():
 
 def test_lens_composition_catalog_covers_every_strategy_knowledge_lens_once():
     catalog_keys = {item.key for item in STRATEGY_LENSES}
-    assert set(LENS_METHODS) | {"crt", "regime_switching"} == catalog_keys
+    assert set(LENS_METHODS) | {"crt", "market_regime_transition"} == catalog_keys
     assert len(LENS_METHODS) == 36
     assert len(FULL_LENSES) == 18
     assert len(DATA_GATED_LENSES) == 18
