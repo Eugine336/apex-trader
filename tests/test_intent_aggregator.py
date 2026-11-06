@@ -64,6 +64,14 @@ class TestActionIdDeduplication:
         ])
         assert agg.flush() == []
 
+    def test_action_id_reuse_across_positions_is_rejected(self):
+        agg = IntentAggregator()
+        agg.submit([
+            _partial(ticket="T1", fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102"),
+            _partial(ticket="T2", fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102"),
+        ])
+        assert agg.flush() == []
+
     def test_distinct_intent_types_from_same_brain_action_are_preserved(self):
         agg = IntentAggregator()
         partial = _partial(fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102")
