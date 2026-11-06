@@ -22,8 +22,9 @@ class _State:
 def _lens(close, epoch=1000.0):
     return SimpleNamespace(
         symbol="EURUSD", domain=EvidenceDomain.STRUCTURE, source_module="market_lens.structure.m5",
-        measurements={"source_kind": "market_lens", "source_timestamp_known": True, "provisional": False,
-                      "current_close": close, "source_bar_epoch": epoch},
+        measurements={"source_kind": "market_lens", "source_timestamp_known": True,
+                      "data_basis": "completed_ohlc", "completed": True, "provisional": False,
+                      "timeframe": "H1", "current_close": close, "source_bar_epoch": epoch},
         confidence=0.5, uncertainty=0.5, evidence_id="e-%s" % close)
 
 
