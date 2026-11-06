@@ -1,6 +1,6 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `d159b7c17d520102fde11d0f304fe81d45020c99`.
+Status baseline: `main` @ `4cb2fe477b58ba6baad1de19bcbed914084915d8`.
 WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
@@ -224,14 +224,21 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   attestation exists. A broker-side acknowledgement/reconciliation lifecycle is still required to resolve ambiguous
   pending actions beyond observed position-size change. Full CI passed on Python 3.11 and 3.12 (4,170 tests each),
   lint, GitGuardian and both Gold desk jobs; no broker orders were sent.
-- **WP-B4 Calibration without a cold start.** (a) A **hindcast replay harness** running all concept modules and the Brain
-  over historical candles, labelling outcomes by each reading's own invalidation/objective, to seed
-  `CalibrationTracker` and the System 4 artifacts; (b) per-concept × market-state track record that Apex consults;
-  (c) **Policy now decided by PR #809:** historical-expectancy eligibility (provenance, sample size, walk-forward folds,
-  selection coverage, development/holdout stability) is separate from forecast-calibration quality; calibration
-  diagnostics scale risk through `CalibrationTracker.sizing_scale` and cannot veto a thesis. Remaining: the 0.25 size
-  floor is still a stop-gap number to move into the owner-limit surface (WP-B7), and eligibility still needs a producer
-  artifact (the hindcast harness in (a) is what produces it).
+- **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
+  reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
+  UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain
+  with completed bars only at each decision cutoff; labels concept implications from their own objective/invalidation
+  levels; treats same-bar double touches as ambiguous; and reports per-concept/timeframe/direction/explicit-state
+  outcomes, reader faults, unlabelable implications and coverage. Brain confidence samples require selected
+  market-order opportunities, explicit stop/target geometry, visible geometry evidence IDs and non-overlapping
+  decision windows. Calibration seeding is opt-in and idempotent per dataset/protocol. PR #828 passed 4,184 tests on
+  Python 3.11 and 3.12, Ruff/lint, GitGuardian and identity/coverage/import checks.
+  **WP-B4 is not accepted yet.** The manifest's source attestation is caller-declared, not independently authenticated;
+  OHLC labels exclude spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts.
+  The per-concept × market-state summaries are report outputs, not yet producer-registered artifacts consulted by the
+  live Brain. Remaining: connect verified quote-history events to the existing `CalibrationProducer` for System 4
+  development/holdout/walk-forward eligibility; make concept track records producer-owned and available to live Brain
+  as non-gating context; validate on owner-supplied history; and move the 0.25 calibration size floor into WP-B7.
 - **WP-B5 Performance.** Concept pipeline cost with the full instrument universe: evaluate only on bar close,
   incremental swings/pools, shared computations across modules, a measured per-symbol time budget.
 - **WP-B6 Remove remaining analysis constants.** `min_evidence_domains = 3`, observer wake thresholds, compliance
