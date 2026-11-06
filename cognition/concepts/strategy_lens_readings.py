@@ -339,7 +339,7 @@ class StrategyLensReadings:
                 epochs = {
                     value for value in source_epochs if value is not None
                 }
-                source_epoch = (
+                source_timestamp_epoch = (
                     next(iter(epochs))
                     if selected and all_methods_available
                     and len(selected) == len(required_methods)
@@ -348,7 +348,26 @@ class StrategyLensReadings:
                     )
                     else None
                 )
-                if selected and source_epoch is None:
+                bar_epochs = [
+                    (
+                        finite(item.source_bar_epoch)
+                        if item.source_timestamp_verified is True
+                        and finite(item.source_bar_epoch) is not None
+                        and finite(item.source_bar_epoch) > 0.0
+                        else None
+                    )
+                    for item in selected.values()
+                ]
+                bar_epoch_values = {value for value in bar_epochs if value is not None}
+                source_bar_epoch = (
+                    next(iter(bar_epoch_values))
+                    if selected and all_methods_available
+                    and len(selected) == len(required_methods)
+                    and len(bar_epoch_values) == 1
+                    and all(value is not None for value in bar_epochs)
+                    else None
+                )
+                if selected and source_timestamp_epoch is None:
                     unknowns.append(
                         "underlying method readings are not all synchronized to one source-verified completed-bar timestamp"
                     )
@@ -423,7 +442,7 @@ class StrategyLensReadings:
                     "data_requirements": list(lens.data_requirements),
                     "data_gated_reason": data_gate,
                     "source_provenance_verified": bool(
-                        selected and source_epoch is not None
+                        selected and source_timestamp_epoch is not None
                     ),
                     "independence_group_verified": bool(
                         selected and independence_group
@@ -450,8 +469,9 @@ class StrategyLensReadings:
                     ),
                     implications=(),
                     facts=facts,
-                    source_bar_epoch=source_epoch,
-                    source_timestamp_verified=source_epoch is not None,
+                    source_bar_epoch=source_bar_epoch,
+                    source_timestamp_epoch=source_timestamp_epoch,
+                    source_timestamp_verified=source_timestamp_epoch is not None,
                     reference_close=reference_close,
                     reference_timeframe=reference_timeframe,
                     unknowns=tuple(dict.fromkeys(unknowns)),
