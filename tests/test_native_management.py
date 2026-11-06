@@ -442,7 +442,6 @@ def test_campaign_geometry_completed_close_invalidation_is_an_exit_verdict():
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
             "provisional": False,
-            "completed": True,
             "timeframe": "H1",
             "source_bar_epoch": now - 10.0,
             "current_close": 97.9,
