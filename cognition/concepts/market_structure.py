@@ -242,7 +242,7 @@ class MarketStructure:
             bars = _clean(raw)
             if len(bars) < 8:
                 continue
-            internal = fractal_swings(bars)
+            internal = fractal_swings(bars, cache_key=f"market-structure:{symbol}:{tf}")
             ext = external_swings(internal)
             state, levels = trend_state(ext)
             order = "external"
