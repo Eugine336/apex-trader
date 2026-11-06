@@ -16,6 +16,7 @@ callers should log the result and continue regardless.
 """
 
 from __future__ import annotations
+import logging
 
 import sqlite3
 import subprocess
@@ -356,6 +357,7 @@ def _event_db_is_corrupt(db_path: Path) -> bool:
             try:
                 conn.close()
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in platforms/clean_start.py:358", exc_info=True)
                 pass
 
     return (row[0] if row else "").strip().lower() != "ok"
