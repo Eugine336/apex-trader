@@ -81,14 +81,23 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         if item.measurements.get("lens_key") in FULL_LENSES
     ]
     assert {item.measurements["lens_key"] for item in full_lens_readings} == set(FULL_LENSES)
-    assert all(
-        not item.measurements["missing_methods"]
-        for item in full_lens_readings
-    ), {
-        item.measurements["lens_key"]: item.measurements["missing_methods"]
-        for item in full_lens_readings
-        if item.measurements["missing_methods"]
+    registered_methods = {
+        method for module in CONCEPT_MODULES
+        for method in getattr(module, "covers_methods", ())
     }
+    declared_methods = {
+        method for methods in LENS_METHODS.values() for method in methods
+    }
+    assert declared_methods <= registered_methods
+    for item in full_lens_readings:
+        required = set(item.measurements["required_methods"])
+        available = set(item.measurements["available_methods"])
+        missing = set(item.measurements["missing_methods"])
+        assert available.isdisjoint(missing)
+        assert available | missing == required
+        assert item.measurements["missing_methods_semantics"].startswith(
+            "No ConceptReading was emitted"
+        )
     trend = next(
         item for item in evidence
         if item.measurements.get("lens_key") == "trend_following"
