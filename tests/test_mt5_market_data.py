@@ -40,10 +40,11 @@ class FakeMT5:
         return True
 
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
+        now = datetime.now(timezone.utc).timestamp()
         return [
-            {"time": 1_800_000_000, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1,
+            {"time": int(now - 120), "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1,
              "tick_volume": 100, "real_volume": 25, "spread": 12},
-            {"time": 1_800_000_060, "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2,
+            {"time": int(now - 30), "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2,
              "tick_volume": 120, "real_volume": 30, "spread": 14},
         ]
 
