@@ -46,6 +46,12 @@ def _readings(bars: list[dict]):
     }
 
 
+def _breakout_bars(closes: list[float]) -> list[dict]:
+    """Provide a full 20-bar adjacent-window baseline before the event segment."""
+    prior_history = [96, 99, 95, 98, 94, 97, 93, 99]
+    return _bars(prior_history + closes)
+
+
 def test_strategy_method_readings_are_registered_once_and_only_claim_catalogued_methods():
     modules = [module for module in CONCEPT_MODULES if module.key == "strategy_method_readings"]
     assert len(modules) == 1
@@ -91,7 +97,7 @@ def test_trend_reading_is_directionally_symmetric_under_price_reflection():
 
 
 def test_breakout_reader_distinguishes_first_close_retest_hold_and_failure():
-    initial = _bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114])
+    initial = _breakout_bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114])
     initial_reading = _readings(initial)["momentum_breakout"]
     assert initial_reading.applicable is True
     assert initial_reading.facts["upside_boundary_observation"]["status"] == (
@@ -103,13 +109,13 @@ def test_breakout_reader_distinguishes_first_close_retest_hold_and_failure():
     assert initial_reading.facts["absolute_momentum_speed_acceleration"] is not None
     assert initial_reading.facts["upside_boundary_observation"]["event_hold_bars"] == 1
 
-    retest = _bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114, 113])
+    retest = _breakout_bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114, 113])
     retest[-1]["high"] = 115.0
     retest[-1]["low"] = 111.8
     held = _readings(retest)["momentum_breakout"]
     assert held.facts["upside_boundary_observation"]["status"] == "retested_and_held"
 
-    failed = _bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114, 111])
+    failed = _breakout_bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114, 111])
     returned_inside = _readings(failed)["momentum_breakout"]
     assert returned_inside.facts["upside_boundary_observation"]["status"] == "failed_return_inside"
     assert held.implications == returned_inside.implications == ()
@@ -162,6 +168,10 @@ def test_mean_reversion_reports_distribution_dependence_and_unit_root_diagnostic
 
 def test_short_history_and_zero_variance_remain_explicitly_unavailable():
     short = _readings(_bars([100, 101, 99, 102, 98, 101, 100, 102, 99, 101]))
+    short_breakout = short["momentum_breakout"]
+    assert short_breakout.facts["absolute_momentum_speed_acceleration"] is None
+    assert "21 completed closes for adjacent-window momentum acceleration" in short_breakout.unknowns
+
     mean_reading = short["mean_reversion"]
     assert mean_reading.applicable is False
     assert mean_reading.facts["rolling_zscore"] is None
