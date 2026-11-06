@@ -5,69 +5,12 @@ skip-if-unchanged works, WorldModel merging preserves existing TF data,
 and the handler is thread-safe under concurrent events.
 """
 
-import sys
 import time
-import types
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 import pytest
-
-# Prefer the real PyTorch installation. A sys.modules-only check is insufficient:
-# the package may be installed but not imported yet, and installing a stub here
-# contaminates every later RL test in the same pytest process.
-try:
-    import torch as _torch
-except ImportError:
-    _torch = None
-
-if _torch is None:
-    _torch = types.ModuleType("torch")
-    _torch.nn = types.ModuleType("torch.nn")
-    _torch.optim = types.ModuleType("torch.optim")
-
-    class _NoGrad:
-        def __enter__(self): return None
-        def __exit__(self, *a): return None
-        def __call__(self, fn): return fn
-
-    _torch.no_grad = _NoGrad
-    _torch.tensor = lambda *a, **kw: None
-    _torch.float32 = "float32"
-    _torch.device = lambda x: x
-    _torch.load = lambda *a, **kw: {}
-    _torch.save = lambda *a, **kw: None
-    _torch.zeros = lambda *a, **kw: None
-    _torch.cat = lambda *a, **kw: None
-    _torch.from_numpy = lambda *a, **kw: None
-    class _Module:
-        def __init__(self, *a, **kw): pass
-        def forward(self, *a, **kw): return None
-        def parameters(self, *a, **kw): return []
-        def eval(self): return self
-        def train(self, *a): return self
-        def state_dict(self, *a): return {}
-        def load_state_dict(self, *a): pass
-        def __call__(self, *a, **kw): return None
-    _torch.nn.Module = _Module
-    _torch.nn.Linear = _Module
-    _torch.nn.ReLU = _Module
-    _torch.nn.Tanh = _Module
-    _torch.nn.Sequential = _Module
-    _torch.nn.functional = types.ModuleType("torch.nn.functional")
-    _torch.distributions = types.ModuleType("torch.distributions")
-    _torch.distributions.Categorical = type("Categorical", (), {"__init__": lambda *a, **kw: None})
-    class _Adam:
-        def __init__(self, *a, **kw): pass
-        def zero_grad(self): pass
-        def step(self): pass
-    _torch.optim.Adam = _Adam
-    sys.modules["torch"] = _torch
-    sys.modules["torch.nn"] = _torch.nn
-    sys.modules["torch.optim"] = _torch.optim
-    sys.modules["torch.nn.functional"] = _torch.nn.functional
-    sys.modules["torch.distributions"] = _torch.distributions
 
 from brain.world_model import WorldModelStore
 from scanner.candle_close_handler import (

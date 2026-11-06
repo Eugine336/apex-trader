@@ -54,8 +54,7 @@ def _make_report(results):
 
 
 def _emit_setup_skipped(loop_state, report, store, correlation_id=None):
-    """Replicates the exact logic of TradingLoop._emit_setup_skipped
-    without importing TradingLoop (avoids torch/heavy dep chain)."""
+    """Replicates TradingLoop._emit_setup_skipped without constructing the loop."""
     if store is None:
         return
     current: dict[str, tuple[str, int]] = {}

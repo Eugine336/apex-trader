@@ -1,7 +1,7 @@
 # APEX TRADER — PIPELINE INTEGRATION MAP
 
 
-> **Identity migration status (2026-10-23):** Identity migration status — this map catalogs module integration as observed when written; it is not proof that every listed module currently influences live decisions. Apex's binding identity is docs/APEX_IDENTITY.md. Current implementation status and required wiring tests are tracked in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+> **Historical integration snapshot:** This map records an earlier pipeline and is retained for audit provenance. Its legacy RL augmentation and planner references are retired, not part of the current runtime. Apex's binding identity is `docs/APEX_IDENTITY.md`; current implementation status is tracked in `docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md`.
 
 **Purpose:** A complete, end-to-end blueprint of the intelligence pipeline — every layer, every component, every data handoff, every staleness gap, and every place a rich signal is reduced to a scalar or dropped entirely. This is the reference for designing a proper integration (syncing the three independent stages: Scanner → Decision/Planning → Risk/Execution).
 

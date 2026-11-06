@@ -62,7 +62,6 @@ class PlannerConfig:
     # ── Advisor agreement weights ────────────────────────────────────────
     scanner_weight: float = 1.0
     de_weight: float = 1.0
-    rl_weight: float = 1.0
     adaptive_weight: float = 0.5
 
     # ── Minimum agreement / confidence to enter ──────────────────────────
@@ -103,7 +102,6 @@ class PlannerConfig:
 
     # ── TP strategy selection ────────────────────────────────────────────
     trend_strength_for_trail_only: float = 0.75  # tf_alignment ≥ this → trail-only
-    low_r_threshold_for_fixed_tp: float = 1.5    # RL expected_r < this → fixed TP
     default_tp1_rr: float = 1.5
     default_tp2_rr: float = 3.0
     default_runner_pct: float = 0.3
@@ -215,7 +213,7 @@ class TradePlanner:
 
         Constitution (DIRECTIONAL_AUTHORITY, V-005): this method used to compute
         a weighted directional "advisor agreement" across the scanner, decision
-        engine, RL and adaptive pair win-rate, blend it into a confidence, and
+        engine and adaptive pair win-rate, blend it into a confidence, and
         emit a ``TradePlan(direction="BUY"/"SELL")`` verdict. That recreated the
         forbidden directional-consensus architecture downstream of cognition.
 
@@ -338,11 +336,6 @@ class TradePlanner:
         if ctx.de_tf_alignment >= cfg.trend_strength_for_trail_only:
             tp1 = price_at_rr(tp1_rr)
             return ("trail_only", tp1, tp1_rr, None, None, 1.0 - 0.5)
-        # Low expected R from RL → bank a fixed target, no runner.
-        if 0 < ctx.rl_expected_r < cfg.low_r_threshold_for_fixed_tp:
-            tp1 = price_at_rr(tp1_rr)
-            tp2 = price_at_rr(tp2_rr)
-            return ("fixed_rr", tp1, tp1_rr, tp2, tp2_rr, 0.0)
         # Default: partial at TP1, leave a runner trailing toward TP2.
         tp1 = price_at_rr(tp1_rr)
         tp2 = price_at_rr(tp2_rr)

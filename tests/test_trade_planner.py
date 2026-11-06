@@ -30,9 +30,6 @@ def _strong_long(**overrides) -> TradePlanContext:
         zone_entry_price=1.0998,
         de_confidence=0.75,
         de_tf_alignment=0.80,
-        rl_action=1,
-        rl_confidence=0.6,
-        rl_expected_r=2.2,
         pair_win_rate=0.6,
         session_win_rate=0.6,
         proposed_sl_price=1.0980,
@@ -106,13 +103,6 @@ def test_trail_only_for_strong_trend():
     strat, _tp1, _tp1_rr, tp2, _tp2_rr, _runner = TradePlanner()._tp_plan(ctx, sl_pips=20.0)
     assert strat == "trail_only"
     assert tp2 is None
-
-
-def test_fixed_tp_for_low_expected_r():
-    ctx = _strong_long(de_tf_alignment=0.5, rl_expected_r=1.0)
-    strat, _tp1, _tp1_rr, _tp2, _tp2_rr, runner = TradePlanner()._tp_plan(ctx, sl_pips=20.0)
-    assert strat == "fixed_rr"
-    assert runner == 0.0
 
 
 def test_correlation_reduces_size():

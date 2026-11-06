@@ -1,7 +1,7 @@
 # APEX TRADER — Multi-Tenant Integration & Instrument Intelligence
 
 
-> **Identity migration status (2026-10-23):** Identity migration status — treat architecture diagrams and module-status claims below as a snapshot until refreshed against current runtime wiring. The whole-system identity is documented in docs/APEX_IDENTITY.md, and unresolved route/authority/testing questions are listed in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+> **Historical architecture snapshot:** The legacy pipeline and module descriptions below are retained for audit provenance, not as the current execution contract. The RL subsystem has been retired; current identity and native Brain requirements are documented in `docs/APEX_IDENTITY.md` and `docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md`.
 
 This document records the line-by-line audit that backed the changes in this PR,
 what was implemented, and the precise remaining roadmap. Every claim carries a
@@ -28,7 +28,7 @@ In **multi-tenant** mode each user runs the whole chain as its own OS process
 components are inherently per-user. The **only** cross-user surface is the
 filesystem; isolation therefore reduces to *where each component reads/writes*,
 which is governed by `runtime_paths.data_dir()` (= `$APEX_DATA_DIR`, the
-per-user workdir) vs `runtime_paths.shared_data_dir()` / `checkpoints_dir()`
+per-user workdir) vs `runtime_paths.shared_data_dir()
 (repo-anchored, read-only shared assets).
 
 ---

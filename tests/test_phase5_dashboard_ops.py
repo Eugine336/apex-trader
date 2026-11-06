@@ -146,17 +146,7 @@ class TestLiveStateEDAwareness:
 
 
 class TestEventDrivenSystemProperties:
-    """Verify the new properties on EventDrivenSystem.
-
-    Skip if torch is not installed (RL import chain).
-    """
-
-    @pytest.fixture(autouse=True)
-    def _skip_without_torch(self):
-        try:
-            import torch  # noqa: F401
-        except ImportError:
-            pytest.skip("torch not installed — RL import chain unavailable")
+    """Verify the new properties on EventDrivenSystem."""
 
     def test_ed_system_has_world_model_store_property(self):
         from event_driven_bootstrap import EventDrivenSystem

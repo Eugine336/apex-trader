@@ -2,7 +2,7 @@
 Trade Planner data models.
 
 `TradePlanContext` carries upstream observations — scanner, decision engine,
-RL, adaptive/ML, portfolio, timing and market state — without any verdict. Any
+adaptive learning, portfolio, timing and market state — without any verdict. Any
 ``direction`` it carries is an opportunity direction already decided by the
 Brain/scanner and is echoed here only for execution geometry; these models do
 NOT decide, vote on, or recompute trade direction.
@@ -82,13 +82,6 @@ class TradePlanContext:
     sa_structure_integrity: float = 0.0  # 0..1
     sa_read_confidence: float = 0.0      # 0..1
 
-    # ── RL Model ─────────────────────────────────────────────────────────
-    rl_action: int = 0               # 0=HOLD, 1=BUY, 2=SELL, 3=CLOSE
-    rl_confidence: float = 0.0
-    rl_expected_r: float = 0.0
-    rl_value_estimate: float = 0.0
-    rl_stage: int = 1
-
     # ── Adaptive / ML ────────────────────────────────────────────────────
     pair_multiplier: float = 1.0
     ev_estimate: float = 0.0
@@ -165,10 +158,6 @@ class TradePlanContext:
             "sa_momentum": round(self.sa_momentum, 3),
             "sa_structure_integrity": round(self.sa_structure_integrity, 3),
             "sa_read_confidence": round(self.sa_read_confidence, 3),
-            "rl_action": self.rl_action,
-            "rl_confidence": round(self.rl_confidence, 3),
-            "rl_expected_r": round(self.rl_expected_r, 3),
-            "rl_stage": self.rl_stage,
             "pair_multiplier": round(self.pair_multiplier, 3),
             "ev_estimate": round(self.ev_estimate, 4),
             "pair_win_rate": round(self.pair_win_rate, 3),

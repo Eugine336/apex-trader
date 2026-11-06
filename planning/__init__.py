@@ -2,7 +2,7 @@
 APEX TRADER — Planning layer.
 
 A coordinator that sits between the analysis advisors (scanner, decision
-engine, RL, adaptive/ML) and execution.  It replaces the serial yes/no veto
+engine and adaptive learning) and execution.  It replaces the serial yes/no veto
 chain with a single rich `TradePlan` that explains *what* to do and *why*.
 
   TradePlanContext  → all advisor analysis (no verdicts)

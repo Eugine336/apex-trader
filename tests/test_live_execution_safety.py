@@ -230,27 +230,6 @@ class TestDeadZoneOrPrecedence:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# C4: torch.load uses weights_only=True
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class TestShadowLoadWeightsOnly:
-    """Verify shadow._load calls torch.load with weights_only=True."""
-
-    def test_weights_only_true_in_source(self):
-        import inspect
-        from rl.shadow import ShadowEngine
-
-        source = inspect.getsource(ShadowEngine._load)
-        assert "weights_only=True" in source, (
-            "ShadowEngine._load must use weights_only=True"
-        )
-        assert "weights_only=False" not in source, (
-            "weights_only=False must not appear in _load"
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # C6: .db files untracked
 # ═══════════════════════════════════════════════════════════════════════════════
 

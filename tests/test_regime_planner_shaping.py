@@ -29,7 +29,6 @@ def _ctx(**kw) -> TradePlanContext:
         atr_pips=_ATR,
         structure_sl_available=False,  # force the ATR-stop branch
         de_tf_alignment=0.5,           # below trail-only threshold
-        rl_expected_r=0.0,             # skip the fixed-TP branch → partial_trail
     )
     base.update(kw)
     return TradePlanContext(**base)
