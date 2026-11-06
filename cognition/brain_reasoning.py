@@ -38,6 +38,7 @@ from cognition.market_context import analyze_market_context
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
 from cognition.analytical_knowledge import assess_analytical_knowledge, knowledge_coverage
+from cognition.concept_synthesis import synthesize_concept_readings
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -514,6 +515,8 @@ class BrainReasoner:
                     "timeframe": str(m.get("timeframe", "") or ""),
                     "source_bar_epoch": m.get("source_bar_epoch"),
                     "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
+                    "data_basis": str(getattr(e, "data_basis", "") or ""),
+                    "provisional": getattr(e, "provisional", True) is True,
                     "independence_group": str(getattr(e, "independence_group", "") or ""),
                     "applicable": m.get("applicable") is True,
                     "implications": list(m.get("implications") or []),
@@ -1560,53 +1563,95 @@ class BrainReasoner:
                     evidence_lineage_scope="domain_level_candidate_sources",
                 ))
 
-            # Concept readings: each applicable implication of a full concept
-            # reading becomes a hypothesis carrying the concept's own invalidation,
-            # objective and open requirements. Strength is the reading's own
-            # evidence strength versus this instrument's history (uncalibrated);
-            # the Brain still weighs, challenges and may reject every one.
-            for reading in analysis.concept_readings:
-                if not reading.get("applicable"):
+            # Select and synthesize concept readings before they become
+            # hypotheses. Shared OHLC provenance is not independent confluence:
+            # same-context readings are grouped, the strongest member anchors
+            # strength, and active opposing groups reduce it.
+            concept_groups = synthesize_concept_readings(analysis.concept_readings)
+            for group in concept_groups:
+                concepts = list(group.get("concepts", []) or [])
+                direction = str(group.get("direction", "") or "").upper()
+                if direction not in (LONG, SHORT, FLAT):
                     continue
-                for imp in reading.get("implications", []):
-                    direction = str(imp.get("direction", "") or "").upper()
-                    if direction not in (LONG, SHORT, FLAT):
-                        continue
-                    strength = imp.get("strength")
-                    conflicts = list(imp.get("conflicts_with", []) or [])
-                    requires = list(imp.get("requires", []) or [])
-                    objective = imp.get("objective_price")
-                    invalid_px = imp.get("invalidation_price")
-                    hyps.append(BrainHypothesis(
-                        statement=str(imp.get("statement", ""))[:500],
-                        confidence=float(strength) if isinstance(strength, (int, float)) else 0.0,
-                        direction_implication=direction,
-                        invalidation=str(imp.get("invalidation_reason", "") or ""),
-                        opportunity_implication=(
-                            f"{reading.get('concept')} on {reading.get('timeframe')}: "
-                            + (f"objective {objective:.10g}" if isinstance(objective, (int, float)) else "no objective")
-                            + (f"; invalidation {invalid_px:.10g}" if isinstance(invalid_px, (int, float)) else "")
-                            + ("; trigger satisfied" if imp.get("activated") else "; trigger not satisfied")
-                        ),
-                        hypothesis_kind=f"concept:{reading.get('concept')}:{reading.get('timeframe')}",
-                        supporting_evidence_ids=[reading.get("evidence_id", "")],
-                        assumptions=["Concept reading strength is uncalibrated reasoning strength, "
-                                     "not a probability or a validated edge."],
-                        unresolved_unknowns=requires + conflicts,
-                        distinguishing_evidence=(
-                            [f"requires: {item}" for item in requires]
-                            + [f"weakened by: {item}" for item in conflicts]
-                            + ([f"invalidation: {imp.get('invalidation_reason')}"] if imp.get("invalidation_reason") else [])
-                        ),
-                        horizon=f"{reading.get('timeframe')} structure",
-                        confidence_components={
-                            "concept": reading.get("concept"),
-                            "reading_strength": strength,
-                            "score_kind": "concept_reading_strength_vs_own_history",
-                            "calibrated_probability": False,
-                        },
-                        evidence_lineage_scope="concept_reading_evidence",
-                    ))
+                opposing_concepts = list(group.get("opposing_concepts", []) or [])
+                requirements = list(group.get("requirements", []) or [])
+                conflicts = list(group.get("conflicts", []) or [])
+                if opposing_concepts:
+                    conflicts.append(
+                        "opposing activated readings: " + ", ".join(opposing_concepts)
+                    )
+                geometry = list(group.get("geometry_candidates", []) or [])
+                geometry_text = [
+                    (
+                        f"{item.get('concept')}: "
+                        + (
+                            f"invalidation {item['invalidation_price']:.10g}"
+                            if isinstance(item.get("invalidation_price"), (int, float))
+                            else "invalidation unknown"
+                        )
+                        + (
+                            f", objective {item['objective_price']:.10g}"
+                            if isinstance(item.get("objective_price"), (int, float))
+                            else ", objective unknown"
+                        )
+                    )
+                    for item in geometry
+                ]
+                statements = list(group.get("statements", []) or [])
+                statement = (
+                    f"{', '.join(concepts)} readings on {group.get('timeframe')} "
+                    f"form one {group.get('status')} {direction} hypothesis: "
+                    + ("; ".join(statements[:3]) if statements else "no explanatory text supplied")
+                )
+                invalidation = "; ".join(
+                    f"{item.get('concept')}: {item.get('invalidation_reason')}"
+                    for item in geometry if item.get("invalidation_reason")
+                )
+                hyps.append(BrainHypothesis(
+                    statement=statement[:700],
+                    supporting_patterns=concepts,
+                    contradicting_patterns=opposing_concepts,
+                    confidence=float(group.get("confidence", 0.0) or 0.0),
+                    direction_implication=direction,
+                    invalidation=invalidation,
+                    opportunity_implication=(
+                        f"{group.get('timeframe')} {group.get('status')} concept group; "
+                        f"member readings={group.get('member_count', 0)}; "
+                        f"distinct concepts={group.get('confluence_count', 0)}; "
+                        + ("geometry candidates: " + "; ".join(geometry_text) if geometry_text else "no complete geometry")
+                    ),
+                    hypothesis_kind=(
+                        f"concept_group:{group.get('timeframe')}:{direction}:"
+                        f"{'active' if group.get('activated') else 'watch'}"
+                    ),
+                    supporting_evidence_ids=list(group.get("evidence_ids", []) or []),
+                    contradicting_evidence_ids=list(group.get("opposing_evidence_ids", []) or []),
+                    assumptions=[
+                        "Concept strengths are uncalibrated reasoning measures, not probabilities.",
+                        "Readings from the same OHLC stream are correlated; confluence does not add independent confidence.",
+                    ],
+                    unresolved_unknowns=list(dict.fromkeys(requirements + conflicts)),
+                    distinguishing_evidence=(
+                        [f"supporting concept: {item}" for item in concepts]
+                        + [f"opposing concept: {item}" for item in opposing_concepts]
+                        + [f"geometry: {item}" for item in geometry_text]
+                        + [f"requires: {item}" for item in requirements]
+                        + [f"conflict: {item}" for item in conflicts]
+                    ),
+                    horizon=f"{group.get('timeframe')} structure",
+                    confidence_components={
+                        "raw_strongest_reading": group.get("strength", 0.0),
+                        "opposing_active_strength": group.get("opposing_strength", 0.0),
+                        "confluence_count": group.get("confluence_count", 0),
+                        "member_count": group.get("member_count", 0),
+                        "confidence_rule": "max_member_strength_times_opposition_penalty",
+                        "additive_confluence_boost": False,
+                        "geometry_divergent": group.get("geometry_divergent", False),
+                        "score_kind": "uncalibrated_concept_group_strength",
+                        "calibrated_probability": False,
+                    },
+                    evidence_lineage_scope="concept_group_evidence",
+                ))
 
             # Generate explicit counter-hypotheses for the strongest distinct
             # directional explanations. When no directional thesis exists, still
