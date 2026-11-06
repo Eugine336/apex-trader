@@ -1494,77 +1494,85 @@ class BrainReasoner:
             # it does not supply a side, forecast probability or trade permission.
             lens_registry = {lens.key: lens for lens in STRATEGY_LENSES}
             for assessment in analysis.strategy_lenses:
-                if not isinstance(assessment, dict) or assessment.get("status") != "relevant":
+                try:
+                    if not isinstance(assessment, dict) or assessment.get("status") != "relevant":
+                        continue
+                    lens_key = str(assessment.get("key", "") or "")
+                    lens = lens_registry.get(lens_key)
+                    if lens is None:
+                        continue
+                    lens_domains = set(lens.evidence_domains)
+                    source_ids = [
+                        item["evidence_id"] for item in analysis.evidence_index
+                        if item.get("domain") in lens_domains
+                    ]
+                    if not source_ids:
+                        continue
+                    lens_support = [
+                        name for name in names
+                        if lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
+                    ]
+                    lens_challenges = [
+                        name for name in names
+                        if name in _CONTRA_PATTERNS
+                        and lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
+                    ]
+                    relevance = _clamp01(assessment.get("relevance", 0.0))
+                    lens_confidence = min(
+                        0.30,
+                        0.10
+                        + 0.04 * min(3, len(assessment.get("reasons", []) or []))
+                        + 0.02 * min(3, len(source_ids)),
+                    )
+                    hyps.append(BrainHypothesis(
+                        statement=(
+                            f"{lens.name} is relevant to the current {symbol} evidence. "
+                            f"Current anchors: {'; '.join(assessment.get('reasons', []) or [])}. "
+                            "This is a lens-specific explanation to test, not a validated edge."
+                        )[:500],
+                        supporting_patterns=lens_support,
+                        contradicting_patterns=lens_challenges,
+                        confidence=lens_confidence,
+                        direction_implication=FLAT,
+                        invalidation=(
+                            "The lens's required observations are contradicted, stale, or no longer relevant"
+                        ),
+                        opportunity_implication=(
+                            f"{lens.name} hypothesis; evaluate its required evidence and limitations "
+                            "without assigning direction from the lens itself"
+                        ),
+                        hypothesis_kind=f"strategy_lens:{lens_key}",
+                        supporting_evidence_ids=source_ids,
+                        contradicting_evidence_ids=list(dict.fromkeys(
+                            evidence_id for name in lens_challenges
+                            for evidence_id in analysis.pattern_evidence_ids.get(name, [])
+                        )),
+                        assumptions=[
+                            "Lens relevance does not establish predictive value or profitability."
+                        ],
+                        unresolved_unknowns=list(dict.fromkeys(
+                            list(assessment.get("missing_context", []) or [])
+                            + [lens.limitation]
+                        )),
+                        distinguishing_evidence=list(lens.data_requirements),
+                        horizon=self._evidence_horizon(
+                            analysis, lens_support, lens_challenges,
+                        ),
+                        confidence_components={
+                            "lens_relevance": relevance,
+                            "source_count": len(source_ids),
+                            "score_kind": "lens_relevance_not_forecast_confidence",
+                            "calibrated_probability": False,
+                        },
+                        evidence_lineage_scope="domain_level_candidate_sources",
+                    ))
+
+                except Exception as exc:  # noqa: BLE001 — isolate one optional lens from native concepts
+                    logger.exception(
+                        "Strategy lens hypothesis failed for %s (%s): %s",
+                        symbol, assessment.get("key") if isinstance(assessment, dict) else "unknown", exc,
+                    )
                     continue
-                lens_key = str(assessment.get("key", "") or "")
-                lens = lens_registry.get(lens_key)
-                if lens is None:
-                    continue
-                lens_domains = set(lens.evidence_domains)
-                source_ids = [
-                    item["evidence_id"] for item in analysis.evidence_index
-                    if item.get("domain") in lens_domains
-                ]
-                if not source_ids:
-                    continue
-                lens_support = [
-                    name for name in names
-                    if lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
-                ]
-                lens_challenges = [
-                    name for name in names
-                    if name in _CONTRA_PATTERNS
-                    and lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
-                ]
-                relevance = _clamp01(assessment.get("relevance", 0.0))
-                lens_confidence = min(
-                    0.30,
-                    0.10
-                    + 0.04 * min(3, len(assessment.get("reasons", []) or []))
-                    + 0.02 * min(3, len(source_ids)),
-                )
-                hyps.append(BrainHypothesis(
-                    statement=(
-                        f"{lens.name} is relevant to the current {symbol} evidence. "
-                        f"Current anchors: {'; '.join(assessment.get('reasons', []) or [])}. "
-                        "This is a lens-specific explanation to test, not a validated edge."
-                    )[:500],
-                    supporting_patterns=lens_support,
-                    contradicting_patterns=lens_challenges,
-                    confidence=lens_confidence,
-                    direction_implication=FLAT,
-                    invalidation=(
-                        "The lens's required observations are contradicted, stale, or no longer relevant"
-                    ),
-                    opportunity_implication=(
-                        f"{lens.name} hypothesis; evaluate its required evidence and limitations "
-                        "without assigning direction from the lens itself"
-                    ),
-                    hypothesis_kind=f"strategy_lens:{lens_key}",
-                    supporting_evidence_ids=source_ids,
-                    contradicting_evidence_ids=list(dict.fromkeys(
-                        evidence_id for name in lens_challenges
-                        for evidence_id in analysis.pattern_evidence_ids.get(name, [])
-                    )),
-                    assumptions=[
-                        "Lens relevance does not establish predictive value or profitability."
-                    ],
-                    unresolved_unknowns=list(dict.fromkeys(
-                        list(assessment.get("missing_context", []) or [])
-                        + [lens.limitation]
-                    )),
-                    distinguishing_evidence=list(lens.data_requirements),
-                    horizon=self._evidence_horizon(
-                        analysis, lens_support, lens_challenges,
-                    ),
-                    confidence_components={
-                        "lens_relevance": relevance,
-                        "source_count": len(source_ids),
-                        "score_kind": "lens_relevance_not_forecast_confidence",
-                        "calibrated_probability": False,
-                    },
-                    evidence_lineage_scope="domain_level_candidate_sources",
-                ))
 
             # Select and synthesize concept readings before they become
             # hypotheses. Shared OHLC provenance is not independent confluence:
