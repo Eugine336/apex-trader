@@ -777,6 +777,12 @@ class CognitiveBrain:
         # Build the first-class opportunity set before qualifying payoff
         # geometry, so the selected object receives the market-derived levels.
         opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        # Retain every fresh harvesting reply, including non-preferred candidates,
+        # for the next management cycle. A market can produce a new opposing
+        # opportunity while the held campaign is unchanged.
+        if is_harvesting:
+            with self._lock:
+                self._last_opportunities[str(symbol or "")] = list(opportunity_set)
         # Resolve geometry independently for every directional candidate. A
         # preferred opportunity cannot borrow another candidate's stop/target,
         # and conditional alternatives retain their own market evidence lineage.
@@ -1094,9 +1100,8 @@ class CognitiveBrain:
         # every gate below behaves exactly as before).
         # Item 8 — remember the set per symbol so MANAGEMENT can later compare a
         # live campaign against the currently visible opportunities.
-        if is_harvesting:
-            with self._lock:
-                self._last_opportunities[str(symbol or "")] = opportunity_set
+        # The latest opportunity set was captured immediately after parsing the
+        # fresh harvesting reply, before any later admission/early-return branch.
         # ACTIVATION GATE (Part XXV / item 7) + V-002: a campaign may only OPEN
         # when a first-class, STRUCTURED opportunity has ACTIVATED. ``driving_opp``
         # must exist and be actionable (state ACTIVE / CONFIRMED / STRENGTHENING).
