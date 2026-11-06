@@ -291,9 +291,13 @@ def test_hindcast_seeds_only_resolved_brain_pairs_with_dataset_digest(tmp_path):
     )
     tracker = CalibrationTracker(path=tmp_path / "calibration.json")
     assert seed_calibration_tracker(tracker, report) == 1
+    # Replaying the identical dataset/horizon/stride cannot overweight the tracker.
+    assert seed_calibration_tracker(tracker, report) == 0
     status = tracker.get_status()
     assert status["samples"] == 1
-    assert status["sources"] == {"hindcast:aaaaaaaaaaaaaaaa": 1}
+    assert status["sources"] == {
+        "hindcast:v1:aaaaaaaaaaaaaaaa:M1:120:1": 1,
+    }
 
 
 def test_brain_calibration_requires_geometry_evidence_lineage():
