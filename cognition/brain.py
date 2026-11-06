@@ -2979,6 +2979,8 @@ class CognitiveBrain:
             informative_facts = [
                 item for item in market_evidence
                 if str(getattr(item, "evidence_id", "") or "") in lead_support_ids
+                and str(getattr(item, "symbol", "") or "").strip().upper()
+                    == str(symbol or "").strip().upper()
                 and isinstance(getattr(item, "measurements", None), dict)
                 and bool(getattr(item, "measurements", {}))
             ]
