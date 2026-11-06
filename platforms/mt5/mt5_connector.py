@@ -614,7 +614,7 @@ class MT5Connector(BaseConnector):
         mapped = self.symbol_map(symbol)
         if mapped is None:
             raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
-        tick_flags = flags if flags is not None else getattr(mt5, "COPY_TICKS_ALL", -1)
+        tick_flags = flags if flags is not None else getattr(mt5, "COPY_TICKS_ALL", 0)
         ticks = mt5.copy_ticks_range(mapped, start, end, tick_flags)
         if ticks is None:
             raise RuntimeError(f"No tick history for {mapped}: {mt5.last_error()}")
@@ -632,7 +632,7 @@ class MT5Connector(BaseConnector):
         if "time_msc" in frame.columns:
             frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
         raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
-        buy_flag = getattr(mt5, "TICK_FLAG_BUY", ોળ0)
+        buy_flag = getattr(mt5, "TICK_FLAG_BUY", 0)
         sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
         frame["aggressor_side"] = [
             "buy" if int(value or 0) & buy_flag else
