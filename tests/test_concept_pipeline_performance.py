@@ -325,3 +325,17 @@ def test_linear_untouched_pool_flags_match_original_per_swing_semantics():
         flags[(index, kind, price)] == _untouched(bars, index, kind, price)
         for index, kind, price in swings
     )
+
+def test_reader_cache_isolated_between_distinct_module_instances_with_same_key():
+    clear_concept_reading_cache()
+    first = _PureOHLCReader()
+    second = _PureOHLCReader()
+    first.calls = 0
+    second.calls = 0
+    bars = _bars()
+
+    read_concept_readings("EURUSD", bars, modules=(first,))
+    read_concept_readings("EURUSD", bars, modules=(second,))
+
+    assert first.calls == 1
+    assert second.calls == 1
