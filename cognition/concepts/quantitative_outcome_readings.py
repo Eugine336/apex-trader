@@ -422,9 +422,12 @@ def _monte_carlo_reading(
             drawdown_r = 0.0
             drawdown_fraction = 0.0
             ruined = False
+            historical_peak = 0.0
             for _ in range(planned_trade_count):
                 outcome_r = rng.choice(returns)
                 historical_r += outcome_r
+                historical_peak = max(historical_peak, historical_r)
+                drawdown_r = max(drawdown_r, historical_peak - historical_r)
                 if not ruined:
                     portfolio_equity *= 1.0 + risk_fraction * outcome_r
                     if portfolio_equity <= 0.0:
