@@ -1,4 +1,4 @@
-"""Management reads the originating concept: first milestone delivered -> protect the profit."""
+"""Management maps a delivered concept milestone to its geometry-derived partial plan."""
 
 from types import SimpleNamespace
 
@@ -45,13 +45,18 @@ SHORT_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820]
 
 def test_long_milestone_passed_in_profit_protects_the_profit():
     v = _assess("LONG", 1.0824, 0.4, LONG_GEO)
-    assert v.action == "protect_profit" and v.thesis_state == "milestone_delivered"
+    assert v.action == "scale_out" and v.thesis_state == "milestone_delivered"
+    assert v.management_plan["kind"] == "milestone_partial"
+    assert v.management_plan["milestone_id"] == "crt:H1:1:1.082"
+    assert v.management_plan["partial_fraction"] == 0.5
     assert "first milestone 1.082" in v.reason and "crt" in v.reason
 
 
 def test_short_mirror():
     v = _assess("SHORT", 1.0816, 0.4, SHORT_GEO)
-    assert v.action == "protect_profit"
+    assert v.action == "scale_out"
+    assert v.management_plan["kind"] == "milestone_partial"
+    assert v.management_plan["partial_fraction"] == 0.5
 
 
 def test_before_the_milestone_the_position_is_simply_held():
