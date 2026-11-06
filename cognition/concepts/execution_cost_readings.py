@@ -66,4 +66,6 @@ class ExecutionCostReadings:
             relevance_horizon_seconds=10.0,
             source_timestamp_epoch=source_epoch if quote_verified else None,
             source_timestamp_verified=quote_verified,
+            evidence_confidence=0.8 if quote_verified else 0.0,
+            evidence_uncertainty=0.2 if quote_verified else 1.0,
         )]

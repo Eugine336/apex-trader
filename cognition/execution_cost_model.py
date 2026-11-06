@@ -167,7 +167,7 @@ def build_execution_cost_reading(
     latency_samples = _finite_nonnegative(observations.get("observed_submit_response_latency_sample_count"))
     fill_min_samples = _finite_nonnegative(observations.get("market_entry_fill_probability_min_samples"), positive=True)
     fill_probability_verified = bool(
-        observations.get("market_entry_fill_probability_verified") is True
+        observations.get("market_entry_fill_rate_sample_floor_met") is True
         and entry_attempts is not None and fill_min_samples is not None
         and entry_attempts >= fill_min_samples
     )
@@ -224,7 +224,7 @@ def build_execution_cost_reading(
         ),
         "market_entry_attempt_count": entry_attempts,
         "market_entry_fill_success_ratio": fill_ratio,
-        "market_entry_fill_probability_verified": fill_probability_verified,
+        "market_entry_fill_rate_sample_floor_met": fill_probability_verified,
         "market_entry_fill_probability_sample_count": observations.get("market_entry_fill_probability_sample_count"),
         "observed_entry_abs_slippage_avg_pips": entry_slippage_avg,
         "observed_entry_slippage_sample_count": entry_slippage_samples,

@@ -227,7 +227,7 @@ class TestBrokerAttemptTelemetry:
         assert observations["market_entry_fill_success_ratio"] is None
         assert observations["observed_entry_abs_slippage_avg_pips"] is None
         assert observations["observed_submit_response_latency_avg_ms"] is None
-        assert observations["market_entry_fill_probability_verified"] is False
+        assert observations["market_entry_fill_rate_sample_floor_met"] is False
 
     def test_failed_attempts_count_in_fill_probability_denominator(self):
         mon = ExecutionMonitor(window=30)
@@ -247,7 +247,7 @@ class TestBrokerAttemptTelemetry:
         assert stats["market_entry_attempt_count"] == 20
         assert stats["market_entry_success_count"] == 19
         assert stats["market_entry_fill_success_ratio"] == 0.95
-        assert stats["market_entry_fill_probability_verified"] is True
+        assert stats["market_entry_fill_rate_sample_floor_met"] is True
         assert stats["observed_entry_abs_slippage_avg_pips"] == 1.0
         assert stats["observed_entry_slippage_sample_count"] == 19
         assert stats["observed_submit_response_latency_avg_ms"] == 134.0

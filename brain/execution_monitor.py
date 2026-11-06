@@ -176,7 +176,7 @@ class ExecutionMonitor:
             "market_entry_attempt_count": attempt_count,
             "market_entry_success_count": success_count,
             "market_entry_fill_success_ratio": success_count / attempt_count if attempt_count else None,
-            "market_entry_fill_probability_verified": attempt_count >= sample_floor,
+            "market_entry_fill_rate_sample_floor_met": attempt_count >= sample_floor,
             "market_entry_fill_probability_min_samples": sample_floor,
             "market_entry_fill_probability_sample_count": attempt_count,
             "observed_entry_abs_slippage_avg_pips": float(np.mean(slippages)) if slippages else None,

@@ -116,6 +116,9 @@ class ConceptReading:
     # Non-candle sources keep their provider timestamp separate from completed bars.
     source_timestamp_epoch: Optional[float] = None
     source_timestamp_verified: bool = False
+    # Optional reliability fields for non-directional, source-backed readings.
+    evidence_confidence: Optional[float] = None
+    evidence_uncertainty: Optional[float] = None
 
 
 class ConceptModule(Protocol):
@@ -155,14 +158,25 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
     sampled_at = datetime.now(timezone.utc).timestamp()
     iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
     strengths = [i.strength for i in reading.implications if i.strength is not None]
-    confidence = max(strengths) if strengths else 0.0
+    inferred_confidence = max(strengths) if strengths else 0.0
+    explicit_confidence = finite(reading.evidence_confidence)
+    confidence = (
+        min(1.0, max(0.0, explicit_confidence))
+        if explicit_confidence is not None else inferred_confidence
+    )
+    explicit_uncertainty = finite(reading.evidence_uncertainty)
+    uncertainty = (
+        min(1.0, max(0.0, explicit_uncertainty))
+        if explicit_uncertainty is not None else
+        (min(1.0, max(0.0, 1.0 - confidence)) if strengths or explicit_confidence is not None else 1.0)
+    )
     return Evidence(
         source_module=f"concept.{reading.concept}.{reading.timeframe.lower()}",
         domain=reading.domain,
         symbol=str(symbol or ""),
         observation=reading.observation[:1400],
-        confidence=min(1.0, max(0.0, confidence)),
-        uncertainty=min(1.0, max(0.0, 1.0 - confidence)) if strengths else 1.0,
+        confidence=confidence,
+        uncertainty=uncertainty,
         polarity=0.0,   # a reading is not a vote; the Brain decides what it means
         measurements={
             "source_kind": "concept_reading",
