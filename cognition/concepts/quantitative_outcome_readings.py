@@ -29,7 +29,7 @@ DATA_GATED_METHODS = {
     ),
     "monte_carlo": (
         "deduplicated broker-truth closed-trade R outcomes with verified close timestamps; "
-        "current-plan stress additionally requires the current portfolio plan"
+        "current-plan stress additionally requires a trusted whole-book plan with an as-of time bounded by the analysis clock"
     ),
 }
 
@@ -385,12 +385,12 @@ def _monte_carlo_reading(
     equity = finite(plan.get("equity")) if isinstance(plan, dict) else None
     risk_fraction = finite(plan.get("risk_fraction")) if isinstance(plan, dict) else None
     raw_trade_count = finite(plan.get("planned_trade_count")) if isinstance(plan, dict) else None
-    plan_epoch = _epoch(plan.get("source_timestamp_epoch")) if isinstance(plan, dict) else None
+    plan_epoch = _epoch(plan.get("plan_as_of_epoch")) if isinstance(plan, dict) else None
     analysis_epoch = _epoch(context.get("analysis_epoch"))
     plan_valid = bool(
         isinstance(plan, dict)
         and plan.get("portfolio_scope") == "whole_book"
-        and plan.get("source_timestamp_verified") is True
+        and plan.get("plan_attested") is True
         and portfolio_id
         and cutoff is not None and plan_epoch is not None and plan_epoch >= cutoff
         and analysis_epoch is not None and plan_epoch <= analysis_epoch

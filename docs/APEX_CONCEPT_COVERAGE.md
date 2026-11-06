@@ -52,7 +52,7 @@ FULL 56 · DATA-GATED 7 · MEASURED 10 · UNMEASURED 6
 | price_location | Pivot points | `pivot_points` | FULL |
 | quantitative | Anomaly and novel pattern discovery | `anomaly_detection` | FULL |
 | quantitative | Bayesian updating | `bayesian` | DATA-GATED — source-verified point-in-time concept outcomes labelled by concept and measured market state, with decision and outcome timestamps |
-| quantitative | Bootstrap and Monte Carlo stress | `monte_carlo` | DATA-GATED — deduplicated broker-truth closed-trade R outcomes with verified close timestamps; current-plan stress additionally requires the current portfolio plan |
+| quantitative | Bootstrap and Monte Carlo stress | `monte_carlo` | DATA-GATED — deduplicated broker-truth closed-trade R outcomes with verified close timestamps; current-plan stress additionally requires a trusted whole-book plan with an as-of time bounded by the analysis clock |
 | quantitative | Clustering and market-state discovery | `clustering` | FULL |
 | quantitative | Probability calibration and validation | `calibration` | DATA-GATED — producer-attributed concept probability forecasts with source-verified outcomes, selection-complete holdout records and forecast timestamps |
 | quantitative | Regime switching and change points | `regime_switching` | FULL |

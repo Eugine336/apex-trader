@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from cognition.concepts.base import ConceptReading
+from cognition.contracts import EvidenceDomain
 from cognition.concepts.quantitative_outcome_readings import (
     DATA_GATED_METHODS,
     QuantitativeOutcomeReadings,
@@ -191,7 +192,7 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
             "portfolio_id": "account-main", "portfolio_scope": "whole_book",
             "equity": 10000.0, "risk_fraction": 0.01,
             "planned_trade_count": 10,
-            "source_timestamp_epoch": cutoff + 30.0, "source_timestamp_verified": True,
+            "plan_as_of_epoch": cutoff + 30.0, "plan_attested": True,
         },
         "analysis_epoch": cutoff + 60.0,
         "monte_carlo_iterations": 500,
@@ -226,8 +227,8 @@ def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history(
                 "portfolio_id": "account-main", "portfolio_scope": "whole_book",
                 "equity": 10000.0, "risk_fraction": 0.01,
                 "planned_trade_count": 10,
-                "source_timestamp_epoch": cutoff - 30.0,
-                "source_timestamp_verified": True,
+                "plan_as_of_epoch": cutoff - 30.0,
+                "plan_attested": True,
             },
             "analysis_epoch": cutoff + 60.0,
         })
@@ -259,7 +260,7 @@ def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
                 "portfolio_id": "account-main", "portfolio_scope": "whole_book",
                 "equity": 10000.0, "risk_fraction": 0.01,
                 "planned_trade_count": 10,
-                "source_timestamp_epoch": cutoff, "source_timestamp_verified": True,
+                "plan_as_of_epoch": cutoff, "plan_attested": True,
             },
             "analysis_epoch": cutoff + 60.0,
         })
