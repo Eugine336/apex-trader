@@ -260,8 +260,8 @@ class StrategyLensReadings:
                 })
                 future_methods = sorted({
                     item.concept for item in candidates
-                    if any(epoch > cutoff_epoch for epoch in _verified_reading_epochs(item))
-                    and cutoff_epoch is not None
+                    if cutoff_epoch is not None
+                    and any(epoch > cutoff_epoch for epoch in _verified_reading_epochs(item))
                     and item.concept not in eligible_concepts
                 })
                 selected: dict[str, ConceptReading] = {}
