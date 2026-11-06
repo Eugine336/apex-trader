@@ -245,3 +245,16 @@ def test_wyckoff_methods_never_emit_decision_or_execution_authority():
     for reading in _readings(_bars()).values():
         assert reading.facts["directional_decision_emitted"] is False
         assert reading.facts["entry_authorization_emitted"] is False
+
+
+
+def test_wyckoff_event_candidates_are_prefix_invariant_when_future_bars_are_removed():
+    full_bars = _bars(100)
+    shorter_bars = full_bars[:82]
+    full = _readings(full_bars)["wyckoff"].facts["event_candidate_history"]
+    shorter = _readings(shorter_bars)["wyckoff"].facts["event_candidate_history"]
+    assert full[:len(shorter)] == shorter
+    assert all(
+        full[index]["index"] < full[index + 1]["index"]
+        for index in range(len(full) - 1)
+    )

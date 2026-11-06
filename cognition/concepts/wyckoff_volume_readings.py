@@ -586,6 +586,7 @@ def _wyckoff_facts(
     return {
         "preceding_range": {"high": range_high, "low": range_low, "width": range_width, "bars": len(bars[-_WYCKOFF_RANGE - 1:-1])},
         "event_sequence": sorted(all_events, key=lambda item: item["index"]),
+        "event_candidate_history": list(event_rows),
         "accumulation_or_markup": accumulation,
         "distribution_or_markdown": distribution,
         "competing_interpretations": {
