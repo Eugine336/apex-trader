@@ -41,3 +41,17 @@ def test_api_rejects_multiple_symbols_in_single_mode():
 def test_api_rejects_symbol_restrictions_in_all_mode():
     with pytest.raises(ValidationError):
         TradingConfig(universe_mode="all", enabled_symbols_override=["EURUSD"])
+
+
+def test_all_mode_uses_live_broker_supported_universe_after_discovery():
+    config = AppConfig(universe_mode="all")
+    config.broker_discovery_complete = True
+    config.broker_enabled_symbols = ["EURUSD", "XAUUSD"]
+    assert config.enabled_pairs == ["EURUSD", "XAUUSD"]
+
+
+def test_selected_mode_fails_closed_when_any_requested_symbol_is_unavailable():
+    config = AppConfig(universe_mode="selected", enabled_symbols_override=["EURUSD", "GBPUSD"])
+    config.broker_discovery_complete = True
+    config.broker_enabled_symbols = ["EURUSD"]
+    assert config.enabled_pairs == []
