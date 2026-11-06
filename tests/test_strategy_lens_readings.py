@@ -100,8 +100,10 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         assert available.isdisjoint(missing)
         assert available | missing == required
         assert item.measurements["missing_methods_semantics"].startswith(
-            "No ConceptReading was emitted"
+            "No eligible ConceptReading was available"
         )
+        assert "unverified reading" in item.measurements["missing_methods_semantics"]
+        assert "beyond the cutoff" in item.measurements["missing_methods_semantics"]
     trend = next(
         item for item in evidence
         if item.measurements.get("lens_key") == "trend_following"
