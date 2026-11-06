@@ -169,7 +169,8 @@ class LiquidityPools:
         last = bars[-1]
         swings = fractal_swings(
             bars[:-1], cache_key=f"market-swings:{symbol}:{tf}",
-        )  # pools exist before the latest bar acts on them\n        eq_h = _equality_percentiles(swings, "H")
+        )  # pools exist before the latest bar acts on them
+        eq_h = _equality_percentiles(swings, "H")
         eq_l = _equality_percentiles(swings, "L")
         pools: list[dict] = []
         for idx, kind, price in swings:
