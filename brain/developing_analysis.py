@@ -135,7 +135,7 @@ class DevelopingAnalysisLoop:
         try:
             self._pool.shutdown(wait=False)
         except Exception:  # pragma: no cover - defensive
-            pass
+            logger.debug("[developing] executor shutdown raised during stop", exc_info=True)
         logger.info(
             "[developing] stopped (cycles={}, analyses_run={}, failed={})",
             self._cycles, self._analyses_run, self._analyses_failed,
