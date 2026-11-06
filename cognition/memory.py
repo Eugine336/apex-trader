@@ -310,9 +310,12 @@ class CampaignMemoryStore:
                     if str(item).strip()
                 ]
                 if mid in completed:
-                    return True
+                    return False
                 pending = progress.get("pending_milestone")
-                if isinstance(pending, dict) and pending.get("milestone_id") != mid:
+                # A pending action is a write-ahead idempotency record. Never
+                # refresh or replace it: until broker size reconciliation or an
+                # explicit rejection, a second submission could close twice.
+                if isinstance(pending, dict):
                     return False
                 progress["pending_milestone"] = {
                     "milestone_id": mid,
@@ -331,6 +334,49 @@ class CampaignMemoryStore:
             logger.warning("[memory] record milestone pending failed for %s: %s", cid, exc)
             return False
 
+    def clear_milestone_pending(
+        self,
+        campaign_id: str,
+        milestone_id: str,
+    ) -> bool:
+        """Clear a write-ahead milestone only after an explicit sink rejection."""
+        cid = str(campaign_id or "").strip()
+        mid = str(milestone_id or "").strip()
+        if not cid or not mid or self._conn is None or self._degraded:
+            return False
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT id, spec_json FROM campaign_memory "
+                    "WHERE campaign_id=? AND closed=0 ORDER BY id DESC LIMIT 1",
+                    (cid,),
+                ).fetchone()
+                if row is None:
+                    return False
+                row_id, raw_spec = row
+                spec = json.loads(raw_spec or "{}")
+                if not isinstance(spec, dict):
+                    return False
+                progress = spec.get("management_progress")
+                if not isinstance(progress, dict):
+                    return False
+                pending = progress.get("pending_milestone")
+                if not isinstance(pending, dict) or str(
+                    pending.get("milestone_id", "") or ""
+                ) != mid:
+                    return False
+                progress["pending_milestone"] = None
+                spec["management_progress"] = progress
+                self._conn.execute(
+                    "UPDATE campaign_memory SET spec_json=? WHERE id=? AND closed=0",
+                    (json.dumps(spec), row_id),
+                )
+                self._conn.commit()
+                return True
+        except Exception as exc:  # noqa: BLE001 — reconciliation state fails closed
+            logger.warning("[memory] clear pending milestone failed for %s: %s", cid, exc)
+            return False
+
     def get_management_progress(
         self,
         campaign_id: str,
@@ -339,7 +385,11 @@ class CampaignMemoryStore:
         now_ms: Optional[int] = None,
         pending_timeout_ms: int = 60_000,
     ) -> dict:
-        """Read milestone progress and confirm pending reductions from broker size."""
+        """Read milestone progress; only broker-size change confirms completion.
+
+        pending_timeout_ms remains accepted for call compatibility, but a
+        timeout never clears an ambiguous broker action.
+        """
         cid = str(campaign_id or "").strip()
         if not cid or self._conn is None or self._degraded:
             return {}
@@ -383,9 +433,9 @@ class CampaignMemoryStore:
                         progress["completed_milestones"] = completed
                         progress["pending_milestone"] = None
                         changed = True
-                    elif submitted > 0 and now - submitted >= max(1_000, int(pending_timeout_ms)):
-                        progress["pending_milestone"] = None
-                        changed = True
+                    # A timeout is not proof that the broker rejected the
+                    # reduction. Keep the pending marker until a size change
+                    # confirms it or the execution sink explicitly rejects it.
                 if changed:
                     spec["management_progress"] = progress
                     self._conn.execute(
