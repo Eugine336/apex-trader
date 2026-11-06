@@ -730,8 +730,8 @@ class NativePositionManager:
             if (
                 measurements.get("source_timestamp_known") is not True
                 or measurements.get("data_basis") != "completed_ohlc"
-                or measurements.get("provisional") is not False
-                or measurements.get("completed") is not True
+                or measurements.get("provisional") is True
+                or measurements.get("completed") is False
             ):
                 continue
             epoch = _finite_number(measurements.get("source_bar_epoch"))
