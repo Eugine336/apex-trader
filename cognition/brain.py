@@ -2132,6 +2132,9 @@ class CognitiveBrain:
                             campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
                             campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
                             campaign["entry_expected_value"] = spec.get("expected_value")
+                            campaign["expected_holding_horizon_seconds"] = spec.get(
+                                "expected_holding_horizon_seconds"
+                            )
                             campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
                             progress_reader = getattr(campaign_memory, "get_management_progress", None)
                             if callable(progress_reader):
