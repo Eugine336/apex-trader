@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 import time
+from statistics import median
 
 import pandas as pd
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
-from cognition.concepts.strategy_method_readings import StrategyMethodReadings
+from cognition.concepts.strategy_method_readings import (
+    StrategyMethodReadings,
+    _historical_breakout_holds,
+)
 from cognition.market_lenses import analyze_market_frames
 
 
@@ -95,6 +99,9 @@ def test_breakout_reader_distinguishes_first_close_retest_hold_and_failure():
     )
     assert initial_reading.facts["volume_basis"] == "provider_volume"
     assert initial_reading.facts["volume_ratio_to_baseline"] is not None
+    assert initial_reading.facts["true_range_expansion_ratio"] is not None
+    assert initial_reading.facts["absolute_momentum_speed_acceleration"] is not None
+    assert initial_reading.facts["upside_boundary_observation"]["event_hold_bars"] == 1
 
     retest = _bars([100, 104, 99, 106, 101, 108, 103, 110, 105, 112, 107, 111, 114, 113])
     retest[-1]["high"] = 115.0
@@ -106,6 +113,16 @@ def test_breakout_reader_distinguishes_first_close_retest_hold_and_failure():
     returned_inside = _readings(failed)["momentum_breakout"]
     assert returned_inside.facts["upside_boundary_observation"]["status"] == "failed_return_inside"
     assert held.implications == returned_inside.implications == ()
+
+
+def test_breakout_acceptance_horizon_uses_completed_instrument_history():
+    bars = _bars([100, 104, 106, 107, 103, 108, 110, 102, 109, 111, 112, 103, 108])
+    holds = _historical_breakout_holds(
+        bars, [(1, "H", 105.0)], "above", (1, 12),
+    )
+
+    assert holds == [2, 2, 3]
+    assert math.ceil(median(holds)) == 2
 
 
 def test_latest_unconfirmed_extreme_is_not_promoted_to_a_confirmed_swing():
@@ -133,6 +150,11 @@ def test_mean_reversion_reports_distribution_dependence_and_unit_root_diagnostic
     assert "constant_plus_trend_adf0" in facts["unit_root_diagnostics"]
     assert "historical_reversion_episodes" in facts
     assert facts["historical_statistics_are_not_forward_probabilities"] is True
+    assert facts["current_structural_regime"] in {"up", "down", "range_or_transition", "undetermined"}
+    assert "reversion_history_by_structural_regime" in facts["historical_reversion_episodes"]
+    assert facts["candidate_mean_reversion_references"]["rolling_mean"] is not None
+    assert facts["candidate_mean_reversion_references"]["volume_weighted_average_price"] is not None
+    assert "statistical_extreme_invalidation_context" in facts
     assert facts["directional_decision_emitted"] is False
     assert facts["entry_authorization_emitted"] is False
     assert reading.implications == ()
@@ -157,7 +179,7 @@ def test_unverified_source_time_is_not_promoted_by_reader():
     readings = _readings(bars)
     for reading in readings.values():
         assert reading.source_bar_epoch is None
-        assert any("source-verified timestamp" in item for item in reading.unknowns)
+        assert "source-verified timestamp for the latest completed bar" in reading.unknowns
 
 
 def test_native_concept_pipeline_emits_neutral_method_evidence():
@@ -220,3 +242,24 @@ def test_market_lenses_live_ohlc_path_delivers_method_evidence_to_brain():
     }
     assert all(item.polarity == 0.0 for item in selected.values())
     assert all(item.source_timestamp_verified is True for item in selected.values())
+
+
+def test_trend_context_includes_higher_timeframe_structure_and_structural_geometry():
+    m5 = _uptrend_bars()
+    h1 = _bars(
+        [200, 204, 199, 206, 201, 208, 203, 210, 205, 212, 207, 214, 209, 213],
+        start_epoch=1_780_000_000.0,
+    )
+    reading = {
+        item.concept: item
+        for item in StrategyMethodReadings().read("XAUUSD", {"M5": m5, "H1": h1})
+        if item.timeframe == "M5"
+    }["trend_following"]
+
+    assert reading.facts["higher_timeframe_structure"]["H1"] == "up"
+    assert reading.facts["objective_basis"] in {
+        "nearest_prior_confirmed_swing_beyond_price_only",
+        "no_prior_confirmed_swing_objective",
+    }
+    assert isinstance(reading.facts["trail_anchor_levels"], list)
+    assert reading.implications == ()
