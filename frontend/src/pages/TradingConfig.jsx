@@ -216,21 +216,25 @@ export default function TradingConfig() {
               {brokerInstruments
                 .filter((item) => item.new_position_eligible)
                 .map((item) => {
+                  const ownerSymbol = String(item.apex_symbol || item.symbol).toUpperCase();
                   const selected = form.enabled_symbols_override
                     .split(",")
                     .map((value) => value.trim().toUpperCase())
-                    .includes(String(item.symbol).toUpperCase());
+                    .includes(ownerSymbol);
                   return (
                     <label key={item.symbol} className="flex items-start gap-2 text-sm text-gray-300">
                       <input
                         type="checkbox"
                         checked={selected}
                         disabled={form.universe_mode === "all"}
-                        onChange={(event) => toggleSymbol(item.symbol, event.target.checked)}
+                        onChange={(event) => toggleSymbol(ownerSymbol, event.target.checked)}
                         className="mt-0.5"
                       />
                       <span>
-                        <span className="font-medium">{item.symbol}</span>
+                        <span className="font-medium">{ownerSymbol}</span>
+                        {item.symbol !== ownerSymbol && (
+                          <span className="ml-1 text-xs text-gray-500">broker: {item.symbol}</span>
+                        )}
                         <span className="block text-xs text-gray-500">
                           {item.description || item.path || "MT5 instrument"}
                         </span>
