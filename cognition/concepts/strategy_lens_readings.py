@@ -388,7 +388,7 @@ class StrategyLensReadings:
                     "complete_method_context" if lens_applicable
                     else "data_gated" if data_gate
                     else "unsynchronized_method_context"
-                    if all_methods_applicable and source_timestamp_epoch is None
+                    if all_methods_applicable and source_bar_epoch is None
                     else "partial_method_context" if selected
                     else "not_evaluable"
                 )
