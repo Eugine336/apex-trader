@@ -778,6 +778,7 @@ class NativePositionManager:
             ),
         }
 
+    @staticmethod
     def _hold(
         reason: str,
         campaign_id: str,
