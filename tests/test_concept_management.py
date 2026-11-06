@@ -43,16 +43,16 @@ SHORT_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820]
              "target_price": 1.0800, "entry_price": 1.0822}
 
 
-def test_long_milestone_passed_in_profit_protects_the_profit():
+def test_long_milestone_passed_in_profit_scales_out_geometry_fraction():
     v = _assess("LONG", 1.0824, 0.4, LONG_GEO)
     assert v.action == "scale_out" and v.thesis_state == "milestone_delivered"
     assert v.management_plan["kind"] == "milestone_partial"
     assert v.management_plan["milestone_id"] == "crt:H1:1:1.082"
     assert v.management_plan["partial_fraction"] == 0.5
-    assert "first milestone 1.082" in v.reason and "crt" in v.reason
+    assert "milestone 1/1 at 1.082" in v.reason and "crt" in v.reason
 
 
-def test_short_mirror():
+def test_short_mirror_scales_out_geometry_fraction():
     v = _assess("SHORT", 1.0816, 0.4, SHORT_GEO)
     assert v.action == "scale_out"
     assert v.management_plan["kind"] == "milestone_partial"
