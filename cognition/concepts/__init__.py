@@ -21,6 +21,12 @@ from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
 from cognition.concepts.power_of_three import PowerOfThreeConcepts
 from cognition.concepts.regime_switching import RegimeSwitchingConcepts
+from cognition.concepts.session_calendar import SessionCalendar
+from cognition.concepts.opening_range import OpeningRange
+from cognition.concepts.vwap import VWAPConcept
+from cognition.concepts.volume_profile import VolumeProfileConcept
+from cognition.concepts.seasonality import SeasonalityConcept
+from cognition.concepts.range_rotation import RangeRotation
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -36,6 +42,12 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     IndicatorContextConcepts(),
     PivotPointConcepts(),
     PowerOfThreeConcepts(),
+    SessionCalendar(),
+    OpeningRange(),
+    VWAPConcept(),
+    VolumeProfileConcept(),
+    SeasonalityConcept(),
+    RangeRotation(),
     RegimeSwitchingConcepts(),
 )
 
