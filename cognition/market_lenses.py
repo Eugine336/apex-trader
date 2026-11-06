@@ -94,14 +94,16 @@ def _rows(
     try:
         if getattr(frame, "empty", False):
             return ([], []) if return_tail_limit > 0 else []
+        supports_tail = callable(getattr(frame, "tail", None))
         total_rows = len(frame) if return_tail_limit > 0 else None
         window_start = (
             max(0, total_rows - int(return_tail_limit))
-            if total_rows is not None and return_tail_limit > 0 else None
+            if supports_tail and total_rows is not None and return_tail_limit > 0
+            else 0 if return_tail_limit > 0 else None
         )
         tail = (
             frame if return_tail_limit > 0
-            else frame.tail(limit) if callable(getattr(frame, "tail", None))
+            else frame.tail(limit) if supports_tail
             else frame
         )
         columns = {str(name).lower(): name for name in getattr(tail, "columns", [])}
