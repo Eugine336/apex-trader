@@ -410,6 +410,32 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     )
 
 
+
+def test_measured_regime_fit_rules_cover_each_supported_style_without_directional_authority():
+    from cognition.strategy_knowledge import _lens_regime_fit
+
+    cases = {
+        "trend_following": ({"trend_context": "uptrend"}, "supports"),
+        "trend_strength": ({"trend_context": "downtrend"}, "supports"),
+        "moving_average": ({"trend_context": "range"}, "challenges"),
+        "mean_reversion": ({"trend_context": "range"}, "supports"),
+        "range_auction": ({"trend_context": "uptrend"}, "challenges"),
+        "momentum": ({"momentum": "accelerating"}, "supports"),
+        "breakout": ({"momentum": "accelerating"}, "supports"),
+        "failed_breakout": ({"momentum": "decelerating"}, "supports"),
+        "oscillator_divergence": ({"momentum": "decelerating"}, "supports"),
+        "order_flow_auction": ({"order_flow": "buying"}, "supports"),
+        "microstructure": ({"order_flow": "selling"}, "supports"),
+    }
+    for lens_key, (regime, expected) in cases.items():
+        fit, explanation = _lens_regime_fit(lens_key, regime)
+        assert fit == expected, (lens_key, fit, expected)
+        assert explanation
+    assert _lens_regime_fit("trend_following", {"trend_context": "conflicted"})[0] == "conflicted"
+    assert _lens_regime_fit("trend_following", {"trend_context": "mixed"})[0] == "unknown"
+    assert _lens_regime_fit("carry_funding", {"momentum": "accelerating"})[0] == "unknown"
+
+
 def test_measured_regime_challenges_style_without_vetoing_native_lens():
     reading = ConceptReading(
         concept="trend_following",

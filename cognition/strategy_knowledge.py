@@ -305,12 +305,25 @@ def _contains_anchor(surface: str, anchor: str) -> bool:
 # These relationships describe when a style's assumptions are supported or
 # challenged by the Brain's measured regime fields. They are context, never gates.
 _LENS_REGIME_FIT_RULES = {
+    # Trend-dependent styles: repeated, unconflicted per-timeframe structure
+    # is required by _classify_regime before trend_context becomes directional.
     "trend_following": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
     "trend_strength": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
     "moving_average": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
     "mean_reversion": ("trend_context", {"range"}, {"uptrend", "downtrend"}),
     "range_auction": ("trend_context", {"range"}, {"uptrend", "downtrend"}),
+
+    # Momentum-dependent styles use the Brain's independently aggregated
+    # momentum state. These are compatibility observations, not entry signals.
     "momentum": ("momentum", {"accelerating"}, {"decelerating"}),
+    "breakout": ("momentum", {"accelerating"}, {"decelerating"}),
+    "failed_breakout": ("momentum", {"decelerating"}, {"accelerating"}),
+    "oscillator_divergence": ("momentum", {"decelerating"}, {"accelerating"}),
+
+    # These styles explicitly consume order-flow context. Buying/selling means
+    # directional activity is present; it does not authorize that direction.
+    "order_flow_auction": ("order_flow", {"buying", "selling"}, {"balanced"}),
+    "microstructure": ("order_flow", {"buying", "selling"}, {"balanced"}),
 }
 
 
