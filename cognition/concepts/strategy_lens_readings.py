@@ -375,14 +375,14 @@ class StrategyLensReadings:
                     and all(value is not None for value in bar_epochs)
                     else None
                 )
-                if selected and source_timestamp_epoch is None:
+                if selected and source_bar_epoch is None:
                     unknowns.append(
                         "underlying method readings are not all synchronized to one source-verified completed-bar timestamp"
                     )
                 lens_applicable = (
                     all_methods_applicable
                     and data_gate is None
-                    and source_timestamp_epoch is not None
+                    and source_bar_epoch is not None
                 )
                 style_state = (
                     "complete_method_context" if lens_applicable
@@ -473,7 +473,7 @@ class StrategyLensReadings:
                     "data_requirements": list(lens.data_requirements),
                     "data_gated_reason": data_gate,
                     "source_provenance_verified": bool(
-                        selected and source_timestamp_epoch is not None
+                        selected and source_bar_epoch is not None
                     ),
                     "independence_group_verified": bool(
                         selected and independence_group

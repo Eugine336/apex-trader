@@ -481,6 +481,7 @@ def test_provider_timestamp_is_not_substituted_for_completed_bar_replay_epoch():
     # Different provider clocks are not collapsed into one invented timestamp.
     assert lens.source_timestamp_epoch is None
     assert lens.source_timestamp_verified is True
+    assert lens.applicable is True
 
 
 def test_lens_composition_excludes_future_dated_method_readings_from_replay():
