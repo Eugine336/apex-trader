@@ -342,7 +342,7 @@ def _event_db_is_corrupt(db_path: Path) -> bool:
             exc,
         )
         return False
-    except sqlite3.DatabaseError:
+    except sqlite3.DatabaseError:  # safe-fallback: malformed database is classified as corrupt for controlled replacement
         # "database disk image is malformed" / "file is not a database".
         return True
     except Exception as exc:  # noqa: BLE001 — never let hygiene abort startup
