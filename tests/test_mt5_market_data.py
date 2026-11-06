@@ -14,6 +14,8 @@ class FakeMT5:
     TICK_FLAG_SELL = 32
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
+    TIMEFRAME_M1 = 1
+    TIMEFRAME_H1 = 16385
 
     @staticmethod
     def symbol_info(symbol):
