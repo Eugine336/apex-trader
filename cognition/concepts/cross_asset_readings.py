@@ -123,9 +123,7 @@ class CrossAssetReadings:
                 if not peer_rows:
                     continue
                 x, y, epochs = _paired_returns(
-                    [*target.values()] if False else target,
-                    peer_rows,
-                    TIMEFRAME_SECONDS[timeframe],
+                    target, peer_rows, TIMEFRAME_SECONDS[timeframe],
                 )
                 # _paired_returns expects timestamp-indexed maps; preserve exact
                 # common timestamps and never forward-fill or interpolate.
