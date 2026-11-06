@@ -75,6 +75,7 @@ class HindcastReport:
     concept_implications_unlabelable: int = 0
     concept_implications_not_activated: int = 0
     concept_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    concept_coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
     brain_calibration_pairs: list[tuple[float, bool]] = field(default_factory=list)
     brain_candidate_outcomes: list[dict[str, Any]] = field(default_factory=list)
     skipped_brain_candidates: int = 0
@@ -108,6 +109,7 @@ class HindcastReport:
             "concept_implications_unlabelable": self.concept_implications_unlabelable,
             "concept_implications_not_activated": self.concept_implications_not_activated,
             "concept_outcomes": list(self.concept_outcomes),
+            "concept_coverage": dict(self.concept_coverage),
             "concept_summary": dict(self.concept_summary),
             "brain_calibration_pairs": [
                 {"confidence": confidence, "won": won}
@@ -475,6 +477,41 @@ def run_hindcast(
         )
         report.concept_readings += len(readings)
         report.concept_reader_faults += len(reader_faults)
+        for reading in readings:
+            coverage_key = f"{reading.concept}|{reading.timeframe}"
+            coverage = report.concept_coverage.setdefault(coverage_key, {
+                "concept": reading.concept,
+                "timeframe": reading.timeframe,
+                "readings": 0,
+                "applicable": 0,
+                "not_applicable": 0,
+                "source_time_verified": 0,
+                "source_time_unverified": 0,
+                "implications": 0,
+                "activated_implications": 0,
+                "applicability_reasons": [],
+                "unknowns": [],
+            })
+            coverage["readings"] += 1
+            coverage["applicable" if reading.applicable else "not_applicable"] += 1
+            coverage[
+                "source_time_verified"
+                if reading.source_timestamp_verified is True
+                else "source_time_unverified"
+            ] += 1
+            coverage["implications"] += len(reading.implications)
+            coverage["activated_implications"] += sum(
+                1 for item in reading.implications if item.activated
+            )
+            if reading.applicability_reason:
+                coverage["applicability_reasons"] = sorted(set(
+                    coverage["applicability_reasons"] + [reading.applicability_reason[:500]]
+                ))
+            coverage["unknowns"] = sorted(set(
+                coverage["unknowns"] + [
+                    str(item)[:300] for item in (reading.unknowns or ()) if str(item).strip()
+                ]
+            ))
         for fault in reader_faults:
             report.faults.append({
                 "stage": "concept_reader",
