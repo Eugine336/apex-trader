@@ -364,7 +364,7 @@ def assess_strategy_lenses(
         )
         lens_provenance_verified = bool(lens_applicable) and all(
             item.measurements.get("source_timestamp_known") is True
-            and item.measurements.get("data_basis") == "completed_ohlc"
+            and str(item.measurements.get("data_basis") or "").startswith("completed_ohlc")
             for item in lens_applicable
         )
         lens_complete = (
