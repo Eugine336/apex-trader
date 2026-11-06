@@ -340,6 +340,49 @@ def _summarize_concept_outcomes(rows: list[dict[str, Any]]) -> dict[str, dict[st
     return summary
 
 
+def _validate_normalized_dataset(dataset: HindcastDataset) -> None:
+    if (
+        not str(dataset.symbol or "").strip()
+        or not str(dataset.source_reference or "").strip()
+        or not str(dataset.attestation_basis or "").strip()
+        or len(str(dataset.dataset_digest or "")) != 64
+    ):
+        raise HindcastDataError("dataset identity, attestation, and SHA-256 digest are required")
+    if dataset.timestamp_semantics not in {"bar_open", "bar_close"}:
+        raise HindcastDataError("unsupported timestamp semantics")
+    if not isinstance(dataset.bars_by_tf, dict) or not dataset.bars_by_tf:
+        raise HindcastDataError("dataset has no timeframe bars")
+    for timeframe, rows in dataset.bars_by_tf.items():
+        if timeframe not in _TIMEFRAME_SECONDS or not isinstance(rows, list):
+            raise HindcastDataError(f"invalid timeframe rows: {timeframe}")
+        previous = None
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise HindcastDataError(f"{timeframe} row {index} is not an object")
+            stamp = _finite(row.get("timestamp_epoch"))
+            source_stamp = _finite(row.get("source_timestamp_epoch"))
+            if (
+                stamp is None or stamp <= 0.0
+                or source_stamp is None or abs(source_stamp - stamp) > 1e-6
+                or row.get("source_timestamp_verified") is not True
+                or row.get("provisional") is True
+                or (previous is not None and stamp <= previous)
+            ):
+                raise HindcastDataError(f"{timeframe} row {index} has invalid source-time ordering/provenance")
+            values = {
+                name: _finite(row.get(name))
+                for name in ("open", "high", "low", "close")
+            }
+            if any(value is None or value <= 0.0 for value in values.values()):
+                raise HindcastDataError(f"{timeframe} row {index} has invalid OHLC values")
+            if (
+                values["high"] < max(values["open"], values["close"], values["low"])
+                or values["low"] > min(values["open"], values["close"], values["high"])
+            ):
+                raise HindcastDataError(f"{timeframe} row {index} has inconsistent OHLC values")
+            previous = stamp
+
+
 def run_hindcast(
     dataset: HindcastDataset,
     *,
@@ -356,6 +399,7 @@ def run_hindcast(
     inject a Brain/modules for deterministic testing; production defaults use
     the real CognitiveBrain and every registered concept module.
     """
+    _validate_normalized_dataset(dataset)
     horizon = int(max_horizon_seconds)
     stride = int(decision_stride)
     base_tf = str(base_timeframe or "").strip().upper()
