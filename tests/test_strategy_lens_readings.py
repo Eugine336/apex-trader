@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
-from cognition.concepts.base import ConceptReading, reading_to_evidence
+from cognition.concepts.base import ConceptReading, Implication, reading_to_evidence
 from cognition.contracts import EvidenceDomain
 from cognition.concepts.strategy_lens_readings import (
     DATA_GATED_LENSES,
@@ -357,6 +357,73 @@ def test_method_readings_must_share_one_verified_timestamp_to_make_lens_applicab
     assert lens.facts["source_provenance_verified"] is False
     assert lens.facts["style_context_state"] == "unsynchronized_method_context"
     assert any("not all synchronized" in item for item in lens.unknowns)
+
+
+
+def test_lens_geometry_preserves_mirror_symmetric_method_levels_without_directional_vote():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+
+    def compose(direction: str, invalidation: float, objective: float, milestones: tuple[float, ...]):
+        methods = [
+            ConceptReading(
+                concept=method,
+                timeframe="M5",
+                domain=EvidenceDomain.MOMENTUM,
+                applicable=True,
+                applicability_reason="method reading is applicable",
+                observation="method geometry is source supplied",
+                implications=(
+                    Implication(
+                        direction=direction,
+                        statement="method-level conditional implication",
+                        strength=0.61,
+                        activated=False,
+                        activation_reason="activation remains conditional",
+                        invalidation_price=invalidation,
+                        invalidation_reason="method-defined structural invalidation",
+                        objective_price=objective,
+                        milestones=milestones,
+                        requires=("independent confirmation",),
+                    ),
+                ),
+                facts={},
+                source_bar_epoch=cutoff,
+                source_timestamp_verified=True,
+                data_basis="completed_ohlc",
+                independence_group="ohlc:XAUUSD:M5",
+            )
+            for method in ("zscore_mean", "mean_reversion")
+        ]
+        readings = StrategyLensReadings().read_with_context(
+            "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+        )
+        return next(item for item in readings if item.concept == "mean_reversion")
+
+    original = compose("LONG", 95.0, 110.0, (103.0, 106.0))
+    mirrored = compose("SHORT", 105.0, 90.0, (97.0, 94.0))
+
+    original_invalidations = original.facts["invalidation_candidates"]
+    mirrored_invalidations = mirrored.facts["invalidation_candidates"]
+    original_objectives = original.facts["objective_candidates"]
+    mirrored_objectives = mirrored.facts["objective_candidates"]
+    assert len(original_invalidations) == len(mirrored_invalidations) == 2
+    assert len(original_objectives) == len(mirrored_objectives) == 2
+    for left, right in zip(original_invalidations, mirrored_invalidations):
+        assert left["direction"] == "LONG"
+        assert right["direction"] == "SHORT"
+        assert right["price"] == 200.0 - left["price"]
+    for left, right in zip(original_objectives, mirrored_objectives):
+        assert right["price"] == 200.0 - left["price"]
+    assert original.facts["milestone_candidates"]
+    assert mirrored.facts["milestone_candidates"]
+    for left, right in zip(
+        original.facts["milestone_candidates"],
+        mirrored.facts["milestone_candidates"],
+    ):
+        assert right["price"] == 200.0 - left["price"]
+    assert original.implications == mirrored.implications == ()
+    assert original.facts["directional_decision_emitted"] is False
+    assert mirrored.facts["entry_authorization_emitted"] is False
 
 
 def test_lens_composition_excludes_future_dated_method_readings_from_replay():
