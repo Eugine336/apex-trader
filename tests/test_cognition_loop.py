@@ -1289,3 +1289,18 @@ def test_unverified_concept_reading_does_not_satisfy_market_intelligence_integri
         "FULL CONCEPT READINGS UNAVAILABLE" in item.observation
         for item in market_state.evidence
     )
+
+
+
+def test_concept_source_receives_cycle_timestamp_when_supported():
+    calls = []
+
+    def concept_source(symbol, *, now=None):
+        calls.append((symbol, now))
+        return []
+
+    EvidenceConsolidator(ctx=None, concept_source=concept_source).build(
+        "XAUUSD", now=1234.5,
+    )
+
+    assert calls == [("XAUUSD", 1234.5)]
