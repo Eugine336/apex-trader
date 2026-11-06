@@ -403,3 +403,22 @@ def test_process_local_thesis_is_not_reused_across_campaign_ids():
     campaign = payload["campaign"]
     assert "original_thesis" not in campaign
     assert "invalidation_conditions" not in campaign
+
+
+def test_expected_holding_horizon_triggers_reassessment_not_automatic_exit():
+    manager = NativePositionManager()
+    position = _position(profit_r=0.1)
+    position.hold_seconds = 7_200.0
+    context = _context()
+    context["expected_holding_horizon_seconds"] = 3_600.0
+
+    result = manager.assess(
+        position,
+        _state(),
+        campaign_context=context,
+        consolidation={"aggregate_uncertainty": 0.1, "market_domain_count": 3},
+    )
+
+    assert result.action == "hold"
+    assert result.thesis_state == "time_decay_review"
+    assert result.management_plan["elapsed_ratio"] == 2.0
