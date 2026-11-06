@@ -1065,7 +1065,7 @@ class CognitiveBrain:
             and isinstance(getattr(item, "measurements", None), dict)
             and item.measurements.get("source_timestamp_known") is True
             and str(item.measurements.get("data_basis", "") or "").lower() == "completed_ohlc"
-            and _finite_number(item.measurements.get("source_bar_epoch")) is not None
+            and item.measurements.get("source_bar_epoch") is not None
             for item in geometry_items
         )
         independence_groups = sorted({
