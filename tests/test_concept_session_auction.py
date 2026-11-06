@@ -304,8 +304,8 @@ def test_range_rotation_flows_from_candles_to_hypothesis_and_geometry(monkeypatc
     analysis = reasoner.analyze_evidence(state)
     hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
     assert any(
-        item.hypothesis_kind == "concept:range_rotation:m5"
-        and item.direction_implication == "LONG"
+        item.hypothesis_kind == "concept_group:M5:LONG:active"
+        and "range_rotation" in item.supporting_patterns
         for item in hypotheses
     )
     geometry = derive_opportunity_geometry(state, "LONG")
