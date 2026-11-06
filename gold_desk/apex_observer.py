@@ -18,7 +18,6 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from loguru import logger
 
-from gold_desk.indicators import atr
 from gold_desk.models import Candle, EventWindow, MarketSnapshot
 
 
