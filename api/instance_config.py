@@ -24,6 +24,7 @@ from typing import Any, Optional
 # Keys accepted in a user's saved trading config (subset of AppConfig surface).
 # Each maps to a setter applied to the constructed AppConfig instance.
 _KNOWN_KEYS = {
+    "universe_mode",
     "enabled_categories",
     "enabled_symbols_override",
     "risk_per_trade_pct",
