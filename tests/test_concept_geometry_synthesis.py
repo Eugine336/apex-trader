@@ -118,13 +118,13 @@ def test_geometry_preserves_reading_supplied_limit_entry_zone():
         "order_type": "LIMIT",
         "entry_zone_low": 99.0,
         "entry_zone_high": 101.0,
-        "entry_price": 100.5,
+        "entry_price": 99.5,
     })
 
     geometry = _geometry_from_concept_readings([reading], "LONG", "EURUSD")
 
     assert geometry is not None
-    assert geometry.entry_price == 100.5
+    assert geometry.entry_price == 99.5
     assert geometry.order_type == "LIMIT"
     assert geometry.entry_zone_low == 99.0
     assert geometry.entry_zone_high == 101.0
