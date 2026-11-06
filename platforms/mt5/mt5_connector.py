@@ -1848,6 +1848,8 @@ class MT5Connector(BaseConnector):
                 mt5.market_book_release(mapped)
             if not book:
                 return []
+            # Local retrieval time is separate from provider source time.
+            snapshot_received_epoch = _time.time()
             out: list[dict] = []
             for item in book:
                 price = float(getattr(item, "price", 0.0) or 0.0)
@@ -1879,6 +1881,8 @@ class MT5Connector(BaseConnector):
                     "book_type": btype,
                     "raw_fields": raw_fields,
                     "source": "mt5.market_book_get",
+                    "source_symbol": mapped,
+                    "snapshot_received_epoch": snapshot_received_epoch,
                     "source_verified": True,
                 })
             return out

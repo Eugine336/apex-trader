@@ -1412,12 +1412,38 @@ class SystemContext:
                             symbol, type(exc).__name__,
                         )
                         symbol_spec = {}
+                    try:
+                        depth_levels = platform_manager.get_market_depth(symbol)
+                        if not isinstance(depth_levels, list):
+                            depth_levels = []
+                        first_depth = depth_levels[0] if depth_levels else {}
+                        market_depth = {
+                            "levels": depth_levels,
+                            "source": first_depth.get("source"),
+                            "source_symbol": first_depth.get("source_symbol"),
+                            "snapshot_received_epoch": first_depth.get("snapshot_received_epoch"),
+                            "source_verified": bool(depth_levels) and all(
+                                isinstance(level, dict)
+                                and level.get("source_verified") is True
+                                and level.get("source") == first_depth.get("source")
+                                for level in depth_levels
+                            ),
+                        }
+                    except Exception as exc:  # noqa: BLE001 — missing optional depth must remain unknown
+                        logger.warning(
+                            "[cognition] broker order-book snapshot unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        market_depth = {}
                     from cognition.market_lenses import analyze_market_frames
                     return analyze_market_frames(
                         symbol,
                         frames,
                         source_includes_forming_bar=True,
-                        concept_context={"symbol_spec": symbol_spec},
+                        concept_context={
+                            "symbol_spec": symbol_spec,
+                            "market_depth": market_depth,
+                        },
                     )
 
                 _consolidator = _EvidenceConsolidator(
