@@ -2132,6 +2132,8 @@ class CognitiveBrain:
                                     k: geometry.get(k) for k in (
                                         "concept", "concept_timeframe", "entry_price", "stop_price",
                                         "target_price", "milestones", "invalidation_reason",
+                                        "direction", "symbol", "evidence_timestamp_epoch",
+                                        "evidence_ids", "independent_source_count", "independence_groups",
                                     )
                                 }
                             campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
