@@ -7,6 +7,7 @@ import pytest
 from cognition.concepts.base import reading_to_evidence
 from cognition.concepts.execution_cost_readings import ExecutionCostReadings
 from cognition.execution_cost_model import build_execution_cost_reading
+from cognition.loop import EvidenceConsolidator
 
 
 def _quote(*, age_seconds=0.2, verified=True, kind="bid_ask", symbol="EURUSD",
@@ -158,3 +159,38 @@ def test_cost_evidence_exposes_brain_gate_and_analytical_measurements():
     assert set(cost_assessment["matched_measurements"]) == {
         "spread", "commission", "slippage", "swap", "latency", "fill_probability",
     }
+
+
+
+def test_execution_cost_source_is_added_to_the_brains_market_state():
+    payload = build_execution_cost_reading(
+        "EURUSD", _quote(), _spec(),
+        now_epoch=datetime.now(timezone.utc).timestamp(),
+    )
+    state = EvidenceConsolidator(
+        execution_cost_source=lambda symbol: payload,
+    ).build("EURUSD")
+    cost_rows = [
+        item for item in state.evidence
+        if item.source_module == "concept.execution_cost.spec"
+    ]
+    assert len(cost_rows) == 1
+    assert cost_rows[0].domain.value == "execution_quality"
+    assert cost_rows[0].measurements["cost_verified"] is False
+    assert cost_rows[0].source_timestamp_verified is True
+
+
+def test_concept_reader_rejects_non_finite_provider_epoch():
+    payload = {
+        "source_timestamp_epoch": float("inf"),
+        "source_timestamp_verified": True,
+        "cost_verified": False,
+        "cost_components_complete": False,
+        "cost_unknown_components": ["provider timestamp invalid"],
+    }
+    reading = ExecutionCostReadings().read_with_context(
+        "EURUSD", {}, {"execution_cost": payload},
+    )[0]
+    assert reading.applicable is False
+    assert reading.source_timestamp_epoch is None
+    assert reading.source_timestamp_verified is False

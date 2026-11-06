@@ -1,6 +1,7 @@
 """Full-context execution-cost reading for the native Apex Brain."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from cognition.concepts.base import ConceptReading
@@ -34,7 +35,9 @@ class ExecutionCostReadings:
             pass
         quote_verified = bool(
             payload.get("source_timestamp_verified") is True
-            and source_epoch is not None and source_epoch > 0.0
+            and source_epoch is not None
+            and math.isfinite(source_epoch)
+            and source_epoch > 0.0
         )
         unknowns_raw = payload.get("cost_unknown_components", ())
         unknowns = tuple(
