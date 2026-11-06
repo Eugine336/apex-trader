@@ -706,12 +706,16 @@ class MT5Connector(BaseConnector):
                 "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
                 "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
                 "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
-                "D1": 86400, "W1": 604800, "MN1": 2592000,
+                "D1": 86400, "W1": 604800,
             }
-            duration = seconds_by_tf.get(timeframe.upper())
-            if duration is not None:
-                bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
+            if timeframe.upper() == "MN1":
+                bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
                 frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+            else:
+                duration = seconds_by_tf.get(timeframe.upper())
+                if duration is not None:
+                    bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
+                    frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
         frame.attrs.update({
             "source": "mt5.copy_rates_range",
             "source_timestamp_verified": True,
