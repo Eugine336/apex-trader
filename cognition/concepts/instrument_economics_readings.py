@@ -81,7 +81,23 @@ class InstrumentEconomicsReadings:
                 "provider-originated specification timestamp; retrieval time is not a verified source timestamp"
             )
 
-        values = {key: _number(spec.get(key)) for key in _NUMERIC_FIELDS}
+        reported_values = {key: _number(spec.get(key)) for key in _NUMERIC_FIELDS}
+        # Numeric fields from an unattested response remain forensic input only.
+        # They must not enter the Brain as usable contract facts.
+        values = (
+            reported_values if verified
+            else {key: None for key in _NUMERIC_FIELDS}
+        )
+        unverified_reported_fields = {}
+        if not verified:
+            for key in (*_NUMERIC_FIELDS, "trade_mode", "trade_calc_mode",
+                        "currency_base", "currency_profit", "currency_margin",
+                        "swap_long", "swap_short", "swap_mode"):
+                if key in spec:
+                    unverified_reported_fields[key] = spec.get(key)
+            raw_info = spec.get("raw_symbol_info")
+            if isinstance(raw_info, dict):
+                unverified_reported_fields["raw_symbol_info"] = dict(raw_info)
         for key in _REQUIRED_POSITIVE_FIELDS:
             value = values[key]
             if value is None:
@@ -151,7 +167,7 @@ class InstrumentEconomicsReadings:
             if profit_tick is not None and loss_tick is not None else None
         )
 
-        raw_mode = spec.get("trade_mode")
+        raw_mode = spec.get("trade_mode") if verified else None
         mode_number = _number(raw_mode)
         trade_mode = (
             _TRADE_MODES.get(int(mode_number))
@@ -160,7 +176,7 @@ class InstrumentEconomicsReadings:
         if trade_mode is None:
             unknowns.append("broker trade_mode and its supported-operation semantics")
         for field in ("currency_base", "currency_profit", "currency_margin"):
-            if not str(spec.get(field) or "").strip():
+            if not str((spec.get(field) if verified else None) or "").strip():
                 unknowns.append(f"broker specification field {field}")
 
         if not verified:
@@ -177,16 +193,16 @@ class InstrumentEconomicsReadings:
             "source": source,
             "source_verified": verified,
             "specification_verified": spec.get("specification_verified") is True,
-            "broker_symbol": spec.get("broker_symbol"),
-            "description": spec.get("description"),
-            "path": spec.get("path"),
+            "broker_symbol": spec.get("broker_symbol") if verified else None,
+            "description": spec.get("description") if verified else None,
+            "path": spec.get("path") if verified else None,
             "trade_mode": raw_mode,
             "trade_mode_interpretation": trade_mode,
-            "trade_calc_mode": spec.get("trade_calc_mode"),
-            "trade_execution_mode": spec.get("trade_exemode"),
-            "filling_mode": spec.get("filling_mode"),
-            "order_mode": spec.get("order_mode"),
-            "expiration_mode": spec.get("expiration_mode"),
+            "trade_calc_mode": spec.get("trade_calc_mode") if verified else None,
+            "trade_execution_mode": spec.get("trade_exemode") if verified else None,
+            "filling_mode": spec.get("filling_mode") if verified else None,
+            "order_mode": spec.get("order_mode") if verified else None,
+            "expiration_mode": spec.get("expiration_mode") if verified else None,
             "contract_size": values["trade_contract_size"],
             "tick_size": tick_size,
             "tick_value": tick_value,
@@ -206,21 +222,22 @@ class InstrumentEconomicsReadings:
             "stop_distance_price_units": stop_distance,
             "freeze_distance_price_units": freeze_distance,
             "currencies": {
-                "base": spec.get("currency_base"),
-                "profit": spec.get("currency_profit"),
-                "margin": spec.get("currency_margin"),
+                "base": spec.get("currency_base") if verified else None,
+                "profit": spec.get("currency_profit") if verified else None,
+                "margin": spec.get("currency_margin") if verified else None,
             },
-            "broker_trading_sessions": spec.get("broker_trading_sessions"),
+            "broker_trading_sessions": spec.get("broker_trading_sessions") if verified else None,
             "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,
             "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,
             "swap": {
-                "long": _number(spec.get("swap_long")),
-                "short": _number(spec.get("swap_short")),
-                "mode": spec.get("swap_mode"),
+                "long": _number(spec.get("swap_long")) if verified else None,
+                "short": _number(spec.get("swap_short")) if verified else None,
+                "mode": spec.get("swap_mode") if verified else None,
                 "unit_interpreted": False,
             },
-            "start_time": spec.get("start_time"),
-            "expiration_time": spec.get("expiration_time"),
+            "start_time": spec.get("start_time") if verified else None,
+            "expiration_time": spec.get("expiration_time") if verified else None,
+            "unverified_reported_fields": unverified_reported_fields,
             "validation_errors": errors,
             "unknown_fields": list(dict.fromkeys(unknowns)),
             "no_config_fallback_used": True,

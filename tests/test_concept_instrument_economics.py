@@ -110,6 +110,8 @@ def test_unavailable_or_unverified_broker_spec_stays_unknown_without_config_defa
         assert reading.facts["status"] == "unavailable_or_unverified"
         assert reading.facts["contract_size"] is None
         assert reading.facts["no_config_fallback_used"] is True
+        if spec:
+            assert reading.facts["unverified_reported_fields"]["trade_contract_size"] == 100.0
         assert reading.unknowns
 
 
