@@ -658,6 +658,70 @@ class MT5Connector(BaseConnector):
         })
         return out
 
+    def get_ohlcv_range(
+        self, symbol: str, timeframe: str, from_dt: datetime, to_dt: datetime,
+        *, include_forming: bool = False,
+    ) -> pd.DataFrame:
+        """Fetch a bounded historical bar range with native MT5 volume/spread fields."""
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 bar history requires timezone-aware datetimes")
+        start = from_dt.astimezone(timezone.utc)
+        end = to_dt.astimezone(timezone.utc)
+        if end < start:
+            raise ValueError("to_dt must be greater than or equal to from_dt")
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        rates = mt5.copy_rates_range(mapped, self.timeframe_map(timeframe), start, end)
+        if rates is None:
+            raise RuntimeError(f"MT5 copy_rates_range failed for {mapped}/{timeframe}: {mt5.last_error()}")
+        frame = pd.DataFrame(rates)
+        if frame.empty:
+            frame.attrs.update({
+                "source": "mt5.copy_rates_range",
+                "source_timestamp_verified": True,
+                "source_symbol": mapped,
+                "volume_basis": "tick_volume_alias_with_real_volume_preserved",
+            })
+            return frame
+        frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        if "tick_volume" in frame.columns:
+            frame["volume"] = frame["tick_volume"]
+        else:
+            frame["tick_volume"] = 0
+            frame["volume"] = 0
+        if "real_volume" not in frame.columns:
+            frame["real_volume"] = 0
+        if "spread" not in frame.columns:
+            frame["spread"] = 0
+        columns = [
+            "time", "open", "high", "low", "close", "volume",
+            "tick_volume", "real_volume", "spread",
+        ]
+        frame = frame[[column for column in columns if column in frame.columns]].copy()
+        if not include_forming:
+            seconds_by_tf = {
+                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
+                "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
+                "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
+                "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
+                "D1": 86400, "W1": 604800, "MN1": 2592000,
+            }
+            duration = seconds_by_tf.get(timeframe.upper())
+            if duration is not None:
+                bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
+                frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+        frame.attrs.update({
+            "source": "mt5.copy_rates_range",
+            "source_timestamp_verified": True,
+            "source_symbol": mapped,
+            "source_timezone": "UTC",
+            "volume_basis": "tick_volume_alias_with_real_volume_preserved",
+            "bar_fields": ["tick_volume", "real_volume", "spread"],
+        })
+        return frame
+
     def get_ticks(
         self, symbol: str, from_dt: datetime, to_dt: datetime, *, flags: Optional[int] = None,
     ) -> pd.DataFrame:
