@@ -169,36 +169,20 @@ def _geometry_from_concept_readings(
                 "independence_group": reading.get("independence_group", ""),
             })
 
-    def median(values: list[float]) -> float:
-        ordered = sorted(values)
-        middle = len(ordered) // 2
-        if len(ordered) % 2:
-            return ordered[middle]
-        return (ordered[middle - 1] + ordered[middle]) / 2.0
-
     best: Optional[dict] = None
     for (timeframe, reference_timeframe, source_time), members in candidates.items():
         entries = [member["entry"] for member in members]
+        # Same symbol, reference timeframe and completed source instant must
+        # agree on the entry close. Do not invent a tolerance for disagreement.
+        if any(value != entries[0] for value in entries[1:]):
+            continue
+        entry = entries[0]
         stops = [member["stop"] for member in members]
         targets = [member["target"] for member in members]
-        entry = median(entries)
-        # First reject materially inconsistent structural interpretations.
-        median_stop, median_target = median(stops), median(targets)
-        median_risk = entry - median_stop if side == "LONG" else median_stop - entry
-        median_reward = median_target - entry if side == "LONG" else entry - median_target
-        if median_risk <= 0.0 or median_reward <= 0.0:
-            continue
-        stop_tolerance = max(0.75 * median_risk, entry * 1e-7)
-        target_tolerance = max(0.75 * median_reward, entry * 1e-7)
-        if max(stops) - min(stops) > stop_tolerance:
-            continue
-        if max(targets) - min(targets) > target_tolerance:
-            continue
-        if max(entries) - min(entries) > max(entry * 1e-6, median_risk * 0.1):
-            continue
 
-        # Use the most protective observed invalidation and nearest real draw;
-        # median levels would weaken the stop or skip the first objective.
+        # Select the closest valid invalidation and nearest real draw. Distinct
+        # structural levels are not averaged or rejected by arbitrary distance
+        # thresholds: each candidate is already validated on the correct side.
         stop = max(stops) if side == "LONG" else min(stops)
         target = min(targets) if side == "LONG" else max(targets)
         risk = entry - stop if side == "LONG" else stop - entry
