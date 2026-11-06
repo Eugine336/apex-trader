@@ -88,13 +88,25 @@ if set(DATA_GATED_LENSES) & set(FULL_LENSES):
     raise RuntimeError("A strategy lens cannot be both FULL and DATA-GATED")
 
 
-def _verified_reading_epoch(reading: ConceptReading) -> float | None:
+def _verified_reading_epochs(reading: ConceptReading) -> tuple[float, ...]:
     if reading.source_timestamp_verified is not True:
+        return ()
+    epochs = {
+        epoch for epoch in (
+            finite(reading.source_timestamp_epoch),
+            finite(reading.source_bar_epoch),
+        )
+        if epoch is not None and epoch > 0.0
+    }
+    return tuple(sorted(epochs))
+
+
+def _verified_reading_epoch(reading: ConceptReading) -> float | None:
+    epochs = _verified_reading_epochs(reading)
+    if not epochs:
         return None
-    epoch = finite(reading.source_timestamp_epoch)
-    if epoch is None:
-        epoch = finite(reading.source_bar_epoch)
-    return epoch if epoch is not None and epoch > 0.0 else None
+    provider_epoch = finite(reading.source_timestamp_epoch)
+    return provider_epoch if provider_epoch in epochs else epochs[0]
 
 
 def _compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
@@ -237,20 +249,19 @@ class StrategyLensReadings:
                 eligible_candidates = [
                     item for item in candidates
                     if cutoff_epoch is not None
-                    and (epoch := _verified_reading_epoch(item)) is not None
-                    and epoch <= cutoff_epoch
+                    and (epochs := _verified_reading_epochs(item))
+                    and all(epoch <= cutoff_epoch for epoch in epochs)
                 ]
                 eligible_concepts = {item.concept for item in eligible_candidates}
                 unverified_methods = sorted({
                     item.concept for item in candidates
-                    if _verified_reading_epoch(item) is None
+                    if not _verified_reading_epochs(item)
                     and item.concept not in eligible_concepts
                 })
                 future_methods = sorted({
                     item.concept for item in candidates
-                    if (epoch := _verified_reading_epoch(item)) is not None
+                    if any(epoch > cutoff_epoch for epoch in _verified_reading_epochs(item))
                     and cutoff_epoch is not None
-                    and epoch > cutoff_epoch
                     and item.concept not in eligible_concepts
                 })
                 selected: dict[str, ConceptReading] = {}
