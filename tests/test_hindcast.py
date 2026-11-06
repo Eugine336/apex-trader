@@ -87,9 +87,10 @@ class _ReadingModule:
 class _Brain:
     available = True
 
-    def __init__(self, *, order_type="MARKET"):
+    def __init__(self, *, order_type="MARKET", geometry_provenance=True):
         self.seen = []
         self.order_type = order_type
+        self.geometry_provenance = geometry_provenance
 
     def reason(self, market_state, *, now=None):
         source_times = [
@@ -107,12 +108,17 @@ class _Brain:
             target_price=102.0,
             candidate_family="continuation",
             order_type=self.order_type,
+            geometry_evidence_ids=(
+                [market_state.evidence[0].evidence_id]
+                if self.geometry_provenance and market_state.evidence else []
+            ),
         )
         decision = SimpleNamespace(
             decision_type=DecisionType.OPEN_CAMPAIGN,
             preferred_opportunity_id="opp-1",
             opportunities=[opportunity],
             confidence=0.7,
+            decision_id="decision-1",
             created_epoch=0.0,
             created_iso="",
         )
@@ -271,6 +277,20 @@ def test_hindcast_seeds_only_resolved_brain_pairs_with_dataset_digest(tmp_path):
     status = tracker.get_status()
     assert status["samples"] == 1
     assert status["sources"] == {"hindcast:aaaaaaaaaaaaaaaa": 1}
+
+
+def test_brain_calibration_requires_geometry_evidence_lineage():
+    bars = [_bar(60), _bar(120, high=103.0), _bar(180)]
+    report = run_hindcast(
+        _dataset(bars),
+        max_horizon_seconds=120,
+        base_timeframe="M1",
+        brain=_Brain(geometry_provenance=False),
+        modules=(_ReadingModule(),),
+    )
+    assert report.brain_calibration_pairs == []
+    assert report.brain_candidate_outcomes == []
+    assert report.skipped_brain_candidates >= 1
 
 
 def test_hindcast_report_does_not_claim_system4_quote_artifacts_from_ohlc():
