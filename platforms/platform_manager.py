@@ -717,6 +717,44 @@ class PlatformManager:
             )
         return list(snapshot.positions)
 
+    def get_tick_history(self, symbol: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
+        """Fetch historical ticks from the owning connector when supported."""
+        connector = self.get_connector(symbol)
+        fetch = getattr(connector, "get_ticks", None)
+        if not callable(fetch):
+            return pd.DataFrame()
+        return fetch(symbol, from_dt, to_dt)
+
+    def get_mt5_account_snapshots(self) -> list[dict]:
+        """Return verified account snapshots from every connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.append({
+                    "connector_index": index,
+                    **connector.get_account_snapshot(),
+                })
+            except Exception as exc:
+                _pm_logger.warning("[account] MT5 account snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
+    def get_mt5_terminal_snapshots(self) -> list[dict]:
+        """Return verified terminal health/version snapshots for connected MT5 accounts."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.append({
+                    "connector_index": index,
+                    **connector.get_terminal_snapshot(),
+                })
+            except Exception as exc:
+                _pm_logger.warning("[terminal] MT5 terminal snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
     def get_market_depth(self, symbol: str) -> list[dict]:
         """Best-effort Level-2 order book for ``symbol`` (empty when unsupported).
 
