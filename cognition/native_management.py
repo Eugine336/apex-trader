@@ -546,6 +546,7 @@ class NativePositionManager:
             # counter-hypotheses as a conservative *risk-reduction-only* fallback.
             # Generic adverse patterns can never authorize EXIT.
             native_patterns: set[str] = set()
+            analysis_domains: set[str] = set()
             analysis_uncertainty = uncertainty
             analysis_contradictions: list[str] = []
             try:
@@ -555,6 +556,9 @@ class NativePositionManager:
                     pattern_name(item)
                     for item in list(getattr(analysis, "detected_patterns", []) or [])
                 }
+                coverage = getattr(analysis, "domain_coverage", {}) or {}
+                if isinstance(coverage, dict):
+                    analysis_domains = {str(key).lower() for key in coverage}
                 analysis_uncertainty = max(
                     uncertainty,
                     _clamp01(getattr(analysis, "evidence_uncertainty", uncertainty)),
@@ -636,9 +640,8 @@ class NativePositionManager:
                     action=action,
                     thesis_state="native_evidence_deteriorating",
                     reason=(
-                        "native Brain found corroborated adverse structure/market conflict "
-                        "with adequate fresh domain coverage; reduce exposure, not exit"
-                        + challenger_note
+                        "native Brain found fresh adverse structure/market conflict; "
+                        "reduce exposure, not exit" + challenger_note
                     ),
                     confidence=(
                         max(directional_challengers, key=lambda item: item[0])[0]
