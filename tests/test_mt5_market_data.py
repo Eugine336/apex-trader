@@ -57,6 +57,30 @@ class FakeMT5:
     def order_calc_margin(self, action, symbol, volume, price):
         return volume * price * 0.01
 
+    @staticmethod
+    def positions_get():
+        return [type("Position", (), {
+            "ticket": 123,
+            "symbol": "EURUSD",
+            "volume": 0.2,
+            "price_open": 1.1,
+            "price_current": 1.2,
+            "profit": 20.0,
+            "swap": -0.5,
+            "comment": "apex-test",
+        })()]
+
+    @staticmethod
+    def orders_get():
+        return [type("Order", (), {
+            "ticket": 456,
+            "symbol": "EURUSD",
+            "volume_current": 0.1,
+            "price_open": 1.15,
+            "type": 2,
+            "comment": "apex-pending-test",
+        })()]
+
     def copy_ticks_range(self, symbol, start, end, flags):
         return [
             {"time": 1_800_000_000, "time_msc": 1_800_000_000_000, "bid": 1.0,
@@ -164,3 +188,17 @@ def test_unregistered_broker_symbol_quote_preserves_raw_tick_and_uses_tick_units
     assert tick.raw_fields["flags"] == 16
     assert tick.raw_fields["volume"] == 3
     assert tick.source_timestamp_verified is True
+
+
+def test_raw_position_and_pending_order_snapshots_preserve_broker_fields(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+
+    positions = connector.get_position_snapshots()
+    orders = connector.get_pending_order_snapshots()
+
+    assert positions[0]["ticket"] == 123
+    assert positions[0]["swap"] == -0.5
+    assert positions[0]["source"] == "mt5.positions_get"
+    assert orders[0]["ticket"] == 456
+    assert orders[0]["type"] == 2
+    assert orders[0]["source"] == "mt5.orders_get"
