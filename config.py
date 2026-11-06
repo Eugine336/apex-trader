@@ -4300,17 +4300,15 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # ── INSTRUMENT UNIVERSE ───────────────────────────────────────────────
-    # Apex is not tied to one instrument. By default every registered forex,
-    # commodity, index and crypto instrument is in scope (synthetics need a
-    # separate broker setup and stay opt-in). Each instrument runs on its own
-    # profile (brain/instrument_profile.py). To narrow the universe:
-    #   • set TRADING_MODE=gold (commodity / XAUUSD only), or
-    #   • list specific symbols in `enabled_symbols_override`.
+    # ── OWNER-CONTROLLED INSTRUMENT UNIVERSE ───────────────────────────────
+    # "all" = all broker-discovered eligible symbols in enabled categories;
+    # "selected" = exactly the owner's selected symbol set; "single" = one symbol.
+    # An empty selected set is invalid at the API/config boundary, never a
+    # silent fallback to all symbols. Gold is not a special trading identity.
+    universe_mode: str = "all"
     enabled_categories: list[str] = field(
         default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
-    # Empty = every symbol in the enabled categories; list symbols to restrict.
     enabled_symbols_override: list[str] = field(default_factory=list)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -4372,27 +4370,35 @@ class AppConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
-        # TRADING_MODE toggles the instrument universe from .env without code
-        # changes. "full" (default) scans every instrument across forex,
-        # commodity, index and crypto; "gold" narrows to commodity / XAUUSD.
-        # Any other value falls back to "full" with a warning. Synthetic is
-        # intentionally excluded — Deriv synthetics need a separate broker setup.
-        mode = os.getenv("TRADING_MODE", "full").lower().strip()
-        if mode not in ("gold", "full"):
-            logger.warning(
-                "[config] unknown TRADING_MODE '{}' — falling back to 'full'", mode
-            )
-            mode = "full"
-        if mode == "gold":
-            self.enabled_categories = ["commodity"]
-            self.enabled_symbols_override = ["XAUUSD"]
-        self.trading_mode = mode
+        mode = str(self.universe_mode or "all").strip().lower()
+        aliases = {"full": "all", "custom": "selected", "one": "single"}
+        mode = aliases.get(mode, mode)
+        if mode not in {"all", "selected", "single"}:
+            raise ValueError("universe_mode must be all, selected, or single")
+        self.universe_mode = mode
+        self.enabled_symbols_override = list(dict.fromkeys(
+            str(symbol).strip().upper()
+            for symbol in self.enabled_symbols_override
+            if str(symbol).strip()
+        ))
+        if mode == "all" and self.enabled_symbols_override:
+            raise ValueError("enabled_symbols_override must be empty in all mode")
+        if mode == "selected" and not self.enabled_symbols_override:
+            raise ValueError("selected universe requires at least one symbol")
+        if mode == "single" and len(self.enabled_symbols_override) != 1:
+            raise ValueError("single universe requires exactly one symbol")
+        # Compatibility metadata only. No gold-specific execution or analysis
+        # path is selected by this field.
+        self.trading_mode = (
+            "gold" if mode == "single" and self.enabled_symbols_override == ["XAUUSD"]
+            else "full"
+        )
 
     @property
     def enabled_pairs(self) -> list[str]:
-        """All symbols from enabled categories, filtered by override if set."""
-        if self.enabled_symbols_override:
-            return self.enabled_symbols_override
+        """Owner-selected symbols; empty selection never expands implicitly."""
+        if self.universe_mode in {"selected", "single"}:
+            return list(self.enabled_symbols_override)
         symbols: list[str] = []
         for cat in self.enabled_categories:
             symbols.extend(i.symbol for i in get_instruments_by_category(cat))
