@@ -357,11 +357,62 @@ class MT5Connector(BaseConnector):
         full = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
         opening_modes = {long_only, short_only, full}
 
+        from brain.symbol_mapper import resolve_to_internal
+        from config import INSTRUMENT_REGISTRY, Platform, get_instrument
+
+        def canonical_symbol(broker_name: str) -> str:
+            canonical = resolve_to_internal(broker_name)
+            if canonical.upper() in INSTRUMENT_REGISTRY:
+                return canonical.upper()
+            normalized = broker_name.strip().upper()
+            candidates = sorted(INSTRUMENT_REGISTRY, key=len, reverse=True)
+            for registered in candidates:
+                if not normalized.startswith(registered):
+                    continue
+                suffix = normalized[len(registered):]
+                if suffix and (
+                    suffix in _COMMON_SUFFIXES
+                    or (
+                        suffix[0] in ".#_!"
+                        and len(suffix) > 1
+                        and suffix[1:].replace(".", "").isalnum()
+                    )
+                ):
+                    return registered
+            return normalized
+
+        named_symbols = [
+            str(getattr(item, "name", "") or "").strip()
+            for item in raw_symbols
+            if str(getattr(item, "name", "") or "").strip()
+        ]
+        aliases: dict[str, list[str]] = {}
+        for broker_name in named_symbols:
+            canonical = canonical_symbol(broker_name)
+            if canonical in INSTRUMENT_REGISTRY:
+                aliases.setdefault(canonical, []).append(broker_name)
+        chosen_broker_symbol: dict[str, str] = {}
+        for canonical, broker_names in aliases.items():
+            if canonical in broker_names:
+                chosen_broker_symbol[canonical] = canonical
+            elif len(broker_names) == 1:
+                chosen_broker_symbol[canonical] = broker_names[0]
+            # Multiple suffixed aliases with no exact canonical name are
+            # ambiguous. They remain visible but cannot enter the trade universe.
+
+        for canonical, broker_name in chosen_broker_symbol.items():
+            self._symbol_cache[canonical] = broker_name
+
         discovered: list[dict] = []
         for item in raw_symbols:
             name = str(getattr(item, "name", "") or "").strip()
             if not name:
                 continue
+            apex_symbol = canonical_symbol(name)
+            mapping_unique = (
+                apex_symbol in INSTRUMENT_REGISTRY
+                and chosen_broker_symbol.get(apex_symbol) == name
+            )
             trade_mode = getattr(item, "trade_mode", None)
             tick_size = float(getattr(item, "trade_tick_size", 0.0) or 0.0)
             point = float(getattr(item, "point", 0.0) or 0.0)
@@ -379,18 +430,18 @@ class MT5Connector(BaseConnector):
                 tick_size, tick_value, point, contract_size, volume_min, volume_max, volume_step
             ))
             try:
-                from brain.symbol_mapper import resolve_to_internal
-                from config import Platform, get_instrument
-                apex_symbol = resolve_to_internal(name)
                 instrument = get_instrument(apex_symbol)
-                apex_supported = instrument.platform in {Platform.MT5, Platform.BOTH}
+                apex_supported = (
+                    mapping_unique
+                    and instrument.platform in {Platform.MT5, Platform.BOTH}
+                )
             except (KeyError, ValueError):
-                apex_symbol = name.upper()
                 apex_supported = False
             discovered.append({
                 "symbol": name,
                 "apex_symbol": apex_symbol,
                 "apex_supported": apex_supported,
+                "broker_symbol_mapping_unique": mapping_unique,
                 "description": str(getattr(item, "description", "") or ""),
                 "path": str(getattr(item, "path", "") or ""),
                 "visible_in_market_watch": bool(getattr(item, "visible", False)),
@@ -415,7 +466,7 @@ class MT5Connector(BaseConnector):
                 "swap_long": getattr(item, "swap_long", None),
                 "swap_short": getattr(item, "swap_short", None),
                 "specification_complete": spec_complete,
-                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete and apex_supported),
+                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete and apex_supported and mapping_unique),
                 "source": "mt5.symbols_get",
                 "source_verified": True,
             })
