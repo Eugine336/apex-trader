@@ -1,14 +1,16 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `d82a93cf` (after PRs #809 calibration-scales-risk, #810 remove instrument directional bias,
-#811 competing directional hypotheses). Source of truth for coverage:
+Status baseline: `main` @ `0c578df3` (after PRs #809 calibration-scales-risk, #810 remove instrument directional bias,
+#811 competing directional hypotheses, and #813 RL subsystem retirement). Source of truth for coverage:
 `docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
 Baseline today: **41/79 analytical methods read in full, 2/38 strategy lenses read in full.**
-Full suite on that baseline (audit sandbox): 4,016 passed, 58 failed, 1 collection error. Of the 58: 45 RL tests (libraries
-absent from the audit sandbox — confirm in CI), 1 silent-exception audit (73 handlers), and **12 System 4 tests that PR #809
-left stale** (they call the renamed `_calibrated_expected_return`; fixed in the PR that carries this document). One collection
-error: `email-validator` missing for the API tests. Lesson recorded: two merged PRs shipped broken tests/syntax
-(`dashboard/state_health.py`, System 4 tests) — every PR must run the full suite and compare with `main` (§9).
+Full GitHub Actions suite on the PR #813 head immediately before merge: **3,952 passed, 1 failed, 0 skipped**
+on both Python 3.11 and 3.12. Collection, required cognition suites and canonical identity/safety audit passed.
+The sole remaining failure is the pre-existing silent-exception observability audit: 72 unclassified handlers.
+The 12 stale System 4 tests were corrected to use the historical-expectancy API and calibration policy.
+The RL package, nine RL-only test files, training tools and PyTorch dependency were retired in PR #813.
+The earlier audit-sandbox report (58 failures plus one collection error) is historical, not the current CI baseline.
+Every PR must run the full suite and compare with `main` (§9).
 
 ## 0. What "done" means
 
@@ -224,9 +226,8 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   judgement.
 
 ## 7. Tech debt to clear alongside
-- 45 RL tests fail in the audit sandbox (missing libraries); confirm in CI and fix or quarantine with a reason.
-- `tests/test_silent_swallow_observability.py`: 73 unclassified silent exception handlers.
-- `tests/test_api_endpoints.py`: collection needs `email-validator` (dependency pin).
+- `tests/test_silent_swallow_observability.py`: 72 unclassified silent exception handlers; this is the sole current full-suite failure and must be classified individually without weakening the audit.
+- `tests/test_api_endpoints.py`: the earlier audit sandbox lacked `email-validator`; GitHub Actions collection now passes on Python 3.11 and 3.12.
 - Stale docs: `docs/APEX_FULL_REDESIGN_ROADMAP.md` completion register for Systems 1–4 (it still describes #798 as an
   unmerged draft).
 - Rename the `gold_desk` package (cosmetic; the observer is instrument-agnostic).

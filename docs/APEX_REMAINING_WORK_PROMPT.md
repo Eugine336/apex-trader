@@ -81,7 +81,7 @@ advisory only).
   concept levels instead of static fractions); hindcast replay + per-concept track record + eligibility artifact;
   performance budget with the full instrument universe; remove remaining analysis constants (`min_evidence_domains`, observer
   wake thresholds, static fractions); owner-limits surface.
-- **Tech debt:** RL tests in CI, 73 silent exception handlers, API test dependency, stale roadmap register.
+- **Tech debt:** 72 unclassified silent exception handlers, audit-sandbox-only API dependency gap, stale roadmap register. The RL subsystem and its tests have been retired.
 
 ## 6. Definition of done (per PR)
 - Register shows the item `FULL` (or `DATA-GATED` with the missing feed named).
