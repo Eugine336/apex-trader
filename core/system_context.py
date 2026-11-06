@@ -24,6 +24,7 @@ Usage::
 from __future__ import annotations
 
 import math
+import threading
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
