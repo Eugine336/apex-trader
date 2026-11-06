@@ -150,14 +150,19 @@ def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral(
         measurements = item.measurements
         assert measurements["concept"] in full_methods
         assert item.polarity == 0.0
-        if measurements["timeframe"] == "SPEC":
-            # Broker contract/carry readings are not candle observations. With
-            # no provider-attested specification timestamp in this OHLC-only
-            # cycle they must remain explicitly time-unknown, never borrow the
-            # latest M5 candle cutoff as fabricated provenance.
-            assert measurements["source_timestamp_known"] is False
-            assert measurements["source_timestamp_epoch"] is None
-            assert measurements["source_timestamp_verified"] is False
+        if measurements["timeframe"] not in {"M1", "M5", "M15", "H1", "H4", "D1"}:
+            # BOOK, TICK and SPEC readings are provider/event channels, not
+            # completed-candle observations. They must never borrow an OHLC
+            # cutoff. A channel may carry its own provider-attested timestamp;
+            # otherwise its source time remains explicitly unknown.
+            assert measurements["source_bar_epoch"] is None
+            if measurements["source_timestamp_known"] is True:
+                assert measurements["source_timestamp_verified"] is True
+                assert measurements["source_timestamp_epoch"] is not None
+                assert measurements["source_timestamp_epoch"] > 0
+            else:
+                assert measurements["source_timestamp_epoch"] is None
+                assert measurements["source_timestamp_verified"] is False
             continue
         assert measurements["source_timestamp_known"] is True, (
             f"unverified candle provenance: concept={measurements.get('concept')}, "
