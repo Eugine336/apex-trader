@@ -36,10 +36,47 @@ def _tp(ticket="T1", symbol="EURUSD", new_tp=1.120, source="adjust", reason="adj
     )
 
 
-def _partial(ticket="T1", symbol="EURUSD", fraction=0.5, source="tp1", reason="tp1 hit", ts=TS):
+def _partial(ticket="T1", symbol="EURUSD", fraction=0.5, source="tp1", reason="tp1 hit", ts=TS, action_id=""):
     return Intent.partial_close(
-        symbol=symbol, ticket=ticket, fraction=fraction, source=source, reason=reason, timestamp=ts,
+        symbol=symbol, ticket=ticket, fraction=fraction, source=source, reason=reason,
+        timestamp=ts, action_id=action_id,
     )
+
+
+class TestActionIdDeduplication:
+    def test_exact_duplicate_brain_partial_action_is_collapsed(self):
+        agg = IntentAggregator()
+        first = _partial(fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102")
+        duplicate = _partial(
+            fraction=0.25, source="replayed_brain_decision",
+            action_id="campaign-1:milestone:crt:H1:1:102",
+        )
+        agg.submit([first, duplicate])
+        result = agg.flush()
+        assert len(result) == 1
+        assert result[0].action_id == "campaign-1:milestone:crt:H1:1:102"
+
+    def test_conflicting_payload_reusing_action_id_is_dropped(self):
+        agg = IntentAggregator()
+        agg.submit([
+            _partial(fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102"),
+            _partial(fraction=0.50, action_id="campaign-1:milestone:crt:H1:1:102"),
+        ])
+        assert agg.flush() == []
+
+    def test_distinct_intent_types_from_same_brain_action_are_preserved(self):
+        agg = IntentAggregator()
+        partial = _partial(fraction=0.25, action_id="campaign-1:milestone:crt:H1:1:102")
+        stop = Intent.modify_sl(
+            symbol="EURUSD", ticket="T1", new_sl=1.101,
+            source="ai_brain", reason="same concept action",
+            action_id="campaign-1:milestone:crt:H1:1:102",
+        )
+        agg.submit([partial, stop])
+        result = agg.flush()
+        assert {item.intent_type for item in result} == {
+            IntentType.PARTIAL_CLOSE, IntentType.MODIFY_SL,
+        }
 
 
 # ── Empty flush ──────────────────────────────────────────────────────
