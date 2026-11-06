@@ -266,20 +266,36 @@ class StrategyLensReadings:
                     else "partial_method_context" if selected
                     else "not_evaluable"
                 )
+                source_epochs = [
+                    finite(item.source_bar_epoch) for item in selected.values()
+                ]
                 epochs = {
-                    value for item in selected.values()
-                    if (value := finite(item.source_bar_epoch)) is not None and value > 0.0
+                    value for value in source_epochs
+                    if value is not None and value > 0.0
                 }
-                source_epoch = next(iter(epochs)) if len(epochs) == 1 else None
-                if len(epochs) > 1:
-                    unknowns.append("underlying method readings are not synchronized to one completed-bar timestamp")
-                groups = {
-                    item.independence_group for item in selected.values()
-                    if item.independence_group
-                }
-                independence_group = next(iter(groups)) if len(groups) == 1 else ""
-                if len(groups) > 1:
-                    unknowns.append("composite lens spans multiple source groups; no single independence group is asserted")
+                source_epoch = (
+                    next(iter(epochs))
+                    if selected and len(epochs) == 1 and len(epochs) == len(selected)
+                    else None
+                )
+                if len(epochs) > 1 or (epochs and len(epochs) != len(selected)):
+                    unknowns.append(
+                        "underlying method readings are not all synchronized to one verified completed-bar timestamp"
+                    )
+                source_groups = [
+                    str(item.independence_group or "").strip()
+                    for item in selected.values()
+                ]
+                groups = {group for group in source_groups if group}
+                independence_group = (
+                    next(iter(groups))
+                    if selected and len(groups) == 1 and len(groups) == len(selected)
+                    else ""
+                )
+                if len(groups) > 1 or (groups and len(groups) != len(selected)):
+                    unknowns.append(
+                        "composite lens spans multiple or incomplete source groups; no single independence group is asserted"
+                    )
                 bases = {
                     item.data_basis or "completed_ohlc" for item in selected.values()
                 }
