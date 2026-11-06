@@ -369,11 +369,23 @@ class MT5Connector(BaseConnector):
             volume_min = float(getattr(item, "volume_min", 0.0) or 0.0)
             volume_max = float(getattr(item, "volume_max", 0.0) or 0.0)
             volume_step = float(getattr(item, "volume_step", 0.0) or 0.0)
+            tick_value = float(getattr(item, "trade_tick_value", 0.0) or 0.0)
             spec_complete = all(value > 0 for value in (
-                tick_size, point, contract_size, volume_min, volume_max, volume_step
+                tick_size, tick_value, point, contract_size, volume_min, volume_max, volume_step
             ))
+            try:
+                from brain.symbol_mapper import resolve_to_internal
+                from config import get_instrument
+                apex_symbol = resolve_to_internal(name)
+                get_instrument(apex_symbol)
+                apex_supported = True
+            except (KeyError, ValueError):
+                apex_symbol = name.upper()
+                apex_supported = False
             discovered.append({
                 "symbol": name,
+                "apex_symbol": apex_symbol,
+                "apex_supported": apex_supported,
                 "description": str(getattr(item, "description", "") or ""),
                 "path": str(getattr(item, "path", "") or ""),
                 "visible_in_market_watch": bool(getattr(item, "visible", False)),
@@ -385,7 +397,7 @@ class MT5Connector(BaseConnector):
                 "digits": int(getattr(item, "digits", 0) or 0),
                 "point": point,
                 "trade_tick_size": tick_size,
-                "trade_tick_value": float(getattr(item, "trade_tick_value", 0.0) or 0.0),
+                "trade_tick_value": tick_value,
                 "trade_contract_size": contract_size,
                 "volume_min": volume_min,
                 "volume_max": volume_max,
@@ -398,7 +410,7 @@ class MT5Connector(BaseConnector):
                 "swap_long": getattr(item, "swap_long", None),
                 "swap_short": getattr(item, "swap_short", None),
                 "specification_complete": spec_complete,
-                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete),
+                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete and apex_supported),
                 "source": "mt5.symbols_get",
                 "source_verified": True,
             })
