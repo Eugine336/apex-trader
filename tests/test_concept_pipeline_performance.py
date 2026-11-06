@@ -339,3 +339,22 @@ def test_reader_cache_isolated_between_distinct_module_instances_with_same_key()
 
     assert first.calls == 1
     assert second.calls == 1
+
+def test_single_pass_row_conversion_preserves_unbounded_list_source_behavior():
+    import cognition.market_lenses as market_lenses
+
+    rows = [
+        {
+            "time": 1_800_000_000 + index * 300,
+            "open": 1.0,
+            "high": 1.1,
+            "low": 0.9,
+            "close": 1.05,
+        }
+        for index in range(40)
+    ]
+    full, window = market_lenses._rows(
+        rows, expected_symbol="EURUSD", return_tail_limit=32,
+    )
+    assert len(full) == 40
+    assert window == full
