@@ -290,22 +290,20 @@ def _state_domains(n, *, symbol="XAUUSD"):
     return ms
 
 
-def test_v12_brain_declines_when_too_few_domains():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=3)
+def test_candidate_geometry_qualifies_without_universal_domain_count():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_state_domains(1))
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    assert "insufficient evidence coverage" in out.decision.risk_rationale
-    cov = out.decision.questions_answered.get("evidence_coverage", "")
-    assert cov.startswith("INSUFFICIENT")
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    coverage = out.decision.questions_answered.get("evidence_coverage", "")
+    assert coverage.startswith("QUALIFIED")
+    assert out.decision.questions_answered.get("evidence_independence_groups") is not None
 
 
-def test_v12_brain_acts_with_adequate_domains():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=3)
+def test_candidate_geometry_qualification_is_not_changed_by_unrelated_domain_count():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_state_domains(3))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.decision.questions_answered.get("evidence_coverage", "").startswith("ADEQUATE")
+    assert out.decision.questions_answered.get("evidence_coverage", "").startswith("QUALIFIED")
 
 
 # ── V17 — provider backoff ──────────────────────────────────────────────────
