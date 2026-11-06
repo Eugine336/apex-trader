@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import pandas as pd
+import pytest
 
 import platforms.mt5.mt5_connector as mt5_module
 from platforms.mt5.mt5_connector import MT5Connector
