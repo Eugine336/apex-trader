@@ -106,7 +106,7 @@ class LiquidityPools:
     def _inducement_reading(self, symbol, tf, bars, ref_close, ref_tf):
         # A local internal pool is swept while the outer confirmed swing range
         # remains intact. This is a price-action proxy, not proof of intent.
-        swings = fractal_swings(bars[:-1], cache_key=f"liquidity-pools:{symbol}:{tf}")
+        swings = fractal_swings(bars[:-1], cache_key=f"market-swings:{symbol}:{tf}")
         highs = [s for s in swings if s[1] == "H"]
         lows = [s for s in swings if s[1] == "L"]
         if len(highs) < 2 or len(lows) < 2:
@@ -168,7 +168,7 @@ class LiquidityPools:
     def _reading(self, symbol, tf, bars, day_week, ref_close, ref_tf):
         last = bars[-1]
         swings = fractal_swings(
-            bars[:-1], cache_key=f"liquidity-pools:{symbol}:{tf}",
+            bars[:-1], cache_key=f"market-swings:{symbol}:{tf}",
         )  # pools exist before the latest bar acts on them\n        eq_h = _equality_percentiles(swings, "H")
         eq_l = _equality_percentiles(swings, "L")
         pools: list[dict] = []
