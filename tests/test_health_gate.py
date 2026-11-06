@@ -76,9 +76,8 @@ class TestIsScannerBlind:
 
 
 # ── main-loop health gate integration ───────────────────────────────
-# These tests exercise the gate decision WITHOUT importing the full
-# TradingLoop (which drags in torch via scanner → rl.bridge).
-# We mock only the watchdog + drawdown interaction and verify:
+# These tests isolate the health-gate decision from full TradingLoop startup.
+# They mock only the watchdog + drawdown interaction and verify:
 #   - blind → scan skipped, management runs, cycle["health_blocked"]
 #   - healthy → scan proceeds normally
 
