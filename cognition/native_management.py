@@ -418,6 +418,30 @@ class NativePositionManager:
                     **base,
                 )
 
+            expected_horizon = _finite_number(
+                context.get("expected_holding_horizon_seconds")
+            )
+            elapsed_holding = _finite_number(getattr(position, "hold_seconds", None))
+            if (
+                expected_horizon is not None and expected_horizon > 0.0
+                and elapsed_holding is not None and elapsed_holding >= expected_horizon
+            ):
+                return NativeManagementVerdict(
+                    action="hold",
+                    thesis_state="time_decay_review",
+                    reason=(
+                        "the campaign's original expected holding horizon has elapsed; "
+                        "reassess the thesis and its remaining expected value using fresh evidence"
+                    ),
+                    management_plan={
+                        "kind": "time_decay_review",
+                        "expected_horizon_seconds": expected_horizon,
+                        "elapsed_holding_seconds": elapsed_holding,
+                        "elapsed_ratio": elapsed_holding / expected_horizon,
+                    },
+                    **base,
+                )
+
             # Negative expected value is meaningful only when it is explicitly
             # marked as AFTER cost and is tied to this campaign. It tightens risk;
             # it does not auto-liquidate a thesis that has not been invalidated.
