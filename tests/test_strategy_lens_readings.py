@@ -37,13 +37,13 @@ def _lens_evidence():
     return [
         item for item in run_concepts("XAUUSD", {"M5": _bars()})
         if item.measurements.get("lens_key") in set(LENS_METHODS)
-        or item.measurements.get("concept") in {"crt", "market_regime_transition"}
+        or item.measurements.get("concept") in {"crt", "regime_switching"}
     ]
 
 
 def test_lens_composition_catalog_covers_every_strategy_knowledge_lens_once():
     catalog_keys = {item.key for item in STRATEGY_LENSES}
-    assert set(LENS_METHODS) | {"crt", "market_regime_transition"} == catalog_keys
+    assert set(LENS_METHODS) | {"crt", "regime_switching"} == catalog_keys
     assert len(LENS_METHODS) == 36
     assert len(FULL_LENSES) == 19
     assert len(DATA_GATED_LENSES) == 17
@@ -62,9 +62,15 @@ def test_lens_composition_reader_is_registered_and_claims_no_new_methods():
 def test_native_pipeline_composes_method_readings_for_every_lens():
     evidence = _lens_evidence()
     concepts = {
-        item.measurements.get("concept")
+        item.measurements.get("lens_key")
+        or (
+            "market_regime_transition"
+            if item.measurements.get("concept") == "regime_switching"
+            else item.measurements.get("concept")
+        )
         for item in evidence
-        if item.measurements.get("lens_key") or item.measurements.get("concept") in {"crt", "market_regime_transition"}
+        if item.measurements.get("lens_key")
+        or item.measurements.get("concept") in {"crt", "regime_switching"}
     }
 
     assert set(LENS_METHODS) | {"crt", "market_regime_transition"} <= concepts
