@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
+
 
 
 # (health label, SystemContext attribute) — mirrors ops.lifecycle adaptive layers.
@@ -150,8 +152,6 @@ def _ed_adaptive_layer_detail(ctx: Any, cfg: Any = None) -> dict:
 def _ed_store_sizes_mb(cfg: Any) -> dict:
     """On-disk size (MB) of each known SQLite store from config paths."""
     from pathlib import Path
-
-from loguru import logger
 
     sizes: dict[str, float] = {}
     if cfg is None:

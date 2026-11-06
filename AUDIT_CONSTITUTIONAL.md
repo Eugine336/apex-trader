@@ -250,15 +250,11 @@ Severity rubric:
 - **Information Lost**: Module observational quality, causal usefulness, regime-specific contribution, and non-directional evidence accuracy are reduced to directional correctness.
 - **Root Cause**: Learning/governance systems were built around module-vote performance before the observation-only constitution was adopted.
 
-### V-022: Adaptive timeframe weights learn from winning LONG/SHORT agreement
-- **Severity**: MEDIUM
-- **Philosophy Rule**: 4, 6, 10, 20
-- **File(s)**: `adaptive/adaptive_weight_provider.py:1-10`, `adaptive/adaptive_weight_provider.py:77-83`, `adaptive/adaptive_weight_provider.py:160-199`, `brain/decision_core.py:77-92`, `brain/decision_core.py:108-140`, `core/system_context.py:1720-1745`
-- **Actual Code Behavior**: `AdaptiveWeightProvider` tracks how predictive each timeframe's confirmed structure direction was versus realized trade outcome. It maps `BULLISH` to `LONG` and `BEARISH` to `SHORT`, credits/debits only timeframes whose trend backed the taken direction, and can override `decision_core` evidence weights after enough trades. `decision_core` comments still describe a probabilistic bias model with timeframe weights contributing directional structure.
-- **Execution Path**: `SystemContext` initializes `AdaptiveWeightProvider` and registers it through `brain.decision_core.set_evidence_weight_provider()`. Any decision-core bias path using `_active_weights()` receives learned weights that were trained on whether timeframe trends backed winning `LONG`/`SHORT` trades.
-- **Why It Violates**: Higher timeframe and timeframe-specific structure should be context, not learned command authority. This system increases or decreases timeframe influence based on directional agreement with winning trades.
-- **Information Lost**: A timeframe's contextual usefulness for different horizons, reversals, liquidity events, and conditional opportunities is reduced to whether its trend aligned with a taken side.
-- **Root Cause**: Static directional bias model was made adaptive without redesigning learning targets around opportunity/thesis quality.
+### V-022: Adaptive timeframe weighting used as a latent directional influence — FIXED
+- **Status**: FIXED in PR #810.
+- **Remediation**: Removed the XAUUSD-specific and generic weighted-direction hooks from `brain/decision_core.py`; removed SystemContext registration, scheduler recompute path, configuration fields, dashboard controls, and the provider implementation.
+- **Current contract**: Timeframe observations remain available as evidence. They are not collapsed into a pre-Brain weighted directional score. The Cognitive Brain forms and challenges LONG, SHORT, and FLAT hypotheses from underlying measurements.
+- **Regression coverage**: Removed provider-hook tests and added mirrored LONG/SHORT Wyckoff spring/upthrust tests.
 
 ## LEGACY
 

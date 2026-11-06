@@ -190,3 +190,46 @@ def test_wyckoff_no_double_drop():
 
     # Inner engine receives the full live frame — it self-drops to n-1 closed.
     assert rec.seen == n
+
+
+def test_wyckoff_spring_and_upthrust_are_mirrored_without_symbol_bias():
+    rows = [{
+        "open": 100.0, "high": 110.0, "low": 90.0,
+        "close": 100.0, "volume": 100.0,
+    } for _ in range(39)]
+    rows.append({
+        "open": 95.0, "high": 98.0, "low": 89.0,
+        "close": 94.0, "volume": 100.0,
+    })
+    original = pd.DataFrame(rows)
+    mirrored = original.copy()
+    mirrored["open"] = 200.0 - original["open"]
+    mirrored["close"] = 200.0 - original["close"]
+    # Reflection swaps extrema: new high is reflected old low, and vice versa.
+    mirrored["high"] = 200.0 - original["low"]
+    mirrored["low"] = 200.0 - original["high"]
+    engine = WyckoffEngine(pip_size=0.01)
+    high, low, _ = engine._range_state(original)
+    m_high, m_low, _ = engine._range_state(mirrored)
+    assert (high, low) == (110.0, 90.0)
+    assert (m_high, m_low) == (110.0, 90.0)
+    assert engine._is_spring(original, low)
+    assert not engine._is_upthrust(original, high)
+    assert not engine._is_spring(mirrored, m_low)
+    assert engine._is_upthrust(mirrored, m_high)
+
+
+def test_wyckoff_reference_range_excludes_candidate_bar():
+    rows = [{
+        "open": 100.0, "high": 110.0, "low": 90.0,
+        "close": 100.0, "volume": 100.0,
+    } for _ in range(39)]
+    rows.append({
+        "open": 95.0, "high": 98.0, "low": 89.0,
+        "close": 94.0, "volume": 100.0,
+    })
+    frame = pd.DataFrame(rows)
+    engine = WyckoffEngine(pip_size=0.01)
+    high, low, _ = engine._range_state(frame)
+    assert (high, low) == (110.0, 90.0)
+    assert engine._is_spring(frame, low)

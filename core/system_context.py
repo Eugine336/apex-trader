@@ -179,7 +179,6 @@ class SystemContext:
     tuner_agent: Optional[TunerAgent] = None
     recommendation_gateway: Optional[RecommendationGateway] = None
     # ── Phase 6: continuous-learning closure ─────────────────────────
-    adaptive_weight_provider: Optional[Any] = None
     recommendation_applier: Optional[Any] = None
     # ── Cross-instrument opportunity layer (GAP 1-5) ──────────────────
     # Pure helpers consumed at gated call sites; default-disabled behaviour is an
@@ -1766,34 +1765,8 @@ class SystemContext:
         )
 
         # ── Phase 6: continuous-learning closure ─────────────────────
-        # (a) AdaptiveWeightProvider — bounded, learned override of the static
-        #     probabilistic-bias evidence weights, registered on decision_core
-        #     so compute_bias reads it (falls back to static defaults on any
-        #     fault or until the min-trades floor is reached).
         at_cfg = getattr(config, "adaptive_tuner", None)
-        try:
-            from adaptive.adaptive_weight_provider import (
-                AdaptiveWeightProvider as _AWP,
-            )
-            from brain import decision_core as _dc
-            if at_cfg is not None and bool(getattr(at_cfg, "enabled", True)):
-                ctx.adaptive_weight_provider = _AWP(
-                    enabled=bool(getattr(at_cfg, "weight_adaptation_enabled", True)),
-                    min_trades=int(getattr(at_cfg, "weight_min_trades", 30)),
-                    min_weight=float(getattr(at_cfg, "weight_min", 0.05)),
-                    max_weight=float(getattr(at_cfg, "weight_max", 0.40)),
-                    max_shift_per_cycle=float(
-                        getattr(at_cfg, "weight_max_shift_per_cycle", 0.03)
-                    ),
-                    window_size=int(getattr(at_cfg, "weight_window_size", 200)),
-                    adapt_gain=float(getattr(at_cfg, "weight_adapt_gain", 0.5)),
-                    state_path=getattr(at_cfg, "weight_state_path", None),
-                )
-                _dc.set_evidence_weight_provider(ctx.adaptive_weight_provider)
-        except Exception as exc:
-            logger.warning("[SystemContext] AdaptiveWeightProvider init failed: {}", exc)
-
-        # (b) RecommendationApplier — applies APPROVED PARAM_PROMOTE
+        # RecommendationApplier applies APPROVED PARAM_PROMOTE
         #     recommendations to a registered, bounded set of live config
         #     parameters (consensus / ranker thresholds). Wired as the gateway
         #     applier so it only fires on an authorised approval.
@@ -1840,9 +1813,7 @@ class SystemContext:
             logger.warning("[SystemContext] RecommendationApplier init failed: {}", exc)
 
         logger.info(
-            "[SystemContext] continuous-learning closure — adaptive_weights={} "
-            "rec_applier={}",
-            ctx.adaptive_weight_provider is not None,
+            "[SystemContext] continuous-learning closure — rec_applier={}",
             ctx.recommendation_applier is not None,
         )
 

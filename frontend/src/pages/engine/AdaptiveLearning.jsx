@@ -5,33 +5,22 @@ import StatTile from "../../components/engine/StatTile";
 import { useEnginePoll } from "../../hooks/useEnginePoll";
 import { fmtTs } from "../../utils/engineFormat";
 
-const TF_ORDER = ["D1", "H4", "H1", "M15", "M5", "M1"];
-
-function deltaClass(delta) {
-  const v = Number(delta || 0);
-  if (v > 0) return "text-emerald-400";
-  if (v < 0) return "text-red-400";
-  return "text-gray-500";
-}
-
 export default function AdaptiveLearning() {
   const { data, loading, error, unavailable } = useEnginePoll(
     getAdaptiveLearning,
     5000
   );
 
-  const weights = data?.weights || {};
   const applier = data?.applier || {};
   const scheduler = data?.scheduler || {};
-  const tfs = TF_ORDER.filter(
-    (tf) => weights.weights && weights.weights[tf] !== undefined
-  );
+  const tuner = data?.tuner || {};
+  const registered = Array.isArray(tuner.registered) ? tuner.registered : [];
 
   return (
     <div className="space-y-6">
       <EngineHeader
         title="Adaptive Learning"
-        subtitle="Closed continuous-learning loop — bounded evidence-weight adaptation, per-TF predictive accuracy, the recommendation applier, and the periodic tuning scheduler."
+        subtitle="Governed parameter application, periodic tuning, scan-cycle learning, and registered tuning agents. Analytical timeframe weights do not determine Brain direction."
       />
 
       <EngineNotice
@@ -45,79 +34,14 @@ export default function AdaptiveLearning() {
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatTile
-              label="Adapting"
-              value={weights.adapting ? "YES" : "NO"}
-              accent={weights.adapting ? "text-emerald-400" : "text-gray-500"}
+              label="Tuner"
+              value={tuner.enabled ? "ENABLED" : "UNAVAILABLE"}
+              accent={tuner.enabled ? "text-emerald-400" : "text-gray-500"}
             />
-            <StatTile
-              label="Trades Learned"
-              value={`${weights.total_trades || 0} / ${weights.min_trades || 0}`}
-            />
-            <StatTile label="Recomputes" value={weights.recompute_count || 0} />
+            <StatTile label="Registered Tunables" value={registered.length} />
+            <StatTile label="Periodic Runs" value={scheduler.periodic_runs || 0} />
             <StatTile label="Params Applied" value={applier.applied_count || 0} />
           </div>
-
-          {!weights.enabled && (
-            <Panel title="Weight adaptation">
-              <div className="py-3 text-center text-xs text-amber-300">
-                Adaptive weight provider not wired — bias uses static defaults.
-              </div>
-            </Panel>
-          )}
-
-          <Panel title="Evidence weights (adapted vs default)">
-            {tfs.length === 0 ? (
-              <div className="py-3 text-center text-xs text-gray-600">no data</div>
-            ) : (
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="text-gray-500">
-                    <th className="py-1 text-left">TF</th>
-                    <th className="py-1 text-right">Weight</th>
-                    <th className="py-1 text-right">Default</th>
-                    <th className="py-1 text-right">Δ last</th>
-                    <th className="py-1 text-right">Accuracy</th>
-                    <th className="py-1 text-right">Samples</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tfs.map((tf) => {
-                    const acc = weights.accuracy ? weights.accuracy[tf] : null;
-                    return (
-                      <tr key={tf} className="border-b border-gray-800/60">
-                        <td className="py-0.5 pr-2 text-gray-500">{tf}</td>
-                        <td className="py-0.5 pr-2 text-right font-mono text-gray-200">
-                          {Number(weights.weights[tf] || 0).toFixed(3)}
-                        </td>
-                        <td className="py-0.5 pr-2 text-right font-mono text-gray-500">
-                          {Number(
-                            (weights.defaults && weights.defaults[tf]) || 0
-                          ).toFixed(3)}
-                        </td>
-                        <td
-                          className={`py-0.5 pr-2 text-right font-mono ${deltaClass(
-                            weights.last_change && weights.last_change[tf]
-                          )}`}
-                        >
-                          {weights.last_change && weights.last_change[tf]
-                            ? Number(weights.last_change[tf]).toFixed(3)
-                            : "—"}
-                        </td>
-                        <td className="py-0.5 pr-2 text-right font-mono text-gray-400">
-                          {acc === null || acc === undefined
-                            ? "—"
-                            : Number(acc).toFixed(2)}
-                        </td>
-                        <td className="py-0.5 text-right font-mono text-gray-500">
-                          {weights.samples ? weights.samples[tf] || 0 : 0}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </Panel>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <Panel title="Recommendation applier">
@@ -172,14 +96,22 @@ export default function AdaptiveLearning() {
                       {scheduler.scan_runs || 0}
                     </td>
                   </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Weight recomputes</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {scheduler.weight_recomputes || 0}
-                    </td>
-                  </tr>
                 </tbody>
               </table>
+            </Panel>
+
+            <Panel title="Registered tuning agents">
+              {registered.length ? (
+                <ul className="space-y-1 text-xs text-gray-400">
+                  {registered.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="py-3 text-center text-xs text-gray-600">
+                  No tunables are registered.
+                </div>
+              )}
             </Panel>
           </div>
         </>

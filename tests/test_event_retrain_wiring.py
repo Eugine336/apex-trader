@@ -268,7 +268,6 @@ def _fake_ctx(ml_adapter):
     # Every subsystem the close path touches set to None (each is guarded by an
     # ``is not None`` check) except the ml_adapter recorder.
     return SimpleNamespace(
-        adaptive_weight_provider=None,
         drawdown_guard=None,
         risk_engine=None,
         portfolio_governor=None,

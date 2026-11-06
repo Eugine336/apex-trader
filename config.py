@@ -4163,28 +4163,14 @@ class AdaptiveTunerConfig:
     time-based (``on_periodic_tick``) and per-scan (``on_scan_cycle``) tune
     cadences — previously only ``on_trade_close`` fired in production, so the
     VoteCalibrator / ModuleGovernor writers stayed dormant and their
-    live readers never saw fresh values. The same scheduler recomputes the
-    :class:`AdaptiveWeightProvider`, which nudges the probabilistic-bias evidence
-    weights toward the timeframes that actually predict outcomes — within hard,
-    reversible bounds.
-
-    Defaults ON with conservative bounds: the loop only adapts after enough
-    evidence (``weight_min_trades``) and can never move a weight far or fast.
+    live readers never saw fresh values. The scheduler runs these learning
+    cadences; it does not alter Brain evidence weights or choose direction.
     """
 
     enabled: bool = True
     # Scheduler cadences (seconds).
     periodic_interval_seconds: float = 900.0   # 15 min — drives on_periodic_tick
     scan_interval_seconds: float = 3600.0      # 1 hr  — drives on_scan_cycle
-    # Adaptive evidence-weight provider bounds.
-    weight_adaptation_enabled: bool = True
-    weight_min_trades: int = 30                # min closed trades before adapting
-    weight_min: float = 0.05                   # floor per timeframe
-    weight_max: float = 0.40                   # ceiling per timeframe
-    weight_max_shift_per_cycle: float = 0.03   # max move per recompute
-    weight_window_size: int = 200              # rolling accuracy window
-    weight_adapt_gain: float = 0.5             # accuracy-divergence sensitivity
-    weight_state_path: str = "data/adaptive_weights.json"
     # Recommendation applier (Learning ⑦ → Governance ⑧ → live config).
     recommendation_apply_enabled: bool = True
     recommendation_max_change_pct: float = 0.20   # max ±20% move per apply
@@ -4198,18 +4184,6 @@ class AdaptiveTunerConfig:
         if float(self.scan_interval_seconds) <= 0:
             raise ValueError(
                 "AdaptiveTunerConfig.scan_interval_seconds must be > 0"
-            )
-        if not (0.0 < float(self.weight_min) < float(self.weight_max) <= 1.0):
-            raise ValueError(
-                "AdaptiveTunerConfig requires 0 < weight_min < weight_max <= 1"
-            )
-        if float(self.weight_max_shift_per_cycle) <= 0:
-            raise ValueError(
-                "AdaptiveTunerConfig.weight_max_shift_per_cycle must be > 0"
-            )
-        if int(self.weight_min_trades) < 1:
-            raise ValueError(
-                "AdaptiveTunerConfig.weight_min_trades must be >= 1"
             )
 
 
