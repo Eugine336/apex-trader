@@ -81,7 +81,7 @@ _ROLLING_SWING_CACHE: OrderedDict[
     str, tuple[tuple[tuple[float, float], ...], tuple[tuple[int, str, float], ...]]
 ] = OrderedDict()
 _ROLLING_SWING_CACHE_LOCK = threading.RLock()
-_ROLLING_SWING_CACHE_MAX_ENTRIES = 256
+_ROLLING_SWING_CACHE_MAX_ENTRIES = 1024
 _ROLLING_SWING_STATS = {
     "exact_hits": 0, "prefix_hits": 0, "incremental_updates": 0, "full_rebuilds": 0,
 }
