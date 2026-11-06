@@ -147,7 +147,6 @@ class NativePositionManager:
         hypotheses: Optional[list[Any]] = None,
         now: Optional[float] = None,
         max_uncertainty: float = 0.6,
-        min_evidence_domains: int = 3,
     ) -> NativeManagementVerdict:
         """Reassess the held thesis. On any fault, return HOLD (never EXIT)."""
         symbol = str(getattr(position, "symbol", "") or "")
