@@ -162,3 +162,16 @@ def test_concept_readings_with_conflicting_order_types_do_not_merge():
     })
 
     assert _geometry_from_concept_readings([market, pending], "LONG", "EURUSD") is None
+
+
+
+def test_malformed_explicit_entry_price_fails_closed():
+    reading = _reading("crt", "e-malformed", 98.0, 105.0)
+    reading["implications"][0].update({
+        "order_type": "LIMIT",
+        "entry_price": "not-a-price",
+        "entry_zone_low": 99.0,
+        "entry_zone_high": 101.0,
+    })
+
+    assert _geometry_from_concept_readings([reading], "LONG", "EURUSD") is None
