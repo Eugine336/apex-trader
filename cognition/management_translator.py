@@ -74,7 +74,6 @@ _OPP = {"LONG": "SHORT", "SHORT": "LONG"}
 def translate_management(
     output: Any,
     position: Any,
-    *,
 ) -> Optional[ManagementAction]:
     """Map a Brain management ``BrainOutput`` → a :class:`ManagementAction`.
 
