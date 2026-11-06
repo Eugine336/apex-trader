@@ -34,6 +34,7 @@ from cognition.concepts.volume_profile import VolumeProfileConcept
 from cognition.concepts.seasonality import SeasonalityConcept
 from cognition.concepts.range_rotation import RangeRotation
 from cognition.concepts.quantitative_state_readings import QuantitativeStateReadings
+from cognition.concepts.cross_asset_readings import CrossAssetReadings
 from cognition.concepts.strategy_lens_readings import StrategyLensReadings
 
 logger = logging.getLogger("apex.cognition.concepts")
@@ -64,6 +65,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     OrderBookReadings(),
     TickMicrostructureReadings(),
     QuantitativeStateReadings(),
+    CrossAssetReadings(),
     StrategyLensReadings(),
 )
 
