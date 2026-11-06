@@ -1679,7 +1679,6 @@ class CognitiveBrain:
                 hypotheses=native_hypotheses,
                 now=now,
                 max_uncertainty=self.max_uncertainty_to_act,
-                min_evidence_domains=self.min_evidence_domains,
             )
             payload["native_analysis"] = analysis.to_dict()
             payload["native_hypotheses"] = [
@@ -3598,7 +3597,6 @@ class CognitiveBrain:
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
-                "min_evidence_domains": None,  # deprecated; no longer gates decisions
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "degrade_on_unknown_council": self._degrade_on_unknown_council,
                 "allow_scale_in": self.allow_scale_in,
