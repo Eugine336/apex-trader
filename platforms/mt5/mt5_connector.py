@@ -778,6 +778,50 @@ class MT5Connector(BaseConnector):
         })
         return frame
 
+    def calculate_profit(
+        self, symbol: str, direction: str, volume: float, price_open: float, price_close: float,
+    ) -> float:
+        """Ask MT5 to calculate P&L in account currency for the exact contract."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        if volume <= 0 or price_open <= 0 or price_close <= 0:
+            raise ValueError("volume and prices must be positive")
+        side = str(direction).strip().upper()
+        if side in {"BUY", "LONG"}:
+            action = mt5.ORDER_TYPE_BUY
+        elif side in {"SELL", "SHORT"}:
+            action = mt5.ORDER_TYPE_SELL
+        else:
+            raise ValueError("direction must be BUY/LONG or SELL/SHORT")
+        result = mt5.order_calc_profit(action, mapped, float(volume), float(price_open), float(price_close))
+        if result is None:
+            raise RuntimeError(f"MT5 order_calc_profit failed for {mapped}: {mt5.last_error()}")
+        return float(result)
+
+    def calculate_margin(
+        self, symbol: str, direction: str, volume: float, price: float,
+    ) -> float:
+        """Ask MT5 to calculate required margin in account currency."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        if volume <= 0 or price <= 0:
+            raise ValueError("volume and price must be positive")
+        side = str(direction).strip().upper()
+        if side in {"BUY", "LONG"}:
+            action = mt5.ORDER_TYPE_BUY
+        elif side in {"SELL", "SHORT"}:
+            action = mt5.ORDER_TYPE_SELL
+        else:
+            raise ValueError("direction must be BUY/LONG or SELL/SHORT")
+        result = mt5.order_calc_margin(action, mapped, float(volume), float(price))
+        if result is None:
+            raise RuntimeError(f"MT5 order_calc_margin failed for {mapped}: {mt5.last_error()}")
+        return float(result)
+
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread
 
