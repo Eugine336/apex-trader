@@ -265,7 +265,7 @@ def _analogue_reading(
     if len(distances) < len(historical):
         unknowns.append("some historical state vectors have no non-zero robust scale across available dimensions")
     facts = {
-        "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range", "relative_volume"],
+        "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range"],
         "current_state": list(current),
         "historical_state_sample_count": len(historical),
         "nearest_neighbour_count": neighbour_count,
@@ -349,7 +349,7 @@ def _anomaly_reading(
     if current_distance is None or novelty_percentile is None:
         unknowns.append("at least one non-constant robust-scaled state feature and its historical distance distribution")
     facts = {
-        "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range", "relative_volume"],
+        "state_feature_names": ["five_bar_log_return", "return_volatility", "median_relative_range"],
         "current_state": list(current),
         "historical_state_count": len(historical),
         "novelty_distance": current_distance,
