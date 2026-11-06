@@ -113,6 +113,8 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
     ]
     assert "method_summaries" in trend.measurements
     assert "method_implications" in trend.measurements
+    assert trend.measurements["source_timestamp_known"] is True
+    assert trend.measurements["source_provenance_verified"] is True
     assert all(
         "implications" in summary
         for summary in trend.measurements["method_summaries"].values()
@@ -301,6 +303,28 @@ def test_unsynchronized_method_composition_is_watch_not_relevant():
     assert lens.source_bar_epoch is None
     assert assessment["status"] == "watch"
     assert any("not all synchronized" in item for item in assessment["missing_context"])
+
+
+def test_reading_adapter_requires_explicit_verification_for_bar_timestamp():
+    reading = ConceptReading(
+        concept="anomaly_detection",
+        timeframe="M5",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+        applicable=True,
+        applicability_reason="test reading",
+        observation="timestamp provenance contract",
+        implications=(),
+        facts={},
+        source_bar_epoch=1_780_000_000.0,
+        data_basis="completed_ohlc",
+    )
+
+    evidence = reading_to_evidence("XAUUSD", reading)
+
+    assert evidence.source_timestamp_verified is False
+    assert evidence.source_timestamp_epoch is None
+    assert evidence.measurements["source_timestamp_known"] is False
+
 
 def test_composite_lens_does_not_promote_unverified_method_timestamps():
     methods = [
