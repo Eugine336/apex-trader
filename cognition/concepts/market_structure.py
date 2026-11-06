@@ -26,7 +26,9 @@ Nothing is invented: where history supplies no objective, the reading says so.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from functools import lru_cache
+import threading
 from typing import Optional
 
 from cognition.contracts import EvidenceDomain
@@ -75,18 +77,102 @@ def _fractal_swings_cached(
     return tuple(out)
 
 
-def fractal_swings(bars: list[dict]) -> list[tuple[int, str, float]]:
-    """Confirmed three-bar fractal swings, shared across OHLC concept readers.
+_ROLLING_SWING_CACHE: OrderedDict[
+    str, tuple[tuple[tuple[float, float], ...], tuple[tuple[int, str, float], ...]]
+] = OrderedDict()
+_ROLLING_SWING_CACHE_LOCK = threading.RLock()
+_ROLLING_SWING_CACHE_MAX_ENTRIES = 256
+_ROLLING_SWING_STATS = {
+    "exact_hits": 0, "incremental_updates": 0, "full_rebuilds": 0,
+}
 
-    A swing is confirmed only once its right-hand bar has completed. The cached
-    key is the complete high/low sequence, so any historical correction
-    invalidates the cached result.
+
+def _append_confirmed_pivot(
+    values: tuple[tuple[float, float], ...],
+    pivots: tuple[tuple[int, str, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
+    if len(values) < 3:
+        return ()
+    index = len(values) - 2
+    previous_high, previous_low = values[index - 1]
+    high, low = values[index]
+    following_high, following_low = values[index + 1]
+    new = []
+    if high > previous_high and high >= following_high:
+        new.append((index, "H", high))
+    if low < previous_low and low <= following_low:
+        new.append((index, "L", low))
+    out = list(pivots)
+    for swing in new:
+        if out and out[-1][1] == swing[1]:
+            more_extreme = (
+                swing[2] > out[-1][2] if swing[1] == "H"
+                else swing[2] < out[-1][2]
+            )
+            if more_extreme:
+                out[-1] = swing
+        else:
+            out.append(swing)
+    return tuple(out)
+
+
+def fractal_swing_cache_status() -> dict[str, int]:
+    with _ROLLING_SWING_CACHE_LOCK:
+        return {**_ROLLING_SWING_STATS, "entries": len(_ROLLING_SWING_CACHE)}
+
+
+def fractal_swings(
+    bars: list[dict], *, cache_key: str = "",
+) -> list[tuple[int, str, float]]:
+    """Confirmed fractal swings with append/rolling-window incremental updates.
+
+    The optional cache key scopes a series to one symbol/timeframe. If a new
+    completed bar is appended or a fixed-size history advances by one bar, only
+    the newly confirmable right-edge pivot is evaluated. Any gap or historical
+    correction triggers a full rebuild. Callers without a stable scope use the
+    bounded exact-history cache.
     """
     values = tuple(
         (float(bar["high"]), float(bar["low"]))
         for bar in bars
     )
-    return list(_fractal_swings_cached(values))
+    if not cache_key:
+        return list(_fractal_swings_cached(values))
+
+    key = str(cache_key)
+    with _ROLLING_SWING_CACHE_LOCK:
+        previous = _ROLLING_SWING_CACHE.get(key)
+        if previous is not None:
+            previous_values, previous_pivots = previous
+            if values == previous_values:
+                _ROLLING_SWING_CACHE.move_to_end(key)
+                _ROLLING_SWING_STATS["exact_hits"] += 1
+                return list(previous_pivots)
+            if len(values) == len(previous_values) + 1 and values[:-1] == previous_values:
+                pivots = _append_confirmed_pivot(values, previous_pivots)
+                _ROLLING_SWING_STATS["incremental_updates"] += 1
+            elif len(values) == len(previous_values) and previous_values[1:] == values[:-1]:
+                # The source returns a fixed rolling window. Drop pivots whose
+                # left-hand confirmation bar has left the window, shift indices,
+                # then evaluate the newly confirmable right-edge pivot.
+                shifted = tuple(
+                    (index - 1, kind, price)
+                    for index, kind, price in previous_pivots
+                    if index > 1
+                )
+                pivots = _append_confirmed_pivot(values, shifted)
+                _ROLLING_SWING_STATS["incremental_updates"] += 1
+            else:
+                pivots = _fractal_swings_cached(values)
+                _ROLLING_SWING_STATS["full_rebuilds"] += 1
+        else:
+            pivots = _fractal_swings_cached(values)
+            _ROLLING_SWING_STATS["full_rebuilds"] += 1
+        _ROLLING_SWING_CACHE[key] = (values, pivots)
+        _ROLLING_SWING_CACHE.move_to_end(key)
+        while len(_ROLLING_SWING_CACHE) > _ROLLING_SWING_CACHE_MAX_ENTRIES:
+            _ROLLING_SWING_CACHE.popitem(last=False)
+        return list(pivots)
 
 
 @lru_cache(maxsize=512)
