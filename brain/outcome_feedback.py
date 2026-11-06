@@ -23,6 +23,7 @@ Leaf module — standard library + loguru only.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import os
@@ -165,6 +166,7 @@ class OutcomeFeedback:
                     try:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
+                        logging.getLogger(__name__).debug("Exception handled by fallback in brain/outcome_feedback.py:167", exc_info=True)
                         continue
                     key = rec.get("trade_key")
                     if not key:
