@@ -212,3 +212,36 @@ def test_fractal_swings_incrementally_update_appended_and_rolling_history():
         (bar["high"], bar["low"]) for bar in base
     )))
     assert fractal_swing_cache_status()["incremental_updates"] == 2
+
+def test_prefix_swing_read_does_not_discard_full_history_incremental_state():
+    from cognition.concepts.market_structure import (
+        _fractal_swings_cached,
+        clear_fractal_swing_cache,
+        fractal_swing_cache_status,
+        fractal_swings,
+    )
+
+    clear_fractal_swing_cache()
+    bars = [
+        {"high": 2.0, "low": 0.0},
+        {"high": 3.0, "low": 1.0},
+        {"high": 2.0, "low": -1.0},
+        {"high": 4.0, "low": 0.0},
+        {"high": 3.0, "low": -2.0},
+    ]
+    key = "shared-structure-liquidity:EURUSD:M5"
+    full = fractal_swings(bars, cache_key=key)
+    prefix = fractal_swings(bars[:-1], cache_key=key)
+    assert prefix == list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in bars[:-1]
+    )))
+
+    next_full = bars[1:] + [{"high": 5.0, "low": -3.0}]
+    advanced = fractal_swings(next_full, cache_key=key)
+    reference = list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in next_full
+    )))
+    assert advanced == reference
+    status = fractal_swing_cache_status()
+    assert status["prefix_hits"] == 1
+    assert status["incremental_updates"] == 1
