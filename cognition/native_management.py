@@ -658,6 +658,7 @@ class NativePositionManager:
                 (),
                 1.0,
                 0,
+                len(hypotheses or []),
             )
 
     @staticmethod
