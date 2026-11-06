@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
-from cognition.concepts.base import ConceptReading
+from cognition.concepts.base import ConceptReading, reading_to_evidence
 from cognition.contracts import EvidenceDomain
 from cognition.concepts.strategy_lens_readings import (
     DATA_GATED_LENSES,
@@ -170,3 +170,10 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
     assert composite.source_bar_epoch is None
     assert composite.independence_group == "ohlc:XAUUSD:M5"
     assert any("not all synchronized" in item for item in composite.unknowns)
+
+    assessment = next(
+        item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", composite)])
+        if item["key"] == "wyckoff_effort_result"
+    )
+    assert assessment["status"] == "watch"
+    assert any("not all synchronized" in item for item in assessment["missing_context"])
