@@ -8,9 +8,9 @@ events from them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class Tick:
     source_timestamp_verified: bool = False
     quote_kind: str = "unknown"
     spread_unit: str = "unknown"
-    raw_fields: dict = None
+    raw_fields: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         timestamp = self.timestamp
