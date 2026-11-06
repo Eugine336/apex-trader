@@ -328,6 +328,8 @@ class StrategyLensReadings:
                         "applicability_reason": item.applicability_reason,
                         "observation": item.observation,
                         "source_bar_epoch": item.source_bar_epoch,
+                        "source_timestamp_epoch": item.source_timestamp_epoch,
+                        "source_timestamp_verified": item.source_timestamp_verified is True,
                         "independence_group": item.independence_group,
                         "unknowns": list(item.unknowns),
                         "facts": _compact_facts(item.facts if isinstance(item.facts, dict) else {}),
@@ -440,9 +442,9 @@ class StrategyLensReadings:
                     "future_dated_method_readings": future_methods,
                     "as_of_source_epoch": cutoff_epoch,
                     "missing_methods_semantics": (
-                        "No ConceptReading was emitted for this method on this symbol/timeframe in this cycle; "
-                        "this can mean the method's event condition was absent, history was insufficient, or its input was unavailable. "
-                        "It does not mean the method implementation is unregistered."
+                        "No eligible ConceptReading was available for this method on this symbol/timeframe at the replay cutoff. "
+                        "The reader may have emitted no reading, emitted an unverified reading, or emitted a reading beyond the cutoff. "
+                        "This does not mean the method implementation is unregistered."
                     ),
                     "applicable_methods": sorted(item.concept for item in applicable),
                     "inapplicable_methods": sorted(inapplicable),
@@ -474,6 +476,10 @@ class StrategyLensReadings:
                     "data_gated_reason": data_gate,
                     "source_provenance_verified": bool(
                         selected and source_bar_epoch is not None
+                    ),
+                    "provider_timestamp_alignment": (
+                        "synchronized" if source_timestamp_epoch is not None
+                        else "not_common_or_not_provided"
                     ),
                     "independence_group_verified": bool(
                         selected and independence_group

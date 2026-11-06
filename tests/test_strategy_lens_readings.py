@@ -525,6 +525,7 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     assert lens.facts["missing_methods"] == ["anomaly_detection"]
     assert lens.facts["method_implications"].get("anomaly_detection") == []
     assert "anomaly_detection" in lens.facts["future_dated_method_readings"]
+    assert "beyond the cutoff" in lens.facts["missing_methods_semantics"]
     assert lens.source_bar_epoch is None
     # The surviving method has an explicit group; it does not imply that the
     # omitted future method contributed to the composition.
