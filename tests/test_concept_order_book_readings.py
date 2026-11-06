@@ -203,7 +203,7 @@ def test_order_book_is_read_even_when_ohlc_history_is_absent():
         if entry.measurements.get("source_kind") == "concept_reading"
         and entry.measurements.get("concept") == "order_book"
     )
-    assert item.measurements["facts"]["spread_price_units"] == 0.02
+    assert math.isclose(item.measurements["facts"]["spread_price_units"], 0.02, rel_tol=1e-12, abs_tol=1e-12)
     assert item.source_timestamp_verified is False
 
 
