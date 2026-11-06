@@ -91,8 +91,10 @@ The default run is report-only. To explicitly seed the persistent
 python scripts/run_concept_hindcast.py .\hindcast-manifest.json --base-timeframe M5 --horizon-seconds 86400 --seed-calibration
 ```
 
-The source is recorded with the dataset digest. No calibration is written if
-there are no resolved Brain samples.
+The source key includes the dataset digest, base timeframe, horizon, stride and
+hindcast protocol version. Re-running the identical replay does not append the
+same calibration samples again. No calibration is written if there are no
+resolved Brain samples.
 
 ## System 4 boundary
 
