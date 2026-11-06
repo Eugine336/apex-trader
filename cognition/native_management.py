@@ -267,6 +267,11 @@ class NativePositionManager:
                     # to OTHER, so source-family checks are needed to prevent
                     # portfolio/risk telemetry from masquerading as market proof.
                     continue
+                # Campaign assessments require an explicit instrument identity.
+                # Global/unknown-symbol telemetry may inform whole-book risk but
+                # cannot invalidate an individual instrument's thesis.
+                if not ev_symbol:
+                    continue
 
                 raw_state = _text(
                     measurements.get("native_thesis_state")
@@ -410,8 +415,8 @@ class NativePositionManager:
                     return NativeManagementVerdict(
                         action="exit", thesis_state="invalidated",
                         reason=(
-                            "original thesis invalidation is corroborated across independent "
-                            "domains with fresh evidence and adequate market coverage"
+                            "original thesis invalidation is corroborated by distinct, fresh, "
+                            "source-verified evidence lineages"
                         ),
                         **base,
                     )
