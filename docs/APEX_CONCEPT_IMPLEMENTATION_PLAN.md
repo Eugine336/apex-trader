@@ -1,0 +1,248 @@
+# Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
+
+Status baseline: `main` @ `d82a93cf` (after PRs #809 calibration-scales-risk, #810 remove instrument directional bias,
+#811 competing directional hypotheses). Source of truth for coverage:
+`docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
+Baseline today: **41/79 analytical methods read in full, 2/38 strategy lenses read in full.**
+Full suite on that baseline (audit sandbox): 4,016 passed, 58 failed, 1 collection error. Of the 58: 45 RL tests (libraries
+absent from the audit sandbox — confirm in CI), 1 silent-exception audit (73 handlers), and **12 System 4 tests that PR #809
+left stale** (they call the renamed `_calibrated_expected_return`; fixed in the PR that carries this document). One collection
+error: `email-validator` missing for the API tests. Lesson recorded: two merged PRs shipped broken tests/syntax
+(`dashboard/state_health.py`, System 4 tests) — every PR must run the full suite and compare with `main` (§9).
+
+## 0. What "done" means
+
+Apex is one expert discretionary trader. Given the full market state it decides which concepts, tools, indicators and
+price action this moment needs, analyses with them, opens, manages and closes on that judgement, and learns from what the
+market does. It has no assigned strategy, style or direction bias and no tuning thresholds for analysis. Only execution
+has hard limits (broker validity, account limits set by the account owner, capital preservation).
+
+"Done" for this plan = for **every** catalogued method and lens:
+1. a concept module returns a **full reading** (not a measurement) — applicability, per-side implication, strength vs
+   the instrument's own history, trigger state, invalidation, objective/milestones, what is unconfirmed, what weakens it,
+   management meaning;
+2. the **Brain** can select it by context, combine it with other readings, build geometry from it and manage a position
+   with it;
+3. it is **tested** (§5) and the coverage register shows `FULL`;
+4. nothing in it is a configured threshold, a static fraction, or an invented level.
+
+## 1. Non-negotiable rules for every work package
+
+1. **The Brain is the only decision authority.** A concept module returns evidence with `polarity = 0`. It never opens,
+   sizes, exits or vetoes. (`cognition/concepts/base.py::reading_to_evidence`.)
+2. **Completed bars only; no look-ahead.** Every swing/pattern is confirmed only by bars that have closed. Each module
+   must pass the generic truncation test in §5.
+3. **No configured thresholds.** Strength is a percentile rank against the instrument's own history on that timeframe
+   (`percentile_rank`). The only constants allowed are *definitions of the concept itself* (e.g. CRT's three candles, a
+   three-bar fractal, Fibonacci 0.62/0.79 for OTE), each commented as a definition.
+4. **Unknown stays unknown.** Missing data, short history, or no objective ⇒ `strength=None` / `objective_price=None` and
+   an entry in `requires` / `unknowns`. Never default, never back-fill.
+5. **Levels are prices or events.** Invalidation is a price/event (e.g. "completed close beyond X on tf"); objectives and
+   milestones are earlier structural levels that exist in the data.
+6. **Instrument-agnostic.** No symbol/asset-class branches in analysis. Asset-class behaviour enters only as data the
+   module reads (contract spec, session calendar) and as its own history.
+7. **Faults are visible.** A module that raises is logged at WARNING by `run_concepts` and skipped; it never fabricates.
+8. **Owner limits are not analysis.** Max risk/daily loss/etc. belong to the owner-limits surface (WP-B7), not to
+   concept code.
+
+## 2. Module contract and file layout
+
+```
+cognition/concepts/<module>.py   class X: key, family, covers_methods, covers_lenses, read(symbol, bars_by_tf)->list[ConceptReading]
+cognition/concepts/__init__.py   register in CONCEPT_MODULES
+tests/test_concept_<module>.py   see §5
+docs/APEX_CONCEPT_COVERAGE.md    regenerate (a test fails if stale)
+```
+`bars_by_tf`: `{"M5","M15","H1","H4","D1": [ {open,high,low,close,volume?,timestamp_epoch,source_timestamp_verified} ]}`,
+completed bars only, full history the connector supplies (`market_lenses.analyze_market_frames`). Multi-symbol,
+tick, order-book, calendar and derivatives inputs need new input channels (§4) — until a channel exists the module
+must return a reading with the data listed under `unknowns`, not guess.
+
+Reference implementations to copy: `crt.py` (phases, invalidation, milestones), `market_structure.py` (swings, state,
+events), `liquidity.py` (pools, sweeps, objective from real pools), `price_delivery.py`, `indicator_context.py`.
+
+## 3. Work packages — concepts (38 methods, 36 lenses)
+
+Priority tiers: **T1** needs only OHLC(V) already supplied; **T2** needs multi-symbol bars or a new
+scalar feed; **T3** needs a new data source (tick/DOM/derivatives/macro). Items in T3 must ship their data channel
+first (§4). Level = register level today.
+
+### WP-A Session, time, auction (T1; VWAP needs volume — tick volume is a proxy, state that in `unknowns`)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `opening_range` | UNMEASURED | Opening range of each session (from `session_calendar`), break/acceptance/failure of the high/low, retest, measured objective only from earlier structure; invalidation = close back inside; session-relative percentile of range size. |
+| `session_calendar` | MEASURED | Session/DST/holiday state, time-to-open/close, rollover window, thin-liquidity flags — as applicability + `requires` for other readings (not a veto). |
+| `vwap` | MEASURED | Session and anchored VWAP (anchors from swing/event/gap), deviation percentile vs own history, acceptance/rejection at VWAP, VWAP as mean-reversion draw or trend support. |
+| `volume_profile` | MEASURED | POC/VAH/VAL/HVN/LVN for session/week, value-area migration, acceptance vs rejection at nodes, naked POCs as objectives. |
+| `seasonality` | MEASURED | Day-of-week/time-of-day/month tendencies measured against the instrument's own history with sample sizes; reading says "weak/strong/insufficient evidence", never a rule. |
+| `range_rotation` | MEASURED | Balance vs imbalance, rotation between range edges, value area, failed auction at edges, objective = opposite edge/POC. |
+
+### WP-B Wyckoff, effort/result, volume indicators (T1)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `wyckoff` | MEASURED | Phase (accumulation/distribution/markup/markdown A–E), events (PS, SC, AR, ST, Spring/Upthrust, SOS/SOW, LPS/LPSY, BU), range bounds, phase confidence from event sequence, invalidation = range break against thesis, objective = range projection only where structure gives one. |
+| `wyckoff_effort_result` | MEASURED | Effort (volume/range) vs result (price progress): absorption, no-supply/no-demand, climactic action, divergence; percentile vs own history. |
+| `volume_indicators` | MEASURED | OBV/MFI/CMF/A-D as readings: confirmation vs divergence with price structure, regime-aware (trend vs range). |
+
+### WP-C Strategy-family readings (T1) — compose method readings into the way a trader uses them
+| Key | Level | Full reading must include |
+|---|---|---|
+| `trend_following` | MEASURED | Trend state + pullback depth/quality vs own history, continuation trigger, trend efficiency, invalidation = trend-defining swing, objective only from structure, trail anchors. |
+| `momentum_breakout` | MEASURED | Acceleration, volatility expansion, breakout acceptance vs failure (holds beyond level N completed bars? — derive N from the instrument's own breakout history, not a constant), retest behaviour. |
+| `mean_reversion` | MEASURED | Z-score/mean distance percentile, regime filter (does reversion work in this state? measured from own history of reversions), objective = mean/VWAP/range midpoint, invalidation = acceptance beyond extreme. |
+| `event_driven` | MEASURED | See WP-E. |
+
+### WP-D Intermarket, relative strength, relative value (T2 — needs bars for several symbols in one call)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `smt_divergence` | UNMEASURED | Correlated-instrument swing divergence at a liquidity sweep (one makes a new extreme, the other does not); pair selection from measured correlation, not a fixed table. |
+| `cross_asset` | MEASURED | Rolling correlation/beta/lead-lag stability, breakdown of a relationship as a signal, relative-strength ranks. |
+| `currency_strength` | MEASURED | Currency/commodity strength ranks and dispersion across all enabled pairs; pair-level implication = strong vs weak. |
+| `relative_value` | MEASURED | Cointegration/residual z-score, half-life, stationarity of spread, invalidation = residual regime break. |
+
+### WP-E Events and macro (T3 — needs a verified calendar feed with actual/forecast/previous and timestamps)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `event_driven` | MEASURED | Pre-event positioning risk, surprise size vs the event's own history, post-release reaction (initial move vs acceptance), volatility jump, fade vs continuation evidence. |
+| `macro_rates` | UNMEASURED | Policy rate path, real yields, curve, inflation surprise; per-currency effect measured against historical co-movement, not hardcoded sign rules. |
+| `macro_growth` | UNMEASURED | GDP/CPI/PCE/NFP/PMI surprise z-scores and their measured instrument reactions. |
+| (lens) `news_event_reaction`, `event_macro` | — | Compose the three above. |
+
+### WP-F Carry, derivatives, crypto, synthetics (T2/T3)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `carry` | MEASURED | Swap/financing by direction and tenor from the broker spec, carry vs expected move, rollover timing — as cost/benefit evidence. |
+| `derivatives` | MEASURED | Futures expiry/roll, days-to-expiry, option IV/skew/OI where a feed exists; otherwise `unknowns`. |
+| `crypto_microstructure` | UNMEASURED | Funding, OI, liquidation clusters, exchange basis (needs exchange API feed). |
+| `synthetic_market` | UNMEASURED | Deriv synthetic contract mechanics (volatility index tick behaviour, spike/crash cadence, provider regime) from the contract spec and own history; no external-news logic. |
+
+### WP-G Microstructure and order flow (T3 — needs tick bid/ask and, where the broker exposes it, DOM)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `tick_microstructure` | MEASURED | Tick/quote rate, spread dynamics, micro-price, volatility-of-quotes; readiness-to-trade evidence. |
+| `order_book` | MEASURED | Depth imbalance, queue imbalance, liquidity pulling; availability depends on broker DOM. |
+| `delta_cvd` | MEASURED | Bid/ask delta and CVD with price-vs-delta divergence (tick-rule estimate if no true aggressor flag; label it). |
+| `footprint` | UNMEASURED | Footprint imbalance (needs aggressor-side volume per price). |
+| `absorption_exhaustion` | MEASURED | Absorption at levels, exhaustion, replenishment/depletion. |
+| `market_impact` | UNMEASURED | Expected slippage/adverse selection for the intended size from own fill history. |
+
+### WP-H Quantitative and self-knowledge (T1/T2)
+| Key | Level | Full reading must include |
+|---|---|---|
+| `time_series` | MEASURED | Autocorrelation, stationarity, regime of dependence per timeframe → which concept families have been working. |
+| `clustering` | MEASURED | Market-state embedding and nearest historical states with their outcomes. |
+| `anomaly_detection` | UNMEASURED | "This state is unlike any seen" (novelty score vs history) → widen `unknowns`, never act as a signal. |
+| `bayesian` | MEASURED | Prior/likelihood/posterior and credible interval for a concept's hit rate in the current state. |
+| `monte_carlo` | UNMEASURED | Bootstrap/Monte Carlo of the trade plan and portfolio (drawdown, tail quantile) as evidence for sizing/viability. |
+| `calibration` | MEASURED | Brier/reliability of Apex's own stated strengths per concept (feeds WP-B4). |
+
+### WP-I Execution, instrument and portfolio facts (T1) — evidence for the Brain, not rules
+`instrument_economics`, `execution_cost`, `portfolio_risk`: readings of viability (cost vs expected move, min-lot vs
+risk, correlated exposure, expected shortfall, risk of ruin). They inform Brain judgement; hard limits stay in the owner
+limits (WP-B7).
+
+### WP-J Strategy lenses (36 not full)
+A lens is the *style view* of its methods. Implement each as a composition module (no new measurement): which method
+readings it consumes, the market states in which that style is appropriate (from measured regime evidence), how that style
+builds stop/target and manages, its known failure modes, and an explicit `unknowns` list. Mapping (lens → methods):
+
+```
+ict_smc: ict_smc, order_blocks, market_structure, inducement, displacement
+trend_following: trend_following, roc_momentum, momentum_breakout       momentum: momentum_breakout, roc_momentum, displacement
+breakout: momentum_breakout, displacement                               failed_breakout: failed_auction, liquidity_sweep, inducement, break_retest
+mean_reversion: zscore_mean, mean_reversion                             range_auction: range_rotation, vwap
+candle_price_action: candlestick_patterns, failed_auction, break_retest order_flow_auction: wyckoff_effort_result, volume_profile, volume_indicators, order_book
+volatility_regime: realized_volatility, bollinger, momentum_breakout    wyckoff: wyckoff, volume_indicators, power_of_three
+session_intraday: opening_range, vwap, power_of_three, range_rotation   event_macro: macro_rates, macro_growth, event_driven
+cross_asset: cross_asset, currency_strength                              statistical_quant: zscore_mean, time_series, bayesian
+microstructure: tick_microstructure, execution_cost                      support_resistance: support_resistance, market_structure, pivot_points, crt
+moving_average: moving_averages                                         oscillator_divergence: divergence, stochastic, rsi, macd
+trend_strength: adx_directional, trend_following                        fibonacci_geometry: fibonacci, dealing_range, ote
+gap_opening_range: opening_range, gap_analysis, session_calendar        volatility_breakout: realized_volatility, bollinger, keltner_donchian
+seasonality_cycles: seasonality                                         relative_value: relative_value, cross_asset
+carry_funding: carry                                                    news_event_reaction: macro_growth, event_driven
+correlation_exposure: portfolio_risk                                    execution_costs: execution_cost, market_impact
+risk_of_ruin: portfolio_risk, monte_carlo                               auction_market_profile: volume_profile, range_rotation
+wyckoff_effort_result: wyckoff_effort_result, wyckoff                   pattern_discovery: anomaly_detection, clustering
+execution_order_types: execution_cost, market_impact                    learning_calibration: calibration
+derivatives_context: derivatives, instrument_economics
+```
+(Mapping was derived from anchor overlap; the lens owner confirms it against `cognition/strategy_knowledge.py`.)
+
+## 4. Data channels (prerequisites for T2/T3 packages)
+Each channel delivers **source-timestamped** data with a `source_timestamp_verified` flag and degrades to "unknown".
+1. **Multi-symbol bars in one call** (SMT, cross-asset, currency strength, relative value) — extend
+   `analyze_market_frames` so `run_concepts` can receive every enabled symbol's frames.
+2. **Tick bid/ask + aggressor estimate** (microstructure, delta/CVD) — from `tick_store`.
+3. **Order-book/DOM** where the broker exposes it (MT5 `market_book`); otherwise unknown.
+4. **Economic calendar with actual/forecast/previous** and event windows (event/macro).
+5. **Rates/yields/inflation series** (macro) and **derivatives/crypto feeds** (funding, OI, liquidations, IV).
+6. **Instrument spec + swap/financing** (already partly present): contract size, tick value, stops level, swap long/short.
+
+## 5. Quality gates (every concept PR)
+1. **Canonical tests** (copy `tests/test_concept_crt.py`): bullish, bearish mirror, cancelled/failed, ambiguous, no-signal,
+   short history ⇒ `None`/unknown, evidence shape (`polarity=0`, completed bars, `independence_group`).
+2. **No-look-ahead harness**: for each module, truncating the last `k` bars must not change any reading that is reported
+   on the shorter history (add to a shared `tests/test_concept_no_lookahead.py` parametrised over `CONCEPT_MODULES`).
+3. **Mirror symmetry property test**: transform prices `p → c − p`; LONG↔SHORT readings must swap with mirrored levels.
+4. **Replay degeneracy test**: run on ≥ 1 year of real candles per asset class; assert the reading is neither always on
+   nor never on, and report frequency (record, don't tune).
+5. **Integration test** (copy `tests/test_concept_integration.py`): candles → evidence → hypotheses → geometry.
+6. **Register in sync** (`python scripts/concept_coverage.py --check`), full suite no new failures vs `main`.
+7. **Code review checklist**: no config numbers; no symbol branches; every `None` is reported in `requires`/`unknowns`.
+
+## 6. Brain integration work packages (single owner; these make the concepts *usable*)
+- **WP-B1 Context selection and composition.** Today every applicable implication becomes its own hypothesis (noisy);
+  PR #811 keeps competing trend and mean-reversion hypotheses alive, which this layer must preserve.
+  Build the layer that decides which concepts apply in the current market state (regime/volatility/session from readings'
+  `applicability`), merges readings that share an `independence_group`, scores **confluence and conflict** across
+  concepts, and produces one thesis per direction with the strongest consistent invalidation/objective. Concept
+  relevance learned from outcomes (WP-B4) is *consulted*, never a gate.
+- **WP-B2 Geometry.** Support reading-supplied entry zones/order types (not only the last close), multi-concept stops
+  (most conservative structural invalidation) and targets (nearest real draw), ordered milestones. Remove the static
+  fallback fractions (`origination_stop_fraction`, `origination_reward_multiple`, `origination_min_rr` in `config.py`;
+  `reward_r_default = 2.0` in `cognition/brain.py`) from the live path.
+- **WP-B3 Management.** Currently only "first milestone passed ⇒ `protect_profit`". Add: partial at each milestone,
+  trail beyond concept anchors (e.g. each new higher low), objective management, completed-close invalidation exit,
+  time decay of a thesis, news-window handling, idempotent actions. Replace static management numbers
+  (`management_translator.scale_out_fraction = 0.5`, tighten-by-halving, `_protective_sl` in
+  `event_driven_bootstrap.py`) with concept-supplied levels.
+- **WP-B4 Calibration without a cold start.** (a) A **hindcast replay harness** running all concept modules and the Brain
+  over historical candles, labelling outcomes by each reading's own invalidation/objective, to seed
+  `CalibrationTracker` and the System 4 artifacts; (b) per-concept × market-state track record that Apex consults;
+  (c) **Policy now decided by PR #809:** historical-expectancy eligibility (provenance, sample size, walk-forward folds,
+  selection coverage, development/holdout stability) is separate from forecast-calibration quality; calibration
+  diagnostics scale risk through `CalibrationTracker.sizing_scale` and cannot veto a thesis. Remaining: the 0.25 size
+  floor is still a stop-gap number to move into the owner-limit surface (WP-B7), and eligibility still needs a producer
+  artifact (the hindcast harness in (a) is what produces it).
+- **WP-B5 Performance.** Concept pipeline cost with the full instrument universe: evaluate only on bar close,
+  incremental swings/pools, shared computations across modules, a measured per-symbol time budget.
+- **WP-B6 Remove remaining analysis constants.** `min_evidence_domains = 3`, observer wake thresholds, compliance
+  thresholds that are analysis rather than execution safety — classify each as (owner limit | definition | remove).
+- **WP-B7 Owner-limits surface.** One explicit place for the limits the account owner sets (risk per trade, daily
+  loss, max exposure, margin), which Apex may *tighten* from its analysis but never loosen. Everything else is Apex's
+  judgement.
+
+## 7. Tech debt to clear alongside
+- 45 RL tests fail in the audit sandbox (missing libraries); confirm in CI and fix or quarantine with a reason.
+- `tests/test_silent_swallow_observability.py`: 73 unclassified silent exception handlers.
+- `tests/test_api_endpoints.py`: collection needs `email-validator` (dependency pin).
+- Stale docs: `docs/APEX_FULL_REDESIGN_ROADMAP.md` completion register for Systems 1–4 (it still describes #798 as an
+  unmerged draft).
+- Rename the `gold_desk` package (cosmetic; the observer is instrument-agnostic).
+
+## 8. Order and parallelism
+1. **Now, in parallel (T1, no new data):** WP-A, WP-B, WP-C, WP-H (calibration/time_series/bayesian), WP-I, plus all of §5's shared
+   harnesses (no-look-ahead, mirror symmetry).
+2. **Prerequisite channels:** §4.1 → WP-D; §4.2/4.3 → WP-G; §4.4/4.5 → WP-E, WP-F.
+3. **Brain integration (one owner, starts immediately):** WP-B1 → WP-B2 → WP-B3; WP-B4 in parallel; WP-B5–B7 as
+   gates before any live use.
+4. **Lenses (WP-J)** after the method modules they compose exist.
+5. **Acceptance:** register shows 79/79 methods and 38/38 lenses `FULL` or explicitly `DATA-GATED` with the missing feed
+   named; replay degeneracy report published; a paper/demo run across several asset classes with the
+   full cycle (observe → analyse → open → manage → close → learn) recorded.
+
+## 9. PR protocol
+One work package per PR from a branch off the latest `main`; run the full suite and compare to `main`; regenerate the
+register; no force-push to `main`; do not edit another package's files without coordinating (the register and
+`CONCEPT_MODULES` are the merge hot-spots — keep those edits minimal).
