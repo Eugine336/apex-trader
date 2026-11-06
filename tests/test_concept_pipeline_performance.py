@@ -304,3 +304,24 @@ def test_full_history_timestamp_fault_does_not_change_bounded_window_attestation
 
     assert all(row["source_timestamp_verified"] is False for row in full)
     assert all(row["source_timestamp_verified"] is True for row in tail_window)
+
+def test_linear_untouched_pool_flags_match_original_per_swing_semantics():
+    from cognition.concepts.liquidity import _untouched, _untouched_flags
+    from cognition.concepts.market_structure import fractal_swings
+
+    bars = [
+        {"high": 10.0, "low": 5.0},
+        {"high": 12.0, "low": 6.0},
+        {"high": 9.0, "low": 4.0},
+        {"high": 11.0, "low": 5.5},
+        {"high": 8.0, "low": 3.0},
+        {"high": 13.0, "low": 2.5},
+        {"high": 9.0, "low": 4.5},
+    ]
+    swings = fractal_swings(bars)
+    flags = _untouched_flags(bars, swings)
+
+    assert all(
+        flags[(index, kind, price)] == _untouched(bars, index, kind, price)
+        for index, kind, price in swings
+    )
