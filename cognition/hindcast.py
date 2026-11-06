@@ -34,6 +34,14 @@ class HindcastDataError(ValueError):
     """Historical dataset or provenance manifest is invalid."""
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class HindcastDataset:
     symbol: str
@@ -156,7 +164,7 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
             raise HindcastDataError(f"{timeframe}: file escapes manifest directory")
         if not source_file.is_file():
             raise FileNotFoundError(str(source_file))
-        actual_hash = hashlib.sha256(source_file.read_bytes()).hexdigest()
+        actual_hash = _sha256_file(source_file)
         if actual_hash != expected_hash:
             raise HindcastDataError(f"{timeframe}: SHA-256 mismatch for {filename}")
         candles = loader.load(source_file, pair=symbol, validate=True)
@@ -232,14 +240,25 @@ def _evaluate_levels(
     direction: str,
     objective_price: float,
     invalidation_price: float,
+    reference_price: Optional[float] = None,
 ) -> tuple[str, Optional[float]]:
     """Resolve objective/invalidation chronology from future OHLC only."""
     side = str(direction or "").upper()
+    if (
+        not math.isfinite(objective_price) or not math.isfinite(invalidation_price)
+        or objective_price <= 0.0 or invalidation_price <= 0.0
+    ):
+        return "INVALID_GEOMETRY", None
+    reference = _finite(reference_price)
     if side == "LONG":
         if not invalidation_price < objective_price:
             return "INVALID_GEOMETRY", None
+        if reference is not None and not invalidation_price < reference < objective_price:
+            return "INVALID_GEOMETRY", None
     elif side == "SHORT":
         if not objective_price < invalidation_price:
+            return "INVALID_GEOMETRY", None
+        if reference is not None and not objective_price < reference < invalidation_price:
             return "INVALID_GEOMETRY", None
     else:
         return "INVALID_GEOMETRY", None
@@ -346,6 +365,7 @@ def run_hindcast(
         for tf, rows in dataset.bars_by_tf.items()
     }
     labelled_readings: set[tuple] = set()
+    last_brain_window_end: dict[tuple[str, str, int], float] = {}
     calibration_tracker = CalibrationTracker(min_samples=30, history_limit=100_000)
 
     for base_index, base_bar in enumerate(base_rows):
@@ -425,7 +445,7 @@ def run_hindcast(
                 if objective is None or invalidation is None:
                     continue
                 key = (
-                    reading.concept, reading.timeframe, source_epoch, cutoff,
+                    reading.concept, reading.timeframe, source_epoch,
                     direction, objective, invalidation,
                 )
                 if key in labelled_readings:
@@ -438,6 +458,7 @@ def run_hindcast(
                     direction=direction,
                     objective_price=objective,
                     invalidation_price=invalidation,
+                    reference_price=reading.reference_close,
                 )
                 report.concept_outcomes.append({
                     "concept": reading.concept,
@@ -480,6 +501,14 @@ def run_hindcast(
         ):
             report.skipped_brain_candidates += 1
             continue
+        family_key = (family, direction, horizon)
+        if cutoff <= last_brain_window_end.get(family_key, 0.0):
+            continue
+        # Selection is based on decision time only, never on the eventual label.
+        last_brain_window_end[family_key] = cutoff + horizon
+        entry = _finite(getattr(selected, "entry_price", None))
+        if entry is None:
+            entry = _finite(base_bar.get("close"))
         outcome, _ = _evaluate_levels(
             base_rows,
             after_epoch=cutoff,
@@ -487,6 +516,7 @@ def run_hindcast(
             direction=direction,
             objective_price=target,
             invalidation_price=stop,
+            reference_price=entry,
         )
         if outcome == "OBJECTIVE_FIRST":
             report.brain_calibration_pairs.append((confidence, True))
