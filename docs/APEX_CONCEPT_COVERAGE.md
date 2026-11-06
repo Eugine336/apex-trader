@@ -24,7 +24,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | UNMEASURED |
 | instrument_mechanics | Futures and options context | `derivatives` | MEASURED |
 | instrument_mechanics | Synthetic instrument mechanics | `synthetic_market` | UNMEASURED |
-| intermarket | Cross-asset relationships | `cross_asset` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| intermarket | Cross-asset relationships | `cross_asset` | DATA-GATED — synchronized multi-symbol bars with verified common-cutoff timestamps |
 | intermarket | Currency and commodity relative strength | `currency_strength` | MEASURED |
 | intermarket | SMT divergence | `smt_divergence` | UNMEASURED |
 | liquidity | Buy-side and sell-side liquidity | `liquidity_pools` | FULL |
@@ -64,7 +64,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | strategy | Event-driven repricing | `event_driven` | MEASURED |
 | strategy | Mean reversion and statistical reversion | `mean_reversion` | FULL |
 | strategy | Momentum and volatility breakout | `momentum_breakout` | FULL |
-| strategy | Pairs, cointegration and relative value | `relative_value` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| strategy | Pairs, cointegration and relative value | `relative_value` | DATA-GATED — synchronized multi-symbol histories and stable relationship samples |
 | strategy | Range rotation and auction balance | `range_rotation` | FULL |
 | strategy | Seasonality and calendar effects | `seasonality` | FULL |
 | strategy | Trend following and pullback continuation | `trend_following` | FULL |
@@ -96,38 +96,38 @@ FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 |---|---|---|
 | Candle Range Theory | `crt` | FULL |
 | Candlestick / M1 price action | `candle_price_action` | FULL |
-| Carry / financing context | `carry_funding` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Correlation and portfolio concentration | `correlation_exposure` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Derivatives and contract-specific context | `derivatives_context` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Execution costs and fill quality | `execution_costs` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Carry / financing context | `carry_funding` | DATA-GATED — verified direction-specific broker swap, funding and rollover data |
+| Correlation and portfolio concentration | `correlation_exposure` | DATA-GATED — broker-truth whole-book positions and synchronized instrument returns |
+| Derivatives and contract-specific context | `derivatives_context` | DATA-GATED — verified derivatives feed and instrument-specific expiry/roll specifications |
+| Execution costs and fill quality | `execution_costs` | DATA-GATED — source-backed market-impact and fill-history observations |
 | Failed breakout / trap | `failed_breakout` | FULL |
-| Gaps / opening-range behaviour | `gap_opening_range` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Gaps / opening-range behaviour | `gap_opening_range` | DATA-GATED — authoritative venue session calendar with per-bar session identifiers |
 | ICT / Smart Money Concepts | `ict_smc` | FULL |
 | Intermarket / relative strength | `cross_asset` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Macro / event-driven | `event_macro` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Market profile / auction theory | `auction_market_profile` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Macro / event-driven | `event_macro` | DATA-GATED — timestamped economic calendar with actual/forecast/previous and macro series |
+| Market profile / auction theory | `auction_market_profile` | DATA-GATED — trade-level volume-at-price for exact auction nodes |
 | Mean reversion | `mean_reversion` | FULL |
 | Momentum / impulse | `momentum` | FULL |
 | Moving-average context | `moving_average` | FULL |
 | Novel pattern / anomaly discovery | `pattern_discovery` | FULL |
-| Order flow / volume auction | `order_flow_auction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Order-type and execution policy | `execution_order_types` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Order flow / volume auction | `order_flow_auction` | DATA-GATED — trade-level volume-at-price and broker DOM/depth where available |
+| Order-type and execution policy | `execution_order_types` | DATA-GATED — current broker constraints, quote/depth and empirical fill probabilities |
 | Oscillator / momentum divergence | `oscillator_divergence` | FULL |
-| Outcome attribution and calibration | `learning_calibration` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Outcome attribution and calibration | `learning_calibration` | DATA-GATED — timestamped decisions, outcomes, costs and holdout attribution |
 | Range breakout / expansion | `breakout` | FULL |
-| Range trading / market auction | `range_auction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Range trading / market auction | `range_auction` | DATA-GATED — verified session boundaries and source-verified traded-volume provenance for VWAP |
 | Regime transition / change-point | `market_regime_transition` | FULL |
 | Relative value / pair relationships | `relative_value` | DATA-GATED — required source inputs are explicitly unavailable until connected |
 | Retracement / measured-move geometry | `fibonacci_geometry` | FULL |
-| Risk of ruin / capital survival | `risk_of_ruin` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Risk of ruin / capital survival | `risk_of_ruin` | DATA-GATED — broker-truth portfolio exposure and validated trade-outcome distributions |
 | Seasonality / cycle hypotheses | `seasonality_cycles` | FULL |
-| Session / VWAP / intraday context | `session_intraday` | DATA-GATED — required source inputs are explicitly unavailable until connected |
-| Statistical / quantitative methods | `statistical_quant` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Session / VWAP / intraday context | `session_intraday` | DATA-GATED — authoritative venue session calendar and verified session VWAP inputs |
+| Statistical / quantitative methods | `statistical_quant` | DATA-GATED — point-in-time per-concept outcome labels for Bayesian posterior updates |
 | Support / resistance and market structure | `support_resistance` | FULL |
 | Tick / spread / execution microstructure | `microstructure` | FULL |
 | Trend following | `trend_following` | FULL |
 | Trend strength / ADX-style regime | `trend_strength` | FULL |
-| Verified news-event reaction | `news_event_reaction` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Verified news-event reaction | `news_event_reaction` | DATA-GATED — trusted timestamped event calendar and actual/forecast/previous values |
 | Volatility contraction and expansion | `volatility_breakout` | FULL |
 | Volatility regime / compression | `volatility_regime` | FULL |
 | Wyckoff effort versus result | `wyckoff_effort_result` | FULL |
