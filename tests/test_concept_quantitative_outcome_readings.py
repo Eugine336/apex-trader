@@ -80,6 +80,8 @@ def test_bayesian_reader_derives_market_state_from_prior_time_series_reading():
         observation="upward confirmed swing structure",
         implications=(),
         facts={"structural_regime_from_confirmed_swings": "up"},
+        source_bar_epoch=cutoff,
+        source_timestamp_verified=True,
     )
     rows = [
         {
@@ -237,7 +239,7 @@ def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history(
     assert item.applicable is False
     assert item.facts["simulation_count"] == 0
     assert item.facts["current_portfolio_plan_stressed"] is False
-    assert any("timestamped at or after" in item for item in item.unknowns)
+    assert any("timestamped after" in item for item in item.unknowns)
 
 
 def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():

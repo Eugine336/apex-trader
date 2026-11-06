@@ -43,7 +43,7 @@ def _snapshot(cutoff):
         "portfolio_returns": [
             {
                 "return_fraction": value,
-                "source_timestamp_epoch": cutoff - (index + 1) * 300.0,
+                "source_timestamp_epoch": cutoff - (5 - index) * 300.0,
                 "source_timestamp_verified": True,
             }
             for index, value in enumerate((0.01, -0.015, 0.005, 0.002, -0.003))
@@ -51,7 +51,7 @@ def _snapshot(cutoff):
         "equity_curve": [
             {
                 "equity": value,
-                "source_timestamp_epoch": cutoff - (index + 1) * 300.0,
+                "source_timestamp_epoch": cutoff - (4 - index) * 300.0,
                 "source_timestamp_verified": True,
             }
             for index, value in enumerate((10000.0, 10100.0, 9900.0, 10200.0))
@@ -114,6 +114,8 @@ def test_portfolio_risk_carries_only_verified_monte_carlo_ruin_probability():
         concept="monte_carlo", timeframe="M5", domain=EvidenceDomain.PORTFOLIO,
         applicable=True, applicability_reason="whole-book simulation available",
         observation="bootstrap", implications=(), facts={"probability_of_ruin": 0.03},
+        source_bar_epoch=cutoff,
+        source_timestamp_verified=True,
     )
     item = _read({
         "analysis_epoch": cutoff + 60.0,
