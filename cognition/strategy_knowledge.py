@@ -328,12 +328,44 @@ def assess_strategy_lenses(
         ]
         matched = list(dict.fromkeys([*matched_evidence, *matched_context]))
         domain_hits = [domain for domain in lens.evidence_domains if domain in domains]
+        lens_readings = [
+            item for item in items
+            if isinstance(getattr(item, "measurements", None), dict)
+            and item.measurements.get("source_kind") == "concept_reading"
+            and item.measurements.get("concept") == lens.key
+        ]
+        lens_applicable = [
+            item for item in lens_readings
+            if item.measurements.get("applicable") is True
+        ]
+        lens_missing_methods = sorted({
+            str(method)
+            for item in lens_readings
+            for method in (item.measurements.get("missing_methods") or [])
+        })
+        lens_unknowns = list(dict.fromkeys(
+            str(reason)
+            for item in lens_readings
+            for reason in (item.measurements.get("unknowns") or [])
+            if str(reason).strip()
+        ))
+        lens_data_gated = any(
+            bool(item.measurements.get("data_gated_reason")) for item in lens_readings
+        )
+        lens_complete = bool(lens_applicable) and not lens_missing_methods and not lens_data_gated
         regime_hits = [
             f"{key}={value}" for key, value in reg.items()
             if value and value not in {"unknown", "none", "balanced", "flat", "mixed"}
             and any(_contains_anchor(value, token) for token in lens.anchors)
         ]
-        if matched_evidence and domain_hits:
+        if lens_readings:
+            if lens_complete:
+                status = "relevant"
+            elif lens_applicable:
+                status = "watch"
+            else:
+                status = "not_evaluable"
+        elif matched_evidence and domain_hits:
             status = "relevant"
         elif matched or domain_hits or regime_hits:
             status = "watch"
@@ -346,11 +378,22 @@ def assess_strategy_lenses(
             reasons.append("available evidence domains: " + ", ".join(domain_hits))
         if regime_hits:
             reasons.append("regime context: " + ", ".join(regime_hits[:3]))
+        if lens_readings:
+            reasons.append(
+                "native method composition: "
+                + ("complete and applicable" if lens_complete else
+                   "partial; missing inputs remain explicit" if lens_applicable else
+                   "present but not currently applicable")
+            )
+            if lens_missing_methods:
+                reasons.append("missing method readings: " + ", ".join(lens_missing_methods))
         if not reasons:
             reasons.append("no current evidence anchors; relevance is unknown, not negative")
         source_count = len({
-            str(getattr(item, "source_module", "") or type(item).__name__)
-            for item in items if _domain(item) in lens.evidence_domains
+            str(getattr(item, "independence_group", "") or "")
+            for item in items
+            if _domain(item) in lens.evidence_domains
+            and str(getattr(item, "independence_group", "") or "").strip()
         })
         if status == "relevant":
             relevance = min(1.0, 0.35 + 0.1 * min(len(matched), 3) + 0.05 * min(source_count, 3))
@@ -364,7 +407,11 @@ def assess_strategy_lenses(
             status=status,
             relevance=round(relevance, 3),
             reasons=tuple(reasons),
-            missing_context=tuple(lens.data_requirements) if status != "relevant" else (),
+            missing_context=tuple(dict.fromkeys([
+                *(lens.data_requirements if status != "relevant" else ()),
+                *lens_missing_methods,
+                *lens_unknowns,
+            ])),
             limitation=lens.limitation,
             data_requirements=tuple(lens.data_requirements),
         ))
