@@ -44,7 +44,8 @@ def _record(concept, tf, domain, observation, implications, facts, bars, ref_clo
         concept=concept, timeframe=tf, domain=domain, applicable=True,
         applicability_reason="The concept's explicitly defined completed-bar structure is present",
         observation=observation, implications=tuple(implications), facts=facts,
-        source_bar_epoch=_epoch(bars[-1]), reference_close=ref_close,
+        source_bar_epoch=_epoch(bars[-1]),
+        source_timestamp_verified=_epoch(bars[-1]) is not None, reference_close=ref_close,
         reference_timeframe=ref_tf, unknowns=tuple(unknowns),
     )
 

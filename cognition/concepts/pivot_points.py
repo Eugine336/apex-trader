@@ -58,7 +58,8 @@ class PivotPointConcepts:
                 conflicts_with=(),
                 management={"recalculate_on":"new_completed_D1_bar"},
             ),),
-            facts=facts, source_bar_epoch=epoch, reference_close=current,
+            facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None, reference_close=current,
             reference_timeframe=current_tf,
             unknowns=("Floor pivots depend on broker daily candle boundaries and are not universal exchange levels.",),
         )]

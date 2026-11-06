@@ -32,8 +32,9 @@ def _reading(concept, tf, bars, close, close_tf, observation, implications, fact
     return ConceptReading(
         concept=concept, timeframe=tf, domain=EvidenceDomain.STRUCTURE,
         applicable=True, applicability_reason="Confirmed completed-bar anchors are present",
-        observation=observation, implications=tuple(implications), facts=facts,
-        source_bar_epoch=epoch, reference_close=close, reference_timeframe=close_tf,
+        observation=observation, implications=tuple(implications), facts=facts,source_bar_epoch=epoch,
+
+        source_timestamp_verified=epoch is not None, reference_close=close, reference_timeframe=close_tf,
         unknowns=tuple(unknowns),
     )
 
