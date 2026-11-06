@@ -50,8 +50,12 @@ class _ReadingModule:
     covers_methods = ()
     covers_lenses = ()
 
+    def __init__(self):
+        self.seen = []
+
     def read(self, symbol, bars_by_tf):
         bars = bars_by_tf.get("M1", [])
+        self.seen.append([bar["timestamp_epoch"] for bar in bars])
         if not bars:
             return []
         last = bars[-1]
@@ -181,18 +185,21 @@ def test_hindcast_never_exposes_future_bars_to_concepts_or_brain():
         _bar(180, close=100.3),
     ]
     brain = _Brain()
+    module = _ReadingModule()
     report = run_hindcast(
         _dataset(bars),
         max_horizon_seconds=120,
         base_timeframe="M1",
         brain=brain,
-        modules=(_ReadingModule(),),
+        modules=(module,),
     )
     assert report.decisions == 3
     assert len(brain.seen) == 3
     for cutoff, visible in brain.seen:
         assert all(stamp <= cutoff for stamp in visible)
     assert brain.seen[0] == (60.0, [60.0])
+    assert module.seen[0] == [60.0]
+    assert module.seen[1] == [60.0, 120.0]
 
 
 def test_concept_and_brain_labels_use_objective_before_invalidation():
@@ -245,6 +252,35 @@ def test_hindcast_excludes_pending_order_opportunities_from_market_fill_labels()
     )
     assert report.brain_calibration_pairs == []
     assert report.skipped_brain_candidates >= 1
+
+
+def test_hindcast_seeds_only_resolved_brain_pairs_with_dataset_digest(tmp_path):
+    from cognition.hindcast import seed_calibration_tracker
+    from cognition.influence import CalibrationTracker
+
+    report = run_hindcast(
+        _dataset([_bar(60), _bar(120, high=103.0), _bar(180)]),
+        max_horizon_seconds=120,
+        base_timeframe="M1",
+        brain=_Brain(),
+        modules=(_ReadingModule(),),
+    )
+    tracker = CalibrationTracker(path=tmp_path / "calibration.json")
+    assert seed_calibration_tracker(tracker, report) == 1
+    status = tracker.get_status()
+    assert status["samples"] == 1
+    assert status["sources"] == {"hindcast:aaaaaaaaaaaaaaaa": 1}
+
+
+def test_hindcast_report_does_not_claim_system4_quote_artifacts_from_ohlc():
+    report = run_hindcast(
+        _dataset([_bar(60), _bar(120, high=103.0)]),
+        max_horizon_seconds=120,
+        base_timeframe="M1",
+        brain=_Brain(),
+        modules=(_ReadingModule(),),
+    )
+    assert "OHLC candles are not broker bid/ask quote evidence" in report.system4_artifact_status
 
 
 def test_unverified_dataset_cannot_be_used_to_train():
