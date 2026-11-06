@@ -180,6 +180,7 @@ class KnowledgeSource:
             u = getattr(self._adapter, "usable", True)
             return bool(u() if callable(u) else u)
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in cognition/knowledge_source.py:182", exc_info=True)
             return True
 
     def _resolve_action(self, capability: str, preferred: str = "") -> str:
