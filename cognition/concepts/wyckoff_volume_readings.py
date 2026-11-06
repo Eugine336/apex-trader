@@ -550,6 +550,12 @@ def _wyckoff_facts(
         range_high = max((bar["high"] for bar in prior), default=None)
         range_low = min((bar["low"] for bar in prior), default=None)
     range_width = range_high - range_low if range_high is not None and range_low is not None else None
+    # Structural range boundaries remain available as provisional invalidation
+    # references even before a climax sequence is established.
+    if accumulation.get("invalidation_level") is None:
+        accumulation["invalidation_level"] = range_low
+    if distribution.get("invalidation_level") is None:
+        distribution["invalidation_level"] = range_high
     selected_events = {item["event"] for item in selected.get("events", [])}
     expected = {"SC", "AR", "ST", "Spring", "SOS", "LPS_BU"} if selected is accumulation else {"BC", "AR", "ST", "UTAD", "SOW", "LPSY"}
     completeness = len(selected_events.intersection(expected)) / len(expected) if expected else None

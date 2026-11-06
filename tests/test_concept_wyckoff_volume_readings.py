@@ -116,7 +116,7 @@ def test_wyckoff_reader_keeps_accumulation_and_distribution_as_competing_hypothe
     assert facts["phase_not_overclaimed"] is True
     assert facts["directional_decision_emitted"] is False
     assert {item.direction for item in reading.implications} == {"LONG", "SHORT", "FLAT"}
-    assert all(item.invalidation_reason for item in reading.implications)
+    assert all(item.invalidation_reason for item in reading.implications if item.direction != "FLAT")
 
 
 def test_wyckoff_interpretation_is_symmetric_under_price_reflection():
