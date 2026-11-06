@@ -29,6 +29,7 @@ layer supplies the raw price rows / tick / ticks / depth / position.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 import time
@@ -95,6 +96,7 @@ def _normalize_bars(bars: Any) -> "list[tuple[float, float, float, float]]":
             if o > 0 or h > 0 or c > 0:
                 out.append((o, h, lo, c))
         except (TypeError, ValueError, IndexError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in cognition/market_snapshot.py:97", exc_info=True)
             continue
     return out
 
