@@ -678,10 +678,10 @@ def analyze_market_frames(
             if source_includes_forming_bar and len(full_rows) > 1
             else full_rows
         )
-        bars_by_timeframe[timeframe] = completed_rows
         bars = completed_rows[-32:]
         if len(bars) < 5:
             continue
+        bars_by_timeframe[timeframe] = completed_rows
         current = bars[-1]
         source_epoch = (
             _safe_float(current.get("timestamp_epoch"))
