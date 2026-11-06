@@ -190,22 +190,15 @@ class CampaignLeg:
 
 @dataclass
 class ReallocationTarget:
-    """A capital-reallocation instruction the portfolio layer derives from
-    live campaign health (Part XVIII Art 11).
+    """Portfolio-level candidate for Brain reassessment, never an order.
 
-    When the book is over-concentrated in one correlated component, the weakest
-    campaigns in that cluster (by the Brain's own health ranking) are trimmed to
-    free capital for higher-expected-value opportunities. ``kind`` is a
-    :class:`~cognition.management_translator.ManagementAction` kind
-    (``partial_close`` to trim, ``close`` to exit); ``fraction`` applies to a
-    partial. It carries no broker specifics — the management sink resolves the
-    live position and realises it on the same execution plane the Brain uses.
+    The registry may identify correlated concentration and rank campaigns by
+    health. Only the Brain may decide whether to reduce exposure and supply the
+    actual management plan, including concept-derived levels or fractions.
     """
 
     symbol: str
     direction: str
-    kind: str = "partial_close"
-    fraction: float = 0.5
     reason: str = ""
     opportunity_strength: float = 0.0
 
@@ -213,8 +206,7 @@ class ReallocationTarget:
         return {
             "symbol": self.symbol,
             "direction": self.direction,
-            "kind": self.kind,
-            "fraction": round(self.fraction, 4),
+            "kind": "candidate",
             "reason": self.reason,
             "opportunity_strength": round(self.opportunity_strength, 4),
         }
@@ -915,17 +907,12 @@ class CampaignRegistry:
         *,
         max_per_component: int = 2,
         concentration_limit: float = 0.6,
-        trim_fraction: float = 0.5,
     ) -> "list[ReallocationTarget]":
-        """Derive capital-reallocation trims from the live book (Part XVIII Art 11).
+        """Identify correlated-book candidates for Brain reassessment.
 
-        When overall concentration is at/above ``concentration_limit`` the book
-        is under-diversified; for each correlated cluster carried by more than
-        ``max_per_component`` campaigns, the *weakest* members beyond the
-        allowance (ranked by the Brain's own campaign health) are returned as
-        partial-close trims — redistributing capital away from redundant
-        correlated risk toward stronger opportunities. Pure and fail-safe;
-        returns ``[]`` when the book is adequately diversified.
+        This method proposes no execution action and supplies no reduction
+        fraction. The Brain must independently decide and author any management
+        plan from current campaign evidence.
         """
         out: list[ReallocationTarget] = []
         try:
@@ -936,7 +923,6 @@ class CampaignRegistry:
             if float(pa.get("concentration", 0.0) or 0.0) < float(concentration_limit):
                 return out
             limit = max(1, int(max_per_component))
-            frac = min(0.95, max(0.05, float(trim_fraction)))
             live = {(c.symbol, c.direction): c for c in self.live_campaigns()}
             seen: set = set()
             clusters = sorted(
@@ -965,7 +951,6 @@ class CampaignRegistry:
                         if camp is not None else 0.0
                     out.append(ReallocationTarget(
                         symbol=key[0], direction=key[1],
-                        kind="partial_close", fraction=frac,
                         reason=(
                             f"reallocate: '{comp}' cluster over-concentrated "
                             f"({len(members)} correlated campaigns) — trim weakest"
