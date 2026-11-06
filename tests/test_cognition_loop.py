@@ -1198,9 +1198,8 @@ def _reallocation_book():
     ]
 
 
-def test_reallocation_review_runs_on_native_verdict_when_advisor_down():
-    """Provider outage is not a market conclusion: a native de-risking verdict
-    approves the concentration trim even with no external advisor."""
+def test_reallocation_native_scale_out_without_concept_plan_does_not_invent_trim():
+    """Advisor outage falls back to Brain, but a SCALE_OUT label has no fraction."""
     from brain.campaign import CampaignRegistry
     calls = []
     brain = _AdvisorDownBrain(DecisionType.SCALE_OUT)
@@ -1213,10 +1212,8 @@ def test_reallocation_review_runs_on_native_verdict_when_advisor_down():
     loop.set_management_sink(lambda action, pos: calls.append(action))
     loop.run_once()
     assert brain.managed >= 1, "native review was never consulted"
-    # The reallocation-specific counter, not ordinary per-position management
-    # (which also emits partial_close), proves the concentration review ran.
-    assert loop.get_status()["reallocations"] >= 1
-    assert any(a.kind == "partial_close" and a.symbol == "AUDUSD" for a in calls)
+    assert calls == []
+    assert loop.get_status()["reallocations"] == 0
 
 
 def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():
