@@ -2133,6 +2133,25 @@ class CognitiveBrain:
                             campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
                             campaign["entry_expected_value"] = spec.get("expected_value")
                             campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
+                            progress_reader = getattr(campaign_memory, "get_management_progress", None)
+                            if callable(progress_reader):
+                                current_size = next((
+                                    getattr(position, name, None)
+                                    for name in ("size", "lots", "volume")
+                                    if getattr(position, name, None) is not None
+                                ), None)
+                                progress = progress_reader(
+                                    campaign_id,
+                                    current_size=current_size,
+                                )
+                                campaign["completed_milestones"] = list(
+                                    progress.get("completed_milestones", []) or []
+                                )
+                                pending = progress.get("pending_milestone")
+                                campaign["pending_milestone_id"] = (
+                                    str(pending.get("milestone_id", "") or "")
+                                    if isinstance(pending, dict) else ""
+                                )
                     elif stored is not None:
                         logger.warning(
                             "[brain] campaign memory identity mismatch for %s; "
