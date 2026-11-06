@@ -329,6 +329,11 @@ class StrategyLensReadings:
                     "required_methods": list(required_methods),
                     "available_methods": sorted(selected),
                     "missing_methods": missing,
+                    "missing_methods_semantics": (
+                        "No ConceptReading was emitted for this method on this symbol/timeframe in this cycle; "
+                        "this can mean the method's event condition was absent, history was insufficient, or its input was unavailable. "
+                        "It does not mean the method implementation is unregistered."
+                    ),
                     "applicable_methods": sorted(item.concept for item in applicable),
                     "method_summaries": summaries,
                     "style_context_state": style_state,
