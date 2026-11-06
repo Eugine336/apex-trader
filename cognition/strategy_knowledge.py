@@ -316,14 +316,12 @@ _LENS_REGIME_FIT_RULES = {
     # Momentum-dependent styles use the Brain's independently aggregated
     # momentum state. These are compatibility observations, not entry signals.
     "momentum": ("momentum", {"accelerating"}, {"decelerating"}),
-    "breakout": ("momentum", {"accelerating"}, {"decelerating"}),
-    "failed_breakout": ("momentum", {"decelerating"}, {"accelerating"}),
-    "oscillator_divergence": ("momentum", {"decelerating"}, {"accelerating"}),
 
-    # These styles explicitly consume order-flow context. Buying/selling means
-    # directional activity is present; it does not authorize that direction.
+    # Order-flow auction interpretation consumes the Brain's aggregated flow
+    # state. Buying/selling means directional activity is present; it does not
+    # authorize that direction. Tick execution microstructure needs quote/latency
+    # evidence not represented by this field, so its fit remains unknown. 
     "order_flow_auction": ("order_flow", {"buying", "selling"}, {"balanced"}),
-    "microstructure": ("order_flow", {"buying", "selling"}, {"balanced"}),
 }
 
 

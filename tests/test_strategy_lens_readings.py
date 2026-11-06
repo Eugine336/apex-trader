@@ -580,11 +580,7 @@ def test_measured_regime_fit_rules_cover_each_supported_style_without_directiona
         "mean_reversion": ({"trend_context": "range"}, "supports"),
         "range_auction": ({"trend_context": "uptrend"}, "challenges"),
         "momentum": ({"momentum": "accelerating"}, "supports"),
-        "breakout": ({"momentum": "accelerating"}, "supports"),
-        "failed_breakout": ({"momentum": "decelerating"}, "supports"),
-        "oscillator_divergence": ({"momentum": "decelerating"}, "supports"),
         "order_flow_auction": ({"order_flow": "buying"}, "supports"),
-        "microstructure": ({"order_flow": "selling"}, "supports"),
     }
     for lens_key, (regime, expected) in cases.items():
         fit, explanation = _lens_regime_fit(lens_key, regime)
@@ -592,7 +588,13 @@ def test_measured_regime_fit_rules_cover_each_supported_style_without_directiona
         assert explanation
     assert _lens_regime_fit("trend_following", {"trend_context": "conflicted"})[0] == "conflicted"
     assert _lens_regime_fit("trend_following", {"trend_context": "mixed"})[0] == "unknown"
-    assert _lens_regime_fit("carry_funding", {"momentum": "accelerating"})[0] == "unknown"
+    for lens_key in (
+        "breakout", "failed_breakout", "oscillator_divergence",
+        "microstructure", "carry_funding",
+    ):
+        fit, explanation = _lens_regime_fit(lens_key, {"momentum": "accelerating"})
+        assert fit == "unknown"
+        assert explanation.strip()
 
 
 
