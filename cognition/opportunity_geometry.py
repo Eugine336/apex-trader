@@ -136,7 +136,7 @@ def _geometry_from_concept_readings(
     stop/target candidates invalidate the group instead of hiding disagreement.
     No reward multiple is invented.
     """
-    candidates: dict[tuple[str, float], list[dict]] = {}
+    candidates: dict[tuple[str, str, float], list[dict]] = {}
     for reading in readings:
         entry = reading["reference"]
         for implication in reading["implications"]:
@@ -151,7 +151,9 @@ def _geometry_from_concept_readings(
             valid = (stop < entry < target) if side == "LONG" else (target < entry < stop)
             if not valid:
                 continue
-            candidates.setdefault((reading["timeframe"], reading["time"]), []).append({
+            candidates.setdefault((
+                reading["timeframe"], reading["reference_timeframe"], reading["time"],
+            ), []).append({
                 "reading": reading,
                 "implication": implication,
                 "entry": entry,
@@ -168,7 +170,7 @@ def _geometry_from_concept_readings(
         return (ordered[middle - 1] + ordered[middle]) / 2.0
 
     best: Optional[dict] = None
-    for (timeframe, source_time), members in candidates.items():
+    for (timeframe, reference_timeframe, source_time), members in candidates.items():
         entries = [member["entry"] for member in members]
         stops = [member["stop"] for member in members]
         targets = [member["target"] for member in members]
@@ -207,7 +209,7 @@ def _geometry_from_concept_readings(
             if member["strength"] is not None
         ]
         strongest = max(strengths, default=-1.0)
-        rank = (len(concepts), strongest, source_time)
+        rank = (len(concepts), strongest, source_time, timeframe, reference_timeframe)
         milestones = tuple(sorted({
             float(value)
             for member in selected
@@ -230,7 +232,7 @@ def _geometry_from_concept_readings(
         ))
         group = {
             "rank": rank, "entry": entry, "stop": stop, "target": target,
-            "risk": risk, "reward": reward, "timeframe": timeframe,
+            "risk": risk, "reward": reward, "timeframe": timeframe, "reference_timeframe": reference_timeframe,
             "source_time": source_time, "concepts": concepts,
             "evidence_ids": evidence_ids, "milestones": milestones,
             "geometry_sources": geometry_sources, "invalidations": invalidations,
@@ -261,7 +263,7 @@ def _geometry_from_concept_readings(
             or "The consolidated concept invalidation geometry is breached"
         ),
         evidence_ids=best["evidence_ids"],
-        entry_timeframe=best["timeframe"],
+        entry_timeframe=best["reference_timeframe"],
         stop_timeframe=best["timeframe"],
         target_timeframe=best["timeframe"],
         symbol=symbol,
