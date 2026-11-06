@@ -136,6 +136,7 @@ def test_hindcast_manifest_checks_hash_and_normalizes_bar_open_timestamps(tmp_pa
         "attestation_basis": "provider export metadata",
         "source_timestamp_verified": True,
         "timestamp_semantics": "bar_open",
+        "timestamp_timezone": "UTC",
         "timeframes": {"M1": {"file": csv_path.name, "sha256": digest}},
     }
     manifest_path = tmp_path / "manifest.json"
@@ -164,6 +165,7 @@ def test_hindcast_manifest_rejects_tampered_file_and_unattested_timestamps(tmp_p
         "attestation_basis": "provider metadata",
         "source_timestamp_verified": True,
         "timestamp_semantics": "bar_close",
+        "timestamp_timezone": "UTC",
         "timeframes": {"M1": {"file": csv_path.name, "sha256": "0" * 64}},
     }
     path = tmp_path / "manifest.json"
