@@ -276,3 +276,31 @@ def test_single_pass_row_conversion_preserves_raw_tail_window_with_invalid_rows(
 
     assert len(full) == 38
     assert tail_window == prior_tail_result
+
+def test_full_history_timestamp_fault_does_not_change_bounded_window_attestation():
+    import pandas as pd
+    import cognition.market_lenses as market_lenses
+
+    timestamps = [1_800_000_000 + index * 300 for index in range(40)]
+    timestamps[0], timestamps[1] = timestamps[1], timestamps[0]
+    frame = pd.DataFrame({
+        "time": timestamps,
+        "open": [1.0] * 40,
+        "high": [1.1] * 40,
+        "low": [0.9] * 40,
+        "close": [1.05] * 40,
+    })
+    frame.attrs.update({
+        "source_symbol": "EURUSD",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+        "source_timestamp_verified": True,
+        "source_timestamp_unit": "unix_seconds",
+    })
+
+    full, tail_window = market_lenses._rows(
+        frame, expected_symbol="EURUSD", return_tail_limit=32,
+    )
+
+    assert all(row["source_timestamp_verified"] is False for row in full)
+    assert all(row["source_timestamp_verified"] is True for row in tail_window)
