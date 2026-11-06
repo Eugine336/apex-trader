@@ -1435,6 +1435,35 @@ class SystemContext:
                             symbol, type(exc).__name__,
                         )
                         market_depth = {}
+                    try:
+                        from datetime import datetime, timedelta, timezone
+                        tick_window_end = datetime.now(timezone.utc)
+                        tick_window_start = tick_window_end - timedelta(seconds=10)
+                        tick_frame = platform_manager.get_tick_history(
+                            symbol, tick_window_start, tick_window_end,
+                        )
+                        tick_attrs = getattr(tick_frame, "attrs", {})
+                        tick_rows = (
+                            tick_frame.to_dict(orient="records")
+                            if callable(getattr(tick_frame, "to_dict", None))
+                            else []
+                        )
+                        tick_history = {
+                            "rows": tick_rows,
+                            "source": tick_attrs.get("source"),
+                            "source_verified": tick_attrs.get("source_verified") is True,
+                            "source_symbol": tick_attrs.get("source_symbol"),
+                            "source_timezone": tick_attrs.get("source_timezone"),
+                            "aggressor_side_basis": tick_attrs.get("aggressor_side_basis"),
+                            "window_start_epoch": tick_window_start.timestamp(),
+                            "window_end_epoch": tick_window_end.timestamp(),
+                        }
+                    except Exception as exc:  # noqa: BLE001 — missing optional tick history must remain unknown
+                        logger.warning(
+                            "[cognition] broker tick history unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        tick_history = {}
                     from cognition.market_lenses import analyze_market_frames
                     return analyze_market_frames(
                         symbol,
@@ -1443,6 +1472,7 @@ class SystemContext:
                         concept_context={
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
+                            "tick_history": tick_history,
                         },
                     )
 
