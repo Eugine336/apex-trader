@@ -19,6 +19,17 @@ def test_modules_only_claim_catalogued_concepts():
         assert set(module.covers_lenses) <= lenses, module.key
 
 
+def test_data_gates_are_explicit_and_never_claim_full_coverage():
+    full = {key for module in CONCEPT_MODULES for key in module.covers_methods}
+    gated = {
+        key: reason
+        for module in CONCEPT_MODULES
+        for key, reason in (getattr(module, "data_gated_methods", {}) or {}).items()
+    }
+    assert not (full & set(gated))
+    assert all(isinstance(reason, str) and reason.strip() for reason in gated.values())
+
+
 def test_every_concept_module_has_a_unique_key():
     keys = [m.key for m in CONCEPT_MODULES]
     assert len(keys) == len(set(keys))

@@ -151,6 +151,22 @@ def _rows(
                 source_origin if source_attested else None
             )
             row_data["source_broker"] = source_broker if source_attested else None
+            # Preserve provider-supplied calendar and contract metadata. Readers
+            # independently require verification flags; pass-through is not attestation.
+            metadata_fields = (
+                "session_id", "session_name", "market_session",
+                "session_open_epoch", "session_close_epoch", "session_timezone",
+                "timezone", "session_calendar_verified", "dst_status",
+                "holiday_status", "rollover_window", "rollover_start_epoch",
+                "rollover_end_epoch", "liquidity", "is_tradeable",
+                "minutes_to_next_session", "tick_size", "tick_size_verified",
+            )
+            for metadata_key in metadata_fields:
+                metadata_value = raw_value(metadata_key)
+                if metadata_value is None:
+                    metadata_value = attrs.get(metadata_key)
+                if metadata_value is not None:
+                    row_data[metadata_key] = metadata_value
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
