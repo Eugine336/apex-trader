@@ -6,6 +6,7 @@ get_size_multiplier, and backward-compatibility with empty state.
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 
 from brain.execution_monitor import ExecutionMonitor
 
