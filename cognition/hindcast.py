@@ -437,7 +437,11 @@ def run_hindcast(
             if not reading.applicable:
                 continue
             source_epoch = _finite(reading.source_bar_epoch)
-            if source_epoch is None or source_epoch > cutoff:
+            if (
+                reading.source_timestamp_verified is not True
+                or source_epoch is None or source_epoch > cutoff
+            ):
+                report.concept_implications_unlabelable += len(reading.implications)
                 continue
             relevance = _finite(reading.relevance_horizon_seconds)
             if relevance is not None and relevance > 0.0 and cutoff - source_epoch > relevance:
