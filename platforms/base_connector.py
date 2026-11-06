@@ -58,6 +58,8 @@ class TickData:
     # provider price represented in both bid/ask slots for compatibility.
     quote_kind: str = "unknown"
     symbol: Optional[str] = None
+    spread_unit: str = "pips"
+    raw_fields: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         aware = bool(
@@ -76,6 +78,9 @@ class TickData:
         self.quote_kind = (
             quote_kind if quote_kind in {"bid_ask", "mid_only"} else "unknown"
         )
+        spread_unit = str(self.spread_unit or "unknown").strip().lower()
+        self.spread_unit = spread_unit if spread_unit in {"pips", "ticks", "points", "unknown"} else "unknown"
+        self.raw_fields = dict(self.raw_fields) if isinstance(self.raw_fields, dict) else {}
 
 
 @dataclass
