@@ -45,6 +45,7 @@ class ManagementAction:
     decision_id: str = ""
     campaign_id: str = ""
     opportunity_id: str = ""
+    action_id: str = ""
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
 
@@ -63,6 +64,7 @@ class ManagementAction:
             "decision_id": self.decision_id,
             "campaign_id": self.campaign_id,
             "opportunity_id": self.opportunity_id,
+            "action_id": self.action_id,
             "identity_version": self.identity_version,
             "identity": self.identity,
         }
@@ -119,12 +121,20 @@ def translate_management(
         decision_campaign_id = str(getattr(decision, "campaign_id", "") or "")
         position_campaign_id = str(getattr(position, "campaign_id", "") or "")
 
+        questions = getattr(decision, "questions_answered", {}) or {}
+        baseline = questions.get("native_management_baseline", {})
+        plan = baseline.get("management_plan", {}) if isinstance(baseline, dict) else {}
+        if not isinstance(plan, dict):
+            plan = {}
+
         def _act(kind: str, **kw: Any) -> ManagementAction:
+            action_id = str(kw.pop("action_id", "") or plan.get("action_id", "") or "")
             return ManagementAction(
                 symbol=symbol, kind=kind, direction=held,
                 confidence=conf, reason=reason, decision_id=dec_id,
                 campaign_id=decision_campaign_id or position_campaign_id,
                 opportunity_id=decision_opportunity_id or position_opportunity_id,
+                action_id=action_id,
                 identity_version=decision_identity_version,
                 identity=decision_identity, **kw,
             )
@@ -136,13 +146,8 @@ def translate_management(
             if not tgt:
                 return _act("close")   # can't reverse an unknown side — just exit
             return _act("reverse", target_direction=tgt)
-        questions = getattr(decision, "questions_answered", {}) or {}
-        baseline = questions.get("native_management_baseline", {})
-        plan = baseline.get("management_plan", {}) if isinstance(baseline, dict) else {}
-        if not isinstance(plan, dict):
-            plan = {}
         if name == "scale_out":
-            if plan.get("kind") != "milestone_partial":
+            if plan.get("kind") not in {"milestone_partial", "news_window_partial"}:
                 return None
             try:
                 frac = float(plan.get("partial_fraction"))
