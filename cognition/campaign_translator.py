@@ -210,11 +210,23 @@ def translate(
             return None
         order_type = str(geometry.get("order_type", "MARKET") or "MARKET").upper()
         intent_order_type = str(intent_meta.get("order_type", order_type) or order_type).upper()
-        if order_type not in {"MARKET", "LIMIT", "STOP"} or intent_order_type != order_type:
+        intent_kind = str(intent_meta.get("kind", order_type.lower()) or "").strip().lower()
+        if (
+            order_type not in {"MARKET", "LIMIT", "STOP"}
+            or intent_order_type != order_type
+            or intent_kind != order_type.lower()
+        ):
             return None
         zone_low = geometry.get("entry_zone_low")
         zone_high = geometry.get("entry_zone_high")
-        if (zone_low is None) != (zone_high is None):
+        intent_zone_low = intent_meta.get("entry_zone_low", zone_low)
+        intent_zone_high = intent_meta.get("entry_zone_high", zone_high)
+        if (
+            (zone_low is None) != (zone_high is None)
+            or (intent_zone_low is None) != (intent_zone_high is None)
+            or intent_zone_low != zone_low
+            or intent_zone_high != zone_high
+        ):
             return None
         evidence_ids = geometry.get("evidence_ids")
         if not isinstance(evidence_ids, (list, tuple)) or not any(
