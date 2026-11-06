@@ -79,6 +79,7 @@ class NativeManagementVerdict:
     whole_book_risk_state: str = "unknown"
     evidence_count: int = 0
     hypothesis_count: int = 0
+    management_plan: dict[str, Any] = field(default_factory=dict)
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
 
@@ -101,6 +102,7 @@ class NativeManagementVerdict:
             "whole_book_risk_state": self.whole_book_risk_state,
             "evidence_count": int(self.evidence_count),
             "hypothesis_count": int(self.hypothesis_count),
+            "management_plan": dict(self.management_plan),
         }
 
 
@@ -399,9 +401,21 @@ class NativePositionManager:
             # been delivered: protect the profit. This only de-risks and uses the
             # concept's own level; it never exits or adds.
             if concept_action is not None:
+                plan_kind = str(concept_action.get("kind", "") or "")
+                if plan_kind == "objective_exit":
+                    return NativeManagementVerdict(
+                        action="exit",
+                        thesis_state="objective_reached",
+                        reason=str(concept_action.get("reason", "concept objective reached")),
+                        management_plan=concept_action,
+                        **base,
+                    )
                 return NativeManagementVerdict(
-                    action="protect_profit", thesis_state="milestone_delivered",
-                    reason=concept_action, **base,
+                    action="scale_out",
+                    thesis_state="milestone_delivered",
+                    reason=str(concept_action.get("reason", "concept milestone reached")),
+                    management_plan=concept_action,
+                    **base,
                 )
 
             # Negative expected value is meaningful only when it is explicitly
@@ -626,50 +640,121 @@ class NativePositionManager:
     @staticmethod
     def _concept_milestone_guidance(
         context: dict, held_side: str, position: Any, fresh: list, symbol: str,
-    ) -> Optional[str]:
-        """Reason string when the originating concept's first milestone has been
-        passed by a fresh completed close while the position is in profit.
-
-        Uses only the stored concept geometry and fresh completed-bar evidence;
-        returns None (no opinion) on anything missing or ambiguous.
-        """
+    ) -> Optional[dict]:
+        """Build a concept-derived partial, objective and structural trailing plan."""
         geometry = context.get("concept_geometry")
         if not isinstance(geometry, dict) or held_side not in {"LONG", "SHORT"}:
             return None
-        milestones = [m for m in (_finite_number(x) for x in (geometry.get("milestones") or [])) if m]
-        if not milestones:
+        timeframe = str(geometry.get("concept_timeframe", "") or "").strip().upper()
+        concept = str(geometry.get("concept", "") or "").strip()
+        if not timeframe or not concept or context.get("pending_milestone_id"):
             return None
+        completed = {
+            str(item) for item in context.get("completed_milestones", []) or []
+            if str(item).strip()
+        }
+        milestones = sorted({
+            value for value in (
+                _finite_number(item) for item in (geometry.get("milestones") or [])
+            ) if value is not None and value > 0.0
+        }, reverse=held_side == "SHORT")
         profit_r = _finite_number(getattr(position, "profit_r", None))
-        if profit_r is None or profit_r <= 0.0:
-            return None
-        latest: Optional[tuple[float, float]] = None   # (source_epoch, completed close)
-        for ev in fresh:
-            if str(getattr(ev, "symbol", "") or "") not in ("", symbol):
+        latest: Optional[tuple[float, float]] = None
+        structure_rows: list[tuple[float, float, float]] = []
+        for evidence in fresh:
+            if str(getattr(evidence, "symbol", "") or "").strip().upper() != symbol.upper():
                 continue
-            m = getattr(ev, "measurements", None)
-            if not isinstance(m, dict) or m.get("source_kind") != "market_lens":
+            measurements = getattr(evidence, "measurements", None)
+            if not isinstance(measurements, dict) or measurements.get("source_kind") != "market_lens":
                 continue
-            if m.get("source_timestamp_known") is not True or m.get("provisional") is True:
+            if (
+                measurements.get("source_timestamp_known") is not True
+                or measurements.get("data_basis") != "completed_ohlc"
+                or measurements.get("provisional") is True
+                or measurements.get("completed") is False
+            ):
                 continue
-            close = _finite_number(m.get("current_close"))
-            epoch = _finite_number(m.get("source_bar_epoch"))
-            if close is None or epoch is None:
+            epoch = _finite_number(measurements.get("source_bar_epoch"))
+            close = _finite_number(measurements.get("current_close"))
+            if epoch is None or close is None:
                 continue
-            if latest is None or epoch > latest[0]:
+            tf = str(measurements.get("timeframe", "") or "").strip().upper()
+            if tf == timeframe and (latest is None or epoch > latest[0]):
                 latest = (epoch, close)
+            domain = str(getattr(getattr(evidence, "domain", None), "value", "") or "").lower()
+            if domain == "structure" and tf == timeframe:
+                level_key = "prior_range_low" if held_side == "LONG" else "prior_range_high"
+                level = _finite_number(measurements.get(level_key))
+                if level is not None:
+                    structure_rows.append((epoch, close, level))
         if latest is None:
             return None
         close = latest[1]
-        first = min(milestones) if held_side == "LONG" else max(milestones)
-        reached = close >= first if held_side == "LONG" else close <= first
-        if not reached:
+        target = _finite_number(geometry.get("target_price"))
+        if target is not None:
+            target_reached = close >= target if held_side == "LONG" else close <= target
+            if target_reached:
+                return {
+                    "kind": "objective_exit",
+                    "reason": (
+                        f"{concept} ({timeframe}) objective {target:.10g} was reached "
+                        f"by a completed close at {close:.10g}"
+                    ),
+                    "objective_price": target,
+                }
+        if profit_r is None or profit_r <= 0.0 or not milestones:
             return None
-        return (
-            f"{geometry.get('concept')} ({geometry.get('concept_timeframe')}) first milestone {first:.10g} "
-            f"has been passed by a completed close at {close:.10g}; protect the profit"
+        remaining = [
+            (index, milestone) for index, milestone in enumerate(milestones, start=1)
+            if f"{concept}:{timeframe}:{index}:{milestone:.10g}" not in completed
+        ]
+        crossed = [
+            (index, milestone) for index, milestone in remaining
+            if (close >= milestone if held_side == "LONG" else close <= milestone)
+        ]
+        if not crossed:
+            return None
+        index, milestone = crossed[0]
+        milestone_id = f"{concept}:{timeframe}:{index}:{milestone:.10g}"
+        # Split the remaining exposure into equal tranches for each uncompleted
+        # concept milestone plus the terminal objective. The fraction is derived
+        # from this campaign's geometry, never a fixed 50% default.
+        partial_fraction = 1.0 / (len(remaining) + 1)
+        current_sl = _finite_number(getattr(position, "sl", None))
+        initial_sl = _finite_number(geometry.get("stop_price"))
+        known_stops = [value for value in (current_sl, initial_sl) if value is not None]
+        protective_floor = (
+            max(known_stops) if held_side == "LONG" and known_stops
+            else min(known_stops) if held_side == "SHORT" and known_stops
+            else None
         )
+        trailing_candidates = [
+            level for _epoch, row_close, level in structure_rows
+            if protective_floor is not None and (
+                protective_floor < level < row_close < close
+                if held_side == "LONG"
+                else close < row_close < level < protective_floor
+            )
+        ]
+        trailing_stop = (
+            max(trailing_candidates) if held_side == "LONG" and trailing_candidates
+            else min(trailing_candidates) if held_side == "SHORT" and trailing_candidates
+            else None
+        )
+        return {
+            "kind": "milestone_partial",
+            "milestone_id": milestone_id,
+            "milestone_index": index,
+            "milestone_count": len(milestones),
+            "milestone_price": milestone,
+            "partial_fraction": partial_fraction,
+            "stop_price": trailing_stop,
+            "reason": (
+                f"{concept} ({timeframe}) milestone {index}/{len(milestones)} "
+                f"at {milestone:.10g} was passed by a completed close at {close:.10g}"
+            ),
+        }
 
-    @staticmethod
     def _hold(
         reason: str,
         campaign_id: str,
