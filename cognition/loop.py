@@ -29,6 +29,7 @@ module stays natively importable/testable); fail-safe throughout.
 from __future__ import annotations
 
 import logging
+import inspect
 import threading
 import time as _time
 from typing import Any, Callable, Optional
@@ -106,6 +107,7 @@ class EvidenceConsolidator:
         # Completed multi-timeframe OHLC -> contextual concept readings.
         # This is a first-class evidence source, not a detached diagnostic.
         self._concept_source = concept_source
+        self._concept_source_accepts_now = self._accepts_keyword(concept_source, "now")
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
         # Market detectors add one neutral evidence record; they are not trade authorities.
@@ -128,13 +130,29 @@ class EvidenceConsolidator:
         """
         self._developing_source = developing_source
 
-    def set_concept_source(self, source: Optional[Callable[[str], Any]]) -> None:
+    @staticmethod
+    def _accepts_keyword(source: Optional[Callable[..., Any]], keyword: str) -> bool:
+        if source is None:
+            return False
+        try:
+            parameters = inspect.signature(source).parameters
+        except (TypeError, ValueError):
+            return False
+        return keyword in parameters or any(
+            item.kind is inspect.Parameter.VAR_KEYWORD
+            for item in parameters.values()
+        )
+
+    def set_concept_source(self, source: Optional[Callable[..., Any]]) -> None:
         """Wire the live multi-timeframe concept-reading source.
 
         The callable returns read-only Evidence derived from completed broker bars.
+        A source that accepts the cycle timestamp can reuse one multi-symbol
+        snapshot across every symbol in that cycle.
         Concept modules cannot choose directions or authorize execution.
         """
         self._concept_source = source
+        self._concept_source_accepts_now = self._accepts_keyword(source, "now")
 
     def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
         """Wire (or clear) the live portfolio-assessment source (Part XVIII Art 11).
@@ -261,7 +279,13 @@ class EvidenceConsolidator:
             if self._concept_source is not None:
                 attempted_sources += 1
                 try:
-                    concept_evidence = list(self._concept_source(ms.symbol) or [])
+                    concept_evidence = list(
+                        (
+                            self._concept_source(ms.symbol, now=now)
+                            if self._concept_source_accepts_now
+                            else self._concept_source(ms.symbol)
+                        ) or []
+                    )
                     concept_readings = [
                         item for item in concept_evidence
                         if isinstance(getattr(item, "measurements", None), dict)
