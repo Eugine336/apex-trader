@@ -25,6 +25,7 @@ Design principles (mirror the trading leaf modules):
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import re
@@ -158,6 +159,7 @@ def _headers_to_dict(headers: Any) -> dict:
         try:
             out[str(k).strip().lower()] = v
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in llm/client.py:160", exc_info=True)
             continue
     return out
 
@@ -174,6 +176,7 @@ def _parse_duration_token(value: Any) -> float:
     try:
         return max(0.0, float(s))          # bare number ⇒ seconds
     except ValueError:
+        logging.getLogger(__name__).debug("Exception handled by fallback in llm/client.py:176", exc_info=True)
         pass
     units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
     total = 0.0
@@ -184,6 +187,7 @@ def _parse_duration_token(value: Any) -> float:
             total += float(num) * units[unit]
             matched = True
         except (ValueError, KeyError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in llm/client.py:186", exc_info=True)
             continue
     return total if matched else 0.0
 
@@ -197,6 +201,7 @@ def _retry_after_value(raw: Any) -> float:
     try:
         return max(0.0, float(s))          # RFC 7231 delta-seconds
     except ValueError:
+        logging.getLogger(__name__).debug("Exception handled by fallback in llm/client.py:199", exc_info=True)
         pass
     try:  # RFC 7231 HTTP-date form
         from email.utils import parsedate_to_datetime
@@ -277,6 +282,7 @@ def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "
         try:
             detail = exc.read().decode("utf-8", "replace")[:200]
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in llm/client.py:279", exc_info=True)
             pass
         return int(exc.code or 0), detail, _headers_to_dict(getattr(exc, "headers", None))
     except Exception as exc:  # noqa: BLE001 — timeouts, DNS, connection resets
