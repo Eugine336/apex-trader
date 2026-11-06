@@ -63,3 +63,56 @@ def test_discovery_marks_supported_instruments_and_rejects_unknown_or_disabled(m
     assert by_symbol["BROKER_CUSTOM"]["apex_supported"] is False
     assert by_symbol["XAUUSD"]["new_position_eligible"] is False
     assert all(row["source_verified"] for row in catalog)
+
+
+def test_unique_broker_suffix_maps_to_canonical_apex_symbol(monkeypatch):
+    pytest.importorskip("pandas")
+    import platforms.mt5.mt5_connector as module
+
+    class FakeMT5:
+        SYMBOL_TRADE_MODE_DISABLED = 0
+        SYMBOL_TRADE_MODE_LONGONLY = 1
+        SYMBOL_TRADE_MODE_SHORTONLY = 2
+        SYMBOL_TRADE_MODE_CLOSEONLY = 3
+        SYMBOL_TRADE_MODE_FULL = 4
+
+        @staticmethod
+        def symbols_get():
+            return [_symbol("EURUSD.a")]
+
+    monkeypatch.setattr(module, "mt5", FakeMT5())
+    connector = module.MT5Connector()
+    connector._connected = True
+
+    catalog = connector.discover_symbols()
+
+    assert catalog[0]["apex_symbol"] == "EURUSD"
+    assert catalog[0]["broker_symbol_mapping_unique"] is True
+    assert catalog[0]["new_position_eligible"] is True
+    assert connector.symbol_map("EURUSD") == "EURUSD.a"
+
+
+def test_ambiguous_broker_suffixes_do_not_enter_trade_universe(monkeypatch):
+    pytest.importorskip("pandas")
+    import platforms.mt5.mt5_connector as module
+
+    class FakeMT5:
+        SYMBOL_TRADE_MODE_DISABLED = 0
+        SYMBOL_TRADE_MODE_LONGONLY = 1
+        SYMBOL_TRADE_MODE_SHORTONLY = 2
+        SYMBOL_TRADE_MODE_CLOSEONLY = 3
+        SYMBOL_TRADE_MODE_FULL = 4
+
+        @staticmethod
+        def symbols_get():
+            return [_symbol("EURUSD.a"), _symbol("EURUSD.raw")]
+
+    monkeypatch.setattr(module, "mt5", FakeMT5())
+    connector = module.MT5Connector()
+    connector._connected = True
+
+    catalog = connector.discover_symbols()
+
+    assert all(row["apex_symbol"] == "EURUSD" for row in catalog)
+    assert all(row["broker_symbol_mapping_unique"] is False for row in catalog)
+    assert all(row["new_position_eligible"] is False for row in catalog)
