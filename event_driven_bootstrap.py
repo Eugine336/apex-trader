@@ -2756,6 +2756,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
@@ -2773,6 +2774,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
@@ -2784,6 +2786,7 @@ class EventDrivenSystem:
                             decision_id=str(getattr(action, "decision_id", "") or ""),
                             campaign_id=str(getattr(action, "campaign_id", "") or ""),
                             opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                             identity_version=str(getattr(action, "identity_version", "") or ""),
                             identity=str(getattr(action, "identity", "") or ""),
                         ))
@@ -2798,6 +2801,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
@@ -2817,6 +2821,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
