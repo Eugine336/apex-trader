@@ -2,7 +2,7 @@ from cognition.brain_reasoning import BrainReasoner, EvidenceAnalysis
 from cognition.concept_synthesis import synthesize_concept_readings
 
 
-def _reading(concept, direction, strength, evidence_id, *, activated=True, timeframe="M5", epoch=1000.0):
+def _reading(concept, direction, strength, evidence_id, *, activated=True, timeframe="M5", epoch=1000.0, independence_group=None):
     return {
         "concept": concept,
         "timeframe": timeframe,
@@ -10,7 +10,7 @@ def _reading(concept, direction, strength, evidence_id, *, activated=True, timef
         "source_timestamp_verified": True,
         "data_basis": "completed_ohlc",
         "provisional": False,
-        "independence_group": f"ohlc:{timeframe}",
+        "independence_group": f"ohlc:{timeframe}" if independence_group is None else independence_group,
         "applicable": True,
         "implications": [{
             "direction": direction,
@@ -45,7 +45,9 @@ def test_same_context_concepts_are_grouped_without_additive_confidence():
     assert long_group["strength"] == 0.8
     assert long_group["opposing_strength"] == 0.7
     assert long_group["confidence"] == 0.8 * (1.0 - 0.5 * 0.7)
-    assert long_group["confluence_count"] == 2
+    assert long_group["concept_count"] == 2
+    assert long_group["confluence_count"] == 1
+    assert long_group["independence_status"] == "single_source"
     assert long_group["geometry_divergent"] is False
 
 
@@ -89,4 +91,42 @@ def test_brain_emits_one_hypothesis_per_synthesized_concept_group():
     assert long_group.supporting_evidence_ids == ["e1", "e2"]
     assert long_group.contradicting_evidence_ids == ["e3"]
     assert long_group.confidence_components["additive_confluence_boost"] is False
-    assert long_group.confidence_components["confluence_count"] == 2
+    assert long_group.confidence_components["concept_count"] == 2
+    assert long_group.confidence_components["confluence_count"] == 1
+    assert long_group.confidence_components["independence_status"] == "single_source"
+
+
+def test_distinct_verified_independence_groups_are_counted_without_confidence_boost():
+    groups = synthesize_concept_readings([
+        _reading("crt", "LONG", 0.8, "e1", independence_group="ohlc:EURUSD:M5"),
+        _reading("order_book", "LONG", 0.7, "e2", independence_group="dom:EURUSD"),
+    ])
+    (long_group,) = groups
+
+    assert long_group["concept_count"] == 2
+    assert long_group["confluence_count"] == 2
+    assert long_group["independence_status"] == "multiple_independent_sources"
+    assert long_group["independence_groups"] == ["dom:EURUSD", "ohlc:EURUSD:M5"]
+    assert long_group["strength"] == 0.8
+    assert long_group["confidence"] == 0.8
+
+
+def test_missing_independence_provenance_is_not_counted_as_confluence():
+    groups = synthesize_concept_readings([
+        _reading("crt", "LONG", 0.8, "e1", independence_group=""),
+        _reading("market_structure", "LONG", 0.7, "e2", independence_group=""),
+    ])
+    (long_group,) = groups
+
+    assert long_group["concept_count"] == 2
+    assert long_group["confluence_count"] == 0
+    assert long_group["independence_status"] == "provenance_unknown"
+
+
+
+def test_unknown_strength_remains_unknown_instead_of_becoming_zero():
+    reading = _reading("crt", "LONG", None, "e1")
+    (group,) = synthesize_concept_readings([reading])
+
+    assert group["strength"] is None
+    assert group["confidence"] is None

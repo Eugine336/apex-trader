@@ -59,7 +59,9 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
             if direction not in _DIRECTIONS:
                 continue
             strength = _finite(implication.get("strength"))
-            strength = min(1.0, max(0.0, strength or 0.0))
+            # Missing strength is epistemically unknown, not a measured zero.
+            # Keep it absent through synthesis; the Brain may then assign a
+            # zero decision score without rewriting the source reading.
             activated = implication.get("activated") is True
             buckets[(timeframe, epoch, direction, activated)].append({
                 "concept": concept,
@@ -75,7 +77,7 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
                 "objective_price": _finite(implication.get("objective_price")),
                 "requires": [str(x) for x in implication.get("requires", []) or [] if str(x).strip()],
                 "conflicts": [str(x) for x in implication.get("conflicts_with", []) or [] if str(x).strip()],
-                "independence_group": str(reading.get("independence_group", "") or ""),
+                "independence_group": str(reading.get("independence_group", "") or "").strip(),
             })
 
     groups: list[dict] = []
@@ -84,7 +86,16 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
     ):
         concepts = sorted({member["concept"] for member in members})
         evidence_ids = list(dict.fromkeys(member["evidence_id"] for member in members))
-        strongest = max((member["strength"] for member in members), default=0.0)
+        # A concept count is not an independence count. Multiple readers over
+        # the same completed OHLC stream are correlated interpretations, not
+        # separate confirmations. Unknown provenance is never counted as an
+        # independent source.
+        independence_groups = sorted({
+            member["independence_group"] for member in members
+            if member["independence_group"]
+        })
+        known_strengths = [member["strength"] for member in members if member["strength"] is not None]
+        strongest = max(known_strengths) if known_strengths else None
         geometry = []
         for member in members:
             if member["invalidation_price"] is None and member["objective_price"] is None:
@@ -118,11 +129,17 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
             ),
             "requirements": requirements,
             "conflicts": conflicts,
-            "independence_groups": sorted({
-                member["independence_group"] for member in members if member["independence_group"]
-            }),
+            "independence_groups": independence_groups,
+            "independence_status": (
+                "multiple_independent_sources" if len(independence_groups) > 1
+                else "single_source" if len(independence_groups) == 1
+                else "provenance_unknown"
+            ),
             "member_count": len(members),
-            "confluence_count": len(concepts),
+            "concept_count": len(concepts),
+            # Backward-compatible field: confluence now means distinct,
+            # explicitly identified independence groups, never concept count.
+            "confluence_count": len(independence_groups),
         })
 
     for group in groups:
@@ -140,7 +157,8 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
             and candidate["direction"] == opposite
             and candidate["activated"]
         ]
-        opposing_strength = max((item["strength"] for item in opposing), default=0.0)
+        opposing_strengths = [item["strength"] for item in opposing if item["strength"] is not None]
+        opposing_strength = max(opposing_strengths) if opposing_strengths else 0.0
         group["opposing_concepts"] = sorted({
             concept for item in opposing for concept in item["concepts"]
         })
@@ -151,6 +169,9 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
         # The same candle stream feeds these readers. Confluence is descriptive,
         # not independent statistical confirmation. Opposing activated readings
         # reduce the strongest member's strength; no additive boost is allowed.
-        group["confidence"] = group["strength"] * (1.0 - 0.5 * opposing_strength)
+        group["confidence"] = (
+            group["strength"] * (1.0 - 0.5 * opposing_strength)
+            if group["strength"] is not None else None
+        )
 
     return groups
