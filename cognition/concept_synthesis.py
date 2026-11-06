@@ -75,7 +75,7 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
                 "objective_price": _finite(implication.get("objective_price")),
                 "requires": [str(x) for x in implication.get("requires", []) or [] if str(x).strip()],
                 "conflicts": [str(x) for x in implication.get("conflicts_with", []) or [] if str(x).strip()],
-                "independence_group": str(reading.get("independence_group", "") or ""),
+                "independence_group": str(reading.get("independence_group", "") or "").strip(),
             })
 
     groups: list[dict] = []
@@ -84,6 +84,14 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
     ):
         concepts = sorted({member["concept"] for member in members})
         evidence_ids = list(dict.fromkeys(member["evidence_id"] for member in members))
+        # A concept count is not an independence count. Multiple readers over
+        # the same completed OHLC stream are correlated interpretations, not
+        # separate confirmations. Unknown provenance is never counted as an
+        # independent source.
+        independence_groups = sorted({
+            member["independence_group"] for member in members
+            if member["independence_group"]
+        })
         strongest = max((member["strength"] for member in members), default=0.0)
         geometry = []
         for member in members:
@@ -118,11 +126,17 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
             ),
             "requirements": requirements,
             "conflicts": conflicts,
-            "independence_groups": sorted({
-                member["independence_group"] for member in members if member["independence_group"]
-            }),
+            "independence_groups": independence_groups,
+            "independence_status": (
+                "multiple_independent_sources" if len(independence_groups) > 1
+                else "single_source" if len(independence_groups) == 1
+                else "provenance_unknown"
+            ),
             "member_count": len(members),
-            "confluence_count": len(concepts),
+            "concept_count": len(concepts),
+            # Backward-compatible field: confluence now means distinct,
+            # explicitly identified independence groups, never concept count.
+            "confluence_count": len(independence_groups),
         })
 
     for group in groups:
