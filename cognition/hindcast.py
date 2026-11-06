@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import string
 from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -326,6 +327,7 @@ def _summarize_concept_outcomes(rows: list[dict[str, Any]]) -> dict[str, dict[st
         invalidation = sum(item["outcome"] == "INVALIDATION_FIRST" for item in members)
         ambiguous = sum(item["outcome"] == "AMBIGUOUS_SAME_BAR" for item in members)
         unresolved = sum(item["outcome"] == "UNRESOLVED" for item in members)
+        invalid_geometry = sum(item["outcome"] == "INVALID_GEOMETRY" for item in members)
         resolved = objective + invalidation
         summary[key] = {
             "observations": len(members),
@@ -334,6 +336,7 @@ def _summarize_concept_outcomes(rows: list[dict[str, Any]]) -> dict[str, dict[st
             "invalidation_first": invalidation,
             "ambiguous_same_bar": ambiguous,
             "unresolved": unresolved,
+            "invalid_geometry": invalid_geometry,
             "objective_first_rate": round(objective / resolved, 6) if resolved else None,
             "semantics": "historical descriptive rate; not a calibrated probability or current-regime edge",
         }
@@ -346,6 +349,7 @@ def _validate_normalized_dataset(dataset: HindcastDataset) -> None:
         or not str(dataset.source_reference or "").strip()
         or not str(dataset.attestation_basis or "").strip()
         or len(str(dataset.dataset_digest or "")) != 64
+        or any(char not in string.hexdigits for char in str(dataset.dataset_digest or ""))
     ):
         raise HindcastDataError("dataset identity, attestation, and SHA-256 digest are required")
     if dataset.timestamp_semantics not in {"bar_open", "bar_close"}:
@@ -365,7 +369,7 @@ def _validate_normalized_dataset(dataset: HindcastDataset) -> None:
                 stamp is None or stamp <= 0.0
                 or source_stamp is None or abs(source_stamp - stamp) > 1e-6
                 or row.get("source_timestamp_verified") is not True
-                or row.get("provisional") is True
+                or row.get("provisional") is not False
                 or (previous is not None and stamp <= previous)
             ):
                 raise HindcastDataError(f"{timeframe} row {index} has invalid source-time ordering/provenance")
