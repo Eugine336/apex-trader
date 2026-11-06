@@ -20,6 +20,7 @@ with its invalidation conditions. Ambiguous or incomplete assessments HOLD.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any, Optional
@@ -701,7 +702,6 @@ class NativePositionManager:
 
         decision_time = _finite_number(now) if now is not None else None
         if decision_time is None:
-            import time
             decision_time = time.time()
         entry_epoch = _finite_number(geometry.get("evidence_timestamp_epoch"))
         campaign_id = str(context.get("campaign_id", "") or "").strip()
