@@ -231,6 +231,9 @@ def test_prefix_swing_read_does_not_discard_full_history_incremental_state():
     ]
     key = "shared-structure-liquidity:EURUSD:M5"
     full = fractal_swings(bars, cache_key=key)
+    assert full == list(_fractal_swings_cached(tuple(
+        (bar["high"], bar["low"]) for bar in bars
+    )))
     prefix = fractal_swings(bars[:-1], cache_key=key)
     assert prefix == list(_fractal_swings_cached(tuple(
         (bar["high"], bar["low"]) for bar in bars[:-1]
