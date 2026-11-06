@@ -3833,7 +3833,6 @@ class CognitionConfig:
     reallocation_enabled: bool = True
     reallocation_max_per_component: int = 2
     reallocation_concentration_limit: float = 0.6
-    reallocation_trim_fraction: float = 0.5
     # Part XIX Art 1/7/8 — opportunity qualification. The market is presumed
     # noise: a Brain-originated entry (and a scale-in) only proceeds if its
     # expected NET value after real round-trip cost (spread + commission +
