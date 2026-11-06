@@ -320,7 +320,7 @@ _LENS_REGIME_FIT_RULES = {
     # Order-flow auction interpretation consumes the Brain's aggregated flow
     # state. Buying/selling means directional activity is present; it does not
     # authorize that direction. Tick execution microstructure needs quote/latency
-    # evidence not represented by this field, so its fit remains unknown. 
+    # evidence not represented by this field, so its fit remains unknown.
     "order_flow_auction": ("order_flow", {"buying", "selling"}, {"balanced"}),
 }
 
