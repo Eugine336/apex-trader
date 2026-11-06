@@ -88,6 +88,15 @@ if set(DATA_GATED_LENSES) & set(FULL_LENSES):
     raise RuntimeError("A strategy lens cannot be both FULL and DATA-GATED")
 
 
+def _verified_reading_epoch(reading: ConceptReading) -> float | None:
+    if reading.source_timestamp_verified is not True:
+        return None
+    epoch = finite(reading.source_timestamp_epoch)
+    if epoch is None:
+        epoch = finite(reading.source_bar_epoch)
+    return epoch if epoch is not None and epoch > 0.0 else None
+
+
 def _compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
     """Retain compact, decision-relevant method facts without copying raw histories."""
     selected: dict[str, Any] = {}
@@ -225,35 +234,25 @@ class StrategyLensReadings:
                 # Historical composition is bounded by the latest verified
                 # completed bar supplied for this timeframe. Unverified or
                 # future-dated method readings cannot enter the replay snapshot.
+                eligible_candidates = [
+                    item for item in candidates
+                    if cutoff_epoch is not None
+                    and (epoch := _verified_reading_epoch(item)) is not None
+                    and epoch <= cutoff_epoch
+                ]
+                eligible_concepts = {item.concept for item in eligible_candidates}
                 unverified_methods = sorted({
                     item.concept for item in candidates
-                    if item.source_timestamp_verified is not True
-                    or (
-                        finite(item.source_timestamp_epoch)
-                        if finite(item.source_timestamp_epoch) is not None
-                        else finite(item.source_bar_epoch)
-                    ) is None
+                    if _verified_reading_epoch(item) is None
+                    and item.concept not in eligible_concepts
                 })
                 future_methods = sorted({
                     item.concept for item in candidates
-                    if (
-                        finite(item.source_timestamp_epoch)
-                        if finite(item.source_timestamp_epoch) is not None
-                        else finite(item.source_bar_epoch)
-                    ) is not None
+                    if (epoch := _verified_reading_epoch(item)) is not None
                     and cutoff_epoch is not None
-                    and (
-                        finite(item.source_timestamp_epoch)
-                        if finite(item.source_timestamp_epoch) is not None
-                        else finite(item.source_bar_epoch)
-                    ) > cutoff_epoch
+                    and epoch > cutoff_epoch
+                    and item.concept not in eligible_concepts
                 })
-                eligible_candidates = [
-                    item for item in candidates
-                    if item.concept not in unverified_methods
-                    and item.concept not in future_methods
-                    and cutoff_epoch is not None
-                ]
                 selected: dict[str, ConceptReading] = {}
                 for method in required_methods:
                     rows = [item for item in eligible_candidates if item.concept == method]
@@ -333,11 +332,7 @@ class StrategyLensReadings:
                 # present timestamp into verified provenance.
                 source_epochs = [
                     (
-                        finite(item.source_bar_epoch)
-                        if item.source_timestamp_verified is True
-                        and finite(item.source_bar_epoch) is not None
-                        and finite(item.source_bar_epoch) > 0.0
-                        else None
+                        _verified_reading_epoch(item)
                     )
                     for item in selected.values()
                 ]
@@ -346,7 +341,9 @@ class StrategyLensReadings:
                 }
                 source_epoch = (
                     next(iter(epochs))
-                    if selected and len(epochs) == 1 and all(
+                    if selected and all_methods_available
+                    and len(selected) == len(required_methods)
+                    and len(epochs) == 1 and all(
                         value is not None for value in source_epochs
                     )
                     else None
@@ -370,7 +367,9 @@ class StrategyLensReadings:
                 groups = {group for group in source_groups if group}
                 independence_group = (
                     next(iter(groups))
-                    if selected and len(groups) == 1 and all(source_groups)
+                    if selected and all_methods_available
+                    and len(selected) == len(required_methods)
+                    and len(groups) == 1 and all(source_groups)
                     else ""
                 )
                 if len(groups) > 1 or (groups and not all(source_groups)):
