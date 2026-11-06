@@ -44,6 +44,9 @@ def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
     if not overrides:
         return config
 
+    if isinstance(overrides.get("universe_mode"), str):
+        config.universe_mode = overrides["universe_mode"].strip().lower()
+
     if isinstance(overrides.get("enabled_categories"), list):
         config.enabled_categories = [str(c) for c in overrides["enabled_categories"]]
 
