@@ -2006,6 +2006,7 @@ class MT5Connector(BaseConnector):
         # ticket and the raw mt5 position object, so this only affects the symbol
         # the rest of the system records and learns under — keeping pip_size,
         # trade-journal, and per-symbol learner keys consistent.
+        info = mt5.symbol_info(p.symbol)
         return PositionInfo(
             order_id=str(p.ticket),
             symbol=resolve_to_internal(p.symbol),
@@ -2019,6 +2020,15 @@ class MT5Connector(BaseConnector):
             swap=p.swap,
             open_time=datetime.fromtimestamp(p.time, tz=timezone.utc),
             platform="mt5",
+            volume_min=float(getattr(info, "volume_min", 0.0) or 0.0),
+            volume_step=float(getattr(info, "volume_step", 0.0) or 0.0),
+            volume_max=float(getattr(info, "volume_max", 0.0) or 0.0),
+            digits=int(getattr(info, "digits", 0) or 0),
+            tick_size=float(
+                getattr(info, "trade_tick_size", 0.0)
+                or getattr(info, "point", 0.0)
+                or 0.0
+            ),
         )
 
     def _fail_order(
