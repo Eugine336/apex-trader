@@ -252,9 +252,16 @@ class PlatformManager:
         results["mt5"] = self._mt5_connected
 
         self._mt5_symbol_catalog = self.discover_mt5_symbols(refresh=True)
-        eligible_count = sum(1 for row in self._mt5_symbol_catalog if row.get("new_position_eligible"))
+        eligible_symbols = list(dict.fromkeys(
+            str(row.get("apex_symbol", "")).upper()
+            for row in self._mt5_symbol_catalog
+            if row.get("new_position_eligible") and row.get("apex_symbol")
+        ))
+        self.config.broker_discovery_complete = self._mt5_connected
+        self.config.broker_enabled_symbols = eligible_symbols
+        eligible_count = len(eligible_symbols)
         logger.info(
-            "[universe] MT5 discovered {} broker symbols; {} have complete specs and permit new positions",
+            "[universe] MT5 discovered {} broker symbols; {} map to supported Apex instruments with complete specs",
             len(self._mt5_symbol_catalog), eligible_count,
         )
 
