@@ -10,6 +10,8 @@ class FakeMT5:
     COPY_TICKS_ALL = 0
     TICK_FLAG_BUY = 16
     TICK_FLAG_SELL = 32
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
 
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
         return [
@@ -18,6 +20,15 @@ class FakeMT5:
             {"time": 1_800_000_060, "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2,
              "tick_volume": 120, "real_volume": 30, "spread": 14},
         ]
+
+    def copy_rates_range(self, symbol, timeframe, start, end):
+        return self.copy_rates_from_pos(symbol, timeframe, 0, 2)
+
+    def order_calc_profit(self, action, symbol, volume, price_open, price_close):
+        return (price_close - price_open) * volume * (1 if action == 0 else -1) * 100
+
+    def order_calc_margin(self, action, symbol, volume, price):
+        return volume * price * 0.01
 
     def copy_ticks_range(self, symbol, start, end, flags):
         return [
@@ -91,3 +102,26 @@ def test_historical_ticks_reject_naive_datetimes(monkeypatch):
         assert "timezone-aware" in str(exc)
     else:
         raise AssertionError("naive datetimes must be rejected")
+
+
+def test_historical_bar_range_preserves_native_fields(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    frame = connector.get_ohlcv_range(
+        "EURUSD",
+        "M1",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, tzinfo=timezone.utc),
+        include_forming=True,
+    )
+    assert frame["tick_volume"].tolist() == [100, 120]
+    assert frame["real_volume"].tolist() == [25, 30]
+    assert frame["spread"].tolist() == [12, 14]
+    assert frame.attrs["source"] == "mt5.copy_rates_range"
+
+
+def test_broker_profit_and_margin_calculations_use_native_mt5_functions(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    profit = connector.calculate_profit("EURUSD", "BUY", 0.2, 1.0, 1.1)
+    margin = connector.calculate_margin("EURUSD", "BUY", 0.2, 1.1)
+    assert profit == pytest.approx(2.0)
+    assert margin == pytest.approx(0.0022)
