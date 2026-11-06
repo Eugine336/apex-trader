@@ -433,8 +433,17 @@ def run_hindcast(
             source_epoch = _finite(reading.source_bar_epoch)
             if source_epoch is None or source_epoch > cutoff:
                 continue
+            relevance = _finite(reading.relevance_horizon_seconds)
+            if relevance is not None and relevance > 0.0 and cutoff - source_epoch > relevance:
+                continue
             future = dataset.bars_by_tf.get(reading.timeframe, [])
-            if not future:
+            visible_for_reading = visible_bars.get(reading.timeframe, [])
+            if not future or not visible_for_reading:
+                continue
+            reference_price = _finite(reading.reference_close)
+            if reference_price is None:
+                reference_price = _finite(visible_for_reading[-1].get("close"))
+            if reference_price is None:
                 continue
             for implication in reading.implications:
                 direction = str(implication.direction or "").upper()
@@ -458,7 +467,7 @@ def run_hindcast(
                     direction=direction,
                     objective_price=objective,
                     invalidation_price=invalidation,
-                    reference_price=reading.reference_close,
+                    reference_price=reference_price,
                 )
                 report.concept_outcomes.append({
                     "concept": reading.concept,
@@ -491,12 +500,14 @@ def run_hindcast(
             report.skipped_brain_candidates += 1
             continue
         direction = str(getattr(selected, "direction", "") or "").upper()
+        order_type = str(getattr(selected, "order_type", "MARKET") or "MARKET").upper()
         stop = _finite(getattr(selected, "stop_price", None))
         target = _finite(getattr(selected, "target_price", None))
         confidence = _finite(getattr(decision, "confidence", None))
         family = str(getattr(selected, "candidate_family", "") or "").strip().lower()
         if (
-            direction not in {"LONG", "SHORT"} or stop is None or target is None
+            direction not in {"LONG", "SHORT"} or order_type != "MARKET"
+            or stop is None or target is None
             or confidence is None or family in {"", "unclassified", "unknown"}
         ):
             report.skipped_brain_candidates += 1
