@@ -320,6 +320,7 @@ class StrategyLensReadings:
                 reference_timeframe = next(iter(reference_timeframes)) if len(reference_timeframes) == 1 else ""
 
                 facts = {
+                    "evidence_source_module": f"concept.strategy_lens.{lens_key}.{timeframe.lower()}",
                     "lens_key": lens_key,
                     "lens_purpose": lens.purpose,
                     "required_methods": list(required_methods),
