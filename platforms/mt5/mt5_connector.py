@@ -1614,6 +1614,16 @@ class MT5Connector(BaseConnector):
         if not _MT5_AVAILABLE or not self._connected:
             return apex_symbol
 
+        # Owner-selected broker-native symbols may already include a broker
+        # suffix (e.g. EURUSD.a). Resolve that exact name before trying aliases.
+        if _MT5_AVAILABLE and self._connected:
+            direct_info = mt5.symbol_info(apex_symbol)
+            if direct_info is not None:
+                if not getattr(direct_info, "visible", False):
+                    mt5.symbol_select(apex_symbol, True)
+                self._symbol_cache[apex_symbol] = apex_symbol
+                return apex_symbol
+
         for suffix in _COMMON_SUFFIXES:
             candidate = apex_symbol + suffix
             info = mt5.symbol_info(candidate)
