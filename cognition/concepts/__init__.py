@@ -33,6 +33,7 @@ from cognition.concepts.vwap import VWAPConcept
 from cognition.concepts.volume_profile import VolumeProfileConcept
 from cognition.concepts.seasonality import SeasonalityConcept
 from cognition.concepts.range_rotation import RangeRotation
+from cognition.concepts.quantitative_state_readings import QuantitativeStateReadings
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -61,6 +62,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     ExecutionCostReadings(),
     OrderBookReadings(),
     TickMicrostructureReadings(),
+    QuantitativeStateReadings(),
 )
 
 
