@@ -666,8 +666,22 @@ class MT5Connector(BaseConnector):
         # forming bar dropped here (default keeps it for the established
         # closed-bar dual-view: structural modules drop it themselves, live
         # observational reads legitimately keep it).
-        if not include_forming and len(out) > 1:
-            out = out.iloc[:-1]
+        if not include_forming:
+            seconds_by_tf = {
+                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
+                "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
+                "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
+                "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
+                "D1": 86400, "W1": 604800,
+            }
+            if timeframe.upper() == "MN1":
+                close_times = out["time"] + pd.offsets.MonthBegin(1)
+                out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+            else:
+                duration = seconds_by_tf.get(timeframe.upper())
+                if duration is not None:
+                    close_times = out["time"] + pd.to_timedelta(duration, unit="s")
+                    out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
         out.attrs.update({
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
