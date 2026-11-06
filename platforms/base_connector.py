@@ -144,6 +144,11 @@ class PositionInfo:
     swap: float
     open_time: datetime
     platform: str
+    volume_min: float = 0.0
+    volume_step: float = 0.0
+    volume_max: float = 0.0
+    digits: int = 0
+    tick_size: float = 0.0
 
 
 TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "D1")
