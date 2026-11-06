@@ -1069,6 +1069,11 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
         _pos_r("GBPUSD", "LONG", profit_r=1.0),
         _pos_r("AUDUSD", "LONG", profit_r=-0.5),
     ]
+    for pos in positions:
+        reg.record_management(
+            pos.symbol, pos.direction, "hold", confidence=0.6,
+            ev_over_flat=pos.profit_r,
+        )
     memory = CampaignMemoryStore(db_path=":memory:")
     memory.record_open(
         symbol="AUDUSD", direction="LONG", campaign_id="campaign-AUDUSD",
