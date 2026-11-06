@@ -116,6 +116,9 @@ class _CampaignAssessment:
     confidence: float
     uncertainty: float
     measurements: dict[str, Any]
+    independence_group: str
+    source_timestamp_verified: bool
+    provisional: bool
 
 
 class NativePositionManager:
@@ -172,7 +175,8 @@ class NativePositionManager:
             if not con and market_state is not None:
                 con = market_state.consolidation(now)
             uncertainty = _clamp01(con.get("aggregate_uncertainty", 1.0))
-            required_domains = max(3, int(min_evidence_domains))
+            # Deprecated compatibility argument: the fixed three-domain
+            # threshold is not a source-independence or campaign-validity test.
             max_unc = _clamp01(max_uncertainty)
             fresh = (
                 list(market_state.fresh_evidence(now))
@@ -199,7 +203,6 @@ class NativePositionManager:
                     uncertainty, 0, len(hypotheses or []),
                 )
 
-            market_domains: set[str] = set()
             assessments: list[_CampaignAssessment] = []
             execution_cost_values: list[float] = []
             ev_after_cost_values: list[float] = []
@@ -225,9 +228,6 @@ class NativePositionManager:
                     or "execution" in source.lower()
                     or "reasoning" in source.lower()
                 )
-                if not is_non_market_source:
-                    market_domains.add(domain)
-
                 for key in ("estimated_total_cost_r", "execution_cost_r", "round_trip_cost_r"):
                     value = _finite_number(measurements.get(key))
                     if value is not None and ("execution" in domain or "execution" in source.lower()):
@@ -302,13 +302,20 @@ class NativePositionManager:
                         confidence=confidence,
                         uncertainty=evidence_uncertainty,
                         measurements=measurements,
+                        independence_group=str(
+                            getattr(ev, "independence_group", "")
+                            or measurements.get("independence_group", "") or ""
+                        ).strip(),
+                        source_timestamp_verified=(
+                            getattr(ev, "source_timestamp_verified", False) is True
+                        ),
+                        provisional=bool(getattr(ev, "provisional", False)),
                     ))
                     for key in ("expected_value_after_cost_r", "net_ev_after_cost_r"):
                         value = _finite_number(measurements.get(key))
                         if value is not None:
                             ev_after_cost_values.append(value)
 
-            domains_present = len(market_domains)
             assessment_domains = {item.domain for item in assessments}
             assessment_states = {item.state for item in assessments}
             evidence_ids = tuple(dict.fromkeys(
@@ -386,11 +393,18 @@ class NativePositionManager:
 
             invalidated = [item for item in assessments if item.state == "invalidated"]
             if invalidated:
-                invalidation_domains = {item.domain for item in invalidated}
+                # Corroboration is based on distinct producer-declared source
+                # lineages, not domain labels. Multiple concepts reading the same
+                # OHLC lineage count once. Unknown provenance is not independent.
+                invalidation_groups = {
+                    item.independence_group for item in invalidated
+                    if item.independence_group
+                    and item.source_timestamp_verified
+                    and not item.provisional
+                }
                 context_complete = bool(original_thesis and invalidation_conditions)
                 if (
-                    len(invalidation_domains) >= 2
-                    and domains_present >= required_domains
+                    len(invalidation_groups) >= 2
                     and uncertainty <= max_unc
                     and context_complete
                 ):
@@ -403,10 +417,11 @@ class NativePositionManager:
                         **base,
                     )
                 missing = []
-                if len(invalidation_domains) < 2:
-                    missing.append("independent confirmation")
-                if domains_present < required_domains:
-                    missing.append(f"market-domain coverage ({domains_present}/{required_domains})")
+                if len(invalidation_groups) < 2:
+                    missing.append(
+                        "two fresh, source-verified independent invalidation lineages "
+                        f"({len(invalidation_groups)}/2)"
+                    )
                 if uncertainty > max_unc:
                     missing.append("market uncertainty to clear")
                 if not context_complete:
