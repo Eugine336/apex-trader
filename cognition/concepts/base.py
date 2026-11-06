@@ -113,6 +113,9 @@ class ConceptReading:
     data_basis: str = ""
     independence_group: str = ""
     relevance_horizon_seconds: Optional[float] = None
+    # Non-candle sources keep their provider timestamp separate from completed bars.
+    source_timestamp_epoch: Optional[float] = None
+    source_timestamp_verified: bool = False
 
 
 class ConceptModule(Protocol):
@@ -138,7 +141,17 @@ def reference_price(bars_by_tf: dict[str, list[dict]]) -> tuple[Optional[float],
 
 def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
     seconds = TIMEFRAME_SECONDS.get(reading.timeframe, 60)
-    known = bool(reading.source_bar_epoch and reading.source_bar_epoch > 0)
+    explicit_source_epoch = finite(reading.source_timestamp_epoch)
+    if reading.source_timestamp_epoch is not None:
+        known = bool(
+            reading.source_timestamp_verified is True
+            and explicit_source_epoch is not None
+            and explicit_source_epoch > 0.0
+        )
+        source_epoch = explicit_source_epoch if known else None
+    else:
+        known = bool(reading.source_bar_epoch and reading.source_bar_epoch > 0)
+        source_epoch = reading.source_bar_epoch if known else None
     sampled_at = datetime.now(timezone.utc).timestamp()
     iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
     strengths = [i.strength for i in reading.implications if i.strength is not None]
@@ -158,6 +171,8 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             "provisional": False,
             "data_basis": reading.data_basis or "completed_ohlc",
             "source_timestamp_known": known,
+            "source_timestamp_epoch": source_epoch,
+            "source_timestamp_verified": known,
             "source_bar_epoch": reading.source_bar_epoch,
             "applicable": reading.applicable,
             "applicability_reason": reading.applicability_reason,
@@ -174,7 +189,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             if reading.relevance_horizon_seconds is not None
             else max(3 * seconds, 180.0)
         ),
-        source_timestamp_epoch=reading.source_bar_epoch if known else None,
+        source_timestamp_epoch=source_epoch if known else None,
         source_timestamp_verified=known,
         data_basis=reading.data_basis or "completed_ohlc",
         provisional=False,

@@ -42,7 +42,6 @@ from cognition.management_translator import ManagementAction as _ManagementActio
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
-    evidence_from_execution_cost,
     evidence_from_market_desk,
     evidence_from_portfolio,
     evidence_from_reasoning,
@@ -342,16 +341,19 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
-            # Violation V9 — surface the per-symbol estimated round-trip execution
-            # cost (spread + slippage, in R) as EXECUTION_QUALITY Evidence so the
-            # Brain's EV is net of execution cost (Part XXIV/XXV). A theoretical
-            # thesis that cannot clear its cost is then declined at the EV gate.
+            # Native execution-cost method: the registered reader receives a
+            # broker quote/specification and empirical entry telemetry. It emits
+            # neutral evidence only; incomplete cost coverage remains unverified.
             if self._execution_cost_source is not None:
                 try:
-                    for e in evidence_from_execution_cost(
-                        ms.symbol, self._execution_cost_source(ms.symbol),
-                    ):
-                        ms.add(e)
+                    cost_payload = self._execution_cost_source(ms.symbol)
+                    from cognition.concepts.base import reading_to_evidence
+                    from cognition.concepts.execution_cost_readings import ExecutionCostReadings
+                    readings = ExecutionCostReadings().read_with_context(
+                        ms.symbol, {}, {"execution_cost": cost_payload},
+                    )
+                    for reading in readings:
+                        ms.add(reading_to_evidence(ms.symbol, reading))
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] execution-cost source fault (%s): %s", symbol, exc)
             # Part XVIII Art 11 — portfolio intelligence: surface how this

@@ -24,6 +24,7 @@ from cognition.concepts.regime_switching import RegimeSwitchingConcepts
 from cognition.concepts.strategy_method_readings import StrategyMethodReadings
 from cognition.concepts.wyckoff_volume_readings import WyckoffVolumeReadings
 from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
+from cognition.concepts.execution_cost_readings import ExecutionCostReadings
 from cognition.concepts.order_book_readings import OrderBookReadings
 from cognition.concepts.tick_microstructure_readings import TickMicrostructureReadings
 from cognition.concepts.session_calendar import SessionCalendar
@@ -57,6 +58,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     StrategyMethodReadings(),
     WyckoffVolumeReadings(),
     InstrumentEconomicsReadings(),
+    ExecutionCostReadings(),
     OrderBookReadings(),
     TickMicrostructureReadings(),
 )

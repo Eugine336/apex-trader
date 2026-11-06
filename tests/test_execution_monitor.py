@@ -217,3 +217,37 @@ class TestBackwardCompat:
             _record(mon, "GBPUSD", slippage_pip_equiv=0.4)
         agg = mon.get_stats()
         assert 0.2 < agg.avg_slippage_pips < 0.5
+
+
+
+class TestBrokerAttemptTelemetry:
+    def test_cold_start_metrics_are_unknown_not_zero(self):
+        observations = ExecutionMonitor().get_cost_observations("EURUSD")
+        assert observations["market_entry_attempt_count"] == 0
+        assert observations["market_entry_fill_success_ratio"] is None
+        assert observations["observed_entry_abs_slippage_avg_pips"] is None
+        assert observations["observed_submit_response_latency_avg_ms"] is None
+        assert observations["market_entry_fill_probability_verified"] is False
+
+    def test_failed_attempts_count_in_fill_probability_denominator(self):
+        mon = ExecutionMonitor(window=30)
+        now = datetime.now(timezone.utc).timestamp()
+        for _ in range(19):
+            mon.record_order_attempt(
+                symbol="EURUSD", success=True, latency_ms=120.0,
+                requested_price=1.1000, fill_price=1.1001,
+                pip_size=0.0001, spread=0.0002, observed_epoch=now,
+            )
+        mon.record_order_attempt(
+            symbol="EURUSD", success=False, latency_ms=400.0,
+            requested_price=1.1000, fill_price=None, pip_size=0.0001,
+            observed_epoch=now,
+        )
+        stats = mon.get_cost_observations("EURUSD", now_epoch=now)
+        assert stats["market_entry_attempt_count"] == 20
+        assert stats["market_entry_success_count"] == 19
+        assert stats["market_entry_fill_success_ratio"] == 0.95
+        assert stats["market_entry_fill_probability_verified"] is True
+        assert stats["observed_entry_abs_slippage_avg_pips"] == 1.0
+        assert stats["observed_entry_slippage_sample_count"] == 19
+        assert stats["observed_submit_response_latency_avg_ms"] == 134.0

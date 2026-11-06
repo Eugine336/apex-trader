@@ -8,6 +8,8 @@ per-symbol and windowed to stay sensitive to recent execution changes.
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+import math
+import time
 
 import numpy as np
 
@@ -53,6 +55,7 @@ class ExecutionMonitor:
         self._latencies: dict[str, deque] = {}
         self._spreads: dict[str, deque] = {}
         self._requotes: dict[str, int] = {}
+        self._order_attempts: dict[str, deque] = {}
 
     def _ensure_symbol(self, symbol: str) -> None:
         if symbol not in self._slippages:
@@ -60,6 +63,135 @@ class ExecutionMonitor:
             self._latencies[symbol] = deque(maxlen=self._window)
             self._spreads[symbol] = deque(maxlen=self._window)
             self._requotes[symbol] = 0
+            self._order_attempts[symbol] = deque(maxlen=self._window)
+
+    def record_order_attempt(
+        self,
+        *,
+        symbol: str,
+        success: bool,
+        latency_ms: float | None,
+        requested_price: float | None = None,
+        fill_price: float | None = None,
+        pip_size: float | None = None,
+        spread: float | None = None,
+        observed_epoch: float | None = None,
+        order_type: str = "market",
+    ) -> None:
+        """Record one broker market-entry attempt; this does not affect execution.
+
+        Latency is submit-to-response time, not signal-to-fill time. Slippage is
+        recorded only with both prices and a valid instrument pip size.
+        """
+        clean_symbol = str(symbol or "").strip().upper()
+        if not clean_symbol:
+            return
+
+        def finite_number(value: object, *, positive: bool = False) -> float | None:
+            if isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(number) or number < 0.0 or (positive and number <= 0.0):
+                return None
+            return number
+
+        observed = finite_number(observed_epoch, positive=True) or time.time()
+        latency = finite_number(latency_ms)
+        requested = finite_number(requested_price, positive=True)
+        filled = finite_number(fill_price, positive=True)
+        pip = finite_number(pip_size, positive=True)
+        spread_value = finite_number(spread)
+        slippage = None
+        confirmed = success is True
+        if confirmed and requested is not None and filled is not None and pip is not None:
+            slippage = abs(filled - requested) / pip
+            if not math.isfinite(slippage):
+                slippage = None
+
+        self._ensure_symbol(clean_symbol)
+        record = {
+            "observed_epoch": observed,
+            "success": confirmed,
+            "latency_ms": latency,
+            "slippage_pips": slippage,
+            "spread": spread_value,
+            "order_type": str(order_type or "market").strip().lower(),
+        }
+        self._order_attempts[clean_symbol].append(record)
+        if latency is not None:
+            self._latencies[clean_symbol].append(latency)
+        if slippage is not None:
+            self._slippages[clean_symbol].append(slippage)
+        if spread_value is not None:
+            self._spreads[clean_symbol].append(spread_value)
+
+    def get_cost_observations(
+        self,
+        symbol: str,
+        *,
+        now_epoch: float | None = None,
+        max_age_seconds: float = 604800.0,
+        min_samples: int = 20,
+    ) -> dict:
+        """Expose recent attempts with explicit sample and unknown states.
+
+        A low-sample success ratio is descriptive only. The fill-rate measure is
+        marked empirically supported only after min_samples broker attempts.
+        The canonical route currently records market entries.
+        """
+        clean_symbol = str(symbol or "").strip().upper()
+        try:
+            now = float(now_epoch) if now_epoch is not None else time.time()
+            if not math.isfinite(now) or now <= 0.0:
+                now = time.time()
+        except (TypeError, ValueError, OverflowError):
+            now = time.time()
+        try:
+            max_age = max(0.0, float(max_age_seconds))
+        except (TypeError, ValueError, OverflowError):
+            max_age = 604800.0
+        try:
+            sample_floor = max(1, int(min_samples))
+        except (TypeError, ValueError, OverflowError):
+            sample_floor = 20
+
+        attempts = list(self._order_attempts.get(clean_symbol, ()))
+        outcomes = [
+            item for item in attempts
+            if item.get("order_type") == "market"
+            and 0.0 <= now - float(item.get("observed_epoch", 0.0)) <= max_age
+        ]
+        success_count = sum(1 for item in outcomes if item.get("success") is True)
+        attempt_count = len(outcomes)
+        slippages = [
+            float(item["slippage_pips"]) for item in outcomes
+            if item.get("success") is True and item.get("slippage_pips") is not None
+        ]
+        latencies = [float(item["latency_ms"]) for item in outcomes if item.get("latency_ms") is not None]
+        spreads = [float(item["spread"]) for item in outcomes if item.get("spread") is not None]
+        return {
+            "market_entry_attempt_count": attempt_count,
+            "market_entry_success_count": success_count,
+            "market_entry_fill_success_ratio": success_count / attempt_count if attempt_count else None,
+            "market_entry_fill_probability_verified": attempt_count >= sample_floor,
+            "market_entry_fill_probability_min_samples": sample_floor,
+            "market_entry_fill_probability_sample_count": attempt_count,
+            "observed_entry_abs_slippage_avg_pips": float(np.mean(slippages)) if slippages else None,
+            "observed_entry_abs_slippage_max_pips": float(np.max(slippages)) if slippages else None,
+            "observed_entry_slippage_sample_count": len(slippages),
+            "observed_submit_response_latency_avg_ms": float(np.mean(latencies)) if latencies else None,
+            "observed_submit_response_latency_sample_count": len(latencies),
+            "observed_entry_spread_avg_price": float(np.mean(spreads)) if spreads else None,
+            "observed_entry_spread_sample_count": len(spreads),
+            "entry_observation_latest_epoch": max(
+                (float(item["observed_epoch"]) for item in outcomes), default=None,
+            ),
+            "entry_observation_max_age_seconds": max_age,
+            "entry_observation_scope": "market_entry_attempts_only",
+        }
 
     def record_execution(
         self,
