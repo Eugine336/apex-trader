@@ -72,16 +72,16 @@ class Implication:
     invalidation_price: Optional[float] = None
     invalidation_reason: str = ""
     objective_price: Optional[float] = None
+    milestones: tuple[float, ...] = ()
+    requires: tuple[str, ...] = ()       # confirmations still missing
+    conflicts_with: tuple[str, ...] = () # what would weaken it
+    management: dict = field(default_factory=dict)
     # Missing entry instructions mean market-at-reference. Non-market orders
     # require an explicit price or a zone containing the reference price.
     entry_price: Optional[float] = None
     entry_zone_low: Optional[float] = None
     entry_zone_high: Optional[float] = None
     order_type: str = "MARKET"
-    milestones: tuple[float, ...] = ()
-    requires: tuple[str, ...] = ()       # confirmations still missing
-    conflicts_with: tuple[str, ...] = () # what would weaken it
-    management: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
