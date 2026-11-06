@@ -79,7 +79,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
 # One latest completed-bar result per module/symbol. This covers a 67-instrument
 # universe without retaining obsolete fingerprints after every new candle.
 _READING_CACHE: OrderedDict[
-    tuple[str, str], tuple[str, tuple[ConceptReading, ...]]
+    tuple[str, str, int], tuple[str, tuple[ConceptReading, ...], object]
 ] = OrderedDict()
 _READING_CACHE_LOCK = threading.RLock()
 _READING_CACHE_MAX_ENTRIES = 4096
@@ -143,7 +143,7 @@ def read_concept_readings(
             not callable(contextual_reader)
             and not getattr(module, "consumes_concept_readings", False)
         )
-        cache_key = (module_key, str(symbol or "").strip().upper())
+        cache_key = (module_key, str(symbol or "").strip().upper(), id(module))
         module_started = time.perf_counter()
         try:
             produced = None
@@ -151,7 +151,11 @@ def read_concept_readings(
             if cacheable:
                 with _READING_CACHE_LOCK:
                     cached = _READING_CACHE.get(cache_key)
-                    if cached is not None and cached[0] == fingerprint:
+                    if (
+                        cached is not None
+                        and cached[0] == fingerprint
+                        and cached[2] is module
+                    ):
                         produced = cached[1]
                         _READING_CACHE.move_to_end(cache_key)
                         cache_hit = True
@@ -181,7 +185,7 @@ def read_concept_readings(
                         )
                 if cacheable:
                     with _READING_CACHE_LOCK:
-                        _READING_CACHE[cache_key] = (fingerprint, produced)
+                        _READING_CACHE[cache_key] = (fingerprint, produced, module)
                         _READING_CACHE.move_to_end(cache_key)
                         while len(_READING_CACHE) > _READING_CACHE_MAX_ENTRIES:
                             _READING_CACHE.popitem(last=False)
