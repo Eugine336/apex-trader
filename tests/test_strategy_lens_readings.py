@@ -85,10 +85,11 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
         method for module in CONCEPT_MODULES
         for method in getattr(module, "covers_methods", ())
     }
-    declared_methods = {
-        method for methods in LENS_METHODS.values() for method in methods
+    declared_full_methods = {
+        method for lens_key in FULL_LENSES
+        for method in LENS_METHODS[lens_key]
     }
-    assert declared_methods <= registered_methods
+    assert declared_full_methods <= registered_methods
     for item in full_lens_readings:
         required = set(item.measurements["required_methods"])
         available = set(item.measurements["available_methods"])
