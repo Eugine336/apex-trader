@@ -966,7 +966,11 @@ def analyze_market_frames(
     # layered on the raw facts above. They are evidence, never decisions.
     try:
         from cognition.concepts import run_concepts
-        output.extend(run_concepts(symbol, bars_by_timeframe, context=concept_context))
+        reader_context = dict(concept_context or {})
+        # Local analysis time bounds internal plans; it is not presented as a
+        # provider timestamp or market-data attestation.
+        reader_context.setdefault("analysis_epoch", time.time())
+        output.extend(run_concepts(symbol, bars_by_timeframe, context=reader_context))
     except Exception as exc:  # noqa: BLE001 — concept faults never break observation
         import logging as _logging
         _logging.getLogger("apex.cognition.market_lenses").exception(

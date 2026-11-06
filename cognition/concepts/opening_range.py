@@ -163,8 +163,9 @@ class OpeningRange:
                        "opening_range_low": low, "opening_range_size": high-low,
                        "midpoint": midpoint, "auction_state": state,
                        "historical_opening_range_samples": len(historical_sizes),
-                       "opening_range_size_percentile": strength},
-                source_bar_epoch=epoch, reference_close=reference, reference_timeframe=reference_tf,
+                       "opening_range_size_percentile": strength},source_bar_epoch=epoch,
+
+                source_timestamp_verified=epoch is not None, reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(unknowns),
             ))
         return readings
@@ -184,7 +185,8 @@ class OpeningRange:
                             "Session opening range is unavailable.", requires=tuple(unknowns),
                             management={"meaning": "Do not infer an opening range from static UTC windows."}),
             ),
-            facts={"status": "data_gated", **(facts or {})},
-            source_bar_epoch=last_source_epoch(bars), reference_close=reference, reference_timeframe=reference_tf,
+            facts={"status": "data_gated", **(facts or {})},source_bar_epoch=last_source_epoch(bars),
+
+            source_timestamp_verified=last_source_epoch(bars) is not None, reference_close=reference, reference_timeframe=reference_tf,
             unknowns=tuple(unknowns),
         )

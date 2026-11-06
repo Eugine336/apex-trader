@@ -34,6 +34,9 @@ from cognition.concepts.volume_profile import VolumeProfileConcept
 from cognition.concepts.seasonality import SeasonalityConcept
 from cognition.concepts.range_rotation import RangeRotation
 from cognition.concepts.quantitative_state_readings import QuantitativeStateReadings
+from cognition.concepts.quantitative_outcome_readings import QuantitativeOutcomeReadings
+from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
+from cognition.concepts.strategy_lens_readings import StrategyLensReadings
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -63,6 +66,9 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     OrderBookReadings(),
     TickMicrostructureReadings(),
     QuantitativeStateReadings(),
+    QuantitativeOutcomeReadings(),
+    PortfolioRiskReadings(),
+    StrategyLensReadings(),
 )
 
 
@@ -77,16 +83,25 @@ def run_concepts(
     diagnostic. Subsequent modules still run; no market reading is fabricated.
     """
     evidence: list[Any] = []
+    concept_readings: list[ConceptReading] = []
     reader_context = context if isinstance(context, dict) else {}
     for module in CONCEPT_MODULES:
         try:
             contextual_reader = getattr(module, "read_with_context", None)
+            module_context = reader_context
+            if getattr(module, "consumes_concept_readings", False):
+                module_context = {
+                    **reader_context,
+                    "concept_readings": tuple(concept_readings),
+                }
             readings = (
-                contextual_reader(symbol, bars_by_tf, reader_context)
+                contextual_reader(symbol, bars_by_tf, module_context)
                 if callable(contextual_reader)
                 else module.read(symbol, bars_by_tf)
             )
             for reading in readings:
+                if isinstance(reading, ConceptReading):
+                    concept_readings.append(reading)
                 evidence.append(reading_to_evidence(symbol, reading))
         except Exception as exc:  # noqa: BLE001
             module_key = str(getattr(module, "key", "unknown") or "unknown")

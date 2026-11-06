@@ -44,8 +44,9 @@ class RangeRotation:
                         Implication(SHORT, "No confirmed balance range supports a short rotation.", None, False,
                                     "No active range edge is confirmed.", requires=tuple(unknowns)),
                     ),
-                    facts={"status": "no_confirmed_range", "confirmed_swing_count": len(points)},
-                    source_bar_epoch=epoch, reference_close=reference, reference_timeframe=reference_tf,
+                    facts={"status": "no_confirmed_range", "confirmed_swing_count": len(points)},source_bar_epoch=epoch,
+
+                    source_timestamp_verified=epoch is not None, reference_close=reference, reference_timeframe=reference_tf,
                     unknowns=tuple(unknowns),
                 ))
                 continue
@@ -137,8 +138,9 @@ class RangeRotation:
                     "failed_low_auction": failed_low, "profile": profile, "poc": poc,
                     "historical_range_samples": len(historical_sizes),
                     "range_size_percentile": strength,
-                },
-                source_bar_epoch=epoch, reference_close=reference, reference_timeframe=reference_tf,
+                },source_bar_epoch=epoch,
+
+                source_timestamp_verified=epoch is not None, reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(unknowns),
             ))
         return readings

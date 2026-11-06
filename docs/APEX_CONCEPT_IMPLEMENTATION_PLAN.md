@@ -1,10 +1,13 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `1698c45a` (after PRs #809–#813 and Phase 2 PRs #817, #819–#822). Source of truth for coverage:
+Status baseline: `main` @ `98f0786d`; active Phase 2 implementation is PR `#823` on
+`phase2/wp-j-strategy-lens-composition`. Source of truth for current coverage:
 `docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
-Baseline today: **56/79 analytical methods read in full, 4 data-gated; 2/38 strategy lenses read in full.**
-Latest full GitHub Actions suite on PR #822: **4,111 passed** on both Python 3.11 and 3.12; Ruff,
-coverage synchronization, canonical identity/safety audit and import checks passed on both versions.
+At the last fully green PR #823 baseline (`7e1ce8d`): **56/79 analytical methods FULL, 8 DATA-GATED,
+9 MEASURED and 6 UNMEASURED; 20/38 strategy lenses FULL and 18 DATA-GATED.**
+The full suite passed **4,146 tests** on both Python 3.11 and 3.12, with Ruff, coverage synchronization,
+canonical identity/safety audit and import checks green. Subsequent PR #823 commits add stricter stale-replay
+and whole-book risk contracts; their CI must pass before this baseline is advanced.
 The RL package, nine RL-only test files, training tools and PyTorch dependency were retired in PR #813.
 The earlier audit-sandbox report and pre-PR #822 test counts are historical, not the current CI baseline.
 Every PR must run the full suite and compare with `main` (§9).
@@ -60,7 +63,7 @@ must return a reading with the data listed under `unknowns`, not guess.
 Reference implementations to copy: `crt.py` (phases, invalidation, milestones), `market_structure.py` (swings, state,
 events), `liquidity.py` (pools, sweeps, objective from real pools), `price_delivery.py`, `indicator_context.py`.
 
-## 3. Work packages — concepts (38 methods, 36 lenses)
+## 3. Work packages — concepts (79 analytical methods, 38 strategy lenses)
 
 Priority tiers: **T1** needs only OHLC(V) already supplied; **T2** needs multi-symbol bars or a new
 scalar feed; **T3** needs a new data source (tick/DOM/derivatives/macro). Items in T3 must ship their data channel
@@ -140,7 +143,9 @@ first (§4). Level = register level today.
 risk, correlated exposure, expected shortfall, risk of ruin). They inform Brain judgement; hard limits stay in the owner
 limits (WP-B7).
 
-### WP-J Strategy lenses (36 not full)
+### WP-J Strategy lenses (36 composed lenses; 18 FULL and 18 DATA-GATED at the last green baseline)
+PR #823 implements the composition reader and Brain-facing assessment contract. The 18 remaining specialist lenses (`crt` and `market_regime_transition`) are read by their dedicated modules; 18 composed lenses are currently FULL and 18 are DATA-GATED. WP-J is not accepted until the latest branch passes current-cutoff freshness, no-look-ahead, mirror-symmetry, Brain challenge and full CI gates.
+
 A lens is the *style view* of its methods. Implement each as a composition module (no new measurement): which method
 readings it consumes, the market states in which that style is appropriate (from measured regime evidence), how that style
 builds stop/target and manages, its known failure modes, and an explicit `unknowns` list. Mapping (lens → methods):

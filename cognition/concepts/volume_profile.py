@@ -155,7 +155,8 @@ class VolumeProfileConcept:
                 applicable=current_profile is not None,
                 applicability_reason="A volume profile is applicable when completed OHLC bars have positive broker volume or an explicitly labeled tick-volume proxy.",
                 observation=f"{timeframe} weekly volume profile state={state}; session profile availability is reported separately.",
-                implications=implications, facts=facts, source_bar_epoch=epoch,
+                implications=implications, facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None,
                 reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(dict.fromkeys(unknowns)),
             ))

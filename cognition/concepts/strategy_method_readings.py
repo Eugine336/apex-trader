@@ -253,6 +253,7 @@ def _trend_reading(
         implications=(),
         facts=facts,
         source_bar_epoch=epoch,
+        source_timestamp_verified=epoch is not None,
         reference_close=reference,
         reference_timeframe=reference_tf,
         unknowns=tuple(dict.fromkeys(unknowns)),
@@ -538,6 +539,7 @@ def _breakout_reading(
         implications=(),
         facts=facts,
         source_bar_epoch=last_source_epoch(bars),
+        source_timestamp_verified=last_source_epoch(bars) is not None,
         reference_close=reference,
         reference_timeframe=reference_tf,
         unknowns=tuple(dict.fromkeys(unknowns)),
@@ -734,6 +736,7 @@ def _mean_reversion_reading(
             applicability_reason="The supplied history cannot form a non-zero-variance rolling price distribution.",
             observation=f"{timeframe} mean-reversion context is unavailable because the rolling distribution is not estimable.",
             implications=(), facts=facts, source_bar_epoch=last_source_epoch(bars),
+        source_timestamp_verified=last_source_epoch(bars) is not None,
             reference_close=reference, reference_timeframe=reference_tf,
             unknowns=tuple(unknowns),
         )
@@ -872,6 +875,7 @@ def _mean_reversion_reading(
         implications=(),
         facts=facts,
         source_bar_epoch=last_source_epoch(bars),
+        source_timestamp_verified=last_source_epoch(bars) is not None,
         reference_close=reference,
         reference_timeframe=reference_tf,
         unknowns=tuple(dict.fromkeys(unknowns)),
@@ -913,6 +917,7 @@ class StrategyMethodReadings:
                         reading = replace(
                             reading,
                             source_bar_epoch=None,
+                            source_timestamp_verified=False,
                             unknowns=reading.unknowns + (timestamp_unknown,),
                         )
                 readings.append(reading)

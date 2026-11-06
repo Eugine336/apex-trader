@@ -76,8 +76,9 @@ def _read(concept,tf,domain,bars,ref,ref_tf,observation,implications,facts,unkno
         concept=concept,timeframe=tf,domain=domain,
         applicability_reason=("The required completed-bar history and formula inputs are present"
                               if applicable else "Insufficient confirmed pivots to evaluate this concept"),
-        applicable=applicable,observation=observation,implications=tuple(implications),facts=facts,
-        source_bar_epoch=epoch,reference_close=ref,reference_timeframe=ref_tf,
+        applicable=applicable,observation=observation,implications=tuple(implications),facts=facts,source_bar_epoch=epoch,
+
+        source_timestamp_verified=epoch is not None,reference_close=ref,reference_timeframe=ref_tf,
         unknowns=tuple(unknowns),
     )
 

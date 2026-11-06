@@ -106,7 +106,8 @@ class RegimeSwitchingConcepts:
                     management={"role": "regime_warning_only", "reassess_on": "next completed bar",
                                 "never_authorizes_entry": True},
                 ),),
-                facts=facts, source_bar_epoch=epoch, reference_close=close,
+                facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None, reference_close=close,
                 reference_timeframe=close_tf,
                 unknowns=("The two-window test is sensitive to autocorrelation, overlapping regime changes and window choice; it is not a calibrated change-point probability.",),
             ))

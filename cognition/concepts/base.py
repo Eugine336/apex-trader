@@ -153,8 +153,9 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         )
         source_epoch = explicit_source_epoch if known else None
     else:
-        known = bool(reading.source_bar_epoch and reading.source_bar_epoch > 0)
-        source_epoch = reading.source_bar_epoch if known else None
+        bar_epoch = finite(reading.source_bar_epoch)
+        known = bool(reading.source_timestamp_verified is True and bar_epoch is not None and bar_epoch > 0.0)
+        source_epoch = bar_epoch if known else None
     sampled_at = datetime.now(timezone.utc).timestamp()
     iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
     strengths = [i.strength for i in reading.implications if i.strength is not None]
@@ -170,8 +171,13 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         if explicit_uncertainty is not None else
         (min(1.0, max(0.0, 1.0 - confidence)) if strengths or explicit_confidence is not None else 1.0)
     )
+    facts = dict(reading.facts) if isinstance(reading.facts, dict) else {}
+    evidence_source_module = str(facts.pop("evidence_source_module", "") or "").strip()
     return Evidence(
-        source_module=f"concept.{reading.concept}.{reading.timeframe.lower()}",
+        source_module=(
+            evidence_source_module
+            or f"concept.{reading.concept}.{reading.timeframe.lower()}"
+        ),
         domain=reading.domain,
         symbol=str(symbol or ""),
         observation=reading.observation[:1400],
@@ -182,7 +188,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             # Keep source facts available both as a nested audit record and as
             # measurements consumed by method assessment and the Brain's
             # existing cost gate. Reserved adapter fields below remain canonical.
-            **dict(reading.facts),
+            **facts,
             "source_kind": "concept_reading",
             "concept": reading.concept,
             "timeframe": reading.timeframe,
@@ -197,7 +203,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             "reference_close": reading.reference_close,
             "reference_timeframe": reading.reference_timeframe,
             "implications": [i.to_dict() for i in reading.implications],
-            "facts": dict(reading.facts),
+            "facts": facts,
             "unknowns": list(reading.unknowns),
         },
         timestamp_epoch=sampled_at,
@@ -214,7 +220,11 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         # An interpretation of the same OHLC is not independent of that OHLC.
         independence_group=(
             reading.independence_group
-            or f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}"
+            or (
+                f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}"
+                if (reading.data_basis or "completed_ohlc") == "completed_ohlc"
+                else ""
+            )
         ),
         measurement_version=MEASUREMENT_VERSION,
     )

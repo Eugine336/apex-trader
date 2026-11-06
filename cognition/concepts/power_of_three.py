@@ -56,8 +56,9 @@ class PowerOfThreeConcepts:
                     conflicts_with=(),
                 ),),
                 facts={"applicable": False, "required_bars": 24, "available_verified_bars": len(verified),
-                       "definition": "utc_day_24_h1_accumulation_manipulation_distribution_proxy_v1"},
-                source_bar_epoch=epoch, reference_close=close, reference_timeframe=close_tf,
+                       "definition": "utc_day_24_h1_accumulation_manipulation_distribution_proxy_v1"},source_bar_epoch=epoch,
+
+                source_timestamp_verified=epoch is not None, reference_close=close, reference_timeframe=close_tf,
                 unknowns=("UTC day thirds are not interchangeable with broker-session or venue-session definitions.",),
             )]
         day, bars = max(complete_days, key=lambda item: item[0])
@@ -113,6 +114,7 @@ class PowerOfThreeConcepts:
                 conflicts_with=("both sides of accumulation were swept",) if sweep_side == "conflicted" else (),
                 management={"reassess_on":"next completed daily cycle"},
             ),),
-            facts=facts, source_bar_epoch=epoch, reference_close=close, reference_timeframe=close_tf,
+            facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None, reference_close=close, reference_timeframe=close_tf,
             unknowns=("UTC thirds are a transparent proxy; canonical Power of Three session timing depends on venue, broker timezone and DST.",),
         )]

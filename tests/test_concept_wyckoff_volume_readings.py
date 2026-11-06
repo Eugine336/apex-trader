@@ -199,6 +199,7 @@ def test_live_market_lens_preserves_tick_and_real_volume_as_separate_fields():
         item.measurements["concept"]: item
         for item in evidence
         if item.measurements.get("source_kind") == "concept_reading"
+        and not item.measurements.get("lens_key")
         and item.measurements.get("concept") in {
             "wyckoff", "wyckoff_effort_result", "volume_indicators",
         }
