@@ -1,6 +1,6 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `618e1e0513f2238772f4d54d06b77eb176442425`.
+Status baseline: `main` @ `d159b7c17d520102fde11d0f304fe81d45020c99`.
 WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
@@ -205,15 +205,25 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   `applicability`), merges readings that share an `independence_group`, scores **confluence and conflict** across
   concepts, and produces one thesis per direction with the strongest consistent invalidation/objective. Concept
   relevance learned from outcomes (WP-B4) is *consulted*, never a gate.
-- **WP-B2 Geometry.** Support reading-supplied entry zones/order types (not only the last close), multi-concept stops
-  (most conservative structural invalidation) and targets (nearest real draw), ordered milestones. Remove the static
-  fallback fractions (`origination_stop_fraction`, `origination_reward_multiple`, `origination_min_rr` in `config.py`;
-  `reward_r_default = 2.0` in `cognition/brain.py`) from the live path.
-- **WP-B3 Management.** Currently only "first milestone passed ⇒ `protect_profit`". Add: partial at each milestone,
-  trail beyond concept anchors (e.g. each new higher low), objective management, completed-close invalidation exit,
-  time decay of a thesis, news-window handling, idempotent actions. Replace static management numbers
-  (`management_translator.scale_out_fraction = 0.5`, tighten-by-halving, `_protective_sl` in
-  `event_driven_bootstrap.py`) with concept-supplied levels.
+- **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
+  zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
+  shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
+  reconciliation, cancellation and lifecycle remain deliberately unsupported until adapters implement them; LIMIT/STOP
+  are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
+  Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
+  bounded by the missing broker pending-order lifecycle.
+- **WP-B3 Management — core implementation merged (PRs #826 and #827); acceptance remains open for data/lifecycle gates.**
+  The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
+  structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
+  progress: ambiguous outcomes stay pending until broker-size reconciliation, while explicit sink rejection can clear
+  the marker. Brain action IDs propagate into close/partial/stop execution intents; the aggregator collapses exact
+  duplicates and rejects conflicting action-ID reuse. Portfolio reallocation emits candidates only; the Brain must
+  author the actual management plan and any partial fraction. The static reallocation trim fraction was removed.
+  Protective-stop validation consumes an explicit concept/structural price and does not synthesize a fraction or
+  breakeven. News-window management remains DATA-GATED until a verified economic-calendar feed with source-time
+  attestation exists. A broker-side acknowledgement/reconciliation lifecycle is still required to resolve ambiguous
+  pending actions beyond observed position-size change. Full CI passed on Python 3.11 and 3.12 (4,170 tests each),
+  lint, GitGuardian and both Gold desk jobs; no broker orders were sent.
 - **WP-B4 Calibration without a cold start.** (a) A **hindcast replay harness** running all concept modules and the Brain
   over historical candles, labelling outcomes by each reading's own invalidation/objective, to seed
   `CalibrationTracker` and the System 4 artifacts; (b) per-concept × market-state track record that Apex consults;
