@@ -539,7 +539,7 @@ def run_hindcast(
                     continue
                 key = (
                     reading.concept, reading.timeframe, source_epoch,
-                    direction, objective, invalidation,
+                    direction, objective, invalidation, state_tag,
                 )
                 if key in labelled_readings:
                     continue
