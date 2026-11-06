@@ -66,6 +66,8 @@ class OpportunityGeometry:
     milestones: tuple[float, ...] = ()
     supporting_concepts: tuple[str, ...] = ()
     geometry_sources: tuple[str, ...] = ()
+    independent_source_count: int = 0
+    independence_groups: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +94,8 @@ class OpportunityGeometry:
             "milestones": list(self.milestones),
             "supporting_concepts": list(self.supporting_concepts),
             "geometry_sources": list(self.geometry_sources),
+            "independent_source_count": self.independent_source_count,
+            "independence_groups": list(self.independence_groups),
         }
 
 
@@ -122,6 +126,7 @@ def _concept_reading_record(item: Any, measurements: dict, now: Optional[float])
         "concept": str(measurements.get("concept", "") or ""),
         "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
         "reference_timeframe": str(measurements.get("reference_timeframe", "") or "").strip().upper(),
+        "independence_group": str(measurements.get("independence_group", "") or "").strip(),
         "implications": [i for i in (measurements.get("implications") or []) if isinstance(i, dict)],
     }
 
@@ -132,9 +137,10 @@ def _geometry_from_concept_readings(
     """Synthesize compatible entry/stop/target levels across concept readings.
 
     Readings are grouped only when they share timeframe and completed source
-    bar. Median geometry resists a single outlier; materially divergent
-    stop/target candidates invalidate the group instead of hiding disagreement.
-    No reward multiple is invented.
+    bar. Materially divergent candidates invalidate the group. Within a
+    compatible group, the protective stop is the closest valid structural
+    invalidation and the target is the nearest valid favorable draw. No reward
+    multiple is invented.
     """
     candidates: dict[tuple[str, str, float], list[dict]] = {}
     for reading in readings:
@@ -160,34 +166,29 @@ def _geometry_from_concept_readings(
                 "stop": stop,
                 "target": target,
                 "strength": _finite(implication.get("strength")),
+                "independence_group": reading.get("independence_group", ""),
             })
-
-    def median(values: list[float]) -> float:
-        ordered = sorted(values)
-        middle = len(ordered) // 2
-        if len(ordered) % 2:
-            return ordered[middle]
-        return (ordered[middle - 1] + ordered[middle]) / 2.0
 
     best: Optional[dict] = None
     for (timeframe, reference_timeframe, source_time), members in candidates.items():
         entries = [member["entry"] for member in members]
+        # Same symbol, reference timeframe and completed source instant must
+        # agree on the entry close. Do not invent a tolerance for disagreement.
+        if any(value != entries[0] for value in entries[1:]):
+            continue
+        entry = entries[0]
         stops = [member["stop"] for member in members]
         targets = [member["target"] for member in members]
-        entry, stop, target = median(entries), median(stops), median(targets)
+
+        # Select the closest valid invalidation and nearest real draw. Distinct
+        # structural levels are not averaged or rejected by arbitrary distance
+        # thresholds: each candidate is already validated on the correct side.
+        stop = max(stops) if side == "LONG" else min(stops)
+        target = min(targets) if side == "LONG" else max(targets)
         risk = entry - stop if side == "LONG" else stop - entry
         reward = target - entry if side == "LONG" else entry - target
         if not (isfinite(risk) and isfinite(reward) and risk > 0.0 and reward > 0.0):
             continue
-        stop_tolerance = max(0.75 * risk, entry * 1e-7)
-        target_tolerance = max(0.75 * reward, entry * 1e-7)
-        if max(stops) - min(stops) > stop_tolerance:
-            continue
-        if max(targets) - min(targets) > target_tolerance:
-            continue
-        if max(entries) - min(entries) > max(entry * 1e-6, risk * 0.1):
-            continue
-
         unique_members: dict[str, dict] = {}
         for member in members:
             reading = member["reading"]
@@ -209,7 +210,14 @@ def _geometry_from_concept_readings(
             if member["strength"] is not None
         ]
         strongest = max(strengths, default=-1.0)
-        rank = (len(concepts), strongest, source_time, timeframe, reference_timeframe)
+        independence_groups = tuple(sorted({
+            member["independence_group"] for member in selected
+            if member.get("independence_group")
+        }))
+        rank = (
+            len(independence_groups), len(concepts), strongest,
+            source_time, timeframe, reference_timeframe,
+        )
         milestones = tuple(sorted({
             float(value)
             for member in selected
@@ -237,6 +245,7 @@ def _geometry_from_concept_readings(
             "evidence_ids": evidence_ids, "milestones": milestones,
             "geometry_sources": geometry_sources, "invalidations": invalidations,
             "activation_reasons": activation_reasons,
+            "independence_groups": independence_groups,
         }
         if best is None or rank > best["rank"]:
             best = group
@@ -254,7 +263,9 @@ def _geometry_from_concept_readings(
         reward_r=best["reward"] / best["risk"],
         activated=True,
         activation_reason=(
-            f"{len(concepts)} concept reading(s) jointly support the completed-bar setup: "
+            f"{len(concepts)} concept reading(s) from "
+            f"{len(best['independence_groups'])} identified independent evidence source(s) "
+            f"support the completed-bar setup: "
             + (", ".join(concepts) or "unnamed concept")
             + (("; " + "; ".join(best["activation_reasons"])) if best["activation_reasons"] else "")
         ),
@@ -273,6 +284,8 @@ def _geometry_from_concept_readings(
         milestones=best["milestones"],
         supporting_concepts=concepts,
         geometry_sources=best["geometry_sources"],
+        independent_source_count=len(best["independence_groups"]),
+        independence_groups=best["independence_groups"],
     )
 
 
