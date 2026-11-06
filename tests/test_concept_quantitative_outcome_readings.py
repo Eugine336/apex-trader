@@ -153,14 +153,25 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
         }
         for index, value in enumerate((1.0, -0.5, 0.7, -1.0, 0.4))
     ]
-    context = {"trade_outcome_samples": rows, "monte_carlo_iterations": 500}
+    context = {
+        "trade_outcome_samples": rows,
+        "portfolio_plan": {
+            "portfolio_id": "account-main", "portfolio_scope": "whole_book",
+            "equity": 10000.0, "risk_fraction": 0.01,
+            "planned_trade_count": 10,
+            "source_timestamp_epoch": cutoff, "source_timestamp_verified": True,
+        },
+        "monte_carlo_iterations": 500,
+    }
     first = next(item for item in _readings(context) if item.concept == "monte_carlo")
     second = next(item for item in _readings(context) if item.concept == "monte_carlo")
     assert first.applicable is True
     assert first.facts["simulation_count"] == 500
     assert first.facts["bootstrap_terminal_return_r_5pct"] == second.facts["bootstrap_terminal_return_r_5pct"]
     assert first.facts["monte_carlo_drawdown_95pct_r"] >= 0.0
-    assert first.facts["current_portfolio_plan_stressed"] is False
+    assert first.facts["current_portfolio_plan_stressed"] is True
+    assert first.facts["portfolio_scope"] == "whole_book"
+    assert first.facts["probability_of_ruin"] is not None
 
 
 def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
@@ -176,7 +187,15 @@ def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
          "source_timestamp_verified": True},
     ]
     item = next(
-        reading for reading in _readings({"trade_outcome_samples": rows})
+        reading for reading in _readings({
+            "trade_outcome_samples": rows,
+            "portfolio_plan": {
+                "portfolio_id": "account-main", "portfolio_scope": "whole_book",
+                "equity": 10000.0, "risk_fraction": 0.01,
+                "planned_trade_count": 10,
+                "source_timestamp_epoch": cutoff, "source_timestamp_verified": True,
+            },
+        })
         if reading.concept == "monte_carlo"
     )
     assert item.applicable is False

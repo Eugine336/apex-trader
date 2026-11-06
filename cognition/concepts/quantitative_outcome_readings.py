@@ -348,9 +348,15 @@ def _monte_carlo_reading(
 ) -> ConceptReading:
     cutoff = last_source_epoch(bars)
     records = context.get("trade_outcome_samples")
+    plan = context.get("portfolio_plan")
     returns: list[float] = []
+    accepted_source_epochs: list[float] = []
     seen: set[str] = set()
     rejected = 0
+    portfolio_id = (
+        str(plan.get("portfolio_id", "") or "").strip()
+        if isinstance(plan, dict) else ""
+    )
     if isinstance(records, (list, tuple)):
         for row in records:
             if not isinstance(row, dict):
@@ -362,7 +368,8 @@ def _monte_carlo_reading(
             value = finite(row.get("return_r"))
             if (
                 not trade_id or trade_id in seen
-                or str(row.get("symbol", "") or "").strip().upper() != symbol
+                or not portfolio_id
+                or str(row.get("portfolio_id", "") or "").strip() != portfolio_id
                 or row.get("source_timestamp_verified") is not True
                 or closed_epoch is None or source_epoch is None
                 or cutoff is None or closed_epoch > cutoff
@@ -373,41 +380,80 @@ def _monte_carlo_reading(
                 continue
             seen.add(trade_id)
             returns.append(value)
-    accepted_source_epochs = [
-        _epoch(row.get("source_timestamp_epoch"))
-        for row in records
-        if isinstance(row, dict)
-        and str(row.get("trade_id", "") or "").strip() in seen
-        and _epoch(row.get("source_timestamp_epoch")) is not None
-    ] if isinstance(records, (list, tuple)) else []
+            accepted_source_epochs.append(source_epoch)
+
+    equity = finite(plan.get("equity")) if isinstance(plan, dict) else None
+    risk_fraction = finite(plan.get("risk_fraction")) if isinstance(plan, dict) else None
+    raw_trade_count = finite(plan.get("planned_trade_count")) if isinstance(plan, dict) else None
+    plan_epoch = _epoch(plan.get("source_timestamp_epoch")) if isinstance(plan, dict) else None
+    plan_valid = bool(
+        isinstance(plan, dict)
+        and plan.get("portfolio_scope") == "whole_book"
+        and plan.get("source_timestamp_verified") is True
+        and portfolio_id
+        and cutoff is not None and plan_epoch is not None and plan_epoch <= cutoff
+        and equity is not None and equity > 0.0
+        and risk_fraction is not None and 0.0 < risk_fraction <= 1.0
+        and raw_trade_count is not None and raw_trade_count.is_integer()
+        and raw_trade_count > 0
+    )
+    planned_trade_count = int(raw_trade_count) if plan_valid and raw_trade_count is not None else 0
     iterations_raw = finite(context.get("monte_carlo_iterations"))
     iterations = int(iterations_raw) if iterations_raw is not None and iterations_raw >= 100 else 5000
     iterations = min(iterations, 50000)
     digest = hashlib.sha256(
-        (symbol + "|" + "|".join(f"{value:.12g}" for value in returns)).encode("utf-8")
+        (
+            symbol + "|" + portfolio_id + "|"
+            + "|".join(f"{value:.12g}" for value in returns)
+            + f"|{equity}|{risk_fraction}|{planned_trade_count}"
+        ).encode("utf-8")
     ).hexdigest()
-    seed = int(digest[:16], 16)
-    rng = random.Random(seed)
+    rng = random.Random(int(digest[:16], 16))
     terminal_returns: list[float] = []
     max_drawdowns: list[float] = []
-    if len(returns) >= 2:
+    final_equities: list[float] = []
+    portfolio_drawdowns: list[float] = []
+    ruin_count = 0
+    if len(returns) >= 2 and plan_valid and equity is not None and risk_fraction is not None:
         for _ in range(iterations):
-            equity = 0.0
-            peak = 0.0
-            drawdown = 0.0
-            for _ in range(len(returns)):
-                equity += rng.choice(returns)
-                peak = max(peak, equity)
-                drawdown = max(drawdown, peak - equity)
-            terminal_returns.append(equity)
-            max_drawdowns.append(drawdown)
+            historical_r = 0.0
+            portfolio_equity = equity
+            portfolio_peak = equity
+            drawdown_r = 0.0
+            drawdown_fraction = 0.0
+            ruined = False
+            for _ in range(planned_trade_count):
+                outcome_r = rng.choice(returns)
+                historical_r += outcome_r
+                if not ruined:
+                    portfolio_equity *= 1.0 + risk_fraction * outcome_r
+                    if portfolio_equity <= 0.0:
+                        portfolio_equity = 0.0
+                        ruined = True
+                    portfolio_peak = max(portfolio_peak, portfolio_equity)
+                    drawdown_r = max(drawdown_r, historical_r - min(historical_r, 0.0))
+                    if portfolio_peak > 0.0:
+                        drawdown_fraction = max(
+                            drawdown_fraction,
+                            (portfolio_peak - portfolio_equity) / portfolio_peak,
+                        )
+            terminal_returns.append(historical_r)
+            max_drawdowns.append(drawdown_r)
+            final_equities.append(portfolio_equity)
+            portfolio_drawdowns.append(drawdown_fraction)
+            ruin_count += int(ruined)
+
     tail = _quantile(terminal_returns, 0.05)
     tail_values = [value for value in terminal_returns if tail is not None and value <= tail]
     unknowns: list[str] = []
     if cutoff is None:
         unknowns.append("source-verified completed-bar cutoff for trade outcome selection")
     if len(returns) < 2:
-        unknowns.append("at least two distinct broker-truth closed-trade R outcomes with verified close timestamps")
+        unknowns.append("at least two distinct broker-truth whole-book trade R outcomes with verified close timestamps")
+    if not plan_valid:
+        unknowns.append(
+            "source-verified whole-book portfolio plan with equity, risk fraction and planned trade count"
+        )
     if rejected:
         unknowns.append(f"{rejected} trade outcome row(s) rejected for duplicate, invalid or future provenance")
     unknowns.append(
@@ -415,41 +461,46 @@ def _monte_carlo_reading(
     )
     return ConceptReading(
         concept="monte_carlo", timeframe=timeframe, domain=EvidenceDomain.PORTFOLIO,
-        applicable=len(returns) >= 2 and cutoff is not None,
+        applicable=len(returns) >= 2 and plan_valid and cutoff is not None,
         applicability_reason=(
-            "A deterministic-seed bootstrap of verified closed-trade R outcomes is available for historical distribution stress."
-            if len(returns) >= 2 and cutoff is not None else
-            "Portfolio stress simulation is unavailable without verified broker-truth trade outcomes."
+            "A deterministic-seed bootstrap stresses the source-verified whole-book plan against broker-truth closed-trade R outcomes."
+            if len(returns) >= 2 and plan_valid and cutoff is not None else
+            "Portfolio plan stress is unavailable without verified whole-book outcomes and a current source-verified plan."
         ),
         observation=(
-            f"{symbol} {timeframe}: bootstrap stress describes historical trade-sequence dispersion, "
-            "not a forecast or a current trade-plan approval."
+            f"{symbol} {timeframe}: Monte Carlo stress reports historical outcome dispersion, "
+            "whole-book plan drawdown and ruin frequency; it does not approve execution."
         ),
         implications=(),
         facts={
+            "portfolio_id": portfolio_id or None,
+            "portfolio_scope": "whole_book" if plan_valid else "unknown",
             "trade_sample_count": len(returns),
             "simulation_count": len(terminal_returns),
+            "planned_trade_count": planned_trade_count,
+            "risk_fraction": risk_fraction if plan_valid else None,
             "bootstrap_terminal_return_r_mean": mean(terminal_returns) if terminal_returns else None,
             "bootstrap_terminal_return_r_5pct": tail,
             "bootstrap_terminal_return_r_95pct": _quantile(terminal_returns, 0.95),
             "bootstrap_expected_shortfall_r_5pct": mean(tail_values) if tail_values else None,
             "monte_carlo_drawdown_95pct_r": _quantile(max_drawdowns, 0.95),
-            "monte_carlo_drawdown_max_r": max(max_drawdowns) if max_drawdowns else None,
-            "simulation_method": "deterministic_seed_iid_trade_return_bootstrap",
-            "current_portfolio_plan_stressed": False,
+            "portfolio_drawdown_95pct_fraction": _quantile(portfolio_drawdowns, 0.95),
+            "portfolio_final_equity_5pct": _quantile(final_equities, 0.05),
+            "probability_of_ruin": ruin_count / len(final_equities) if final_equities else None,
+            "simulation_method": "deterministic_seed_iid_whole_book_trade_return_bootstrap",
+            "current_portfolio_plan_stressed": plan_valid,
             "directional_decision_emitted": False,
             "entry_authorization_emitted": False,
-            "data_gated_reason": None if len(returns) >= 2 else DATA_GATED_METHODS["monte_carlo"],
+            "data_gated_reason": None if len(returns) >= 2 and plan_valid else DATA_GATED_METHODS["monte_carlo"],
         },
         source_bar_epoch=cutoff,
         source_timestamp_epoch=max(accepted_source_epochs) if accepted_source_epochs else None,
         source_timestamp_verified=cutoff is not None,
         reference_close=reference, reference_timeframe=reference_tf,
         unknowns=tuple(unknowns),
-        data_basis="broker_closed_trade_outcomes",
-        independence_group=f"trade_outcomes:{symbol}",
+        data_basis="broker_truth_whole_book_trade_outcomes_and_current_plan",
+        independence_group=f"portfolio_outcomes:{portfolio_id}" if portfolio_id else "",
     )
-
 
 class QuantitativeOutcomeReadings:
     key = "quantitative_outcome_readings"
