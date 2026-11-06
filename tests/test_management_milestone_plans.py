@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from cognition.native_management import NativePositionManager
 
 
-def _evidence(close, prior_range_low, *, epoch=1000.0, symbol="EURUSD", timeframe="H1"):
+def _evidence(close, prior_range_low, *, prior_range_high=None, epoch=1000.0, symbol="EURUSD", timeframe="H1"):
     return SimpleNamespace(
         symbol=symbol,
         domain=SimpleNamespace(value="structure"),
@@ -19,6 +19,7 @@ def _evidence(close, prior_range_low, *, epoch=1000.0, symbol="EURUSD", timefram
             "source_bar_epoch": epoch,
             "current_close": close,
             "prior_range_low": prior_range_low,
+            "prior_range_high": prior_range_high,
         },
     )
 
@@ -228,3 +229,30 @@ def test_new_completed_higher_low_trails_without_waiting_for_milestone():
     assert plan["kind"] == "trailing_stop_update"
     assert plan["stop_price"] == 100.25
     assert plan["action_id"].startswith("campaign-1:concept-trail:")
+
+
+
+def test_short_completed_close_beyond_original_stop_invalidates_symmetrically():
+    context = {
+        "campaign_id": "campaign-short",
+        "concept_geometry": {
+            "concept": "market_structure",
+            "concept_timeframe": "H1",
+            "entry_price": 100.0,
+            "stop_price": 102.0,
+            "target_price": 94.0,
+            "milestones": [98.0, 96.0],
+            "evidence_timestamp_epoch": 800.0,
+            "symbol": "EURUSD",
+            "direction": "SHORT",
+        },
+    }
+    plan = NativePositionManager._concept_milestone_guidance(
+        context, "SHORT", SimpleNamespace(profit_r=-1.0, sl=102.0),
+        [_evidence(102.1, None, prior_range_high=103.0, epoch=1000.0)],
+        "EURUSD", now=1000.0,
+    )
+
+    assert plan["kind"] == "invalidation_exit"
+    assert plan["invalidation_price"] == 102.0
+    assert plan["action_id"].startswith("campaign-short:concept-invalidation:")
