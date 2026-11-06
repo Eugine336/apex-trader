@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from cognition.native_management import NativePositionManager
 
 
-def _evidence(close, prior_range_low, *, epoch=1000.0, symbol="EURUSD"):
+def _evidence(close, prior_range_low, *, epoch=1000.0, symbol="EURUSD", timeframe="H1"):
     return SimpleNamespace(
         symbol=symbol,
         domain=SimpleNamespace(value="structure"),
@@ -13,7 +13,7 @@ def _evidence(close, prior_range_low, *, epoch=1000.0, symbol="EURUSD"):
             "data_basis": "completed_ohlc",
             "provisional": False,
             "completed": True,
-            "timeframe": "H1",
+            "timeframe": timeframe,
             "source_bar_epoch": epoch,
             "current_close": close,
             "prior_range_low": prior_range_low,
@@ -36,7 +36,11 @@ def test_milestone_plan_uses_geometry_count_for_dynamic_partial_and_trailing_lev
     }
     position = SimpleNamespace(profit_r=0.8, sl=98.0, direction="LONG")
     plan = NativePositionManager._concept_milestone_guidance(
-        context, "LONG", position, [_evidence(103.0, 101.0)], "EURUSD",
+        context, "LONG", position, [
+            _evidence(100.5, 100.25, epoch=900.0),
+            _evidence(103.0, 101.0, epoch=1000.0),
+            _evidence(104.0, None, epoch=1100.0),
+        ], "EURUSD",
     )
 
     assert plan["kind"] == "milestone_partial"

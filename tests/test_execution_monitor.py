@@ -6,6 +6,7 @@ get_size_multiplier, and backward-compatibility with empty state.
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 
 from brain.execution_monitor import ExecutionMonitor
 
@@ -217,3 +218,83 @@ class TestBackwardCompat:
             _record(mon, "GBPUSD", slippage_pip_equiv=0.4)
         agg = mon.get_stats()
         assert 0.2 < agg.avg_slippage_pips < 0.5
+
+
+
+class TestBrokerAttemptTelemetry:
+    def test_cold_start_metrics_are_unknown_not_zero(self):
+        observations = ExecutionMonitor().get_cost_observations("EURUSD")
+        assert observations["market_entry_attempt_count"] == 0
+        assert observations["market_entry_fill_success_ratio"] is None
+        assert observations["observed_entry_abs_slippage_avg_pips"] is None
+        assert observations["observed_submit_response_latency_avg_ms"] is None
+        assert observations["market_entry_fill_rate_sample_floor_met"] is False
+
+    def test_failed_attempts_count_in_fill_probability_denominator(self):
+        mon = ExecutionMonitor(window=30)
+        now = datetime.now(timezone.utc).timestamp()
+        for _ in range(19):
+            mon.record_order_attempt(
+                symbol="EURUSD", success=True, latency_ms=120.0,
+                requested_price=1.1000, fill_price=1.1001,
+                pip_size=0.0001, spread=0.0002, observed_epoch=now,
+            )
+        mon.record_order_attempt(
+            symbol="EURUSD", success=False, latency_ms=400.0,
+            requested_price=1.1000, fill_price=None, pip_size=0.0001,
+            observed_epoch=now,
+        )
+        stats = mon.get_cost_observations("EURUSD", now_epoch=now)
+        assert stats["market_entry_attempt_count"] == 20
+        assert stats["market_entry_success_count"] == 19
+        assert stats["market_entry_fill_success_ratio"] == 0.95
+        assert stats["market_entry_fill_rate_sample_floor_met"] is True
+        assert abs(stats["observed_entry_abs_slippage_avg_pips"] - 1.0) < 1e-8
+        assert stats["observed_entry_slippage_sample_count"] == 19
+        assert stats["observed_submit_response_latency_avg_ms"] == 134.0
+
+
+
+class TestRoundTripSlippagePairing:
+    def test_partial_closes_are_weighted_and_only_complete_trade_is_sampled(self):
+        mon = ExecutionMonitor(window=50)
+        mon.record_order_attempt(
+            symbol="EURUSD", success=True, latency_ms=80.0,
+            requested_price=1.1000, fill_price=1.10005,
+            pip_size=0.0001, order_id="ticket-1", lots=0.2,
+            direction="BUY", platform="mt5",
+        )
+        mon.record_close_result(
+            order_id="ticket-1", platform="mt5", success=True,
+            requested_price=1.1010, fill_price=1.1009,
+            lots_closed=0.1,
+        )
+        partial = mon.get_cost_observations("EURUSD", min_samples=1)
+        assert partial["observed_round_trip_slippage_sample_count"] == 0
+        mon.record_close_result(
+            order_id="ticket-1", platform="mt5", success=True,
+            requested_price=1.1010, fill_price=1.1008,
+            lots_closed=0.1,
+        )
+        complete = mon.get_cost_observations("EURUSD", min_samples=1)
+        # Entry 0.5 pips + weighted exit mean 1.5 pips = 2.0 pips.
+        assert complete["observed_round_trip_abs_slippage_avg_pips"] == pytest.approx(2.0)
+        assert complete["observed_round_trip_slippage_sample_count"] == 1
+        assert complete["round_trip_slippage_verified"] is True
+        assert complete["pip_size"] == pytest.approx(0.0001)
+
+    def test_unmatched_or_payout_only_close_never_produces_round_trip_slippage(self):
+        mon = ExecutionMonitor(window=20)
+        mon.record_order_attempt(
+            symbol="EURUSD", success=True, latency_ms=80.0,
+            requested_price=1.1000, fill_price=1.1001,
+            pip_size=0.0001, order_id="ticket-2", lots=0.1,
+            direction="BUY", platform="deriv",
+        )
+        mon.record_close_result(
+            order_id="ticket-2", platform="deriv", success=True,
+            requested_price=None, fill_price=10.0, lots_closed=0.1,
+        )
+        observations = mon.get_cost_observations("EURUSD", min_samples=1)
+        assert observations["observed_round_trip_slippage_sample_count"] == 0
+        assert observations["round_trip_slippage_verified"] is False

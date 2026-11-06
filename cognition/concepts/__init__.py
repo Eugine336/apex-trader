@@ -21,6 +21,12 @@ from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
 from cognition.concepts.power_of_three import PowerOfThreeConcepts
 from cognition.concepts.regime_switching import RegimeSwitchingConcepts
+from cognition.concepts.strategy_method_readings import StrategyMethodReadings
+from cognition.concepts.wyckoff_volume_readings import WyckoffVolumeReadings
+from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
+from cognition.concepts.execution_cost_readings import ExecutionCostReadings
+from cognition.concepts.order_book_readings import OrderBookReadings
+from cognition.concepts.tick_microstructure_readings import TickMicrostructureReadings
 from cognition.concepts.session_calendar import SessionCalendar
 from cognition.concepts.opening_range import OpeningRange
 from cognition.concepts.vwap import VWAPConcept
@@ -49,19 +55,36 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     SeasonalityConcept(),
     RangeRotation(),
     RegimeSwitchingConcepts(),
+    StrategyMethodReadings(),
+    WyckoffVolumeReadings(),
+    InstrumentEconomicsReadings(),
+    ExecutionCostReadings(),
+    OrderBookReadings(),
+    TickMicrostructureReadings(),
 )
 
 
-def run_concepts(symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[Any]:
+def run_concepts(
+    symbol: str,
+    bars_by_tf: dict[str, list[dict]],
+    context: dict[str, Any] | None = None,
+) -> list[Any]:
     """Run every concept module over completed bars and return Evidence.
 
     A module that faults is logged and represented by a non-directional runtime
     diagnostic. Subsequent modules still run; no market reading is fabricated.
     """
     evidence: list[Any] = []
+    reader_context = context if isinstance(context, dict) else {}
     for module in CONCEPT_MODULES:
         try:
-            for reading in module.read(symbol, bars_by_tf):
+            contextual_reader = getattr(module, "read_with_context", None)
+            readings = (
+                contextual_reader(symbol, bars_by_tf, reader_context)
+                if callable(contextual_reader)
+                else module.read(symbol, bars_by_tf)
+            )
+            for reading in readings:
                 evidence.append(reading_to_evidence(symbol, reading))
         except Exception as exc:  # noqa: BLE001
             module_key = str(getattr(module, "key", "unknown") or "unknown")

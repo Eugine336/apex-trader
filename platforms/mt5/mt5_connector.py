@@ -472,6 +472,38 @@ class MT5Connector(BaseConnector):
             })
         return sorted(discovered, key=lambda row: row["symbol"].casefold())
 
+    @staticmethod
+    def _swap_mode_name(value) -> Optional[str]:
+        """Resolve swap units through the installed MetaTrader5 enum constants."""
+        labels = (
+            ("SYMBOL_SWAP_MODE_DISABLED", "disabled"),
+            ("SYMBOL_SWAP_MODE_POINTS", "points"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_SYMBOL", "currency_symbol"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_MARGIN", "currency_margin"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT", "currency_deposit"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_PROFIT", "currency_profit"),
+            ("SYMBOL_SWAP_MODE_INTEREST_CURRENT", "interest_current"),
+            ("SYMBOL_SWAP_MODE_INTEREST_OPEN", "interest_open"),
+            ("SYMBOL_SWAP_MODE_REOPEN_CURRENT", "reopen_current"),
+            ("SYMBOL_SWAP_MODE_REOPEN_BID", "reopen_bid"),
+        )
+        lookup = {}
+        for constant, label in labels:
+            raw_value = getattr(mt5, constant, None)
+            if raw_value is None:
+                continue
+            try:
+                lookup[int(raw_value)] = label
+            # Malformed optional MT5 enum constants are ignored.
+            # SAFE-FALLBACK: unresolved values never become an assumed swap mode.
+            except (TypeError, ValueError, OverflowError):
+                continue
+        try:
+            return lookup.get(int(value)) if value is not None else None
+        except (TypeError, ValueError, OverflowError):
+            # SAFE-FALLBACK: an unknown swap-mode value is not interpreted.
+            return None
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Broker-truth symbol economics from MT5 ``symbol_info``.
 
@@ -502,6 +534,15 @@ class MT5Connector(BaseConnector):
                 "swap_long": getattr(si, "swap_long", None),
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
+                "swap_mode_name": self._swap_mode_name(getattr(si, "swap_mode", None)),
+                "swap_rollover3days": getattr(si, "swap_rollover3days", None),
+                "swap_schedule": {
+                    day: getattr(si, f"swap_{day}", None)
+                    for day in (
+                        "sunday", "monday", "tuesday", "wednesday",
+                        "thursday", "friday", "saturday",
+                    )
+                },
                 "trade_tick_value": getattr(si, "trade_tick_value", None),
                 "trade_tick_value_profit": getattr(si, "trade_tick_value_profit", None),
                 "trade_tick_value_loss": getattr(si, "trade_tick_value_loss", None),
@@ -1644,6 +1685,7 @@ class MT5Connector(BaseConnector):
             lots_closed=close_lots,
             pnl=position.profit,
             platform="mt5",
+            requested_price=price,
         )
 
     # ── Positions ────────────────────────────────────────────────────────
@@ -1807,6 +1849,8 @@ class MT5Connector(BaseConnector):
                 mt5.market_book_release(mapped)
             if not book:
                 return []
+            # Local retrieval time is separate from provider source time.
+            snapshot_received_epoch = _time.time()
             out: list[dict] = []
             for item in book:
                 price = float(getattr(item, "price", 0.0) or 0.0)
@@ -1838,6 +1882,8 @@ class MT5Connector(BaseConnector):
                     "book_type": btype,
                     "raw_fields": raw_fields,
                     "source": "mt5.market_book_get",
+                    "source_symbol": mapped,
+                    "snapshot_received_epoch": snapshot_received_epoch,
                     "source_verified": True,
                 })
             return out

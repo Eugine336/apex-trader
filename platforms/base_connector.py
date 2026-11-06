@@ -114,6 +114,9 @@ class CloseResult:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     error: str = ""
+    # Exact price submitted to the broker for the close. Payout-based venues
+    # leave this unset when the response is not a comparable market price.
+    requested_price: Optional[float] = None
 
 
 @dataclass

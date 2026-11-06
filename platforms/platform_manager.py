@@ -126,6 +126,8 @@ class PlatformManager:
 
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or AppConfig()
+        # Attached by SystemContext; execution telemetry is never an admission control.
+        self.execution_monitor = None
 
         # ── Intraday candle cache (Phase 5): transparent TTL cache in front of
         # per-symbol/timeframe broker fetches. See platforms/candle_cache.py. ─
@@ -586,6 +588,10 @@ class PlatformManager:
                 _pm_logger.warning("[pm] Deriv idem-key lookup failed: {}", exc)
         return None
 
+    def set_execution_monitor(self, monitor: Optional[object]) -> None:
+        """Attach the shared execution telemetry sink; never changes admission."""
+        self.execution_monitor = monitor
+
     def execute_entry(
         self,
         symbol: str,
@@ -594,34 +600,95 @@ class PlatformManager:
         sl: float,
         tp: float,
         comment: str = "",
-        stake_usd: Optional[float] = None,  # Deriv only — risk amount in USD
+        stake_usd: Optional[float] = None,
         idempotency_key: str = "",
     ) -> OrderResult:
-        """Place a market entry. **Executor-only broker mutator.**
+        """Place a market entry through the executor-only broker path.
 
-        The Execution Division (``ActionExecutor``) is the sole intended
-        caller — it is the only path that enforces the RiskGate + circuit
-        breaker before a broker write.  Do not call this directly from
-        Intelligence / Consensus / Compliance / Portfolio / Operations code;
-        emit an ``Intent`` and route it through the executor instead.
+        Optional telemetry records confirmed broker outcomes after submission.
+        A telemetry failure never changes, retries, or suppresses the broker result.
         """
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
+        monitor = getattr(self, "execution_monitor", None)
+        attempt_quote = None
+        if monitor is not None:
+            try:
+                attempt_quote = self.get_price(symbol)
+            except Exception as exc:  # noqa: BLE001 — telemetry is non-authoritative
+                _pm_logger.debug("[pm] execution telemetry quote unavailable for {}: {}", symbol, exc)
 
-        t0 = _time.monotonic()
-        with self._broker_write_lock:
-            if isinstance(connector, DerivConnector):
-                result = connector.place_order(
-                    symbol, direction, lots, sl, tp, comment,
-                    idempotency_key=idempotency_key,
-                    stake_usd=stake_usd,
-                )
-            else:
-                result = connector.place_order(
-                    symbol, direction, lots, sl, tp, comment,
-                    idempotency_key=idempotency_key,
-                )
-        latency_ms = (_time.monotonic() - t0) * 1000
+        started_monotonic = _time.monotonic()
+        result = None
+        try:
+            with self._broker_write_lock:
+                if isinstance(connector, DerivConnector):
+                    result = connector.place_order(
+                        symbol, direction, lots, sl, tp, comment,
+                        idempotency_key=idempotency_key,
+                        stake_usd=stake_usd,
+                    )
+                else:
+                    result = connector.place_order(
+                        symbol, direction, lots, sl, tp, comment,
+                        idempotency_key=idempotency_key,
+                    )
+        finally:
+            latency_ms = max((_time.monotonic() - started_monotonic) * 1000.0, 0.0)
+            if monitor is not None:
+                try:
+                    pip_size = None
+                    try:
+                        instrument = get_instrument(symbol)
+                        raw_pip_size = getattr(instrument, "pip_size", None)
+                        if raw_pip_size is not None:
+                            candidate = float(raw_pip_size)
+                            if math.isfinite(candidate) and candidate > 0.0:
+                                pip_size = candidate
+                    except (TypeError, ValueError, OverflowError):
+                        pip_size = None
+
+                    spread = None
+                    if (
+                        attempt_quote is not None
+                        and getattr(attempt_quote, "source_timestamp_verified", False) is True
+                        and str(getattr(attempt_quote, "quote_kind", "") or "").lower() == "bid_ask"
+                        and str(getattr(attempt_quote, "symbol", "") or "").strip().upper()
+                            == str(symbol or "").strip().upper()
+                    ):
+                        try:
+                            bid = float(attempt_quote.bid)
+                            ask = float(attempt_quote.ask)
+                            quote_time = getattr(attempt_quote, "time", None)
+                            quote_age = (
+                                _time.time() - quote_time.timestamp()
+                                if isinstance(quote_time, datetime)
+                                and quote_time.tzinfo is not None
+                                and quote_time.utcoffset() is not None
+                                else float("inf")
+                            )
+                            if math.isfinite(bid) and math.isfinite(ask) and bid > 0.0 and ask > bid and 0.0 <= quote_age <= 5.0:
+                                spread = ask - bid
+                        except (TypeError, ValueError, OverflowError, OSError):
+                            spread = None
+
+                    monitor.record_order_attempt(
+                        symbol=symbol,
+                        success=getattr(result, "success", False) is True,
+                        latency_ms=latency_ms,
+                        requested_price=getattr(result, "requested_price", None),
+                        fill_price=getattr(result, "fill_price", None),
+                        pip_size=pip_size,
+                        spread=spread,
+                        observed_epoch=_time.time(),
+                        order_type="market",
+                        order_id=getattr(result, "order_id", None),
+                        lots=getattr(result, "lots", lots),
+                        direction=getattr(result, "direction", direction),
+                        platform=str(getattr(result, "platform", platform) or platform),
+                    )
+                except Exception as exc:  # noqa: BLE001 — monitor must never affect execution
+                    _pm_logger.warning("[pm] execution telemetry failed for {}: {}", symbol, exc)
 
         if result.success:
             logger.info(
@@ -635,6 +702,7 @@ class PlatformManager:
                 platform.upper(), direction, symbol, lots, result.error,
             )
         return result
+
 
     def modify_trade(
         self,
@@ -664,7 +732,23 @@ class PlatformManager:
         """
         connector = self._connector_by_platform_str(platform)
         with self._broker_write_lock:
-            return connector.close_order(order_id, lots)
+            result = connector.close_order(order_id, lots)
+        monitor = getattr(self, "execution_monitor", None)
+        if monitor is not None:
+            try:
+                clean_platform = str(platform or "unknown").strip().lower().split("_", 1)[0]
+                monitor.record_close_result(
+                    order_id=order_id,
+                    platform=clean_platform,
+                    success=getattr(result, "success", False) is True,
+                    requested_price=getattr(result, "requested_price", None),
+                    fill_price=getattr(result, "close_price", None),
+                    lots_closed=getattr(result, "lots_closed", None),
+                    observed_epoch=_time.time(),
+                )
+            except Exception as exc:  # noqa: BLE001 — monitoring cannot change close result
+                _pm_logger.warning("[pm] close telemetry failed for {}: {}", order_id, exc)
+        return result
 
     def get_realized_pnl(self, order_id: str, platform: str) -> Optional[float]:
         connector = self._connector_by_platform_str(platform)

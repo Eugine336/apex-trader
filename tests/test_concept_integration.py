@@ -75,6 +75,27 @@ def test_candles_produce_a_concept_reading_in_the_live_evidence_path():
     assert imp["direction"] == "LONG" and imp["activated"] is True
 
 
+def test_registered_concept_hypotheses_survive_faulty_optional_strategy_lens(monkeypatch):
+    import cognition.brain_reasoning as reasoning
+
+    state = _state({"H1": _crt_frame()})
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state)
+
+    class BrokenLens:
+        key = "broken_optional_lens"
+
+    monkeypatch.setattr(reasoning, "STRATEGY_LENSES", (BrokenLens(),))
+    analysis.strategy_lenses = [{"key": "broken_optional_lens", "status": "relevant"}]
+
+    hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
+    assert any(
+        hypothesis.hypothesis_kind == "concept_group:h1:long:active"
+        and "crt" in hypothesis.supporting_patterns
+        for hypothesis in hypotheses
+    )
+
+
 def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     state = _state({"H1": _crt_frame()})
     reasoner = BrainReasoner()
@@ -82,7 +103,7 @@ def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     hyps = reasoner.generate_hypotheses(analysis, "EURUSD")
     concept = [
         h for h in hyps
-        if h.hypothesis_kind == "concept_group:H1:LONG:active"
+        if h.hypothesis_kind == "concept_group:h1:long:active"
         and "crt" in h.supporting_patterns
     ]
     assert len(concept) == 1
