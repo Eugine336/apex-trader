@@ -151,7 +151,6 @@ def run_concepts(
                 "concept_module": module_key,
                 "status": "reader_failed",
                 "exception_type": fault["exception_type"],
-                "exception_message": fault["message"],
                 "reading_unavailable": True,
                 "non_market_evidence": True,
             },
