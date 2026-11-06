@@ -304,8 +304,11 @@ def test_unverified_method_timestamps_are_not_evaluable():
     )
 
     assert lens.source_bar_epoch is None
-    assert assessment["status"] == "watch"
-    assert any("not all synchronized" in item for item in assessment["missing_context"])
+    assert assessment["status"] == "not_evaluable"
+    assert any(
+        "method readings excluded because source timestamps are unverified" in item
+        for item in assessment["missing_context"]
+    )
 
 
 
