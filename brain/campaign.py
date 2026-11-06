@@ -207,7 +207,7 @@ class ReallocationTarget:
         return {
             "symbol": self.symbol,
             "direction": self.direction,
-            "kind": "candidate",
+            "kind": self.kind,
             "reason": self.reason,
             "opportunity_strength": round(self.opportunity_strength, 4),
         }
