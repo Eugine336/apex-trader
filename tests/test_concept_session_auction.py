@@ -247,8 +247,11 @@ def test_price_mirror_symmetry_for_all_directional_wp_a_readers():
 
 
 def test_session_calendar_is_price_mirror_invariant():
-    original, mirrored = _assert_mirror(SessionCalendar(), _session_bars())
+    original = _reading(SessionCalendar(), _session_bars())
+    mirrored = _reading(SessionCalendar(), _mirror(_session_bars()))
     assert original.facts["status"] == mirrored.facts["status"]
+    assert original.facts["session_id"] == mirrored.facts["session_id"]
+    assert original.facts["session_open_epoch"] == mirrored.facts["session_open_epoch"]
 
 
 def test_every_wp_a_reading_converts_to_non_directional_evidence():
