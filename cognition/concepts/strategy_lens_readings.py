@@ -225,6 +225,9 @@ class StrategyLensReadings:
                         )
                 missing = [method for method in required_methods if method not in selected]
                 applicable = [item for item in selected.values() if item.applicable]
+                inapplicable = [item.concept for item in selected.values() if not item.applicable]
+                all_methods_available = not missing
+                all_methods_applicable = all_methods_available and len(applicable) == len(required_methods)
                 unknowns: list[str] = []
                 if missing:
                     unknowns.append(
@@ -235,6 +238,10 @@ class StrategyLensReadings:
                 data_gate = DATA_GATED_LENSES.get(lens_key)
                 if data_gate:
                     unknowns.append("complete lens interpretation requires " + data_gate)
+                if inapplicable:
+                    unknowns.append(
+                        "required methods currently inapplicable: " + ", ".join(sorted(inapplicable))
+                    )
                 if not applicable:
                     unknowns.append("no applicable underlying method reading is currently available")
 
@@ -255,15 +262,17 @@ class StrategyLensReadings:
                         "independence_group": item.independence_group,
                         "unknowns": list(item.unknowns),
                         "facts": _compact_facts(item.facts if isinstance(item.facts, dict) else {}),
+                        "implications": [implication.to_dict() for implication in item.implications],
                     }
                     method_geometry = _method_geometry(item)
                     for key, values in method_geometry.items():
                         geometry[key].extend(values)
 
                 lens = catalog[lens_key]
-                all_methods_available = not missing
+                lens_applicable = all_methods_applicable and data_gate is None
                 style_state = (
-                    "all_required_method_readings_available" if all_methods_available and applicable
+                    "complete_method_context" if lens_applicable
+                    else "data_gated" if data_gate
                     else "partial_method_context" if selected
                     else "not_evaluable"
                 )
@@ -344,7 +353,12 @@ class StrategyLensReadings:
                         "It does not mean the method implementation is unregistered."
                     ),
                     "applicable_methods": sorted(item.concept for item in applicable),
+                    "inapplicable_methods": sorted(inapplicable),
                     "method_summaries": summaries,
+                    "method_implications": {
+                        method: [implication.to_dict() for implication in item.implications]
+                        for method, item in selected.items()
+                    },
                     "style_context_state": style_state,
                     "entry_zones": geometry["entry_zone_candidates"],
                     "invalidation_candidates": geometry["invalidation_candidates"],
@@ -368,9 +382,11 @@ class StrategyLensReadings:
                     concept=lens_key,
                     timeframe=timeframe,
                     domain=EvidenceDomain.OTHER,
-                    applicable=bool(applicable),
+                    applicable=lens_applicable,
                     applicability_reason=(
-                        f"{len(applicable)} of {len(required_methods)} required method readings are applicable; "
+                        f"{len(selected)} of {len(required_methods)} required method readings are present; "
+                        f"{len(applicable)} are applicable and {len(inapplicable)} are inapplicable; "
+                        f"complete style applicability requires every method and all named feeds; "
                         f"style context={style_state}."
                     ),
                     observation=(
@@ -381,6 +397,7 @@ class StrategyLensReadings:
                     implications=(),
                     facts=facts,
                     source_bar_epoch=source_epoch,
+                    source_timestamp_verified=source_epoch is not None,
                     reference_close=reference_close,
                     reference_timeframe=reference_timeframe,
                     unknowns=tuple(dict.fromkeys(unknowns)),
