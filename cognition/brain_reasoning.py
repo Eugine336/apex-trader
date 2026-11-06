@@ -29,6 +29,7 @@ advisor is available the Brain can still originate from this layer alone
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from hashlib import sha256
 from typing import Any, Optional
 
@@ -39,6 +40,8 @@ from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
 from cognition.analytical_knowledge import assess_analytical_knowledge, knowledge_coverage
 from cognition.concept_synthesis import synthesize_concept_readings
+
+logger = logging.getLogger(__name__)
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -1668,7 +1671,8 @@ class BrainReasoner:
                 primary = max(hyps, key=lambda item: item.confidence)
                 hyps.append(self._counter(primary, analysis))
             return hyps
-        except Exception:  # noqa: BLE001 — hypothesis generation must never break reasoning
+        except Exception as exc:  # noqa: BLE001 — preserve diagnosis while keeping reasoning fail-closed
+            logger.exception("Native hypothesis generation failed for %s: %s", symbol, exc)
             return [BrainHypothesis(
                 statement="No structured hypothesis could be formed from the evidence.",
                 confidence=0.0, direction_implication=FLAT,
