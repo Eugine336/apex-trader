@@ -104,7 +104,7 @@ def _validate_source_file_timestamps(path: Path, timeframe: str) -> None:
             raise HindcastDataError(f"{timeframe}: empty CSV")
         time_key = next((
             field for field in reader.fieldnames
-            if field.strip().lower() in {"time", "timestamp", "datetime", "date"}
+            if field.strip().lower() in {"time", "timestamp", "datetime", "date", "t"}
         ), None)
         if time_key is None:
             raise HindcastDataError(f"{timeframe}: CSV requires a time/timestamp column")
