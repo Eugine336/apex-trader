@@ -1,5 +1,7 @@
 """Tests for the deterministic, provider-independent campaign manager."""
 
+import time
+
 from cognition.brain import CognitiveBrain, PositionView
 from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.identity import IDENTITY_VERSION
