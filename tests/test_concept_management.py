@@ -25,7 +25,8 @@ def _lens(close, epoch=1000.0):
         measurements={"source_kind": "market_lens", "source_timestamp_known": True,
                       "data_basis": "completed_ohlc", "completed": True, "provisional": False,
                       "timeframe": "H1", "current_close": close, "source_bar_epoch": epoch},
-        confidence=0.5, uncertainty=0.5, evidence_id="e-%s" % close)
+        confidence=0.5, uncertainty=0.5, evidence_id="e-%s" % close,
+        relevance_horizon_seconds=1800.0)
 
 
 def _assess(side, close, profit_r, geometry, extra=None):
@@ -38,9 +39,11 @@ def _assess(side, close, profit_r, geometry, extra=None):
 
 
 LONG_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820], "stop_price": 1.0795,
-            "target_price": 1.0840, "entry_price": 1.0818}
+            "target_price": 1.0840, "entry_price": 1.0818, "symbol": "EURUSD",
+            "direction": "LONG", "evidence_timestamp_epoch": 900.0}
 SHORT_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820], "stop_price": 1.0845,
-             "target_price": 1.0800, "entry_price": 1.0822}
+             "target_price": 1.0800, "entry_price": 1.0822, "symbol": "EURUSD",
+             "direction": "SHORT", "evidence_timestamp_epoch": 900.0}
 
 
 def test_long_milestone_passed_in_profit_scales_out_geometry_fraction():
