@@ -60,7 +60,7 @@ DATA_GATED_LENSES: dict[str, str] = {
     "order_flow_auction": "trade-level volume-at-price and broker DOM/depth where available",
     "session_intraday": "authoritative venue session calendar and verified session VWAP inputs",
     "event_macro": "timestamped economic calendar with actual/forecast/previous and macro series",
-    "cross_asset": "synchronized multi-symbol bars with verified common-cutoff timestamps",
+    "cross_asset": "source-attested base/quote currency metadata and a complete synchronized FX universe for relative currency-strength attribution",
     "statistical_quant": "point-in-time per-concept outcome labels for Bayesian posterior updates",
     "microstructure": "source-timestamped bid/ask tick stream and broker DOM/depth where exposed",
     "gap_opening_range": "authoritative venue session calendar with per-bar session identifiers",
