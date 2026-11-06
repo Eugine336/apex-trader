@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
+from cognition.concepts.base import ConceptReading
+from cognition.contracts import EvidenceDomain
 from cognition.concepts.strategy_lens_readings import (
     DATA_GATED_LENSES,
     FULL_LENSES,
@@ -132,3 +134,39 @@ def test_data_gated_lens_does_not_claim_full_when_external_inputs_are_absent():
     assert event.measurements["applicable"] is False
     assert any("economic calendar" in item for item in event.measurements["unknowns"])
     assert event.polarity == 0.0
+
+
+
+def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
+    methods = [
+        ConceptReading(
+            concept="wyckoff_effort_result",
+            timeframe="M5",
+            domain=EvidenceDomain.VOLUME,
+            applicable=True,
+            applicability_reason="completed-bar method reading",
+            observation="volume effort compared with range result",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+        ),
+        ConceptReading(
+            concept="wyckoff",
+            timeframe="M5",
+            domain=EvidenceDomain.STRUCTURE,
+            applicable=True,
+            applicability_reason="completed-bar method reading",
+            observation="phase and event sequence",
+            implications=(),
+            facts={},
+            source_bar_epoch=None,
+        ),
+    ]
+    readings = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    composite = next(item for item in readings if item.concept == "wyckoff_effort_result")
+
+    assert composite.source_bar_epoch is None
+    assert composite.independence_group == "ohlc:XAUUSD:M5"
+    assert any("not all synchronized" in item for item in composite.unknowns)
