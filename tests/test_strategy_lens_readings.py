@@ -305,6 +305,35 @@ def test_unsynchronized_method_composition_is_watch_not_relevant():
     assert any("not all synchronized" in item for item in assessment["missing_context"])
 
 
+
+def test_verified_ohlcv_method_basis_can_support_complete_lens_provenance():
+    reading = ConceptReading(
+        concept="wyckoff_effort_result",
+        timeframe="M5",
+        domain=EvidenceDomain.VOLUME,
+        applicable=True,
+        applicability_reason="verified completed OHLCV source",
+        observation="volume method evidence",
+        implications=(),
+        facts={
+            "lens_key": "wyckoff_effort_result",
+            "required_methods": ["wyckoff_effort_result", "wyckoff"],
+            "available_methods": ["wyckoff_effort_result", "wyckoff"],
+            "missing_methods": [],
+            "data_gated_reason": None,
+        },
+        source_bar_epoch=1_780_000_000.0,
+        source_timestamp_verified=True,
+        data_basis="completed_ohlcv_with_selected_volume_source",
+    )
+    assessment = next(
+        item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", reading)])
+        if item["key"] == "wyckoff_effort_result"
+    )
+
+    assert assessment["status"] == "relevant"
+
+
 def test_reading_adapter_requires_explicit_verification_for_bar_timestamp():
     reading = ConceptReading(
         concept="anomaly_detection",
