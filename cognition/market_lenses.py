@@ -74,10 +74,11 @@ def _timestamp_epoch(value: Any) -> float | None:
 
 def _rows(
     frame: Any, limit: int = 32, *, expected_symbol: str = "",
-) -> list[dict[str, Any]]:
+    return_tail_limit: int = 0,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Read OHLC(V), retaining source-time attestation from the broker adapter."""
     if frame is None:
-        return []
+        return ([], []) if return_tail_limit > 0 else []
     attrs = getattr(frame, "attrs", {})
     attrs = attrs if isinstance(attrs, dict) else {}
     source_symbol = str(attrs.get("source_symbol", "") or "").strip().upper()
@@ -92,12 +93,22 @@ def _rows(
     )
     try:
         if getattr(frame, "empty", False):
-            return []
-        tail = frame.tail(limit) if callable(getattr(frame, "tail", None)) else frame
+            return ([], []) if return_tail_limit > 0 else []
+        total_rows = len(frame) if return_tail_limit > 0 else None
+        window_start = (
+            max(0, total_rows - int(return_tail_limit))
+            if total_rows is not None and return_tail_limit > 0 else None
+        )
+        tail = (
+            frame if return_tail_limit > 0
+            else frame.tail(limit) if callable(getattr(frame, "tail", None))
+            else frame
+        )
         columns = {str(name).lower(): name for name in getattr(tail, "columns", [])}
         iterator = tail.iterrows() if callable(getattr(tail, "iterrows", None)) else enumerate(tail)
         result: list[dict[str, Any]] = []
-        for row_index, row in iterator:
+        tail_result: list[dict[str, Any]] = []
+        for ordinal, (row_index, row) in enumerate(iterator):
             def raw_value(*aliases: str) -> Any:
                 names = tuple(columns[name] for name in aliases if name in columns) + aliases
                 for name in names:
@@ -205,6 +216,8 @@ def _rows(
                     else inferred_volume_source
                 )
             result.append(row_data)
+            if return_tail_limit > 0 and (window_start is None or ordinal >= window_start):
+                tail_result.append(row_data)
         if source_attested:
             source_epochs = [row.get("timestamp_epoch") for row in result]
             ordered = (
@@ -221,9 +234,9 @@ def _rows(
             if not ordered:
                 for row in result:
                     row["source_timestamp_verified"] = False
-        return result
+        return (result, tail_result) if return_tail_limit > 0 else result
     except Exception:  # noqa: BLE001 — observer errors never break the cognition cycle
-        return []
+        return ([], []) if return_tail_limit > 0 else []
 
 
 def _mean(values: list[float]) -> float:
@@ -672,13 +685,22 @@ def analyze_market_frames(
             continue
         # Convert each provider frame once. The bounded raw-lens window and the
         # full concept history are views of the same completed-bar rows.
-        full_rows = _rows(frame, limit=1_000_000, expected_symbol=symbol)
+        full_rows, raw_window_rows = _rows(
+            frame,
+            limit=1_000_000,
+            expected_symbol=symbol,
+            return_tail_limit=32,
+        )
         completed_rows = (
             full_rows[:-1]
             if source_includes_forming_bar and len(full_rows) > 1
             else full_rows
         )
-        bars = completed_rows[-32:]
+        bars = (
+            raw_window_rows[:-1]
+            if source_includes_forming_bar and len(raw_window_rows) > 1
+            else raw_window_rows
+        )
         if len(bars) < 5:
             continue
         bars_by_timeframe[timeframe] = completed_rows
