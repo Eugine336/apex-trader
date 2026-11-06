@@ -393,6 +393,19 @@ class MT5Connector(BaseConnector):
                 "broker_trading_sessions": self._get_symbol_sessions(mapped),
                 "broker_session_timezone_verified": False,
                 "broker_holiday_calendar_verified": False,
+                "currency_base": getattr(si, "currency_base", None),
+                "currency_profit": getattr(si, "currency_profit", None),
+                "currency_margin": getattr(si, "currency_margin", None),
+                "description": getattr(si, "description", None),
+                "path": getattr(si, "path", None),
+                "trade_calc_mode": getattr(si, "trade_calc_mode", None),
+                "trade_exemode": getattr(si, "trade_exemode", None),
+                "filling_mode": getattr(si, "filling_mode", None),
+                "order_mode": getattr(si, "order_mode", None),
+                "expiration_mode": getattr(si, "expiration_mode", None),
+                "start_time": getattr(si, "start_time", None),
+                "expiration_time": getattr(si, "expiration_time", None),
+                "raw_symbol_info": dict(si._asdict()) if callable(getattr(si, "_asdict", None)) else {},
             }
         except Exception as exc:
             logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
@@ -548,10 +561,23 @@ class MT5Connector(BaseConnector):
             )
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        df = df.rename(
-            columns={"tick_volume": "volume", "real_volume": "real_volume"}
-        )
-        out = df[["time", "open", "high", "low", "close", "volume"]]
+        # Preserve every broker-provided bar field used by market analysis.
+        # "volume" remains a compatibility alias for tick_volume; it is never
+        # silently described as exchange-traded volume.
+        if "tick_volume" in df.columns:
+            df["volume"] = df["tick_volume"]
+        else:
+            df["volume"] = 0
+            df["tick_volume"] = 0
+        if "real_volume" not in df.columns:
+            df["real_volume"] = 0
+        if "spread" not in df.columns:
+            df["spread"] = 0
+        out = df[[
+            "time", "open", "high", "low", "close", "volume",
+            "tick_volume", "real_volume", "spread",
+        ]].copy()
+        out.attrs["volume_basis"] = "tick_volume_alias_with_real_volume_preserved"
         # MT5 copy_rates_from_pos(..., 0, count) returns the in-progress bar as
         # the last row. Callers that need confirmed-closed data can request the
         # forming bar dropped here (default keeps it for the established
@@ -565,8 +591,62 @@ class MT5Connector(BaseConnector):
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "mt5",
+            "volume_basis": out.attrs.get("volume_basis"),
+            "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
         return out
+
+    def get_ticks(
+        self, symbol: str, from_dt: datetime, to_dt: datetime, *, flags: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Fetch the broker's historical tick tape without inventing aggressor flow.
+
+        Datetimes must be timezone-aware; the MT5 request is normalized to UTC.
+        BUY/SELL aggressor flags are exposed only when the broker supplies them.
+        """
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 tick history requires timezone-aware from_dt and to_dt")
+        start = from_dt.astimezone(timezone.utc)
+        end = to_dt.astimezone(timezone.utc)
+        if end < start:
+            raise ValueError("to_dt must be greater than or equal to from_dt")
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        tick_flags = flags if flags is not None else getattr(mt5, "COPY_TICKS_ALL", -1)
+        ticks = mt5.copy_ticks_range(mapped, start, end, tick_flags)
+        if ticks is None:
+            raise RuntimeError(f"No tick history for {mapped}: {mt5.last_error()}")
+        frame = pd.DataFrame(ticks)
+        if frame.empty:
+            frame.attrs.update({
+                "source": "mt5.copy_ticks_range",
+                "source_verified": True,
+                "source_symbol": mapped,
+                "source_timezone": "UTC",
+            })
+            return frame
+        if "time" in frame.columns:
+            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        if "time_msc" in frame.columns:
+            frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
+        raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
+        buy_flag = getattr(mt5, "TICK_FLAG_BUY", ોળ0)
+        sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
+        frame["aggressor_side"] = [
+            "buy" if int(value or 0) & buy_flag else
+            "sell" if int(value or 0) & sell_flag else None
+            for value in raw_flags
+        ]
+        frame.attrs.update({
+            "source": "mt5.copy_ticks_range",
+            "source_verified": True,
+            "source_symbol": mapped,
+            "source_timezone": "UTC",
+            "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
+        })
+        return frame
 
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread
