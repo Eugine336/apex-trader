@@ -4309,6 +4309,9 @@ class AppConfig:
         default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
     enabled_symbols_override: list[str] = field(default_factory=list)
+    # Populated by PlatformManager after a successful MT5 discovery cycle.
+    broker_discovery_complete: bool = field(default=False, init=False)
+    broker_enabled_symbols: list[str] = field(default_factory=list, init=False)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
@@ -4394,7 +4397,22 @@ class AppConfig:
 
     @property
     def enabled_pairs(self) -> list[str]:
-        """Owner-selected symbols; empty selection never expands implicitly."""
+        """Resolve owner scope against live MT5 capability when discovery exists."""
+        if self.broker_discovery_complete:
+            available = set(self.broker_enabled_symbols)
+            if self.universe_mode in {"selected", "single"}:
+                missing = [symbol for symbol in self.enabled_symbols_override if symbol not in available]
+                if missing:
+                    logger.error(
+                        "[config] owner-selected symbols unavailable or unsupported on connected MT5 broker: {}",
+                        missing,
+                    )
+                    return []
+                return list(self.enabled_symbols_override)
+            return [
+                symbol for symbol in self.broker_enabled_symbols
+                if get_instrument(symbol).category.value in self.enabled_categories
+            ]
         if self.universe_mode in {"selected", "single"}:
             return list(self.enabled_symbols_override)
         symbols: list[str] = []
