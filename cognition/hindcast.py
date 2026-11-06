@@ -57,6 +57,7 @@ class HindcastDataset:
 class HindcastReport:
     symbol: str
     source_reference: str
+    attestation_basis: str
     dataset_digest: str
     timestamp_semantics: str
     source_timestamp_verified: bool
@@ -88,6 +89,7 @@ class HindcastReport:
             "schema_version": 1,
             "symbol": self.symbol,
             "source_reference": self.source_reference,
+            "attestation_basis": self.attestation_basis,
             "dataset_digest": self.dataset_digest,
             "timestamp_semantics": self.timestamp_semantics,
             "source_timestamp_verified": self.source_timestamp_verified,
@@ -376,6 +378,7 @@ def run_hindcast(
     report = HindcastReport(
         symbol=dataset.symbol,
         source_reference=dataset.source_reference,
+        attestation_basis=dataset.attestation_basis,
         dataset_digest=dataset.dataset_digest,
         timestamp_semantics=dataset.timestamp_semantics,
         source_timestamp_verified=dataset.source_timestamp_verified,
