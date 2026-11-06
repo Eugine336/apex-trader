@@ -401,7 +401,7 @@ class StrategyLensReadings:
                 source_groups = [
                     (
                         str(item.independence_group or "").strip()
-                        if (item.data_basis or "completed_ohlc") == "completed_ohlc"
+                        if (item.data_basis or "completed_ohlc").startswith("completed_ohlc")
                         else ""
                     )
                     for item in selected.values()

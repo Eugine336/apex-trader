@@ -360,6 +360,37 @@ def test_method_readings_must_share_one_verified_timestamp_to_make_lens_applicab
 
 
 
+
+def test_completed_ohlcv_method_readings_preserve_explicit_shared_bar_lineage():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    methods = [
+        ConceptReading(
+            concept=method,
+            timeframe="M5",
+            domain=EvidenceDomain.VOLUME,
+            applicable=True,
+            applicability_reason="verified completed OHLCV input",
+            observation="method-level volume and auction context",
+            implications=(),
+            facts={},
+            source_bar_epoch=cutoff,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlcv_with_selected_volume_source",
+            independence_group="ohlc:XAUUSD:M5",
+        )
+        for method in ("wyckoff_effort_result", "wyckoff")
+    ]
+    lens = next(
+        item for item in StrategyLensReadings().read_with_context(
+            "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+        )
+        if item.concept == "wyckoff_effort_result"
+    )
+    assert lens.applicable is True
+    assert lens.independence_group == "ohlc:XAUUSD:M5"
+    assert lens.facts["independence_group_verified"] is True
+
+
 def test_lens_geometry_preserves_mirror_symmetric_method_levels_without_directional_vote():
     cutoff = _bars()[-1]["timestamp_epoch"]
 
