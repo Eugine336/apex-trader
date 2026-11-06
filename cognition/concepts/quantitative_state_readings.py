@@ -404,6 +404,12 @@ class QuantitativeStateReadings:
                 continue
             for reader in (_time_series_reading, _analogue_reading, _anomaly_reading):
                 reading = reader(timeframe, bars, reference, reference_tf)
+                reading = ConceptReading(
+                    **{
+                        **reading.__dict__,
+                        "independence_group": f"ohlc:{str(symbol or '').upper()}:{timeframe}",
+                    }
+                )
                 if bars[-1].get("source_timestamp_verified") is not True:
                     reason = "source-verified timestamp for the latest completed bar"
                     if reason not in reading.unknowns:
