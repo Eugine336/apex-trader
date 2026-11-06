@@ -121,6 +121,14 @@ def fractal_swing_cache_status() -> dict[str, int]:
         return {**_ROLLING_SWING_STATS, "entries": len(_ROLLING_SWING_CACHE)}
 
 
+def clear_fractal_swing_cache() -> None:
+    with _ROLLING_SWING_CACHE_LOCK:
+        _ROLLING_SWING_CACHE.clear()
+        for key in _ROLLING_SWING_STATS:
+            _ROLLING_SWING_STATS[key] = 0
+    _fractal_swings_cached.cache_clear()
+
+
 def fractal_swings(
     bars: list[dict], *, cache_key: str = "",
 ) -> list[tuple[int, str, float]]:
