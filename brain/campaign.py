@@ -199,6 +199,7 @@ class ReallocationTarget:
 
     symbol: str
     direction: str
+    kind: str = "candidate"
     reason: str = ""
     opportunity_strength: float = 0.0
 
