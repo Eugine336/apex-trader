@@ -24,7 +24,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | UNMEASURED |
 | instrument_mechanics | Futures and options context | `derivatives` | MEASURED |
 | instrument_mechanics | Synthetic instrument mechanics | `synthetic_market` | UNMEASURED |
-| intermarket | Cross-asset relationships | `cross_asset` | DATA-GATED — synchronized multi-symbol bars with verified common-cutoff timestamps |
+| intermarket | Cross-asset relationships | `cross_asset` | MEASURED |
 | intermarket | Currency and commodity relative strength | `currency_strength` | MEASURED |
 | intermarket | SMT divergence | `smt_divergence` | UNMEASURED |
 | liquidity | Buy-side and sell-side liquidity | `liquidity_pools` | FULL |
@@ -64,7 +64,7 @@ FULL 56 · DATA-GATED 4 · MEASURED 12 · UNMEASURED 7
 | strategy | Event-driven repricing | `event_driven` | MEASURED |
 | strategy | Mean reversion and statistical reversion | `mean_reversion` | FULL |
 | strategy | Momentum and volatility breakout | `momentum_breakout` | FULL |
-| strategy | Pairs, cointegration and relative value | `relative_value` | DATA-GATED — synchronized multi-symbol histories and stable relationship samples |
+| strategy | Pairs, cointegration and relative value | `relative_value` | MEASURED |
 | strategy | Range rotation and auction balance | `range_rotation` | FULL |
 | strategy | Seasonality and calendar effects | `seasonality` | FULL |
 | strategy | Trend following and pullback continuation | `trend_following` | FULL |
