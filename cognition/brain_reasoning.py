@@ -1628,7 +1628,8 @@ class BrainReasoner:
                     opportunity_implication=(
                         f"{group.get('timeframe')} {group.get('status')} concept group; "
                         f"member readings={group.get('member_count', 0)}; "
-                        f"distinct concepts={group.get('confluence_count', 0)}; "
+                        f"distinct concepts={group.get('concept_count', 0)}; "
+                        f"independent evidence groups={group.get('confluence_count', 0)}; "
                         + ("geometry candidates: " + "; ".join(geometry_text) if geometry_text else "no complete geometry")
                     ),
                     hypothesis_kind=(
@@ -1654,6 +1655,9 @@ class BrainReasoner:
                         "raw_strongest_reading": group.get("strength", 0.0),
                         "opposing_active_strength": group.get("opposing_strength", 0.0),
                         "confluence_count": group.get("confluence_count", 0),
+                        "concept_count": group.get("concept_count", 0),
+                        "independence_groups": list(group.get("independence_groups", []) or []),
+                        "independence_status": group.get("independence_status", "provenance_unknown"),
                         "member_count": group.get("member_count", 0),
                         "confidence_rule": "max_member_strength_times_opposition_penalty",
                         "additive_confluence_boost": False,
