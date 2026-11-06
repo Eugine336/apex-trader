@@ -56,7 +56,7 @@ def test_time_series_reports_return_and_volatility_dependence_and_adf_limitation
     assert set(facts["squared_return_autocorrelation_lags_1_to_5"]) == {1, 2, 3, 4, 5}
     assert facts["adf_zero_lag_constant"]["status"] == "statistic_available"
     assert facts["statistical_tests_are_diagnostics_not_directional_forecasts"] is True
-    assert reading.independence_group == "ohlc:M5"
+    assert reading.independence_group == "ohlc:XAUUSD:M5"
     assert reading.implications == ()
 
 
