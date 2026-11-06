@@ -3867,14 +3867,6 @@ class CognitionConfig:
     #   "shadow" — record the intended management action, submit nothing.
     #   "live"   — realise it on MT5 via the wired management sink (default).
     management_mode: str = "live"
-    # Part X — when the Brain originates an entry without an explicit protective
-    # stop, execution derives one deterministically: a stop ``origination_stop_fraction``
-    # of price away (0.4% default, instrument-agnostic) with a take-profit at the
-    # nearest structural level >= ``origination_min_rr`` × risk ahead, else
-    # ``origination_reward_multiple`` × risk. Guarantees every entry is protected.
-    origination_stop_fraction: float = 0.004
-    origination_reward_multiple: float = 2.0
-    origination_min_rr: float = 1.0
     # Optional hard cap on the lot size the Brain may originate/scale (0 = no
     # cap; the broker vol_max still applies). Lets an operator bound absolute
     # size regardless of conviction on a small account.
@@ -3954,9 +3946,6 @@ class CognitionConfig:
             ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
             ("COGNITION_MANAGE_MIN_INTERVAL_SECONDS", "manage_min_interval_seconds"),
             ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
-            ("COGNITION_ORIGINATION_STOP_FRACTION", "origination_stop_fraction"),
-            ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
-            ("COGNITION_ORIGINATION_MIN_RR", "origination_min_rr"),
             ("COGNITION_ORIGINATION_MAX_LOTS", "origination_max_lots"),
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
