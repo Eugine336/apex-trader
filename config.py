@@ -4300,18 +4300,18 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # ── INSTRUMENT UNIVERSE ───────────────────────────────────────────────
-    # Apex is not tied to one instrument. By default every registered forex,
-    # commodity, index and crypto instrument is in scope (synthetics need a
-    # separate broker setup and stay opt-in). Each instrument runs on its own
-    # profile (brain/instrument_profile.py). To narrow the universe:
-    #   • set TRADING_MODE=gold (commodity / XAUUSD only), or
-    #   • list specific symbols in `enabled_symbols_override`.
+    # ── OWNER-CONTROLLED INSTRUMENT UNIVERSE ───────────────────────────────
+    # "all" = all broker-discovered eligible symbols in enabled categories;
+    # "selected" = exactly the owner's selected symbol set; "single" = one symbol.
+    # Gold is not a special trading identity or hard-coded execution mode.
+    universe_mode: str = "all"
     enabled_categories: list[str] = field(
         default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
-    # Empty = every symbol in the enabled categories; list symbols to restrict.
     enabled_symbols_override: list[str] = field(default_factory=list)
+    # Populated by PlatformManager after a successful MT5 discovery cycle.
+    broker_discovery_complete: bool = field(default=False, init=False)
+    broker_enabled_symbols: list[str] = field(default_factory=list, init=False)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
@@ -4372,27 +4372,49 @@ class AppConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
-        # TRADING_MODE toggles the instrument universe from .env without code
-        # changes. "full" (default) scans every instrument across forex,
-        # commodity, index and crypto; "gold" narrows to commodity / XAUUSD.
-        # Any other value falls back to "full" with a warning. Synthetic is
-        # intentionally excluded — Deriv synthetics need a separate broker setup.
-        mode = os.getenv("TRADING_MODE", "full").lower().strip()
-        if mode not in ("gold", "full"):
-            logger.warning(
-                "[config] unknown TRADING_MODE '{}' — falling back to 'full'", mode
-            )
-            mode = "full"
-        if mode == "gold":
-            self.enabled_categories = ["commodity"]
-            self.enabled_symbols_override = ["XAUUSD"]
-        self.trading_mode = mode
+        mode = str(self.universe_mode or "all").strip().lower()
+        mode = {"full": "all", "custom": "selected", "one": "single"}.get(mode, mode)
+        if mode not in {"all", "selected", "single"}:
+            raise ValueError("universe_mode must be all, selected, or single")
+        self.universe_mode = mode
+        self.enabled_symbols_override = list(dict.fromkeys(
+            str(symbol).strip().upper()
+            for symbol in self.enabled_symbols_override
+            if str(symbol).strip()
+        ))
+        if mode == "all" and self.enabled_symbols_override:
+            # Backward compatibility for direct AppConfig construction.
+            self.universe_mode = "selected"
+            mode = "selected"
+        if mode == "selected" and not self.enabled_symbols_override:
+            raise ValueError("selected universe requires at least one symbol")
+        if mode == "single" and len(self.enabled_symbols_override) != 1:
+            raise ValueError("single universe requires exactly one symbol")
+        self.trading_mode = (
+            "gold" if mode == "single" and self.enabled_symbols_override == ["XAUUSD"]
+            else "full"
+        )
 
     @property
     def enabled_pairs(self) -> list[str]:
-        """All symbols from enabled categories, filtered by override if set."""
-        if self.enabled_symbols_override:
-            return self.enabled_symbols_override
+        """Resolve owner scope against live MT5 capability when discovery exists."""
+        if self.broker_discovery_complete:
+            available = set(self.broker_enabled_symbols)
+            if self.universe_mode in {"selected", "single"}:
+                missing = [symbol for symbol in self.enabled_symbols_override if symbol not in available]
+                if missing:
+                    logger.error(
+                        "[config] owner-selected symbols unavailable or unsupported on connected MT5 broker: {}",
+                        missing,
+                    )
+                    return []
+                return list(self.enabled_symbols_override)
+            return [
+                symbol for symbol in self.broker_enabled_symbols
+                if get_instrument(symbol).category.value in self.enabled_categories
+            ]
+        if self.universe_mode in {"selected", "single"}:
+            return list(self.enabled_symbols_override)
         symbols: list[str] = []
         for cat in self.enabled_categories:
             symbols.extend(i.symbol for i in get_instruments_by_category(cat))

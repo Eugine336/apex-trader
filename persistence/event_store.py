@@ -9,6 +9,7 @@ Mirror the sync-sqlite3 + WAL pattern used by ``persistence/position_store.py``.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import queue
@@ -202,6 +203,7 @@ class EventStore:
                 try:
                     self._conn.close()
                 except Exception:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in persistence/event_store.py:204", exc_info=True)
                     pass
                 try:
                     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -226,6 +228,7 @@ class EventStore:
             try:
                 self._conn.close()
             except Exception:
+                logging.getLogger(__name__).debug("Exception handled by fallback in persistence/event_store.py:228", exc_info=True)
                 pass
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
             quarantined = self._db_path.with_name(

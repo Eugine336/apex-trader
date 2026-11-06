@@ -8,9 +8,9 @@ events from them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,8 @@ class Tick:
     # original quote timestamp. Receipt/analysis timestamps are not source time.
     source_timestamp_verified: bool = False
     quote_kind: str = "unknown"
+    spread_unit: str = "unknown"
+    raw_fields: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         timestamp = self.timestamp
@@ -49,6 +51,15 @@ class Tick:
         if quote_kind not in {"bid_ask", "mid_only"}:
             quote_kind = "unknown"
         object.__setattr__(self, "quote_kind", quote_kind)
+        spread_unit = str(self.spread_unit or "unknown").strip().lower()
+        if spread_unit not in {"pips", "ticks", "points", "unknown"}:
+            spread_unit = "unknown"
+        object.__setattr__(self, "spread_unit", spread_unit)
+        object.__setattr__(
+            self,
+            "raw_fields",
+            dict(self.raw_fields) if isinstance(self.raw_fields, dict) else {},
+        )
 
     @property
     def mid(self) -> float:

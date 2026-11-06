@@ -180,7 +180,8 @@ class KnowledgeSource:
             u = getattr(self._adapter, "usable", True)
             return bool(u() if callable(u) else u)
         except Exception:  # noqa: BLE001
-            return True
+            logging.getLogger(__name__).debug("Provider usability check failed; disabling this optional source", exc_info=True)
+            return False
 
     def _resolve_action(self, capability: str, preferred: str = "") -> str:
         """Turn a semantic capability into its provider action string.

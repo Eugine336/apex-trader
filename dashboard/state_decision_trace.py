@@ -11,6 +11,7 @@ reads + aggregates; it never makes a decision.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import time as _time
@@ -69,6 +70,7 @@ class DecisionTraceMixin:
             try:
                 payload = json.loads(pj) if isinstance(pj, str) else pj
             except Exception:
+                logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_decision_trace.py:71", exc_info=True)
                 continue
             payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
             payload.setdefault("correlation_id", row.get("correlation_id"))
@@ -127,6 +129,7 @@ class DecisionTraceMixin:
                         conf_sum[stage] += float(sv.get("confidence", 0.0) or 0.0)
                         conf_cnt[stage] += 1
                     except (TypeError, ValueError):
+                        logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_decision_trace.py:129", exc_info=True)
                         pass
 
             outcome = tr.get("final_outcome", "") or "UNKNOWN"

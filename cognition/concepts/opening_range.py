@@ -38,7 +38,7 @@ class OpeningRange:
             if not current_session["verified"]:
                 readings.append(self._unknown_reading(
                     timeframe, bars, reference, reference_tf,
-                    ["verified session id, timezone and open/close timestamps from an authoritative venue calendar"],
+                    ["verified session id, timezone and open/close timestamps from an authoritative venue session calendar"],
                     "Opening-range analysis is relevant, but the current bar has no verified session boundary.",
                 ))
                 continue

@@ -447,3 +447,23 @@ def test_microstructure_two_ticks_still_fault_safe():
     assert micro["ticks"] == 2 and "momentum" in micro
 
 
+
+
+def test_market_snapshot_preserves_mt5_raw_quote_metadata():
+    from datetime import datetime, timezone
+
+    tick = SimpleNamespace(
+        symbol="BROKER_CUSTOM",
+        bid=100.0,
+        ask=100.02,
+        quote_kind="bid_ask",
+        spread_unit="ticks",
+        raw_fields={"flags": 16, "volume": 3, "time_msc": 1_800_000_000_000},
+        timestamp=datetime.now(timezone.utc),
+        source_timestamp_verified=True,
+    )
+    snapshot = build_price_snapshot("BROKER_CUSTOM", {"M1": _uptrend()}, tick=tick)
+
+    assert snapshot["price"]["spread_unit"] == "ticks"
+    assert snapshot["price"]["raw_fields"]["flags"] == 16
+    assert snapshot["price"]["raw_fields"]["volume"] == 3

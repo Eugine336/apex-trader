@@ -24,6 +24,7 @@ as live-path violations, and this guard never flags its own token list.
 """
 
 from __future__ import annotations
+import logging
 
 import argparse
 import json
@@ -283,6 +284,7 @@ def _scan_patterns(check: Check) -> list[Violation]:
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            logging.getLogger(__name__).debug("Exception handled by fallback in scripts/constitution_audit.py:285", exc_info=True)
             continue
         for i, line in enumerate(text.splitlines(), start=1):
             if rx.search(line):
@@ -324,6 +326,7 @@ def _scan_tree(check: Check) -> list[Violation]:
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            logging.getLogger(__name__).debug("Exception handled by fallback in scripts/constitution_audit.py:326", exc_info=True)
             continue
         for i, line in enumerate(text.splitlines(), start=1):
             if any(rx.search(line) for rx in check.banned_calls):

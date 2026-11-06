@@ -199,6 +199,8 @@ class PlatformManager:
         # still checked live against _mt5_connected_flags, so routing stays
         # correct across disconnects/reconnects.
         self._broker_overrides_cache: dict[str, Optional[set]] = {}
+        # Read-only broker-native symbol catalog; discovery never grants trade permission.
+        self._mt5_symbol_catalog: list[dict] = []
 
         # Per-cycle price snapshot (thread-local). When the trading loop opens a
         # snapshot for its management pass, repeated get_price() calls for the
@@ -248,6 +250,20 @@ class PlatformManager:
 
         # Legacy key so callers checking results.get("mt5") still work
         results["mt5"] = self._mt5_connected
+
+        self._mt5_symbol_catalog = self.discover_mt5_symbols(refresh=True)
+        eligible_symbols = list(dict.fromkeys(
+            str(row.get("apex_symbol", "")).upper()
+            for row in self._mt5_symbol_catalog
+            if row.get("new_position_eligible") and row.get("apex_symbol")
+        ))
+        self.config.broker_discovery_complete = self._mt5_connected
+        self.config.broker_enabled_symbols = eligible_symbols
+        eligible_count = len(eligible_symbols)
+        logger.info(
+            "[universe] MT5 discovered {} broker symbols; {} map to supported Apex instruments with complete specs",
+            len(self._mt5_symbol_catalog), eligible_count,
+        )
 
         logger.info("Connecting to Deriv…")
         self._deriv_connected = self.deriv.connect()
@@ -521,6 +537,25 @@ class PlatformManager:
             return str(getattr(connector, "_account_id", "") or "")
         return ""
 
+    def discover_mt5_symbols(self, *, refresh: bool = False) -> list[dict]:
+        """Return the current broker-native MT5 symbol catalog.
+
+        Unsupported and disabled symbols remain visible with explicit flags.
+        Owner selection, feed capability and risk admission are separate.
+        """
+        if refresh:
+            catalog: list[dict] = []
+            for index, connector in enumerate(self.mt5_connectors):
+                if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                    continue
+                try:
+                    for row in connector.discover_symbols():
+                        catalog.append({**row, "connector_index": index})
+                except Exception as exc:
+                    _pm_logger.warning("[universe] MT5 symbol discovery failed for connector {}: {}", index, exc)
+            self._mt5_symbol_catalog = catalog
+        return [dict(row) for row in self._mt5_symbol_catalog]
+
     def get_typical_spreads(self, symbol: str) -> dict[str, float]:
         from config import INSTRUMENT_REGISTRY
         result: dict[str, float] = {}
@@ -688,6 +723,94 @@ class PlatformManager:
                 + ", ".join(sorted(str(item) for item in snapshot.failed_platforms))
             )
         return list(snapshot.positions)
+
+    def get_tick_history(self, symbol: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
+        """Fetch historical ticks from the owning connector when supported."""
+        connector = self.get_connector(symbol)
+        fetch = getattr(connector, "get_ticks", None)
+        if not callable(fetch):
+            return pd.DataFrame()
+        return fetch(symbol, from_dt, to_dt)
+
+    def calculate_broker_profit(
+        self, symbol: str, direction: str, volume: float, price_open: float, price_close: float,
+    ) -> float:
+        """Return broker-calculated P&L in account currency where supported."""
+        connector = self.get_connector(symbol)
+        calculate = getattr(connector, "calculate_profit", None)
+        if not callable(calculate):
+            raise NotImplementedError(f"Broker profit calculation is unavailable for {symbol}")
+        return float(calculate(symbol, direction, volume, price_open, price_close))
+
+    def calculate_broker_margin(
+        self, symbol: str, direction: str, volume: float, price: float,
+    ) -> float:
+        """Return broker-calculated margin in account currency where supported."""
+        connector = self.get_connector(symbol)
+        calculate = getattr(connector, "calculate_margin", None)
+        if not callable(calculate):
+            raise NotImplementedError(f"Broker margin calculation is unavailable for {symbol}")
+        return float(calculate(symbol, direction, volume, price))
+
+    def get_mt5_position_snapshots(self) -> list[dict]:
+        """Return raw open-position records from each connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.extend({
+                    **row,
+                    "connector_index": index,
+                } for row in connector.get_position_snapshots())
+            except Exception as exc:
+                _pm_logger.warning("[positions] MT5 raw position snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
+    def get_mt5_pending_order_snapshots(self) -> list[dict]:
+        """Return raw pending-order records from each connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.extend({
+                    **row,
+                    "connector_index": index,
+                } for row in connector.get_pending_order_snapshots())
+            except Exception as exc:
+                _pm_logger.warning("[orders] MT5 raw pending-order snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
+    def get_mt5_account_snapshots(self) -> list[dict]:
+        """Return verified account snapshots from every connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.append({
+                    "connector_index": index,
+                    **connector.get_account_snapshot(),
+                })
+            except Exception as exc:
+                _pm_logger.warning("[account] MT5 account snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
+    def get_mt5_terminal_snapshots(self) -> list[dict]:
+        """Return verified terminal health/version snapshots for connected MT5 accounts."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.append({
+                    "connector_index": index,
+                    **connector.get_terminal_snapshot(),
+                })
+            except Exception as exc:
+                _pm_logger.warning("[terminal] MT5 terminal snapshot failed for connector {}: {}", index, exc)
+        return snapshots
 
     def get_market_depth(self, symbol: str) -> list[dict]:
         """Best-effort Level-2 order book for ``symbol`` (empty when unsupported).
@@ -949,6 +1072,27 @@ class PlatformManager:
         return None
 
     # ── Market data ──────────────────────────────────────────────────────
+
+    def fetch_market_data_range(
+        self,
+        symbol: str,
+        timeframes: list[str],
+        from_dt: datetime,
+        to_dt: datetime,
+        *,
+        include_forming: bool = False,
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch historical MT5 bar ranges for replay and hindcast consumers."""
+        connector = self.get_connector(symbol)
+        fetch = getattr(connector, "get_ohlcv_range", None)
+        if not callable(fetch):
+            raise NotImplementedError(f"Historical range retrieval is unavailable for {symbol}")
+        return {
+            timeframe: fetch(
+                symbol, timeframe, from_dt, to_dt, include_forming=include_forming,
+            )
+            for timeframe in timeframes
+        }
 
     def fetch_market_data(
         self,

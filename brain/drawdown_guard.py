@@ -4,6 +4,7 @@ When the battlefield changes, risk must adapt instantly.
 This guard enforces caution, recovery, and hard freeze states.
 """
 
+import logging
 import functools
 import threading
 from dataclasses import dataclass
@@ -155,6 +156,7 @@ class DrawdownGuard:
                 from loguru import logger
                 logger.debug("[drawdown-guard] mode-change callback failed: {}", exc)
             except Exception:
+                logging.getLogger(__name__).debug("Exception handled by fallback in brain/drawdown_guard.py:157", exc_info=True)
                 pass
 
     def register_trade_result(

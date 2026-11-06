@@ -7,6 +7,7 @@ so the division stays decoupled and unit-testable.
 """
 
 from __future__ import annotations
+import logging
 
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
@@ -85,6 +86,7 @@ class SizingFactors:
             try:
                 p *= float(value)
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in portfolio/models.py:87", exc_info=True)
                 continue
         return p
 
@@ -133,5 +135,6 @@ def normalize_book(book: Optional[Sequence[Any]]) -> list[OpenPositionView]:
                 )
             )
         except Exception:  # noqa: BLE001 — never let book parsing break sizing
+            logging.getLogger(__name__).debug("Exception handled by fallback in portfolio/models.py:135", exc_info=True)
             continue
     return out

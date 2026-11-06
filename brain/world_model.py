@@ -10,6 +10,7 @@ readers (execution plane, entry plane, dashboard) get frozen snapshots.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 import threading
@@ -205,6 +206,7 @@ class WorldModel:
             for fvg in self.all_fvgs():
                 _consider(getattr(fvg, "midpoint", None))
         except Exception:  # never let a malformed object break entry geometry
+            logging.getLogger(__name__).debug("Exception handled by fallback in brain/world_model.py:207", exc_info=True)
             pass
         # Order blocks — the near edge price reaches first becomes the target.
         try:
@@ -212,6 +214,7 @@ class WorldModel:
                 edge = getattr(ob, "bottom", None) if is_long else getattr(ob, "top", None)
                 _consider(edge)
         except Exception:
+            logging.getLogger(__name__).debug("Exception handled by fallback in brain/world_model.py:214", exc_info=True)
             pass
         # Liquidity pools — price hunts buy-side liquidity above / sell-side below.
         try:
@@ -224,6 +227,7 @@ class WorldModel:
                 for zone in (pools or []):
                     _consider(getattr(zone, "price", None))
         except Exception:
+            logging.getLogger(__name__).debug("Exception handled by fallback in brain/world_model.py:226", exc_info=True)
             pass
 
         # Nearest-first, de-duplicated.

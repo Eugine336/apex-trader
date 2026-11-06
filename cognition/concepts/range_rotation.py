@@ -50,7 +50,13 @@ class RangeRotation:
                 ))
                 continue
 
-            upper_point, lower_point = max(pairs, key=lambda pair: max(pair[0]["index"], pair[1]["index"]))
+            upper_point, lower_point = max(
+                pairs,
+                key=lambda pair: (
+                    max(pair[0]["index"], pair[1]["index"]),
+                    min(pair[0]["index"], pair[1]["index"]),
+                ),
+            )
             upper, lower = upper_point["price"], lower_point["price"]
             midpoint = (upper + lower) / 2.0
             anchor_index = min(upper_point["index"], lower_point["index"])
