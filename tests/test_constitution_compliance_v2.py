@@ -159,7 +159,6 @@ def test_v3_brain_declines_when_council_metadata_is_missing():
     out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
         min_advisors_for_action=1,
-        min_evidence_domains=2,
     ).reason(ms)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
