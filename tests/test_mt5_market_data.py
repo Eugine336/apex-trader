@@ -1,4 +1,5 @@
 from collections import namedtuple
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -61,27 +62,27 @@ class FakeMT5:
 
     @staticmethod
     def positions_get():
-        return [type("Position", (), {
-            "ticket": 123,
-            "symbol": "EURUSD",
-            "volume": 0.2,
-            "price_open": 1.1,
-            "price_current": 1.2,
-            "profit": 20.0,
-            "swap": -0.5,
-            "comment": "apex-test",
-        })()]
+        return [SimpleNamespace(
+            ticket=123,
+            symbol="EURUSD",
+            volume=0.2,
+            price_open=1.1,
+            price_current=1.2,
+            profit=20.0,
+            swap=-0.5,
+            comment="apex-test",
+        )]
 
     @staticmethod
     def orders_get():
-        return [type("Order", (), {
-            "ticket": 456,
-            "symbol": "EURUSD",
-            "volume_current": 0.1,
-            "price_open": 1.15,
-            "type": 2,
-            "comment": "apex-pending-test",
-        })()]
+        return [SimpleNamespace(
+            ticket=456,
+            symbol="EURUSD",
+            volume_current=0.1,
+            price_open=1.15,
+            type=2,
+            comment="apex-pending-test",
+        )]
 
     def copy_ticks_range(self, symbol, start, end, flags):
         return [
