@@ -112,8 +112,8 @@ def test_reflected_price_history_remains_evaluable_without_directional_authority
     assert reflected["anomaly_detection"].applicable is True
     assert math.isfinite(direct["anomaly_detection"].facts["novelty_distance"])
     assert math.isfinite(reflected["anomaly_detection"].facts["novelty_distance"])
-    assert direct["clustering"].facts["historical_analogue_count"] == (
-        reflected["clustering"].facts["historical_analogue_count"]
+    assert direct["clustering"].facts["historical_state_sample_count"] == (
+        reflected["clustering"].facts["historical_state_sample_count"]
     )
     assert direct["clustering"].facts["directional_decision_emitted"] is False
     assert reflected["clustering"].facts["directional_decision_emitted"] is False
