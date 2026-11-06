@@ -362,7 +362,17 @@ def assess_strategy_lenses(
         lens_data_gated = any(
             bool(item.measurements.get("data_gated_reason")) for item in lens_readings
         )
-        lens_complete = bool(lens_applicable) and not lens_missing_methods and not lens_data_gated
+        lens_provenance_verified = bool(lens_applicable) and all(
+            item.measurements.get("source_timestamp_known") is True
+            and item.measurements.get("data_basis") == "completed_ohlc"
+            for item in lens_applicable
+        )
+        lens_complete = (
+            bool(lens_applicable)
+            and not lens_missing_methods
+            and not lens_data_gated
+            and lens_provenance_verified
+        )
         regime_hits = [
             f"{key}={value}" for key, value in reg.items()
             if value and value not in {"unknown", "none", "balanced", "flat", "mixed"}
