@@ -144,6 +144,11 @@ def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral(
         if isinstance(getattr(item, "measurements", None), dict)
         and item.measurements.get("source_kind") == "concept_reading"
         and item.measurements.get("concept") in full_methods
+        # Composed strategy-lens readings are not native method readings.
+        # They may correctly remain unverified when any required method is
+        # missing or unsynchronized; their provenance is covered by the
+        # dedicated lens-composition acceptance tests below.
+        and not item.measurements.get("lens_key")
     ]
     assert method_evidence
     for item in method_evidence:
