@@ -114,10 +114,7 @@ def test_brain_strategy_lens_assessment_uses_composed_method_evidence():
         item["key"]: item for item in assess_strategy_lenses(evidence)
     }
 
-    assert assessments["pattern_discovery"]["status"] == "relevant"
     assert any("native method composition" in reason for reason in assessments["pattern_discovery"]["reasons"])
-    assert assessments["trend_following"]["status"] == "watch"
-    assert any("not all synchronized" in item for item in assessments["trend_following"]["missing_context"])
     assert assessments["event_macro"]["status"] == "not_evaluable"
     assert any(
         "complete lens interpretation requires" in item
@@ -152,6 +149,7 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
             facts={},
             source_bar_epoch=1_780_000_000.0,
             data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
         ),
         ConceptReading(
             concept="wyckoff",
@@ -164,6 +162,7 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
             facts={},
             source_bar_epoch=None,
             data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
         ),
     ]
     readings = StrategyLensReadings().read_with_context(
@@ -179,5 +178,92 @@ def test_composite_lens_never_promotes_mixed_method_timestamps_to_verified():
         item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", composite)])
         if item["key"] == "wyckoff_effort_result"
     )
+    assert assessment["status"] == "watch"
+    assert any("not all synchronized" in item for item in assessment["missing_context"])
+
+
+
+def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="sufficient own-history sample",
+            observation="current state novelty is measured against prior states",
+            implications=(),
+            facts={"novelty_own_history_percentile": 0.72},
+            source_bar_epoch=1_780_000_000.0,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="prior states have realized outcomes",
+            observation="nearest historical states are available",
+            implications=(),
+            facts={"historical_state_sample_count": 80},
+            source_bar_epoch=1_780_000_000.0,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+    assessment = next(
+        item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", lens)])
+        if item["key"] == "pattern_discovery"
+    )
+
+    assert lens.source_bar_epoch == 1_780_000_000.0
+    assert lens.independence_group == "ohlc:XAUUSD:M5"
+    assert assessment["status"] == "relevant"
+
+
+def test_unsynchronized_method_composition_is_watch_not_relevant():
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="novelty",
+            implications=(),
+            facts={},
+            source_bar_epoch=1_780_000_000.0,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="analogues",
+            implications=(),
+            facts={},
+            source_bar_epoch=None,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+    assessment = next(
+        item for item in assess_strategy_lenses([reading_to_evidence("XAUUSD", lens)])
+        if item["key"] == "pattern_discovery"
+    )
+
+    assert lens.source_bar_epoch is None
     assert assessment["status"] == "watch"
     assert any("not all synchronized" in item for item in assessment["missing_context"])
