@@ -210,7 +210,7 @@ def translate(
             return None
         order_type = str(geometry.get("order_type", "MARKET") or "MARKET").upper()
         intent_order_type = str(intent_meta.get("order_type", order_type) or order_type).upper()
-        if order_type not in {"MARKET", "LIMIT", "STOP", "STOP_LIMIT"} or intent_order_type != order_type:
+        if order_type not in {"MARKET", "LIMIT", "STOP"} or intent_order_type != order_type:
             return None
         zone_low = geometry.get("entry_zone_low")
         zone_high = geometry.get("entry_zone_high")
