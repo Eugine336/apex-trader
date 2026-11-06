@@ -121,6 +121,9 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **ove
             "evidence_ids": ["test-evidence-1", "test-evidence-2"],
             "entry_timeframe": "M5",
             "evidence_timestamp_epoch": time.time(),
+            "order_type": str(values.get("order_type", "MARKET") or "MARKET").upper(),
+            "entry_zone_low": values.get("entry_zone_low"),
+            "entry_zone_high": values.get("entry_zone_high"),
         }
         values["payoff_geometry"] = geometry
     return Intent.open(**values)
@@ -1051,3 +1054,27 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
     )
     assert not result.success and result.rejected_by_gate
     assert "broker_spec_unverified" in result.gate_reason
+
+
+
+def test_action_executor_never_reinterprets_pending_entry_as_market():
+    intent = _open_intent(
+        order_type="LIMIT",
+        entry_zone_low=1.05,
+        entry_zone_high=1.15,
+    )
+
+    assert ActionExecutor._payoff_geometry_error(intent) == (
+        "pending_order_type_not_supported_by_broker_adapter"
+    )
+
+
+def test_action_executor_rejects_entry_outside_attached_zone():
+    intent = _open_intent(
+        entry_zone_low=1.15,
+        entry_zone_high=1.20,
+    )
+
+    assert ActionExecutor._payoff_geometry_error(intent) == (
+        "market_payoff_geometry_entry_outside_zone"
+    )
