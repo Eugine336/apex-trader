@@ -397,7 +397,6 @@ class CampaignMemoryStore:
             size = float(current_size) if current_size is not None else None
         except (TypeError, ValueError, OverflowError):
             size = None
-        now = int(now_ms if now_ms is not None else _now_ms())
         try:
             with self._lock:
                 row = self._conn.execute(
@@ -423,7 +422,6 @@ class CampaignMemoryStore:
                 if isinstance(pending, dict):
                     milestone_id = str(pending.get("milestone_id", "") or "")
                     before = _clampf(pending.get("size_before", 0.0), 0.0, 1e12)
-                    submitted = int(pending.get("submitted_at_ms", 0) or 0)
                     if (
                         size is not None and size >= 0.0
                         and before - size > max(1e-8, before * 1e-4)
