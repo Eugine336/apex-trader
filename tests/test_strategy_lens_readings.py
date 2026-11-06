@@ -384,6 +384,8 @@ def test_lens_geometry_preserves_mirror_symmetric_method_levels_without_directio
                         objective_price=objective,
                         milestones=milestones,
                         requires=("independent confirmation",),
+                        conflicts_with=("opposing structural break",),
+                        management={"protective_action": "trail_to_anchor", "anchor": "confirmed_swing"},
                     ),
                 ),
                 facts={},
@@ -422,6 +424,13 @@ def test_lens_geometry_preserves_mirror_symmetric_method_levels_without_directio
     ):
         assert right["price"] == 200.0 - left["price"]
     assert original.implications == mirrored.implications == ()
+    assert original.facts["management_candidates"][0]["management"] == {
+        "protective_action": "trail_to_anchor", "anchor": "confirmed_swing",
+    }
+    assert original.facts["management_candidates"][0]["requires"] == [
+        "independent confirmation",
+    ]
+    assert original.facts["geometry_management_contract"]["execution_authority"] is False
     assert original.facts["directional_decision_emitted"] is False
     assert mirrored.facts["entry_authorization_emitted"] is False
 

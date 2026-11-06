@@ -131,8 +131,22 @@ def _method_geometry(reading: ConceptReading) -> dict[str, list[dict[str, Any]]]
         "milestone_candidates": [],
         "entry_zone_candidates": [],
         "trail_anchors": [],
+        "management_candidates": [],
     }
     for implication in reading.implications:
+        result["management_candidates"].append({
+            "method": reading.concept,
+            "timeframe": reading.timeframe,
+            "direction": implication.direction,
+            "activated": implication.activated,
+            "strength": implication.strength,
+            "management": (
+                dict(implication.management)
+                if isinstance(implication.management, dict) else {}
+            ),
+            "requires": list(implication.requires),
+            "conflicts_with": list(implication.conflicts_with),
+        })
         if implication.invalidation_price is not None:
             result["invalidation_candidates"].append({
                 "method": reading.concept,
@@ -306,6 +320,7 @@ class StrategyLensReadings:
                     "milestone_candidates": [],
                     "entry_zone_candidates": [],
                     "trail_anchors": [],
+                    "management_candidates": [],
                 }
                 for method, item in selected.items():
                     summaries[method] = {
@@ -317,6 +332,11 @@ class StrategyLensReadings:
                         "unknowns": list(item.unknowns),
                         "facts": _compact_facts(item.facts if isinstance(item.facts, dict) else {}),
                         "implications": [implication.to_dict() for implication in item.implications],
+                    "management": [
+                        dict(implication.management)
+                        if isinstance(implication.management, dict) else {}
+                        for implication in item.implications
+                    ],
                     }
                     method_geometry = _method_geometry(item)
                     for key, values in method_geometry.items():
@@ -440,6 +460,15 @@ class StrategyLensReadings:
                     "objective_candidates": geometry["objective_candidates"],
                     "milestone_candidates": geometry["milestone_candidates"],
                     "trail_anchors": geometry["trail_anchors"],
+                    "management_candidates": geometry["management_candidates"],
+                    "geometry_management_contract": {
+                        "stop_basis": "method-supplied invalidation candidates only; the Brain resolves thesis compatibility and risk",
+                        "target_basis": "method-supplied objectives and milestones only; no synthetic price targets",
+                        "management_basis": "method-supplied management instructions and trail anchors only; no fixed scale-out or trailing constants",
+                        "style_key": lens_key,
+                        "directional_decision_emitted": False,
+                        "execution_authority": False,
+                    },
                     "known_failure_modes": [lens.limitation],
                     "data_requirements": list(lens.data_requirements),
                     "data_gated_reason": data_gate,
