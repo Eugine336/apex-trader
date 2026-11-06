@@ -67,6 +67,9 @@ class HindcastReport:
     decision_faults: int = 0
     concept_readings: int = 0
     concept_reader_faults: int = 0
+    concept_implications_seen: int = 0
+    concept_implications_unlabelable: int = 0
+    concept_implications_not_activated: int = 0
     concept_outcomes: list[dict[str, Any]] = field(default_factory=list)
     brain_calibration_pairs: list[tuple[float, bool]] = field(default_factory=list)
     skipped_brain_candidates: int = 0
@@ -95,6 +98,9 @@ class HindcastReport:
             "decision_faults": self.decision_faults,
             "concept_readings": self.concept_readings,
             "concept_reader_faults": self.concept_reader_faults,
+            "concept_implications_seen": self.concept_implications_seen,
+            "concept_implications_unlabelable": self.concept_implications_unlabelable,
+            "concept_implications_not_activated": self.concept_implications_not_activated,
             "concept_outcomes": list(self.concept_outcomes),
             "concept_summary": dict(self.concept_summary),
             "brain_calibration_pairs": [
@@ -440,18 +446,24 @@ def run_hindcast(
             visible_for_reading = visible_bars.get(reading.timeframe, [])
             if not future or not visible_for_reading:
                 continue
-            reference_price = _finite(reading.reference_close)
+            reference_price = _finite(visible_for_reading[-1].get("close"))
             if reference_price is None:
-                reference_price = _finite(visible_for_reading[-1].get("close"))
+                reference_price = _finite(reading.reference_close)
             if reference_price is None:
                 continue
             for implication in reading.implications:
+                report.concept_implications_seen += 1
                 direction = str(implication.direction or "").upper()
-                if direction not in {"LONG", "SHORT"} or not implication.activated:
+                if direction not in {"LONG", "SHORT"}:
+                    report.concept_implications_unlabelable += 1
+                    continue
+                if not implication.activated:
+                    report.concept_implications_not_activated += 1
                     continue
                 objective = _finite(implication.objective_price)
                 invalidation = _finite(implication.invalidation_price)
                 if objective is None or invalidation is None:
+                    report.concept_implications_unlabelable += 1
                     continue
                 key = (
                     reading.concept, reading.timeframe, source_epoch,
@@ -476,6 +488,10 @@ def run_hindcast(
                     "market_state": state_tag,
                     "decision_epoch": cutoff,
                     "source_bar_epoch": source_epoch,
+                    "independence_group": reading.independence_group or (
+                        f"ohlc:{dataset.symbol}:{reading.timeframe}"
+                        if reading.data_basis in {"", "completed_ohlc"} else ""
+                    ),
                     "objective_price": objective,
                     "invalidation_price": invalidation,
                     "reasoning_strength": _finite(implication.strength),
@@ -535,6 +551,8 @@ def run_hindcast(
             report.brain_calibration_pairs.append((confidence, False))
         elif outcome == "AMBIGUOUS_SAME_BAR":
             report.ambiguous_brain_candidates += 1
+        elif outcome == "INVALID_GEOMETRY":
+            report.skipped_brain_candidates += 1
         else:
             report.unresolved_brain_candidates += 1
 
