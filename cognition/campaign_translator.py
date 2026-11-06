@@ -11,6 +11,7 @@ Pure standard library, fully offline-testable.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 from dataclasses import dataclass, field
@@ -123,6 +124,7 @@ def derive_protective_levels(
             try:
                 tv = float(t)
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in cognition/campaign_translator.py:125", exc_info=True)
                 continue
             if is_long and tv >= price + min_ahead:
                 tp = tv
