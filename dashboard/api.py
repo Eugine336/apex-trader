@@ -184,6 +184,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     def trade_history():
         return _state.get_trade_history()
 
+    @app.get("/api/instruments")
+    def instruments():
+        """Broker-native MT5 symbol catalogue and eligibility metadata."""
+        return _state.get_mt5_instruments()
+
     @app.get("/api/scanner")
     def scanner():
         return _state.get_scanner_results()
