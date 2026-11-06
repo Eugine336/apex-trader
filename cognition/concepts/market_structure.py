@@ -83,7 +83,7 @@ _ROLLING_SWING_CACHE: OrderedDict[
 _ROLLING_SWING_CACHE_LOCK = threading.RLock()
 _ROLLING_SWING_CACHE_MAX_ENTRIES = 256
 _ROLLING_SWING_STATS = {
-    "exact_hits": 0, "incremental_updates": 0, "full_rebuilds": 0,
+    "exact_hits": 0, "prefix_hits": 0, "incremental_updates": 0, "full_rebuilds": 0,
 }
 
 
@@ -156,6 +156,20 @@ def fractal_swings(
                 _ROLLING_SWING_CACHE.move_to_end(key)
                 _ROLLING_SWING_STATS["exact_hits"] += 1
                 return list(previous_pivots)
+            if (
+                len(values) + 1 == len(previous_values)
+                and values == previous_values[:-1]
+            ):
+                # A downstream concept may need the same history without the
+                # latest bar (pool-before-sweep semantics). Return that prefix
+                # view without replacing the full-series state used next cycle.
+                prefix_pivots = tuple(
+                    swing for swing in previous_pivots
+                    if swing[0] < len(values) - 1
+                )
+                _ROLLING_SWING_CACHE.move_to_end(key)
+                _ROLLING_SWING_STATS["prefix_hits"] += 1
+                return list(prefix_pivots)
             if len(values) == len(previous_values) + 1 and values[:-1] == previous_values:
                 pivots = _append_confirmed_pivot(values, previous_pivots)
                 _ROLLING_SWING_STATS["incremental_updates"] += 1
@@ -250,7 +264,7 @@ class MarketStructure:
             bars = _clean(raw)
             if len(bars) < 8:
                 continue
-            internal = fractal_swings(bars, cache_key=f"market-structure:{symbol}:{tf}")
+            internal = fractal_swings(bars, cache_key=f"market-swings:{symbol}:{tf}")
             ext = external_swings(internal)
             state, levels = trend_state(ext)
             order = "external"
