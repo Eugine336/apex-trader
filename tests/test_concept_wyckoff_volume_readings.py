@@ -62,7 +62,7 @@ def test_wyckoff_volume_reader_is_registered_and_claims_only_its_three_methods()
     modules = [module for module in CONCEPT_MODULES if module.key == "wyckoff_volume_readings"]
     assert len(modules) == 1
     assert set(modules[0].covers_methods) == {
-        "wyckoff", "wyckoff_effort_result", "volume_indicators",
+        "wyckoff_effort_result", "volume_indicators",
     }
     assert modules[0].covers_lenses == ()
 
@@ -102,6 +102,8 @@ def test_wyckoff_reader_keeps_accumulation_and_distribution_as_competing_hypothe
     facts = reading.facts
 
     assert reading.applicable is True
+    assert facts["coverage_status"] == "PARTIAL"
+    assert "complete primary/secondary cause and test sequence" in facts["unimplemented_wyckoff_components"]
     assert "accumulation_or_markup" in facts["competing_interpretations"]
     assert "distribution_or_markdown" in facts["competing_interpretations"]
     assert facts["phase_not_overclaimed"] is True

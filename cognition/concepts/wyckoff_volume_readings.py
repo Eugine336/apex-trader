@@ -266,6 +266,11 @@ def _effort_result_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any], li
         ],
         "directional_decision_emitted": False,
         "entry_authorization_emitted": False,
+        "reading_scope": "latest_completed_bar_effort_result",
+        "interpretation_invalidation": [
+            "a later completed close beyond the current bar's high/low changes the limited-result observation into follow-through",
+            "source volume semantics or timestamp attestation fail validation",
+        ],
     }
     if facts["volume_basis"] in {"tick_volume_proxy", "mixed_volume_sources"}:
         unknowns.append("tick volume is an activity proxy, not centralized executed volume or aggressor flow")
@@ -345,6 +350,10 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
             "accumulation_distribution": "close-location weighted cumulative bar volume; not exchange order flow",
         },
         "no_directional_signal": True,
+        "divergence_invalidation_conditions": [
+            "a later confirmed price and indicator swing jointly establish a new extreme in the direction that resolves the divergence",
+            "the comparison pivots are superseded by newer confirmed swings",
+        ],
         "directional_decision_emitted": False,
         "entry_authorization_emitted": False,
     }
@@ -454,6 +463,13 @@ def _wyckoff_facts(bars: list[dict[str, Any]], effort: dict[str, Any]) -> tuple[
             },
         },
         "interpretation_state": interpretation,
+        "coverage_status": "PARTIAL",
+        "unimplemented_wyckoff_components": [
+            "complete primary/secondary cause and test sequence",
+            "confirmed selling climax or buying climax and automatic rally or reaction sequence",
+            "secondary tests and last-point-of-support or last-point-of-supply sequence",
+            "campaign-level phase transitions with point-of-control migration",
+        ],
         "phase_not_overclaimed": True,
         "volume_is_not_aggressor_flow": True,
         "directional_decision_emitted": False,
@@ -473,7 +489,7 @@ def _wyckoff_facts(bars: list[dict[str, Any]], effort: dict[str, Any]) -> tuple[
 class WyckoffVolumeReadings:
     key = "wyckoff_volume_readings"
     family = "auction_volume"
-    covers_methods = ("wyckoff_effort_result", "wyckoff", "volume_indicators")
+    covers_methods = ("wyckoff_effort_result", "volume_indicators")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -544,8 +560,8 @@ class WyckoffVolumeReadings:
                     if wyckoff_applicable else "The preceding range and event sequence do not have sufficient completed-bar history."
                 ),
                 observation=(
-                    f"{symbol} {timeframe}: Wyckoff auction interpretation is {wyckoff['interpretation_state']}; "
-                    "the Brain must compare both accumulation and distribution hypotheses."
+                    f"{symbol} {timeframe}: partial Wyckoff auction observations are {wyckoff['interpretation_state']}; "
+                    "the full Wyckoff campaign phase is not established, and the Brain must compare both accumulation and distribution hypotheses."
                 ),
                 implications=(),
                 facts=wyckoff,
