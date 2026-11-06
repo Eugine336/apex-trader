@@ -245,6 +245,10 @@ def test_concept_and_brain_labels_use_objective_before_invalidation():
         "uncalibrated_reasoning_strength_not_probability"
     )
     assert report.brain_calibration_pairs == [(0.7, True)]
+    coverage = report.concept_coverage["test_structure|M1"]
+    assert coverage["readings"] == 3
+    assert coverage["applicable"] == 3
+    assert coverage["source_time_verified"] == 3
 
 
 def test_same_bar_objective_and_invalidation_is_ambiguous_not_a_win():
