@@ -103,7 +103,7 @@ FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 | Failed breakout / trap | `failed_breakout` | FULL |
 | Gaps / opening-range behaviour | `gap_opening_range` | DATA-GATED — authoritative venue session calendar with per-bar session identifiers |
 | ICT / Smart Money Concepts | `ict_smc` | FULL |
-| Intermarket / relative strength | `cross_asset` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Intermarket / relative strength | `cross_asset` | DATA-GATED — synchronized multi-symbol bars with verified common-cutoff timestamps |
 | Macro / event-driven | `event_macro` | DATA-GATED — timestamped economic calendar with actual/forecast/previous and macro series |
 | Market profile / auction theory | `auction_market_profile` | DATA-GATED — trade-level volume-at-price for exact auction nodes |
 | Mean reversion | `mean_reversion` | FULL |
@@ -117,7 +117,7 @@ FULL 21 · DATA-GATED 17 · MEASURED 0 · UNMEASURED 0
 | Range breakout / expansion | `breakout` | FULL |
 | Range trading / market auction | `range_auction` | DATA-GATED — verified session boundaries and source-verified traded-volume provenance for VWAP |
 | Regime transition / change-point | `market_regime_transition` | FULL |
-| Relative value / pair relationships | `relative_value` | DATA-GATED — required source inputs are explicitly unavailable until connected |
+| Relative value / pair relationships | `relative_value` | DATA-GATED — synchronized multi-symbol histories and stable relationship samples |
 | Retracement / measured-move geometry | `fibonacci_geometry` | FULL |
 | Risk of ruin / capital survival | `risk_of_ruin` | DATA-GATED — broker-truth portfolio exposure and validated trade-outcome distributions |
 | Seasonality / cycle hypotheses | `seasonality_cycles` | FULL |
