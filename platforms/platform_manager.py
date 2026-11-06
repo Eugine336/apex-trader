@@ -1023,6 +1023,27 @@ class PlatformManager:
 
     # ── Market data ──────────────────────────────────────────────────────
 
+    def fetch_market_data_range(
+        self,
+        symbol: str,
+        timeframes: list[str],
+        from_dt: datetime,
+        to_dt: datetime,
+        *,
+        include_forming: bool = False,
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch historical MT5 bar ranges for replay and hindcast consumers."""
+        connector = self.get_connector(symbol)
+        fetch = getattr(connector, "get_ohlcv_range", None)
+        if not callable(fetch):
+            raise NotImplementedError(f"Historical range retrieval is unavailable for {symbol}")
+        return {
+            timeframe: fetch(
+                symbol, timeframe, from_dt, to_dt, include_forming=include_forming,
+            )
+            for timeframe in timeframes
+        }
+
     def fetch_market_data(
         self,
         symbol: str,
