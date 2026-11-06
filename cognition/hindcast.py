@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from backtest.data import HistoricalDataLoader
-from cognition.concepts import CONCEPT_MODULES, read_concept_readings
+from cognition.concepts import read_concept_readings
 from cognition.concepts.base import ConceptModule, ConceptReading, reading_to_evidence
 from cognition.contracts import MarketState
 from cognition.influence import CalibrationTracker
@@ -476,6 +476,9 @@ def run_hindcast(
             })
 
         market = MarketState(symbol=dataset.symbol, created_epoch=cutoff)
+        market.created_iso = datetime.fromtimestamp(
+            cutoff, tz=timezone.utc,
+        ).isoformat()
         for reading in readings:
             market.add(reading_to_evidence(dataset.symbol, reading))
         try:
