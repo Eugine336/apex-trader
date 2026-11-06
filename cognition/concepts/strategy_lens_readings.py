@@ -88,25 +88,16 @@ if set(DATA_GATED_LENSES) & set(FULL_LENSES):
     raise RuntimeError("A strategy lens cannot be both FULL and DATA-GATED")
 
 
-def _verified_reading_epochs(reading: ConceptReading) -> tuple[float, ...]:
+def _verified_bar_epoch(reading: ConceptReading) -> float | None:
+    """Return only the verified completed-bar epoch used for replay ordering.
+
+    Provider observation time is a separate clock. It must never be compared
+    directly with a candle epoch or silently substituted for the bar timestamp.
+    """
     if reading.source_timestamp_verified is not True:
-        return ()
-    epochs = {
-        epoch for epoch in (
-            finite(reading.source_timestamp_epoch),
-            finite(reading.source_bar_epoch),
-        )
-        if epoch is not None and epoch > 0.0
-    }
-    return tuple(sorted(epochs))
-
-
-def _verified_reading_epoch(reading: ConceptReading) -> float | None:
-    epochs = _verified_reading_epochs(reading)
-    if not epochs:
         return None
-    provider_epoch = finite(reading.source_timestamp_epoch)
-    return provider_epoch if provider_epoch in epochs else epochs[0]
+    epoch = finite(reading.source_bar_epoch)
+    return epoch if epoch is not None and epoch > 0.0 else None
 
 
 def _compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
@@ -249,19 +240,20 @@ class StrategyLensReadings:
                 eligible_candidates = [
                     item for item in candidates
                     if cutoff_epoch is not None
-                    and (epochs := _verified_reading_epochs(item))
-                    and all(epoch <= cutoff_epoch for epoch in epochs)
+                    and (bar_epoch := _verified_bar_epoch(item)) is not None
+                    and bar_epoch <= cutoff_epoch
                 ]
                 eligible_concepts = {item.concept for item in eligible_candidates}
                 unverified_methods = sorted({
                     item.concept for item in candidates
-                    if not _verified_reading_epochs(item)
+                    if _verified_bar_epoch(item) is None
                     and item.concept not in eligible_concepts
                 })
                 future_methods = sorted({
                     item.concept for item in candidates
                     if cutoff_epoch is not None
-                    and any(epoch > cutoff_epoch for epoch in _verified_reading_epochs(item))
+                    and (bar_epoch := _verified_bar_epoch(item)) is not None
+                    and bar_epoch > cutoff_epoch
                     and item.concept not in eligible_concepts
                 })
                 selected: dict[str, ConceptReading] = {}
@@ -334,34 +326,26 @@ class StrategyLensReadings:
                 # A completed-bar epoch is trusted only when each method reading
                 # explicitly verifies its source timestamp. Never promote a merely
                 # present timestamp into verified provenance.
-                source_epochs = [
+                provider_epochs = [
                     (
-                        _verified_reading_epoch(item)
-                    )
-                    for item in selected.values()
-                ]
-                epochs = {
-                    value for value in source_epochs if value is not None
-                }
-                source_timestamp_epoch = (
-                    next(iter(epochs))
-                    if selected and all_methods_available
-                    and len(selected) == len(required_methods)
-                    and len(epochs) == 1 and all(
-                        value is not None for value in source_epochs
-                    )
-                    else None
-                )
-                bar_epochs = [
-                    (
-                        finite(item.source_bar_epoch)
+                        finite(item.source_timestamp_epoch)
                         if item.source_timestamp_verified is True
-                        and finite(item.source_bar_epoch) is not None
-                        and finite(item.source_bar_epoch) > 0.0
+                        and finite(item.source_timestamp_epoch) is not None
+                        and finite(item.source_timestamp_epoch) > 0.0
                         else None
                     )
                     for item in selected.values()
                 ]
+                provider_epoch_values = {
+                    value for value in provider_epochs if value is not None
+                }
+                source_timestamp_epoch = (
+                    next(iter(provider_epoch_values))
+                    if selected and len(provider_epoch_values) == 1
+                    and all(value is not None for value in provider_epochs)
+                    else None
+                )
+                bar_epochs = [_verified_bar_epoch(item) for item in selected.values()]
                 bar_epoch_values = {value for value in bar_epochs if value is not None}
                 source_bar_epoch = (
                     next(iter(bar_epoch_values))
@@ -489,7 +473,7 @@ class StrategyLensReadings:
                     facts=facts,
                     source_bar_epoch=source_bar_epoch,
                     source_timestamp_epoch=source_timestamp_epoch,
-                    source_timestamp_verified=source_timestamp_epoch is not None,
+                    source_timestamp_verified=source_bar_epoch is not None,
                     reference_close=reference_close,
                     reference_timeframe=reference_timeframe,
                     unknowns=tuple(dict.fromkeys(unknowns)),

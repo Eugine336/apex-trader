@@ -426,6 +426,54 @@ def test_lens_geometry_preserves_mirror_symmetric_method_levels_without_directio
     assert mirrored.facts["entry_authorization_emitted"] is False
 
 
+
+def test_provider_timestamp_is_not_substituted_for_completed_bar_replay_epoch():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="source bar is within replay cutoff",
+            observation="provider observation time is separate",
+            implications=(),
+            facts={},
+            source_bar_epoch=cutoff,
+            source_timestamp_epoch=cutoff + 120.0,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="same completed bar",
+            observation="same replay bar",
+            implications=(),
+            facts={},
+            source_bar_epoch=cutoff,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    lens = next(
+        item for item in StrategyLensReadings().read_with_context(
+            "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+        )
+        if item.concept == "pattern_discovery"
+    )
+    assert lens.facts["future_dated_method_readings"] == []
+    assert lens.facts["missing_methods"] == []
+    assert lens.source_bar_epoch == cutoff
+    # Different provider clocks are not collapsed into one invented timestamp.
+    assert lens.source_timestamp_epoch is None
+    assert lens.source_timestamp_verified is True
+
+
 def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     cutoff = _bars()[-1]["timestamp_epoch"]
     methods = [
@@ -438,7 +486,7 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
             observation="future novelty evidence",
             implications=(),
             facts={"novelty_own_history_percentile": 0.99},
-            source_bar_epoch=cutoff,
+            source_bar_epoch=cutoff + 300.0,
             source_timestamp_epoch=cutoff + 300.0,
             source_timestamp_verified=True,
             data_basis="completed_ohlc",
