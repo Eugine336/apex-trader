@@ -2651,6 +2651,24 @@ class CognitionLoop:
                     )
                     return
                 self._manage_submitted += 1
+                if action.kind == "partial_close" and action.milestone_id and self._memory is not None:
+                    size_before = next((
+                        getattr(position, name, None)
+                        for name in ("lots", "size", "volume")
+                        if getattr(position, name, None) is not None
+                    ), None)
+                    try:
+                        size_before = float(size_before)
+                    except (TypeError, ValueError, OverflowError):
+                        size_before = 0.0
+                    recorder = getattr(self._memory, "record_milestone_pending", None)
+                    if size_before > 0.0 and callable(recorder):
+                        recorder(
+                            action.campaign_id,
+                            action.milestone_id,
+                            size_before=size_before,
+                            fraction=action.fraction,
+                        )
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
                     action.symbol, action.kind, action.direction, action.confidence,
