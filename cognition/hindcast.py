@@ -122,7 +122,7 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
     Manifest schema:
       symbol, source_reference, attestation_basis,
       source_timestamp_verified=true, timestamp_semantics=(bar_open|bar_close),
-      timeframes={TF: {file, sha256}}.
+      timestamp_timezone=UTC, timeframes={TF: {file, sha256}}.
 
     The manifest's source attestation is a caller declaration, not an independent
     authentication of the data vendor. File hashes make the declared dataset
@@ -141,10 +141,13 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
     source_reference = str(manifest.get("source_reference", "") or "").strip()
     attestation_basis = str(manifest.get("attestation_basis", "") or "").strip()
     semantics = str(manifest.get("timestamp_semantics", "") or "").strip().lower()
+    timestamp_timezone = str(manifest.get("timestamp_timezone", "") or "").strip().upper()
     if not symbol or not source_reference or not attestation_basis:
         raise HindcastDataError("symbol, source_reference and attestation_basis are required")
     if semantics not in {"bar_open", "bar_close"}:
         raise HindcastDataError("timestamp_semantics must be bar_open or bar_close")
+    if timestamp_timezone != "UTC":
+        raise HindcastDataError("timestamp_timezone must be explicitly declared as UTC")
     if manifest.get("source_timestamp_verified") is not True:
         raise HindcastDataError(
             "hindcast training requires explicit source_timestamp_verified=true"
@@ -203,6 +206,7 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
         "source_reference": source_reference,
         "attestation_basis": attestation_basis,
         "timestamp_semantics": semantics,
+        "timestamp_timezone": timestamp_timezone,
         "files": digest_rows,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return HindcastDataset(
