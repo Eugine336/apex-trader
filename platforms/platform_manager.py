@@ -752,6 +752,36 @@ class PlatformManager:
             raise NotImplementedError(f"Broker margin calculation is unavailable for {symbol}")
         return float(calculate(symbol, direction, volume, price))
 
+    def get_mt5_position_snapshots(self) -> list[dict]:
+        """Return raw open-position records from each connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.extend({
+                    **row,
+                    "connector_index": index,
+                } for row in connector.get_position_snapshots())
+            except Exception as exc:
+                _pm_logger.warning("[positions] MT5 raw position snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
+    def get_mt5_pending_order_snapshots(self) -> list[dict]:
+        """Return raw pending-order records from each connected MT5 account."""
+        snapshots: list[dict] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots.extend({
+                    **row,
+                    "connector_index": index,
+                } for row in connector.get_pending_order_snapshots())
+            except Exception as exc:
+                _pm_logger.warning("[orders] MT5 raw pending-order snapshot failed for connector {}: {}", index, exc)
+        return snapshots
+
     def get_mt5_account_snapshots(self) -> list[dict]:
         """Return verified account snapshots from every connected MT5 account."""
         snapshots: list[dict] = []
