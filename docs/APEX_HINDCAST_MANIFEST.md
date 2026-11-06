@@ -70,7 +70,8 @@ The runner:
   and invalidation prices, starting strictly after the decision cutoff;
 - treats a same-bar objective/invalidation double touch as ambiguous;
 - scores Brain confidence only when an actionable market-order opportunity has
-  explicit stop/target geometry and one level resolves first;
+  explicit stop/target geometry, its geometry evidence IDs resolve to evidence
+  visible at that cutoff, and one level resolves first;
 - selects non-overlapping Brain outcome windows by decision time, independent
   of their eventual labels;
 - records unlabelable readings, module faults, unresolved outcomes and ambiguous
