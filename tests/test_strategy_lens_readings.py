@@ -307,6 +307,55 @@ def test_unsynchronized_method_composition_is_watch_not_relevant():
 
 
 
+
+def test_lens_composition_excludes_future_dated_method_readings_from_replay():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="future reading must be excluded",
+            observation="future novelty evidence",
+            implications=(),
+            facts={"novelty_own_history_percentile": 0.99},
+            source_bar_epoch=cutoff + 300.0,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="historical analogue available at cutoff",
+            observation="historical analogue evidence",
+            implications=(),
+            facts={"historical_state_sample_count": 80},
+            source_bar_epoch=cutoff,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+
+    assert lens.facts["missing_methods"] == ["anomaly_detection"]
+    assert lens.facts["method_implications"]["anomaly_detection"] == []
+    assert "anomaly_detection" in lens.facts["future_dated_method_readings"]
+    assert lens.source_bar_epoch is None
+    assert lens.independence_group == ""
+    assert any(
+        "future-dated method readings excluded" in item
+        for item in lens.unknowns
+    )
+
+
 def test_measured_regime_challenges_style_without_vetoing_native_lens():
     reading = ConceptReading(
         concept="trend_following",

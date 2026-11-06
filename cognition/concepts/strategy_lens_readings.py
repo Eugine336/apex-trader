@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cognition.concepts.auction_utils import clean_bars
+from cognition.concepts.auction_utils import clean_bars, last_source_epoch
 from cognition.concepts.base import TIMEFRAME_SECONDS, ConceptReading, finite
 from cognition.contracts import EvidenceDomain
 from cognition.strategy_knowledge import STRATEGY_LENSES
@@ -203,22 +203,60 @@ class StrategyLensReadings:
                 method for methods in LENS_METHODS.values() for method in methods
             }
         ]
+        cleaned_by_timeframe = {
+            timeframe: clean_bars(raw)
+            for timeframe, raw in (bars_by_tf or {}).items()
+            if timeframe in TIMEFRAME_SECONDS
+        }
         timeframes = [
-            timeframe for timeframe, raw in (bars_by_tf or {}).items()
-            if timeframe in TIMEFRAME_SECONDS and clean_bars(raw)
+            timeframe for timeframe, bars in cleaned_by_timeframe.items() if bars
         ]
         catalog = {lens.key: lens for lens in STRATEGY_LENSES}
         results: list[ConceptReading] = []
 
         for timeframe in timeframes:
+            bars = cleaned_by_timeframe[timeframe]
+            cutoff_epoch = last_source_epoch(bars)
             for lens_key, required_methods in LENS_METHODS.items():
                 candidates = [
                     item for item in method_readings
                     if item.timeframe == timeframe and item.concept in required_methods
                 ]
+                # Historical composition is bounded by the latest verified
+                # completed bar supplied for this timeframe. Unverified or
+                # future-dated method readings cannot enter the replay snapshot.
+                unverified_methods = sorted({
+                    item.concept for item in candidates
+                    if item.source_timestamp_verified is not True
+                    or (
+                        finite(item.source_timestamp_epoch)
+                        if finite(item.source_timestamp_epoch) is not None
+                        else finite(item.source_bar_epoch)
+                    ) is None
+                })
+                future_methods = sorted({
+                    item.concept for item in candidates
+                    if (
+                        finite(item.source_timestamp_epoch)
+                        if finite(item.source_timestamp_epoch) is not None
+                        else finite(item.source_bar_epoch)
+                    ) is not None
+                    and cutoff_epoch is not None
+                    and (
+                        finite(item.source_timestamp_epoch)
+                        if finite(item.source_timestamp_epoch) is not None
+                        else finite(item.source_bar_epoch)
+                    ) > cutoff_epoch
+                })
+                eligible_candidates = [
+                    item for item in candidates
+                    if item.concept not in unverified_methods
+                    and item.concept not in future_methods
+                    and cutoff_epoch is not None
+                ]
                 selected: dict[str, ConceptReading] = {}
                 for method in required_methods:
-                    rows = [item for item in candidates if item.concept == method]
+                    rows = [item for item in eligible_candidates if item.concept == method]
                     if rows:
                         selected[method] = max(
                             rows, key=lambda item: finite(item.source_bar_epoch) or 0.0,
@@ -229,6 +267,20 @@ class StrategyLensReadings:
                 all_methods_available = not missing
                 all_methods_applicable = all_methods_available and len(applicable) == len(required_methods)
                 unknowns: list[str] = []
+                if cutoff_epoch is None:
+                    unknowns.append(
+                        "no source-verified completed-bar cutoff is available; historical lens composition is not evaluable"
+                    )
+                if unverified_methods:
+                    unknowns.append(
+                        "method readings excluded because source timestamps are unverified: "
+                        + ", ".join(unverified_methods)
+                    )
+                if future_methods:
+                    unknowns.append(
+                        "future-dated method readings excluded beyond the completed-bar replay cutoff: "
+                        + ", ".join(future_methods)
+                    )
                 if missing:
                     unknowns.append(
                         "underlying method readings unavailable: " + ", ".join(missing)
@@ -347,6 +399,9 @@ class StrategyLensReadings:
                     "required_methods": list(required_methods),
                     "available_methods": sorted(selected),
                     "missing_methods": missing,
+                    "unverified_method_readings": unverified_methods,
+                    "future_dated_method_readings": future_methods,
+                    "as_of_source_epoch": cutoff_epoch,
                     "missing_methods_semantics": (
                         "No ConceptReading was emitted for this method on this symbol/timeframe in this cycle; "
                         "this can mean the method's event condition was absent, history was insufficient, or its input was unavailable. "
