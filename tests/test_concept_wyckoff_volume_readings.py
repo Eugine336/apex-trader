@@ -62,7 +62,7 @@ def test_wyckoff_volume_reader_is_registered_and_claims_only_its_three_methods()
     modules = [module for module in CONCEPT_MODULES if module.key == "wyckoff_volume_readings"]
     assert len(modules) == 1
     assert set(modules[0].covers_methods) == {
-        "wyckoff_effort_result", "volume_indicators",
+        "wyckoff", "wyckoff_effort_result", "volume_indicators",
     }
     assert modules[0].covers_lenses == ()
 
@@ -75,11 +75,16 @@ def test_effort_result_compares_effort_with_price_result_and_does_not_claim_abso
     assert reading.applicable is True
     assert facts["volume_percentile_vs_prior_observations"] is not None
     assert facts["range_percentile_vs_prior_observations"] is not None
-    assert facts["effort_result_state"] == "high_effort_limited_price_result"
+    assert facts["effort_result_state"] in {
+        "volume_effort_rank_exceeds_range_result",
+        "range_result_rank_exceeds_volume_effort",
+        "effort_result_ranks_aligned",
+    }
     assert facts["absorption_is_confirmed"] is False
     assert facts["tick_volume_is_trade_aggressor_volume"] is False
     assert facts["directional_decision_emitted"] is False
-    assert reading.implications == ()
+    assert {item.direction for item in reading.implications} == {"LONG", "SHORT", "FLAT"}
+    assert all(item.requires for item in reading.implications)
 
 
 def test_volume_indicators_report_core_values_and_confirmed_price_indicator_divergence():
@@ -94,7 +99,8 @@ def test_volume_indicators_report_core_values_and_confirmed_price_indicator_dive
     assert facts["volume_rate_of_change_10"] is not None
     assert facts["confirmed_price_indicator_divergence"]["obv"]["lookahead"] is False
     assert facts["directional_decision_emitted"] is False
-    assert reading.implications == ()
+    assert {item.direction for item in reading.implications} == {"LONG", "SHORT", "FLAT"}
+    assert all(item.requires for item in reading.implications)
 
 
 def test_wyckoff_reader_keeps_accumulation_and_distribution_as_competing_hypotheses():
@@ -102,13 +108,15 @@ def test_wyckoff_reader_keeps_accumulation_and_distribution_as_competing_hypothe
     facts = reading.facts
 
     assert reading.applicable is True
-    assert facts["coverage_status"] == "PARTIAL"
-    assert "complete primary/secondary cause and test sequence" in facts["unimplemented_wyckoff_components"]
+    assert facts["phase"] in {"unresolved", "competing"} or facts["phase"].endswith(("_A", "_B", "_C", "_D", "_E"))
+    assert facts["phase_sequence_completeness"] is not None
+    assert facts["phase_confidence_semantics"].endswith("not a calibrated probability")
     assert "accumulation_or_markup" in facts["competing_interpretations"]
     assert "distribution_or_markdown" in facts["competing_interpretations"]
     assert facts["phase_not_overclaimed"] is True
     assert facts["directional_decision_emitted"] is False
-    assert reading.implications == ()
+    assert {item.direction for item in reading.implications} == {"LONG", "SHORT", "FLAT"}
+    assert all(item.invalidation_reason for item in reading.implications)
 
 
 def test_wyckoff_interpretation_is_symmetric_under_price_reflection():
@@ -198,6 +206,42 @@ def test_live_market_lens_preserves_tick_and_real_volume_as_separate_fields():
         assert item.source_timestamp_verified is True
     for key in ("wyckoff_effort_result", "volume_indicators"):
         assert selected[key].measurements["facts"]["volume_basis"] == "tick_volume_proxy"
-    assert selected["wyckoff"].measurements["facts"]["coverage_status"] == "PARTIAL"
+    assert selected["wyckoff"].measurements["facts"]["phase_not_overclaimed"] is True
+    assert {item["direction"] for item in selected["wyckoff"].measurements["implications"]} == {"LONG", "SHORT", "FLAT"}
     facts = selected["volume_indicators"].measurements["facts"]
     assert facts["real_volume"]["complete_for_recent_window"] is False
+
+
+
+def test_wyckoff_phase_reader_keeps_accumulation_and_distribution_mirrored():
+    bars = _bars(100)
+    prior_low = min(item["low"] for item in bars[-40:])
+    candidate = dict(bars[-1])
+    candidate["low"] = prior_low - 1.0
+    candidate["open"] = prior_low - 0.2
+    candidate["close"] = prior_low + 0.2
+    candidate["high"] = prior_low + 0.7
+    candidate["volume"] = max(item["volume"] for item in bars[-20:]) + 1.0
+    candidate["timestamp_epoch"] += 300
+    original = _readings(bars + [candidate])["wyckoff"]
+    reflected = _readings(_reflect(bars + [candidate]))["wyckoff"]
+    assert {item.direction for item in original.implications} == {"LONG", "SHORT", "FLAT"}
+    assert {item.direction for item in reflected.implications} == {"LONG", "SHORT", "FLAT"}
+    assert original.facts["current_auction_events"]["spring_candidate"] == reflected.facts["current_auction_events"]["upthrust_candidate"]
+
+
+def test_wyckoff_full_readings_have_only_real_levels_and_explicit_requirements():
+    for reading in _readings(_bars()).values():
+        assert reading.implications
+        for item in reading.implications:
+            assert item.direction in {"LONG", "SHORT", "FLAT"}
+            assert item.invalidation_price is None or math.isfinite(item.invalidation_price)
+            assert item.objective_price is None or math.isfinite(item.objective_price)
+            assert item.requires
+            assert item.management
+
+
+def test_wyckoff_methods_never_emit_decision_or_execution_authority():
+    for reading in _readings(_bars()).values():
+        assert reading.facts["directional_decision_emitted"] is False
+        assert reading.facts["entry_authorization_emitted"] is False
