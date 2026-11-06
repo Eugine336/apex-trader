@@ -567,7 +567,6 @@ class CognitionLoop:
         management_mode: str = "shadow",
         event_driven: bool = False,
         event_min_interval_seconds: float = 8.0,
-        event_confidence_delta: float = 0.15,
         clock: Optional[Callable[[], float]] = None,
         campaign_registry: Optional[Any] = None,
         reallocation_enabled: bool = False,
@@ -623,7 +622,6 @@ class CognitionLoop:
         # periodic cycle remains a backstop. Off by default (pure interval).
         self.event_driven = bool(event_driven)
         self.event_min_interval_seconds = max(0.0, float(event_min_interval_seconds))
-        self.event_confidence_delta = max(0.0, float(event_confidence_delta))
         self._clock = clock or _time.monotonic
         self._wake = threading.Event()
         self._pending: set = set()
@@ -2055,18 +2053,9 @@ class CognitionLoop:
             sym = str(symbol or "")
             if not sym:
                 return False
-            try:
-                m = None if change_magnitude is None else float(change_magnitude)
-            except (TypeError, ValueError):
-                m = None
-            prev = self._event_last_magnitude.get(sym)
-            self._event_last_magnitude[sym] = m
-            if m is None or prev is None:
-                triggered = True
-            else:
-                triggered = abs(m - prev) >= self.event_confidence_delta
-            if not triggered:
-                return False
+            # Magnitude remains in the public signature for older producers,
+            # but never filters analysis. Queue coalescing and the per-symbol
+            # scheduler below bound compute without suppressing evidence changes.
             t = self._clock() if now is None else float(now)
             last = self._event_last_reason_at.get(sym, 0.0)
             if self.event_min_interval_seconds > 0.0 and (t - last) < self.event_min_interval_seconds:
