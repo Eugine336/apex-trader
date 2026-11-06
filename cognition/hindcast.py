@@ -180,6 +180,10 @@ def load_hindcast_dataset(manifest_path: str | Path) -> HindcastDataset:
         if actual_hash != expected_hash:
             raise HindcastDataError(f"{timeframe}: SHA-256 mismatch for {filename}")
         candles = loader.load(source_file, pair=symbol, validate=True)
+        if semantics == "bar_open" and timeframe == "D1":
+            raise HindcastDataError(
+                "D1 bar-open timestamps require explicit bar-close timestamps because session/DST lengths vary"
+            )
         seconds = _TIMEFRAME_SECONDS[timeframe]
         rows = []
         for candle in candles:
