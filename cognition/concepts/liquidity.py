@@ -41,6 +41,32 @@ def _untouched(bars: list[dict], idx: int, kind: str, level: float) -> bool:
     return all((b["high"] <= level) if kind == "H" else (b["low"] >= level) for b in later)
 
 
+def _untouched_flags(
+    bars: list[dict],
+    swings: list[tuple[int, str, float]],
+) -> dict[tuple[int, str, float], bool]:
+    """Resolve all swing-pool untouched states in O(bars + swings), not O(bars*swings)."""
+    count = len(bars)
+    suffix_high = [float("-inf")] * count
+    suffix_low = [float("inf")] * count
+    max_after = float("-inf")
+    min_after = float("inf")
+    for index in range(count - 1, -1, -1):
+        suffix_high[index] = max_after
+        suffix_low[index] = min_after
+        max_after = max(max_after, float(bars[index]["high"]))
+        min_after = min(min_after, float(bars[index]["low"]))
+    flags = {}
+    for index, kind, price in swings:
+        if index < 0 or index >= count:
+            flags[(index, kind, price)] = False
+        elif kind == "H":
+            flags[(index, kind, price)] = suffix_high[index] <= price
+        else:
+            flags[(index, kind, price)] = suffix_low[index] >= price
+    return flags
+
+
 def _equality_percentiles(swings: list[tuple[int, str, float]], kind: str) -> dict[int, float]:
     """For each swing of ``kind``: percentile rank (0..1) of its gap to the nearest
     other swing of the same kind among the instrument's own gaps. Lower = more equal."""
@@ -106,7 +132,9 @@ class LiquidityPools:
     def _inducement_reading(self, symbol, tf, bars, ref_close, ref_tf):
         # A local internal pool is swept while the outer confirmed swing range
         # remains intact. This is a price-action proxy, not proof of intent.
-        swings = fractal_swings(bars[:-1], cache_key=f"market-swings:{symbol}:{tf}")
+        history = bars[:-1]
+        swings = fractal_swings(history, cache_key=f"market-swings:{symbol}:{tf}")
+        untouched = _untouched_flags(history, swings)
         highs = [s for s in swings if s[1] == "H"]
         lows = [s for s in swings if s[1] == "L"]
         if len(highs) < 2 or len(lows) < 2:
@@ -118,7 +146,7 @@ class LiquidityPools:
         for pool in swings:
             # An inducement candidate must still be a resting internal pool
             # immediately before the latest completed bar acts on it.
-            if not _untouched(bars[:-1], pool[0], pool[1], pool[2]):
+            if not untouched.get((pool[0], pool[1], pool[2]), False):
                 continue
             if pool[1] == "H" and pool[0] != external_high[0] and last["high"] > pool[2] and last["close"] < pool[2]:
                 if last["high"] <= external_high[2]:
@@ -167,14 +195,16 @@ class LiquidityPools:
     # ------------------------------------------------------------------
     def _reading(self, symbol, tf, bars, day_week, ref_close, ref_tf):
         last = bars[-1]
+        history = bars[:-1]
         swings = fractal_swings(
-            bars[:-1], cache_key=f"market-swings:{symbol}:{tf}",
+            history, cache_key=f"market-swings:{symbol}:{tf}",
         )  # pools exist before the latest bar acts on them
+        untouched = _untouched_flags(history, swings)
         eq_h = _equality_percentiles(swings, "H")
         eq_l = _equality_percentiles(swings, "L")
         pools: list[dict] = []
         for idx, kind, price in swings:
-            if _untouched(bars[:-1], idx, kind, price):
+            if untouched.get((idx, kind, price), False):
                 pools.append({"kind": kind, "price": price, "source": "swing", "index": idx,
                               "equality_percentile": (eq_h if kind == "H" else eq_l).get(idx)})
         for label, kind, price, since in day_week:
