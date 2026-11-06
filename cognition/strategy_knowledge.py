@@ -330,7 +330,10 @@ _LENS_REGIME_FIT_RULES = {
 def _lens_regime_fit(lens_key: str, regime: dict[str, str]) -> tuple[str, str]:
     rule = _LENS_REGIME_FIT_RULES.get(lens_key)
     if rule is None:
-        return "unknown", ""
+        return (
+            "unknown",
+            "no measured regime field currently establishes compatibility for this style",
+        )
     field, supportive, challenging = rule
     observed = str(regime.get(field, "unknown") or "unknown").lower()
     if observed == "conflicted":
@@ -476,7 +479,11 @@ def assess_strategy_lenses(
             reasons=tuple(reasons),
             missing_context=tuple(dict.fromkeys([
                 *(lens.data_requirements if status != "relevant" else ()),
-                *( [regime_fit_context] if regime_fit == "unknown" and regime_fit_context else [] ),
+                *(
+                    [regime_fit_context]
+                    if regime_fit in {"unknown", "conflicted"} and regime_fit_context
+                    else []
+                ),
                 *lens_missing_methods,
                 *lens_unknowns,
             ])),
