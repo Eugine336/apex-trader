@@ -86,7 +86,7 @@ def test_lens_composition_preserves_method_geometry_and_failure_modes():
     evidence = _lens_evidence()
     trend = next(
         item for item in evidence
-        if item.measurements.get("concept") == "trend_following"
+        if item.measurements.get("lens_key") == "trend_following"
     )
     facts = trend.measurements
 
