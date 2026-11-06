@@ -159,7 +159,12 @@ def test_emitted_full_method_readings_use_the_current_cutoff_and_remain_neutral(
             assert measurements["source_timestamp_epoch"] is None
             assert measurements["source_timestamp_verified"] is False
             continue
-        assert measurements["source_timestamp_known"] is True
+        assert measurements["source_timestamp_known"] is True, (
+            f"unverified candle provenance: concept={measurements.get('concept')}, "
+            f"timeframe={measurements.get('timeframe')}, data_basis={measurements.get('data_basis')}, "
+            f"source_bar_epoch={measurements.get('source_bar_epoch')}, "
+            f"unknowns={measurements.get('unknowns')}"
+        )
         assert measurements["source_bar_epoch"] == cutoff
         assert measurements["source_timestamp_verified"] is True
 
