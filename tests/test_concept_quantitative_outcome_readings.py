@@ -167,11 +167,13 @@ def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
     cutoff = _bars()[-1]["timestamp_epoch"]
     rows = [
         {"trade_id": "duplicate", "symbol": "XAUUSD", "return_r": 1.0,
-         "closed_epoch": cutoff - 300, "source_timestamp_verified": True},
+         "closed_epoch": cutoff - 300, "source_timestamp_epoch": cutoff - 300,
+         "source_timestamp_verified": True},
         {"trade_id": "duplicate", "symbol": "XAUUSD", "return_r": -1.0,
          "closed_epoch": cutoff - 300, "source_timestamp_verified": True},
         {"trade_id": "future", "symbol": "XAUUSD", "return_r": 2.0,
-         "closed_epoch": cutoff + 300, "source_timestamp_verified": True},
+         "closed_epoch": cutoff + 300, "source_timestamp_epoch": cutoff + 300,
+         "source_timestamp_verified": True},
     ]
     item = next(
         reading for reading in _readings({"trade_outcome_samples": rows})

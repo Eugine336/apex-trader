@@ -13,7 +13,7 @@ import random
 from statistics import mean
 from typing import Any
 
-from cognition.concepts.auction_utils import last_source_epoch
+from cognition.concepts.auction_utils import clean_bars, last_source_epoch
 from cognition.concepts.base import TIMEFRAME_SECONDS, ConceptReading, finite, reference_price
 from cognition.contracts import EvidenceDomain
 
@@ -145,7 +145,7 @@ def _valid_outcome_rows(
             or row.get("source_timestamp_verified") is not True
             or decision_epoch is None or outcome_epoch is None or source_epoch is None
             or decision_epoch > outcome_epoch or outcome_epoch > cutoff
-            or source_epoch > cutoff or outcome is None
+            or source_epoch < outcome_epoch or source_epoch > cutoff or outcome is None
         ):
             rejected += 1
             continue
@@ -269,7 +269,8 @@ def _calibration_reading(
                 and forecast_epoch is not None and outcome_epoch is not None
                 and source_epoch is not None
                 and forecast_epoch < outcome_epoch
-                and cutoff is not None and outcome_epoch <= cutoff and source_epoch <= cutoff
+                and cutoff is not None and outcome_epoch <= cutoff
+                and source_epoch >= outcome_epoch and source_epoch <= cutoff
             )
             if not valid:
                 rejected += 1
@@ -278,6 +279,7 @@ def _calibration_reading(
                 "concept": str(row["concept"]).strip().lower(),
                 "probability": probability,
                 "outcome": outcome,
+                "source_timestamp_epoch": source_epoch,
             })
     by_concept: dict[str, dict[str, Any]] = {}
     for concept in sorted({item["concept"] for item in accepted}):
@@ -301,7 +303,10 @@ def _calibration_reading(
         unknowns.append("selection-complete, source-verified concept forecasts with matured holdout outcomes")
     if rejected:
         unknowns.append(f"{rejected} forecast row(s) rejected because holdout, selection or timestamp requirements failed")
-    latest = max((_epoch(row.get("source_timestamp_epoch")) or 0.0 for row in records if isinstance(row, dict)), default=0.0) if isinstance(records, (list, tuple)) else 0.0
+    latest = max(
+        (item["source_timestamp_epoch"] for item in accepted),
+        default=0.0,
+    )
     return ConceptReading(
         concept="calibration", timeframe=timeframe, domain=EvidenceDomain.HISTORICAL_ANALOGUE,
         applicable=bool(by_concept) and cutoff is not None,
@@ -353,18 +358,28 @@ def _monte_carlo_reading(
                 continue
             trade_id = str(row.get("trade_id", "") or "").strip()
             closed_epoch = _epoch(row.get("closed_epoch"))
+            source_epoch = _epoch(row.get("source_timestamp_epoch"))
             value = finite(row.get("return_r"))
             if (
                 not trade_id or trade_id in seen
                 or str(row.get("symbol", "") or "").strip().upper() != symbol
                 or row.get("source_timestamp_verified") is not True
-                or closed_epoch is None or cutoff is None or closed_epoch > cutoff
+                or closed_epoch is None or source_epoch is None
+                or cutoff is None or closed_epoch > cutoff
+                or source_epoch < closed_epoch or source_epoch > cutoff
                 or value is None
             ):
                 rejected += 1
                 continue
             seen.add(trade_id)
             returns.append(value)
+    accepted_source_epochs = [
+        _epoch(row.get("source_timestamp_epoch"))
+        for row in records
+        if isinstance(row, dict)
+        and str(row.get("trade_id", "") or "").strip() in seen
+        and _epoch(row.get("source_timestamp_epoch")) is not None
+    ] if isinstance(records, (list, tuple)) else []
     iterations_raw = finite(context.get("monte_carlo_iterations"))
     iterations = int(iterations_raw) if iterations_raw is not None and iterations_raw >= 100 else 5000
     iterations = min(iterations, 50000)
@@ -427,6 +442,7 @@ def _monte_carlo_reading(
             "data_gated_reason": None if len(returns) >= 2 else DATA_GATED_METHODS["monte_carlo"],
         },
         source_bar_epoch=cutoff,
+        source_timestamp_epoch=max(accepted_source_epochs) if accepted_source_epochs else None,
         source_timestamp_verified=cutoff is not None,
         reference_close=reference, reference_timeframe=reference_tf,
         unknowns=tuple(unknowns),
@@ -453,7 +469,7 @@ class QuantitativeOutcomeReadings:
         for timeframe, raw in (bars_by_tf or {}).items():
             if timeframe not in TIMEFRAME_SECONDS:
                 continue
-            bars = raw if isinstance(raw, list) else []
+            bars = clean_bars(raw)
             if not bars:
                 continue
             readings.extend((
