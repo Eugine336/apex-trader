@@ -53,7 +53,11 @@ def _fast_cfg() -> ExecutorConfig:
     )
 
 
-def _positions(remaining_lots: float, volume_step: float = 0.01) -> dict[str, dict]:
+def _positions(
+    remaining_lots: float,
+    volume_step: float = 0.01,
+    volume_min: float = 0.01,
+) -> dict[str, dict]:
     return {
         "T1": {
             "symbol": "GBPUSD",
@@ -63,6 +67,7 @@ def _positions(remaining_lots: float, volume_step: float = 0.01) -> dict[str, di
             "lots": remaining_lots,
             "remaining_lots": remaining_lots,
             "volume_step": volume_step,
+            "volume_min": volume_min,
         },
     }
 
@@ -131,12 +136,12 @@ class TestExecutorMinLotFallback:
         # The impossible split is never sent to the broker.
         assert broker.close_calls == []
 
-    def test_zero_remaining_returns_success_skip(self):
+    def test_zero_remaining_volume_is_rejected_as_unverified(self):
         broker = _FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
         result = executor.execute(_partial_intent(), _positions(0.0))
-        assert result.success is True
-        assert "min_lot_skip" in (result.error or "")
+        assert result.success is False
+        assert "broker-verified" in (result.error or "")
         assert broker.close_calls == []
 
     def test_success_result_does_not_trigger_rollback(self):
