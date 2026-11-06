@@ -216,6 +216,11 @@ class FlushLoop:
                 "platform": getattr(pos, "platform", ""),
                 "lots": getattr(pos, "lots", 0.0),
                 "remaining_lots": getattr(pos, "remaining_lots", getattr(pos, "lots", 0.0)),
+                "volume_min": getattr(pos, "volume_min", 0.0),
+                "volume_step": getattr(pos, "volume_step", 0.0),
+                "volume_max": getattr(pos, "volume_max", 0.0),
+                "digits": getattr(pos, "digits", 0),
+                "tick_size": getattr(pos, "tick_size", 0.0),
             }
         return result
 
