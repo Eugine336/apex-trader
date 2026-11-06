@@ -559,7 +559,6 @@ def test_lens_composition_excludes_future_dated_method_readings_from_replay():
             applicable=True,
             applicability_reason="future reading must be excluded",
             observation="future novelty evidence",
-            implications=(),
             facts={"novelty_own_history_percentile": 0.99},
             implications=(
                 Implication(
