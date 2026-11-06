@@ -8,7 +8,10 @@ import time
 import pandas as pd
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
-from cognition.concepts.wyckoff_volume_readings import WyckoffVolumeReadings
+from cognition.concepts.wyckoff_volume_readings import (
+    WyckoffVolumeReadings,
+    _wyckoff_implications,
+)
 from cognition.market_lenses import analyze_market_frames
 
 
@@ -258,3 +261,62 @@ def test_wyckoff_event_candidates_are_prefix_invariant_when_future_bars_are_remo
         full[index]["index"] < full[index + 1]["index"]
         for index in range(len(full) - 1)
     )
+
+
+
+def test_completed_close_invalidation_cancels_accumulation_implication():
+    facts = {
+        "phase_sequence_strength_percentile": 0.95,
+        "accumulation_or_markup": {
+            "phase": "D",
+            "events": [{"event": "Spring"}, {"event": "SOS"}],
+            "invalidation_level": 99.0,
+            "objective_price": 120.0,
+            "invalidated": True,
+        },
+        "distribution_or_markdown": {
+            "phase": None, "events": [], "invalidation_level": 110.0,
+            "objective_price": None, "invalidated": False,
+        },
+    }
+    implications = _wyckoff_implications(
+        [{"open": 98.5, "high": 99.0, "low": 97.0, "close": 98.0}],
+        facts,
+        [],
+    )
+    long = next(item for item in implications if item.direction == "LONG")
+
+    assert long.activated is False
+    assert long.strength is None
+    assert long.objective_price is None
+    assert "breached the accumulation invalidation level" in long.activation_reason
+    assert any("new completed accumulation sequence" in item for item in long.requires)
+
+
+def test_completed_close_invalidation_cancels_distribution_implication_mirror():
+    facts = {
+        "phase_sequence_strength_percentile": 0.95,
+        "accumulation_or_markup": {
+            "phase": None, "events": [], "invalidation_level": 90.0,
+            "objective_price": None, "invalidated": False,
+        },
+        "distribution_or_markdown": {
+            "phase": "D",
+            "events": [{"event": "UTAD"}, {"event": "SOW"}],
+            "invalidation_level": 101.0,
+            "objective_price": 80.0,
+            "invalidated": True,
+        },
+    }
+    implications = _wyckoff_implications(
+        [{"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.0}],
+        facts,
+        [],
+    )
+    short = next(item for item in implications if item.direction == "SHORT")
+
+    assert short.activated is False
+    assert short.strength is None
+    assert short.objective_price is None
+    assert "breached the distribution invalidation level" in short.activation_reason
+    assert any("new completed distribution sequence" in item for item in short.requires)
