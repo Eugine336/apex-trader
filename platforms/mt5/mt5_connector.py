@@ -229,6 +229,61 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    @staticmethod
+    def _record_fields(record: Any) -> dict:
+        """Convert an MT5 namedtuple response to a plain field dictionary."""
+        asdict = getattr(record, "_asdict", None)
+        if callable(asdict):
+            return dict(asdict())
+        return {
+            key: value for key, value in vars(record).items()
+            if not key.startswith("_")
+        }
+
+    def get_account_snapshot(self) -> dict:
+        """Return all account_info fields with explicit live-source provenance."""
+        self._require_connection()
+        info = mt5.account_info()
+        if info is None:
+            raise RuntimeError(f"MT5 account_info returned no result: {mt5.last_error()}")
+        return {
+            **self._record_fields(info),
+            "source": "mt5.account_info",
+            "source_verified": True,
+        }
+
+    def get_terminal_snapshot(self) -> dict:
+        """Return terminal health/version metadata without exposing credentials."""
+        self._require_connection()
+        info = mt5.terminal_info()
+        if info is None:
+            raise RuntimeError(f"MT5 terminal_info returned no result: {mt5.last_error()}")
+        return {
+            **self._record_fields(info),
+            "version": mt5.version(),
+            "source": "mt5.terminal_info",
+            "source_verified": True,
+        }
+
+    def get_order_history(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
+        """Return broker order-history records with all MT5-provided fields."""
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 order history requires timezone-aware datetimes")
+        orders = mt5.history_orders_get(
+            from_dt.astimezone(timezone.utc), to_dt.astimezone(timezone.utc)
+        )
+        if orders is None:
+            raise RuntimeError(f"MT5 history_orders_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(order),
+                "source": "mt5.history_orders_get",
+                "source_verified": True,
+            }
+            for order in orders
+        ]
+
     def _get_symbol_sessions(self, mapped_symbol: str) -> list[dict]:
         """Read the broker's weekly per-symbol trade sessions when MT5 exposes them.
 
@@ -428,21 +483,9 @@ class MT5Connector(BaseConnector):
         out: list[dict] = []
         for d in deals:
             out.append({
-                "ticket": getattr(d, "ticket", 0),
-                "order": getattr(d, "order", 0),
-                "position_id": getattr(d, "position_id", 0),
-                "time": getattr(d, "time", 0),
-                "symbol": getattr(d, "symbol", ""),
-                "type": getattr(d, "type", -1),
-                "entry": getattr(d, "entry", -1),
-                "volume": getattr(d, "volume", 0.0),
-                "price": getattr(d, "price", 0.0),
-                "commission": getattr(d, "commission", 0.0),
-                "swap": getattr(d, "swap", 0.0),
-                "fee": getattr(d, "fee", 0.0),
-                "profit": getattr(d, "profit", 0.0),
-                "magic": getattr(d, "magic", 0),
-                "comment": getattr(d, "comment", ""),
+                **self._record_fields(d),
+                "source": "mt5.history_deals_get",
+                "source_verified": True,
             })
         return out
 
@@ -1518,10 +1561,9 @@ class MT5Connector(BaseConnector):
                 price = float(getattr(item, "price", 0.0) or 0.0)
                 if price <= 0:
                     continue
-                volume = float(
-                    getattr(item, "volume_real", 0.0)
-                    or getattr(item, "volume", 0.0) or 0.0,
-                )
+                reported_volume = float(getattr(item, "volume", 0.0) or 0.0)
+                real_volume = float(getattr(item, "volume_real", 0.0) or 0.0)
+                volume = real_volume if real_volume > 0 else reported_volume
                 # MT5 BOOK_TYPE: 1/3 = SELL (ask), 2/4 = BUY (bid).
                 btype = getattr(item, "type", None)
                 if btype in (2, 4):
@@ -1530,7 +1572,17 @@ class MT5Connector(BaseConnector):
                     side = "ask"
                 else:
                     continue
-                out.append({"price": price, "volume": volume, "side": side})
+                out.append({
+                    "price": price,
+                    "volume": volume,
+                    "reported_volume": reported_volume,
+                    "volume_real": real_volume,
+                    "volume_basis": "volume_real" if real_volume > 0 else "volume",
+                    "side": side,
+                    "book_type": btype,
+                    "source": "mt5.market_book_get",
+                    "source_verified": True,
+                })
             return out
         except Exception as exc:  # noqa: BLE001
             logger.debug("[mt5] market depth unavailable for {}: {}", symbol, exc)
