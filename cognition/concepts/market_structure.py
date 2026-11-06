@@ -26,6 +26,7 @@ Nothing is invented: where history supplies no objective, the reading says so.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Optional
 
 from cognition.contracts import EvidenceDomain
@@ -45,33 +46,53 @@ def _clean(bars: list[dict]) -> list[dict]:
     return out
 
 
-def fractal_swings(bars: list[dict]) -> list[tuple[int, str, float]]:
-    """Confirmed three-bar fractal swings as (index, 'H'|'L', price), alternating.
-
-    A swing at bar i is confirmed only once bar i+1 has completed (no look-ahead).
-    Consecutive swings of the same kind keep only the more extreme one.
-    """
+@lru_cache(maxsize=512)
+def _fractal_swings_cached(
+    values: tuple[tuple[float, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
+    """Shared immutable swing result keyed by the exact high/low history."""
     raw: list[tuple[int, str, float]] = []
-    for i in range(1, len(bars) - 1):
-        if bars[i]["high"] > bars[i - 1]["high"] and bars[i]["high"] >= bars[i + 1]["high"]:
-            raw.append((i, "H", bars[i]["high"]))
-        if bars[i]["low"] < bars[i - 1]["low"] and bars[i]["low"] <= bars[i + 1]["low"]:
-            raw.append((i, "L", bars[i]["low"]))
-    raw.sort(key=lambda s: (s[0], s[1]))
+    for i in range(1, len(values) - 1):
+        previous_high, previous_low = values[i - 1]
+        high, low = values[i]
+        following_high, following_low = values[i + 1]
+        if high > previous_high and high >= following_high:
+            raw.append((i, "H", high))
+        if low < previous_low and low <= following_low:
+            raw.append((i, "L", low))
+    raw.sort(key=lambda item: (item[0], item[1]))
     out: list[tuple[int, str, float]] = []
-    for sw in raw:
-        if out and out[-1][1] == sw[1]:
-            keep_new = sw[2] > out[-1][2] if sw[1] == "H" else sw[2] < out[-1][2]
+    for swing in raw:
+        if out and out[-1][1] == swing[1]:
+            keep_new = (
+                swing[2] > out[-1][2] if swing[1] == "H"
+                else swing[2] < out[-1][2]
+            )
             if keep_new:
-                out[-1] = sw
+                out[-1] = swing
             continue
-        out.append(sw)
-    return out
+        out.append(swing)
+    return tuple(out)
 
 
-def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, str, float]]:
-    """Swings of swings: an internal high above both neighbouring internal highs
-    (a low below both neighbouring lows) is external."""
+def fractal_swings(bars: list[dict]) -> list[tuple[int, str, float]]:
+    """Confirmed three-bar fractal swings, shared across OHLC concept readers.
+
+    A swing is confirmed only once its right-hand bar has completed. The cached
+    key is the complete high/low sequence, so any historical correction
+    invalidates the cached result.
+    """
+    values = tuple(
+        (float(bar["high"]), float(bar["low"]))
+        for bar in bars
+    )
+    return list(_fractal_swings_cached(values))
+
+
+@lru_cache(maxsize=512)
+def _external_swings_cached(
+    internal: tuple[tuple[int, str, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
     highs = [s for s in internal if s[1] == "H"]
     lows = [s for s in internal if s[1] == "L"]
     out = []
@@ -80,8 +101,13 @@ def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, s
             a, b, c = seq[j - 1][2], seq[j][2], seq[j + 1][2]
             if (kind == "H" and b > a and b >= c) or (kind == "L" and b < a and b <= c):
                 out.append(seq[j])
-    out.sort(key=lambda s: s[0])
-    return out
+    out.sort(key=lambda item: item[0])
+    return tuple(out)
+
+
+def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, str, float]]:
+    """Cached swings-of-swings calculation over immutable confirmed pivots."""
+    return list(_external_swings_cached(tuple(internal)))
 
 
 def trend_state(ext: list[tuple[int, str, float]]) -> tuple[str, dict]:
