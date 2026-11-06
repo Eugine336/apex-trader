@@ -311,8 +311,8 @@ class ReasoningEngine:
             return True
         try:
             return bool(fn(symbol))
-        except Exception:  # noqa: BLE001
-            logging.getLogger(__name__).debug("Exception handled by fallback in llm/reasoning_orchestrator.py:313", exc_info=True)
+        except Exception:  # noqa: BLE001 — safe-fallback: unknown degradation state is treated as degraded
+            logging.getLogger(__name__).debug("Degradation-state lookup failed; treating the reasoner as degraded", exc_info=True)
             return True
 
     @property
