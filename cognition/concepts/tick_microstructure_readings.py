@@ -353,6 +353,7 @@ class TickMicrostructureReadings:
             implications=(),
             facts=facts,
             source_bar_epoch=latest_epoch if timestamps_verified else None,
+            source_timestamp_verified=timestamps_verified,
             reference_close=None,
             reference_timeframe="",
             unknowns=tuple(dict.fromkeys(unknowns)),

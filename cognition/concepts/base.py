@@ -153,8 +153,9 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         )
         source_epoch = explicit_source_epoch if known else None
     else:
-        known = bool(reading.source_bar_epoch and reading.source_bar_epoch > 0)
-        source_epoch = reading.source_bar_epoch if known else None
+        bar_epoch = finite(reading.source_bar_epoch)
+        known = bool(reading.source_timestamp_verified is True and bar_epoch is not None and bar_epoch > 0.0)
+        source_epoch = bar_epoch if known else None
     sampled_at = datetime.now(timezone.utc).timestamp()
     iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
     strengths = [i.strength for i in reading.implications if i.strength is not None]
