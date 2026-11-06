@@ -560,7 +560,26 @@ class MT5Connector(BaseConnector):
                 f"Stale tick for {mapped}: {age:.1f}s old (limit {self._max_tick_age_seconds}s)"
             )
 
-        pip_size = get_pip_size(symbol)
+        spread_unit = "pips"
+        try:
+            pip_size = get_pip_size(symbol)
+        except KeyError:
+            # Unknown broker-native instruments can still be observed. Their
+            # spread is reported in broker ticks, never mislabeled as pips.
+            info = mt5.symbol_info(mapped)
+            pip_size = float(
+                getattr(info, "trade_tick_size", 0.0)
+                or getattr(info, "point", 0.0)
+                or 0.0
+            )
+            spread_unit = "ticks"
+        if pip_size <= 0:
+            raise RuntimeError(f"MT5 has no usable tick-size/point for {mapped}")
+        raw_fields = (
+            dict(tick._asdict())
+            if callable(getattr(tick, "_asdict", None))
+            else {}
+        )
         return TickData(
             bid=tick.bid,
             ask=tick.ask,
@@ -569,6 +588,8 @@ class MT5Connector(BaseConnector):
             source_timestamp_verified=True,
             quote_kind="bid_ask",
             symbol=str(symbol or "").strip().upper(),
+            spread_unit=spread_unit,
+            raw_fields=raw_fields,
         )
 
     def get_tick(self, symbol: str) -> TickData:
