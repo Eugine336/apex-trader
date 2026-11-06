@@ -13,6 +13,14 @@ class FakeMT5:
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
 
+    @staticmethod
+    def symbol_info(symbol):
+        return type("SymbolInfo", (), {"visible": True})()
+
+    @staticmethod
+    def symbol_select(symbol, enabled):
+        return True
+
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
         return [
             {"time": 1_800_000_000, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1,
