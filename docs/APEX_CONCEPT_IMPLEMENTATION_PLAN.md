@@ -1,6 +1,6 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `4cb2fe477b58ba6baad1de19bcbed914084915d8`.
+Status baseline: `main` @ `dba20cd19eead2181d7788baa70c90fb81c747a5`.
 WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
@@ -239,8 +239,19 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   live Brain. Remaining: connect verified quote-history events to the existing `CalibrationProducer` for System 4
   development/holdout/walk-forward eligibility; make concept track records producer-owned and available to live Brain
   as non-gating context; validate on owner-supplied history; and move the 0.25 calibration size floor into WP-B7.
-- **WP-B5 Performance.** Concept pipeline cost with the full instrument universe: evaluate only on bar close,
-  incremental swings/pools, shared computations across modules, a measured per-symbol time budget.
+- **WP-B5 Performance — first implementation layer merged (PR #829).** Pure OHLC concept readings are cached
+  per module instance and symbol against a digest of the full completed-bar history; historical corrections invalidate
+  the entry and contextual readers (ticks, depth, portfolio, execution costs and reading-composition modules) still
+  refresh each cognition pass. Broker frames are materialized once while preserving the existing bounded raw-lens
+  window and list-source semantics. Confirmed fractal swings update incrementally for appended/rolling windows;
+  MarketStructure and Liquidity share the symbol/timeframe swing state, including prefix-only pool reads. Untouched
+  swing-pool status now uses suffix extrema in linear time. Per-module elapsed time, total per-symbol elapsed time,
+  bar counts and cache hit/miss metrics are exposed in structured debug logs. PR #829 passed 4,196 tests on Python
+  3.11 and 3.12, Ruff/lint, GitGuardian and both Gold desk suites.
+  **WP-B5 is not accepted yet.** No production full-universe benchmark has been run, so no latency reduction or
+  per-symbol budget is claimed. Remaining: measure the real configured instrument/timeframe universe, set an
+  evidence-based per-symbol budget, and extend incremental computation to the other costly structures/pools while
+  preserving source-time and concept semantics.
 - **WP-B6 Remove remaining analysis constants.** `min_evidence_domains = 3`, observer wake thresholds, compliance
   thresholds that are analysis rather than execution safety — classify each as (owner limit | definition | remove).
 - **WP-B7 Owner-limits surface.** One explicit place for the limits the account owner sets (risk per trade, daily
