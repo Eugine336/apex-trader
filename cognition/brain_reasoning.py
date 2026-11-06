@@ -519,7 +519,7 @@ class BrainReasoner:
                     "source_bar_epoch": m.get("source_bar_epoch"),
                     "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
                     "data_basis": str(getattr(e, "data_basis", "") or ""),
-                    "provisional": getattr(e, "provisional", True) is True,
+                    "provisional": getattr(e, "provisional", True) is False,
                     "independence_group": str(getattr(e, "independence_group", "") or ""),
                     "applicable": m.get("applicable") is True,
                     "implications": list(m.get("implications") or []),
