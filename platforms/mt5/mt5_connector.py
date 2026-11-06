@@ -375,10 +375,10 @@ class MT5Connector(BaseConnector):
             ))
             try:
                 from brain.symbol_mapper import resolve_to_internal
-                from config import get_instrument
+                from config import Platform, get_instrument
                 apex_symbol = resolve_to_internal(name)
-                get_instrument(apex_symbol)
-                apex_supported = True
+                instrument = get_instrument(apex_symbol)
+                apex_supported = instrument.platform in {Platform.MT5, Platform.BOTH}
             except (KeyError, ValueError):
                 apex_symbol = name.upper()
                 apex_supported = False
