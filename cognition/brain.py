@@ -855,7 +855,7 @@ class CognitiveBrain:
             risk_distance=geometry.risk_distance if geometry is not None else None,
         )
         return_verified, expected_return_r, return_source = (
-            self._calibrated_expected_return(
+            self._historical_expected_return(
                 market_state,
                 direction,
                 candidate_family=str(
@@ -2434,7 +2434,7 @@ class CognitiveBrain:
         }
         return aliases.get(token)
 
-    def _calibrated_expected_return(
+    def _historical_expected_return(
         self,
         market_state: MarketState,
         direction: str,
@@ -2443,13 +2443,16 @@ class CognitiveBrain:
         horizon_seconds: Optional[int] = None,
         now: Optional[float] = None,
     ) -> tuple[bool, float, str]:
-        """Return producer-validated family-conditional expected directional return in R.
+        """Return producer-validated historical expectancy in R, not calibration.
 
-        The artifact separately reports the development-sample favourable-return
-        base rate. It is not a calibrated forecast or target-before-stop win
-        probability. EV therefore uses fixed-horizon expected return directly,
-        less costs; the legacy reliability_gap field is a development/holdout
-        prevalence-drift guard, not a reliability-diagram metric.
+        The producer artifact contains two distinct classes of information:
+        fixed-horizon realised returns (development and untouched holdout), and
+        forecast-calibration diagnostics (base-rate/Brier/reliability metrics).
+        Only the former establish empirical expectancy. Calibration diagnostics
+        are consumed by the risk-sizing tracker and MUST NOT independently
+        determine opportunity eligibility. Data provenance, sample sufficiency,
+        walk-forward validation, selection coverage and development/holdout
+        expectancy stability remain required to prevent unsupported EV claims.
         """
         side = str(direction or "").strip().upper()
         if side not in (LONG, SHORT):
@@ -2501,39 +2504,42 @@ class CognitiveBrain:
                     # Self-declared flags or IDs cannot attest calibration.
                     # Only an artifact registered by the native producer verifies.
                     continue
-                favourable_probability = self._cost_value(artifact.favourable_probability)
                 try:
                     development_return = float(artifact.expected_return_r)
                     holdout_return = float(artifact.holdout_expected_return_r)
                     expected_return_gap = float(artifact.expected_return_gap)
-                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: ignore malformed calibration artifact values
+                    sample_count = int(artifact.sample_count)
+                    walk_forward_folds = int(artifact.walk_forward_folds)
+                    selection_coverage = float(artifact.selection_coverage)
+                except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: ignore malformed producer values
                     continue
                 if (
-                    favourable_probability is None or favourable_probability > 1.0
-                    or favourable_probability < 0.0
-                    or not math.isfinite(development_return)
+                    not math.isfinite(development_return)
                     or not math.isfinite(holdout_return)
                     or not math.isfinite(expected_return_gap)
+                    or not math.isfinite(selection_coverage)
+                    or expected_return_gap < 0.0
                     or expected_return_gap > 0.50
-                    or int(artifact.sample_count) < 30
-                    or float(artifact.brier_score) > 0.25
-                    or float(artifact.reliability_gap) > 0.15
-                    or int(artifact.walk_forward_folds) < 3
-                    or float(artifact.selection_coverage) < 0.95
+                    or sample_count < 30
+                    or walk_forward_folds < 3
+                    or selection_coverage < 0.95
                     or not artifact.dataset_digest
                 ):
                     continue
+                # Brier score, favourable base rate and reliability gap describe
+                # forecast calibration. They are deliberately not eligibility
+                # gates: CalibrationTracker scales risk; it cannot veto a thesis.
                 expected_return = min(development_return, holdout_return)
                 stamp = self._cost_value(source_epoch) or 0.0
                 candidates.append((
                     stamp, expected_return,
                     f"{artifact.protocol}:{artifact.artifact_id} "
-                    f"(family={artifact.candidate_family}, h={artifact.horizon_seconds}s, n={artifact.sample_count}, "
+                    f"(family={artifact.candidate_family}, h={artifact.horizon_seconds}s, n={sample_count}, "
                     f"development_R={development_return:.4f}, "
                     f"holdout_R={holdout_return:.4f}, "
-                    f"favourable_p={favourable_probability:.4f}, "
-                    f"Brier={artifact.brier_score:.4f}, "
-                    f"development_holdout_prevalence_gap={artifact.reliability_gap:.4f})",
+                    f"development_holdout_return_gap={expected_return_gap:.4f}, "
+                    f"walk_forward_folds={walk_forward_folds}, "
+                    f"selection_coverage={selection_coverage:.4f})",
                 ))
         except Exception:
             return False, 0.0, "calibration evidence unavailable"
@@ -2995,7 +3001,7 @@ class CognitiveBrain:
             )
             direction = lead.direction_implication
             return_verified, expected_return_r, return_source = (
-                self._calibrated_expected_return(
+                self._historical_expected_return(
                     market_state,
                     direction,
                     candidate_family=str(getattr(lead, "hypothesis_kind", "") or "unclassified"),
