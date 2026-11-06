@@ -1401,11 +1401,23 @@ class SystemContext:
                         count=_concept_history_bars + 1,
                         include_forming=True,
                     )
+                    # Broker symbol_info is an independent specification
+                    # source. Do not substitute config defaults when the
+                    # connected venue cannot attest its contract fields.
+                    try:
+                        symbol_spec = platform_manager.get_symbol_spec(symbol)
+                    except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
+                        logger.warning(
+                            "[cognition] broker symbol specification unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        symbol_spec = {}
                     from cognition.market_lenses import analyze_market_frames
                     return analyze_market_frames(
                         symbol,
                         frames,
                         source_includes_forming_bar=True,
+                        concept_context={"symbol_spec": symbol_spec},
                     )
 
                 _consolidator = _EvidenceConsolidator(

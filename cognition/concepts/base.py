@@ -110,6 +110,9 @@ class ConceptReading:
     reference_close: Optional[float] = None       # latest completed close on the finest timeframe
     reference_timeframe: str = ""
     unknowns: tuple[str, ...] = ()
+    data_basis: str = ""
+    independence_group: str = ""
+    relevance_horizon_seconds: Optional[float] = None
 
 
 class ConceptModule(Protocol):
@@ -153,7 +156,7 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
             "concept": reading.concept,
             "timeframe": reading.timeframe,
             "provisional": False,
-            "data_basis": "completed_ohlc",
+            "data_basis": reading.data_basis or "completed_ohlc",
             "source_timestamp_known": known,
             "source_bar_epoch": reading.source_bar_epoch,
             "applicable": reading.applicable,
@@ -166,12 +169,19 @@ def reading_to_evidence(symbol: str, reading: ConceptReading) -> Evidence:
         },
         timestamp_epoch=sampled_at,
         timestamp_iso=iso,
-        relevance_horizon_seconds=max(3 * seconds, 180.0),
+        relevance_horizon_seconds=(
+            reading.relevance_horizon_seconds
+            if reading.relevance_horizon_seconds is not None
+            else max(3 * seconds, 180.0)
+        ),
         source_timestamp_epoch=reading.source_bar_epoch if known else None,
         source_timestamp_verified=known,
-        data_basis="completed_ohlc",
+        data_basis=reading.data_basis or "completed_ohlc",
         provisional=False,
         # An interpretation of the same OHLC is not independent of that OHLC.
-        independence_group=f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}",
+        independence_group=(
+            reading.independence_group
+            or f"ohlc:{str(symbol or '').upper()}:{reading.timeframe}"
+        ),
         measurement_version=MEASUREMENT_VERSION,
     )

@@ -650,6 +650,7 @@ def analyze_market_frames(
     frames: dict[str, Any],
     *,
     source_includes_forming_bar: bool = True,
+    concept_context: dict[str, Any] | None = None,
 ) -> list[Evidence]:
     """Emit cross-instrument structure, liquidity, momentum, volatility and volume facts.
 
@@ -965,7 +966,7 @@ def analyze_market_frames(
     # layered on the raw facts above. They are evidence, never decisions.
     try:
         from cognition.concepts import run_concepts
-        output.extend(run_concepts(symbol, bars_by_timeframe))
+        output.extend(run_concepts(symbol, bars_by_timeframe, context=concept_context))
     except Exception as exc:  # noqa: BLE001 — concept faults never break observation
         import logging as _logging
         _logging.getLogger("apex.cognition.market_lenses").exception(
