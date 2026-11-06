@@ -261,6 +261,7 @@ class CalibrationTracker:
                         self._samples.append((c, 1.0 if bool(pair[1]) else 0.0))
                         accepted += 1
                     except Exception:  # noqa: BLE001
+                        logging.getLogger(__name__).debug("Exception handled by fallback in cognition/influence.py:263", exc_info=True)
                         continue
                 if len(self._samples) > self._limit:
                     self._samples = self._samples[-self._limit:]
