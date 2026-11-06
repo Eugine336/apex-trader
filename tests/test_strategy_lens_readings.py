@@ -125,6 +125,29 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
     assert trend.measurements["entry_authorization_emitted"] is False
 
 
+
+def test_every_full_method_emits_a_current_cutoff_non_directional_reading():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    evidence = run_concepts("XAUUSD", {"M5": _bars()})
+    full_methods = {
+        method for module in CONCEPT_MODULES
+        for method in getattr(module, "covers_methods", ())
+    }
+    method_evidence = [
+        item for item in evidence
+        if isinstance(getattr(item, "measurements", None), dict)
+        and item.measurements.get("source_kind") == "concept_reading"
+        and item.measurements.get("concept") in full_methods
+    ]
+    produced = {item.measurements["concept"] for item in method_evidence}
+    assert full_methods <= produced
+    for item in method_evidence:
+        assert item.polarity == 0.0
+        assert item.measurements["source_timestamp_known"] is True
+        assert item.measurements["source_bar_epoch"] == cutoff
+        assert item.measurements["source_timestamp_verified"] is True
+
+
 def test_lens_composition_preserves_method_geometry_and_failure_modes():
     evidence = _lens_evidence()
     trend = next(
