@@ -15,6 +15,7 @@ never contends with the event store's writer.
 """
 
 from __future__ import annotations
+import logging
 
 import sqlite3
 import threading
@@ -182,4 +183,5 @@ class EventReplayer:
             try:
                 self._conn.close()
             except Exception:
+                logging.getLogger(__name__).debug("Exception handled by fallback in persistence/event_replayer.py:184", exc_info=True)
                 pass

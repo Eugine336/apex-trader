@@ -303,13 +303,10 @@ class CognitiveBrain:
         # unknown state is ALWAYS logged and recorded (never a silent pass).
         self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
         self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
-        # Payoff geometry used to turn win-probability into a genuine expected
-        # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
-        # not supply explicit excursions. ``min_expected_value`` is retained for
-        # the Part-C3 EV gate (act only when EV clears it); None ⇒ not enforced
-        # here yet, so this change computes/records EV without altering the
-        # current act/no-act behaviour.
-        self.reward_r_default = max(0.0, float(reward_r_default))
+        # ``reward_r_default`` remains an ignored constructor compatibility
+        # argument for older callers. It must never synthesize payoff geometry
+        # or a reward estimate; only verified market-derived opportunity
+        # geometry can supply reward/risk for qualification.
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
@@ -777,6 +774,12 @@ class CognitiveBrain:
         # Build the first-class opportunity set before qualifying payoff
         # geometry, so the selected object receives the market-derived levels.
         opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        # Retain every fresh harvesting reply, including non-preferred candidates,
+        # for the next management cycle. A market can produce a new opposing
+        # opportunity while the held campaign is unchanged.
+        if is_harvesting:
+            with self._lock:
+                self._last_opportunities[str(symbol or "")] = list(opportunity_set)
         # Resolve geometry independently for every directional candidate. A
         # preferred opportunity cannot borrow another candidate's stop/target,
         # and conditional alternatives retain their own market evidence lineage.
@@ -797,6 +800,9 @@ class CognitiveBrain:
             candidate.reward_distance = candidate_geometry.reward_distance
             candidate.reward_r = candidate_geometry.reward_r
             candidate.geometry_evidence_ids = list(candidate_geometry.evidence_ids)
+            candidate.order_type = candidate_geometry.order_type
+            candidate.entry_zone_low = candidate_geometry.entry_zone_low
+            candidate.entry_zone_high = candidate_geometry.entry_zone_high
             candidate.target_logic = (
                 f"Market-derived target {candidate_geometry.target_price:.10g}; "
                 f"entry {candidate_geometry.entry_price:.10g}; "
@@ -1094,9 +1100,8 @@ class CognitiveBrain:
         # every gate below behaves exactly as before).
         # Item 8 — remember the set per symbol so MANAGEMENT can later compare a
         # live campaign against the currently visible opportunities.
-        if is_harvesting:
-            with self._lock:
-                self._last_opportunities[str(symbol or "")] = opportunity_set
+        # The latest opportunity set was captured immediately after parsing the
+        # fresh harvesting reply, before any later admission/early-return branch.
         # ACTIVATION GATE (Part XXV / item 7) + V-002: a campaign may only OPEN
         # when a first-class, STRUCTURED opportunity has ACTIVATED. ``driving_opp``
         # must exist and be actionable (state ACTIVE / CONFIRMED / STRENGTHENING).
@@ -1418,7 +1423,8 @@ class CognitiveBrain:
             desired_exposure=desired_exposure,
             expected_value=expected_value,
             initial_execution_intent={
-                "kind": "market",
+                "kind": (geometry.order_type.lower() if geometry is not None else "market"),
+                "order_type": (geometry.order_type if geometry is not None else "MARKET"),
                 "confidence": round(eff_conf, 4),
                 "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                 **({
@@ -1427,6 +1433,9 @@ class CognitiveBrain:
                     "tp": geometry.target_price,
                     "payoff_geometry": geometry.to_dict(),
                     "geometry_evidence_ids": list(geometry.evidence_ids),
+                    "order_type": geometry.order_type,
+                    "entry_zone_low": geometry.entry_zone_low,
+                    "entry_zone_high": geometry.entry_zone_high,
                 } if geometry is not None else {}),
             },
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
@@ -2127,12 +2136,36 @@ class CognitiveBrain:
                                     k: geometry.get(k) for k in (
                                         "concept", "concept_timeframe", "entry_price", "stop_price",
                                         "target_price", "milestones", "invalidation_reason",
+                                        "direction", "symbol", "evidence_timestamp_epoch",
+                                        "evidence_ids", "independent_source_count", "independence_groups",
                                     )
                                 }
                             campaign["opportunity_id"] = str(spec.get("opportunity_id") or "")
                             campaign["entry_decision_id"] = str(spec.get("decision_id") or "")
                             campaign["entry_expected_value"] = spec.get("expected_value")
+                            campaign["expected_holding_horizon_seconds"] = spec.get(
+                                "expected_holding_horizon_seconds"
+                            )
                             campaign["entry_identity_version"] = str(spec.get("identity_version") or "")
+                            progress_reader = getattr(campaign_memory, "get_management_progress", None)
+                            if callable(progress_reader):
+                                current_size = next((
+                                    getattr(position, name, None)
+                                    for name in ("size", "lots", "volume")
+                                    if getattr(position, name, None) is not None
+                                ), None)
+                                progress = progress_reader(
+                                    campaign_id,
+                                    current_size=current_size,
+                                )
+                                campaign["completed_milestones"] = list(
+                                    progress.get("completed_milestones", []) or []
+                                )
+                                pending = progress.get("pending_milestone")
+                                campaign["pending_milestone_id"] = (
+                                    str(pending.get("milestone_id", "") or "")
+                                    if isinstance(pending, dict) else ""
+                                )
                     elif stored is not None:
                         logger.warning(
                             "[brain] campaign memory identity mismatch for %s; "

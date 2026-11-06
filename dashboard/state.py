@@ -110,6 +110,21 @@ class LiveState(
     def set_event_driven_system(self, ed_system: Any) -> None:
         self._event_driven_system = ed_system
 
+    def get_mt5_instruments(self) -> dict:
+        """Expose the connected broker's native symbol catalogue read-only."""
+        if self._platform_manager is None:
+            return {"symbols": [], "source": "unavailable", "connected": False}
+        try:
+            symbols = self._platform_manager.discover_mt5_symbols(refresh=False)
+            return {
+                "symbols": symbols,
+                "source": "mt5.symbols_get",
+                "connected": bool(self._connection_status.get("mt5")),
+            }
+        except Exception as exc:
+            logger.warning("[dashboard] MT5 instrument catalogue unavailable: {}", exc)
+            return {"symbols": [], "source": "error", "connected": False}
+
     def get_activity(self) -> dict:
         """
         Returns activity feed backed by the persistent event store.

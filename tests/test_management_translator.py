@@ -7,11 +7,16 @@ from cognition.management_translator import ManagementAction, translate_manageme
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 
 
-def _out(decision_type, symbol="XAUUSD", confidence=0.7):
+def _out(decision_type, symbol="XAUUSD", confidence=0.7, management_plan=None):
     dec = SimpleNamespace(
         decision_type=decision_type, symbol=symbol, confidence=confidence,
         thesis="because reasons", decision_id="dec-1",
         identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+        questions_answered={
+            "native_management_baseline": {
+                "management_plan": management_plan or {},
+            }
+        },
     )
     return SimpleNamespace(decision=dec)
 
@@ -37,14 +42,36 @@ def test_reverse_sets_target_direction():
     assert a2.target_direction == "LONG"
 
 
-def test_scale_out_maps_to_partial_close_with_fraction():
-    a = translate_management(_out(DecisionType.SCALE_OUT), _pos(), scale_out_fraction=0.5)
-    assert a.kind == "partial_close" and 0.05 <= a.fraction <= 0.95
+def test_scale_out_requires_concept_milestone_fraction_and_identity():
+    assert translate_management(_out(DecisionType.SCALE_OUT), _pos()) is None
+    plan = {
+        "kind": "milestone_partial",
+        "milestone_id": "crt:H1:1:1.082",
+        "milestone_price": 1.082,
+        "partial_fraction": 0.4,
+        "stop_price": 1.081,
+        "action_id": "campaign-7:milestone:crt:H1:1:1.082:1000",
+    }
+    action = translate_management(
+        _out(DecisionType.SCALE_OUT, management_plan=plan), _pos(),
+    )
+    assert action.kind == "partial_close"
+    assert action.fraction == 0.4
+    assert action.milestone_id == "crt:H1:1:1.082"
+    assert action.stop_price == 1.081
+    assert action.action_id == "campaign-7:milestone:crt:H1:1:1.082:1000"
 
 
-def test_protect_and_tighten_map_to_sl_moves():
-    assert translate_management(_out(DecisionType.PROTECT_PROFIT), _pos()).kind == "protect_sl"
-    assert translate_management(_out(DecisionType.TIGHTEN_RISK), _pos()).kind == "tighten_sl"
+def test_protect_and_tighten_require_explicit_structure_stop_levels():
+    assert translate_management(_out(DecisionType.PROTECT_PROFIT), _pos()) is None
+    assert translate_management(_out(DecisionType.TIGHTEN_RISK), _pos()) is None
+    plan = {"stop_price": 1.081}
+    assert translate_management(
+        _out(DecisionType.PROTECT_PROFIT, management_plan=plan), _pos(),
+    ).kind == "protect_sl"
+    assert translate_management(
+        _out(DecisionType.TIGHTEN_RISK, management_plan=plan), _pos(),
+    ).kind == "tighten_sl"
 
 
 def test_scale_in_maps_through():
@@ -110,3 +137,17 @@ def test_management_action_prefers_brain_decision_opportunity_provenance():
     assert action.decision_id == "dec-1"
     assert action.campaign_id == "brain-campaign-4"
     assert action.opportunity_id == "brain-opportunity-12"
+
+
+
+def test_exit_preserves_concept_invalidation_action_id():
+    action_id = "campaign-7:concept-invalidation:H1:1000:98"
+    plan = {"kind": "invalidation_exit", "action_id": action_id}
+    action = translate_management(
+        _out(DecisionType.EXIT, management_plan=plan), _pos(),
+    )
+
+    assert action is not None
+    assert action.kind == "close"
+    assert action.action_id == action_id
+    assert action.to_dict()["action_id"] == action_id

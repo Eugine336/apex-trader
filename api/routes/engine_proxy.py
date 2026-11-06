@@ -80,6 +80,15 @@ async def _proxy(
         ) from exc
 
 
+@router.get("/instruments")
+async def instruments(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Broker-native instrument catalogue for owner trading-universe selection."""
+    return await _proxy(user=user, pm=pm, path="/api/instruments")
+
+
 @router.get("/scanner")
 async def scanner(
     user: dict[str, Any] = Depends(get_current_user),

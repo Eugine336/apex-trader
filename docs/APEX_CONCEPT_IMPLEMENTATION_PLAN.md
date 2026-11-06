@@ -1,15 +1,18 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `0c578df3` (after PRs #809 calibration-scales-risk, #810 remove instrument directional bias,
-#811 competing directional hypotheses, and #813 RL subsystem retirement). Source of truth for coverage:
-`docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
-Baseline today: **41/79 analytical methods read in full, 2/38 strategy lenses read in full.**
-Full GitHub Actions suite on the PR #813 head immediately before merge: **3,952 passed, 1 failed, 0 skipped**
-on both Python 3.11 and 3.12. Collection, required cognition suites and canonical identity/safety audit passed.
-The sole remaining failure is the pre-existing silent-exception observability audit: 72 unclassified handlers.
-The 12 stale System 4 tests were corrected to use the historical-expectancy API and calibration policy.
+Status baseline: `main` @ `d159b7c17d520102fde11d0f304fe81d45020c99`.
+WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
+Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
+`python scripts/concept_coverage.py`).
+Current register: **56/79 analytical methods FULL, 8 DATA-GATED, 9 MEASURED and 6 UNMEASURED;
+20/38 strategy lenses FULL and 18 DATA-GATED.**
+PR #823 passed **4,151 tests** on both Python 3.11 and 3.12, Ruff, coverage synchronization,
+canonical identity/safety audit, import checks, GitGuardian and both Gold desk jobs.
+WP-J acceptance gates for current-cutoff freshness, no-look-ahead, mirror symmetry, Brain assessment
+and full CI passed. This accepts the composition/assessment layer; it does not claim all 79 methods
+are FULL or remove the explicitly named external-data gates.
 The RL package, nine RL-only test files, training tools and PyTorch dependency were retired in PR #813.
-The earlier audit-sandbox report (58 failures plus one collection error) is historical, not the current CI baseline.
+The earlier audit-sandbox report and pre-PR #822 test counts are historical, not the current CI baseline.
 Every PR must run the full suite and compare with `main` (§9).
 
 ## 0. What "done" means
@@ -63,7 +66,7 @@ must return a reading with the data listed under `unknowns`, not guess.
 Reference implementations to copy: `crt.py` (phases, invalidation, milestones), `market_structure.py` (swings, state,
 events), `liquidity.py` (pools, sweeps, objective from real pools), `price_delivery.py`, `indicator_context.py`.
 
-## 3. Work packages — concepts (38 methods, 36 lenses)
+## 3. Work packages — concepts (79 analytical methods, 38 strategy lenses)
 
 Priority tiers: **T1** needs only OHLC(V) already supplied; **T2** needs multi-symbol bars or a new
 scalar feed; **T3** needs a new data source (tick/DOM/derivatives/macro). Items in T3 must ship their data channel
@@ -143,7 +146,9 @@ first (§4). Level = register level today.
 risk, correlated exposure, expected shortfall, risk of ruin). They inform Brain judgement; hard limits stay in the owner
 limits (WP-B7).
 
-### WP-J Strategy lenses (36 not full)
+### WP-J Strategy lenses (36 composed lenses; 18 FULL and 18 DATA-GATED at the last green baseline)
+PR #823 implements the composition reader and Brain-facing assessment contract. The 18 remaining specialist lenses (`crt` and `market_regime_transition`) are read by their dedicated modules; 18 composed lenses are currently FULL and 18 are DATA-GATED. WP-J acceptance completed in PR #823: current-cutoff freshness, no-look-ahead, mirror-symmetry, Brain challenge and full CI gates passed. The composition layer remains bounded by its explicit method and feed prerequisites.
+
 A lens is the *style view* of its methods. Implement each as a composition module (no new measurement): which method
 readings it consumes, the market states in which that style is appropriate (from measured regime evidence), how that style
 builds stop/target and manages, its known failure modes, and an explicit `unknowns` list. Mapping (lens → methods):
@@ -200,15 +205,25 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   `applicability`), merges readings that share an `independence_group`, scores **confluence and conflict** across
   concepts, and produces one thesis per direction with the strongest consistent invalidation/objective. Concept
   relevance learned from outcomes (WP-B4) is *consulted*, never a gate.
-- **WP-B2 Geometry.** Support reading-supplied entry zones/order types (not only the last close), multi-concept stops
-  (most conservative structural invalidation) and targets (nearest real draw), ordered milestones. Remove the static
-  fallback fractions (`origination_stop_fraction`, `origination_reward_multiple`, `origination_min_rr` in `config.py`;
-  `reward_r_default = 2.0` in `cognition/brain.py`) from the live path.
-- **WP-B3 Management.** Currently only "first milestone passed ⇒ `protect_profit`". Add: partial at each milestone,
-  trail beyond concept anchors (e.g. each new higher low), objective management, completed-close invalidation exit,
-  time decay of a thesis, news-window handling, idempotent actions. Replace static management numbers
-  (`management_translator.scale_out_fraction = 0.5`, tighten-by-halving, `_protective_sl` in
-  `event_driven_bootstrap.py`) with concept-supplied levels.
+- **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
+  zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
+  shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
+  reconciliation, cancellation and lifecycle remain deliberately unsupported until adapters implement them; LIMIT/STOP
+  are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
+  Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
+  bounded by the missing broker pending-order lifecycle.
+- **WP-B3 Management — core implementation merged (PRs #826 and #827); acceptance remains open for data/lifecycle gates.**
+  The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
+  structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
+  progress: ambiguous outcomes stay pending until broker-size reconciliation, while explicit sink rejection can clear
+  the marker. Brain action IDs propagate into close/partial/stop execution intents; the aggregator collapses exact
+  duplicates and rejects conflicting action-ID reuse. Portfolio reallocation emits candidates only; the Brain must
+  author the actual management plan and any partial fraction. The static reallocation trim fraction was removed.
+  Protective-stop validation consumes an explicit concept/structural price and does not synthesize a fraction or
+  breakeven. News-window management remains DATA-GATED until a verified economic-calendar feed with source-time
+  attestation exists. A broker-side acknowledgement/reconciliation lifecycle is still required to resolve ambiguous
+  pending actions beyond observed position-size change. Full CI passed on Python 3.11 and 3.12 (4,170 tests each),
+  lint, GitGuardian and both Gold desk jobs; no broker orders were sent.
 - **WP-B4 Calibration without a cold start.** (a) A **hindcast replay harness** running all concept modules and the Brain
   over historical candles, labelling outcomes by each reading's own invalidation/objective, to seed
   `CalibrationTracker` and the System 4 artifacts; (b) per-concept × market-state track record that Apex consults;

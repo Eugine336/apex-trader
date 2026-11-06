@@ -75,12 +75,37 @@ def test_candles_produce_a_concept_reading_in_the_live_evidence_path():
     assert imp["direction"] == "LONG" and imp["activated"] is True
 
 
+def test_registered_concept_hypotheses_survive_faulty_optional_strategy_lens(monkeypatch):
+    import cognition.brain_reasoning as reasoning
+
+    state = _state({"H1": _crt_frame()})
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state)
+
+    class BrokenLens:
+        key = "broken_optional_lens"
+
+    monkeypatch.setattr(reasoning, "STRATEGY_LENSES", (BrokenLens(),))
+    analysis.strategy_lenses = [{"key": "broken_optional_lens", "status": "relevant"}]
+
+    hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
+    assert any(
+        hypothesis.hypothesis_kind == "concept_group:h1:long:active"
+        and "crt" in hypothesis.supporting_patterns
+        for hypothesis in hypotheses
+    )
+
+
 def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     state = _state({"H1": _crt_frame()})
     reasoner = BrainReasoner()
     analysis = reasoner.analyze_evidence(state)
     hyps = reasoner.generate_hypotheses(analysis, "EURUSD")
-    concept = [h for h in hyps if h.hypothesis_kind == "concept:crt:h1"]
+    concept = [
+        h for h in hyps
+        if h.hypothesis_kind == "concept_group:h1:long:active"
+        and "crt" in h.supporting_patterns
+    ]
     assert len(concept) == 1
     h = concept[0]
     assert h.direction_implication == "LONG"
@@ -154,7 +179,12 @@ def test_brain_challenges_a_concept_with_an_opposing_same_bar_concept_reading():
     assert challenged.confidence < 0.8
     assert "same-timeframe, same-source-bar concept interpretation opposes" in challenged.criticism
 
-def test_geometry_comes_from_the_concept_not_from_a_default_multiple():
+def test_geometry_comes_from_the_concept_not_from_a_default_multiple(monkeypatch):
+    import cognition.concepts as concept_registry
+    monkeypatch.setattr(
+        concept_registry, "CONCEPT_MODULES",
+        tuple(module for module in concept_registry.CONCEPT_MODULES if module.key == "crt"),
+    )
     state = _state({"H1": _crt_frame()})
     geo = derive_opportunity_geometry(state, "LONG")
     assert geo is not None and geo.concept == "crt" and geo.concept_timeframe == "H1"
@@ -169,7 +199,12 @@ def test_geometry_comes_from_the_concept_not_from_a_default_multiple():
     assert opposite is None or opposite.concept == ""
 
 
-def test_bearish_crt_gives_short_geometry():
+def test_bearish_crt_gives_short_geometry(monkeypatch):
+    import cognition.concepts as concept_registry
+    monkeypatch.setattr(
+        concept_registry, "CONCEPT_MODULES",
+        tuple(module for module in concept_registry.CONCEPT_MODULES if module.key == "crt"),
+    )
     state = _state({"H1": _crt_frame(bullish=False)})
     geo = derive_opportunity_geometry(state, "SHORT")
     assert geo is not None

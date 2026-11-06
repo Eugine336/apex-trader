@@ -7,6 +7,7 @@ CognitionLoop, where Apex's existing CognitiveBrain is the sole decision
 authority. This observer has no broker order API.
 """
 from __future__ import annotations
+import logging
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -91,6 +92,7 @@ def _frame_to_closed_candles(
                     volume=max(0.0, volume),
                 ))
             except (KeyError, TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in gold_desk/apex_observer.py:93", exc_info=True)
                 continue
         result.sort(key=lambda bar: bar.timestamp)
         # De-duplicate malformed broker history rather than passing a broken
@@ -252,6 +254,7 @@ class ApexMarketObserver:
         try:
             self.tick_router.unregister_callback(self._on_tick)
         except Exception:
+            logging.getLogger(__name__).debug("Exception handled by fallback in gold_desk/apex_observer.py:254", exc_info=True)
             pass
         self._stop.set()
         self._wakeup.set()

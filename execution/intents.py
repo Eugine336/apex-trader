@@ -71,6 +71,13 @@ class Intent:
     payoff_geometry: Optional[dict] = None
     # Exact decision-time evidence snapshot; descriptive only until independently validated.
     decision_feature_snapshot: Optional[dict] = None
+    # Typed Brain entry instructions. Pending orders remain blocked until the
+    # broker adapter implements and reconciles their lifecycle.
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
+    # Appended to preserve positional compatibility of existing Intent callers.
+    action_id: str = ""
 
     @staticmethod
     def close(
@@ -83,6 +90,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -98,6 +106,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.CLOSE,
@@ -124,6 +133,9 @@ class Intent:
         identity: str = IDENTITY_STATEMENT,
         payoff_geometry: Optional[dict] = None,
         decision_feature_snapshot: Optional[dict] = None,
+        order_type: str = "MARKET",
+        entry_zone_low: Optional[float] = None,
+        entry_zone_high: Optional[float] = None,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         """An intent to OPEN a new position.
@@ -158,6 +170,9 @@ class Intent:
                 copy.deepcopy(decision_feature_snapshot)
                 if isinstance(decision_feature_snapshot, dict) else None
             ),
+            order_type=str(order_type or "MARKET").upper(),
+            entry_zone_low=entry_zone_low,
+            entry_zone_high=entry_zone_high,
             priority=IntentType.OPEN,
         )
 
@@ -172,6 +187,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -187,6 +203,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.MODIFY_SL,
@@ -203,6 +220,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -218,6 +236,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.MODIFY_TP,
@@ -234,6 +253,7 @@ class Intent:
         decision_id: str = "",
         campaign_id: str = "",
         opportunity_id: str = "",
+        action_id: str = "",
         identity_version: str = IDENTITY_VERSION,
         identity: str = IDENTITY_STATEMENT,
         timestamp: Optional[datetime] = None,
@@ -249,6 +269,7 @@ class Intent:
             decision_id=decision_id,
             campaign_id=campaign_id,
             opportunity_id=opportunity_id,
+            action_id=action_id,
             identity_version=identity_version,
             identity=identity,
             priority=IntentType.PARTIAL_CLOSE,

@@ -17,6 +17,7 @@ Exits non-zero if any tested provider fails, so it's CI-friendly.
 """
 
 from __future__ import annotations
+import logging
 
 import argparse
 import json
@@ -61,6 +62,7 @@ def _verbose_transport(verbose: bool):
             try:
                 detail = exc.read().decode("utf-8", "replace")
             except Exception:
+                logging.getLogger(__name__).debug("Exception handled by fallback in scripts/test_llm_providers.py:63", exc_info=True)
                 pass
             if verbose:
                 print(f"    [http {exc.code}] {detail[:500]}")

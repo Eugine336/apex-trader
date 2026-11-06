@@ -42,7 +42,6 @@ from cognition.management_translator import ManagementAction as _ManagementActio
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
-    evidence_from_execution_cost,
     evidence_from_market_desk,
     evidence_from_portfolio,
     evidence_from_reasoning,
@@ -100,11 +99,9 @@ class EvidenceConsolidator:
         self._influence_enabled = bool(influence_enabled)
         self._reasoning = reasoning
         self._knowledge = knowledge
-        # Violation V9 — a ``symbol -> cost`` callable estimating the per-symbol
-        # round-trip execution cost (spread + slippage) in R-multiples. Surfaced
-        # as EXECUTION_QUALITY Evidence so the Brain's EV is net of execution
-        # cost (Part XXIV/XXV). May return a float (total cost in R) or a dict
-        # with estimated_spread_r / estimated_slippage_r / estimated_total_cost_r.
+        # Native execution-cost evidence source. Returns a broker quote/specification
+        # plus verified fee models and execution telemetry. Missing components stay
+        # unknown; only the Brain may normalize a complete monetary total into R.
         self._execution_cost_source = execution_cost_source
         # Completed multi-timeframe OHLC -> contextual concept readings.
         # This is a first-class evidence source, not a detached diagnostic.
@@ -190,13 +187,12 @@ class EvidenceConsolidator:
         self._consult_ledger = ledger
 
     def set_execution_cost_source(self, execution_cost_source: Optional[Callable[[str], Any]]) -> None:
-        """Wire (or clear) the per-symbol execution-cost source (Violation V9).
+        """Wire the broker-grounded execution-cost observation source.
 
-        A ``symbol -> cost`` callable returning the estimated round-trip cost in
-        R-multiples (a float total, or a dict with estimated_spread_r /
-        estimated_slippage_r / estimated_total_cost_r). The consolidator surfaces
-        it as EXECUTION_QUALITY Evidence so the Brain's EV is net of execution
-        cost (Part XXIV/XXV). Fail-safe callable; never invoked eagerly.
+        It returns quote lineage, broker contract conversion, explicitly verified
+        fee models and empirical execution observations. Missing components remain
+        unknown. The consolidator surfaces it as neutral EXECUTION_QUALITY Evidence;
+        only the Brain normalizes a complete monetary total into risk units.
         """
         self._execution_cost_source = execution_cost_source
 
@@ -342,18 +338,32 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
-            # Violation V9 — surface the per-symbol estimated round-trip execution
-            # cost (spread + slippage, in R) as EXECUTION_QUALITY Evidence so the
-            # Brain's EV is net of execution cost (Part XXIV/XXV). A theoretical
-            # thesis that cannot clear its cost is then declined at the EV gate.
+            # Native execution-cost method: the registered reader receives a
+            # broker quote/specification and empirical entry telemetry. It emits
+            # neutral evidence only; incomplete cost coverage remains unverified.
             if self._execution_cost_source is not None:
+                attempted_sources += 1
                 try:
-                    for e in evidence_from_execution_cost(
-                        ms.symbol, self._execution_cost_source(ms.symbol),
-                    ):
-                        ms.add(e)
+                    cost_payload = self._execution_cost_source(ms.symbol)
+                    from cognition.concepts.base import reading_to_evidence
+                    from cognition.concepts.execution_cost_readings import ExecutionCostReadings
+                    readings = ExecutionCostReadings().read_with_context(
+                        ms.symbol, {}, {"execution_cost": cost_payload},
+                    )
+                    if not readings:
+                        failed_sources.append("execution_cost")
+                        logger.warning(
+                            "[consolidator] execution-cost source returned no reading (%s)",
+                            symbol,
+                        )
+                    for reading in readings:
+                        ms.add(reading_to_evidence(ms.symbol, reading))
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] execution-cost source fault (%s): %s", symbol, exc)
+                    failed_sources.append("execution_cost")
+                    logger.warning(
+                        "[consolidator] execution-cost source FAILED (%s): %s",
+                        symbol, exc,
+                    )
             # Part XVIII Art 11 — portfolio intelligence: surface how this
             # symbol's exposure stacks against the live book (correlated
             # clusters, concentration) as risk-context Evidence (never a vote).
@@ -563,7 +573,6 @@ class CognitionLoop:
         reallocation_enabled: bool = False,
         reallocation_max_per_component: int = 2,
         reallocation_concentration_limit: float = 0.6,
-        reallocation_trim_fraction: float = 0.5,
         pattern_tracker: Optional[Any] = None,
         candidate_event_store: Optional[Any] = None,
         calibration_provider: Optional[Any] = None,
@@ -658,7 +667,6 @@ class CognitionLoop:
         self.reallocation_enabled = bool(reallocation_enabled)
         self._realloc_max_per_component = max(1, int(reallocation_max_per_component))
         self._realloc_concentration_limit = float(reallocation_concentration_limit)
-        self._realloc_trim_fraction = min(0.95, max(0.05, float(reallocation_trim_fraction)))
         self._last_realloc_at: dict = {}
         self._reallocations = 0
         if self._campaigns is not None:
@@ -2339,11 +2347,12 @@ class CognitionLoop:
 
     def _maybe_reallocate(self, positions: Any, *, now: Optional[float] = None) -> int:
         """Trim the weakest campaign(s) in an over-concentrated correlated
-        cluster to free capital (Part XVIII Art 11). Gated + throttled.
+        cluster for Brain reassessment (Part XVIII Art 11). Gated + throttled.
 
-        Uses the campaign registry's health-ranked reallocation targets and
-        realises each trim through the SAME management sink the Brain uses (no
-        parallel executor). Fully fail-safe. Returns the number of trims issued.
+        Uses registry candidates only. The Brain must author the complete
+        management decision and concept-derived execution plan; no portfolio
+        heuristic may synthesize a partial-close fraction. Returns actions accepted
+        by the shared management sink.
         """
         reg = self._campaigns
         if (not self.reallocation_enabled or reg is None
@@ -2354,7 +2363,6 @@ class CognitionLoop:
             targets = reg.reallocation_targets(
                 max_per_component=self._realloc_max_per_component,
                 concentration_limit=self._realloc_concentration_limit,
-                trim_fraction=self._realloc_trim_fraction,
             )
             if not targets:
                 return 0
@@ -2381,25 +2389,27 @@ class CognitionLoop:
                 # (EXIT / TIGHTEN_RISK / SCALE_OUT). A confident HOLD overrides the
                 # mechanical concentration rule — the weakest campaign may be about
                 # to turn around, and its capital is not obviously better elsewhere.
-                approved, verdict, verdict_conf = self._reason_reallocation(
+                output, verdict, verdict_conf = self._reason_reallocation(
                     tgt, pos, now=now,
                 )
                 logger.info(
-                    "[cognition-loop] REALLOCATE check: registry targets %s for "
-                    "trim, Brain says %s (conf=%.2f) — %s",
-                    sym, verdict, verdict_conf,
-                    "trimming" if approved else "vetoed (holding)",
+                    "[cognition-loop] REALLOCATE review %s %s: Brain says %s "
+                    "(conf=%.2f) — %s",
+                    sym, direction, verdict, verdict_conf,
+                    "eligible for authored management" if output is not None else "retain / no action",
                 )
-                if not approved:
+                if output is None:
                     continue
-                action = _ManagementAction(
-                    symbol=sym, kind=str(getattr(tgt, "kind", "partial_close")),
-                    direction=direction,
-                    fraction=float(getattr(tgt, "fraction", 0.5) or 0.5),
-                    confidence=0.0,
-                    reason=str(getattr(tgt, "reason", "") or "portfolio_reallocation"),
-                )
-                self._management_sink(action, pos)
+                action = _translate_management(output, pos)
+                if action is None:
+                    logger.info(
+                        "[cognition-loop] REALLOCATE held %s %s: Brain supplied no "
+                        "complete, executable management plan",
+                        sym, direction,
+                    )
+                    continue
+                if not self._realise_management(output, pos):
+                    continue
                 self._last_realloc_at[(sym, direction)] = t
                 self._reallocations += 1
                 issued += 1
@@ -2422,36 +2432,16 @@ class CognitionLoop:
 
     def _reason_reallocation(
         self, target: Any, position: Any, *, now: Optional[float] = None,
-    ) -> "tuple[bool, str, float]":
-        """Consult the Brain on a reallocation CANDIDATE (Part XXVII/XXVIII).
+    ) -> "tuple[Any, str, float]":
+        """Return the Brain-authored management output for a portfolio candidate.
 
-        The campaign registry proposes trimming an over-concentrated cluster's
-        weakest campaign, but capital reallocation is a reasoned, portfolio-level
-        decision — "where does the next unit of risk capital have the highest
-        justified expected value?" — not a mechanical rule. This asks the single
-        Brain to manage the exact position; the trim proceeds ONLY when the
-        Brain's verdict de-risks (EXIT / TIGHTEN_RISK / SCALE_OUT). A confident
-        HOLD (or any non-de-risking verdict) vetoes the mechanical trim — the
-        weakest campaign may be about to turn around. V-011 — capital
-        reallocation is an OPPORTUNITY decision that requires cognitive input, so
-        it does NOT fail open: when the Brain is unavailable (or a fault occurs)
-        the trim is HELD, not executed. Only risk protections fail open elsewhere;
-        opportunity-level reallocation holds. Returns ``(approved, verdict, conf)``.
+        The registry supplies context only. It cannot authorize a partial close
+        or supply a fraction. The exact Brain output must translate into a valid
+        management action before the shared management sink can execute it.
         """
         brain = self._brain
-        # V-011 — reallocation is an OPPORTUNITY decision (capital redeployment),
-        # not a risk protection, so it must NOT fail open. With no Brain there is
-        # no cognitive input to justify trimming a live campaign, so HOLD it
-        # (approved=False) rather than letting the mechanical concentration rule
-        # proceed unreasoned.
         if brain is None or not hasattr(brain, "manage"):
-            return False, "unavailable", 0.0
-        # Identity (continuous re-evaluation, native independence): an external
-        # advisor outage is an infrastructure state, not a market conclusion.
-        # ``Brain.manage`` falls back to the native thesis-based manager when no
-        # advisor is available, so the review proceeds on native evidence. The
-        # trim still requires a de-risking verdict; a native HOLD or any fault
-        # still vetoes it, so this never fails open.
+            return None, "unavailable", 0.0
         try:
             sym = str(getattr(target, "symbol", "") or "")
             ms = self._consolidator.build(sym, now=now)
@@ -2463,31 +2453,23 @@ class CognitionLoop:
             approved = dtype in (
                 DecisionType.EXIT, DecisionType.TIGHTEN_RISK, DecisionType.SCALE_OUT,
             )
-            # Part XXVII — annotate the management decision so the portfolio-level
-            # review that produced this verdict is auditable downstream.
             if decision is not None:
                 try:
                     qa = getattr(decision, "questions_answered", None)
                     if isinstance(qa, dict):
                         qa["reallocation_context"] = (
-                            "portfolio concentration triggered review — Brain "
-                            f"{'approved' if approved else 'vetoed'} trim"
+                            "portfolio concentration triggered reassessment — Brain "
+                            f"{'issued a management verdict' if approved else 'retained the campaign'}"
                         )
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug(
-                        "[cognition-loop] reallocation annotate fault (%s): %s",
-                        sym, exc,
-                    )
-            return approved, str(verdict), conf
-        except Exception as exc:  # noqa: BLE001 — a fault must never break the loop
+                    logger.debug("[cognition-loop] reallocation annotate fault (%s): %s", sym, exc)
+            return (output if approved else None), str(verdict), conf
+        except Exception as exc:  # noqa: BLE001 — a fault must never authorize a trim
             logger.debug(
                 "[cognition-loop] reallocation reasoning fault (%s): %s — holding",
                 getattr(target, "symbol", "?"), exc,
             )
-            # V-011 — a reasoning fault leaves us without cognitive input, so hold
-            # the position (no mechanical trim) rather than fail open into a
-            # capital reallocation the Brain never sanctioned.
-            return False, "fault", 0.0
+            return None, "fault", 0.0
 
     def _campaign_open(self, symbol: str, direction: str, campaign: Any,
                        decision: Any) -> None:
@@ -2629,27 +2611,84 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001 — learning must never break the loop
             logger.debug("[cognition-loop] pattern outcome fault: %s", exc)
 
-    def _realise_management(self, output: Any, position: Any) -> None:
-        """Turn a Brain management verdict into a shadow record or a live action.
+    def _realise_management(self, output: Any, position: Any) -> bool:
+        """Translate and realise management without replaying ambiguous partials.
 
-        ``shadow`` logs the intended action (observational, executes nothing);
-        ``live`` hands it to the wired sink (degrading to shadow-record when no
-        sink is set). Fail-safe — never breaks the management cycle."""
+        Milestone reductions use a durable write-ahead marker before the sink is
+        called. Only an explicit sink rejection clears it; an ambiguous response
+        remains pending until broker-size reconciliation confirms the reduction.
+        """
         try:
             action = _translate_management(output, position)
             if action is None:
-                return  # HOLD / observe — nothing to do
+                return False  # HOLD / observe — nothing to do
             self._manage_intended += 1
             if self.management_mode == "live" and self._management_sink is not None:
+                milestone_pending = False
+                if action.kind == "partial_close" and action.milestone_id:
+                    memory = self._memory
+                    recorder = getattr(memory, "record_milestone_pending", None)
+                    size_before = next((
+                        getattr(position, name, None)
+                        for name in ("lots", "size", "volume")
+                        if getattr(position, name, None) is not None
+                    ), None)
+                    try:
+                        size_before = float(size_before)
+                    except (TypeError, ValueError, OverflowError):
+                        size_before = 0.0
+                    if (
+                        memory is None or not callable(recorder)
+                        or not action.campaign_id or size_before <= 0.0
+                    ):
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s milestone %s: "
+                            "durable campaign progress or a valid pre-action size is unavailable",
+                            action.symbol, action.milestone_id,
+                        )
+                        return False
+                    try:
+                        recorded = recorder(
+                            action.campaign_id,
+                            action.milestone_id,
+                            size_before=size_before,
+                            fraction=action.fraction,
+                        )
+                    except Exception:
+                        recorded = False
+                    if recorded is not True:
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s milestone %s: "
+                            "another reduction is pending or progress could not be persisted",
+                            action.symbol, action.milestone_id,
+                        )
+                        return False
+                    milestone_pending = True
+
                 sink_result = self._management_sink(action, position)
                 if sink_result is False:
+                    if milestone_pending:
+                        clearer = getattr(self._memory, "clear_milestone_pending", None)
+                        cleared = False
+                        if callable(clearer):
+                            try:
+                                cleared = clearer(action.campaign_id, action.milestone_id)
+                            except Exception:
+                                cleared = False
+                        if not cleared:
+                            logger.error(
+                                "[cognition-loop] milestone rejection could not clear its "
+                                "write-ahead marker; campaign remains blocked pending reconciliation"
+                            )
                     self._manage_suppressed += 1
                     logger.warning(
                         "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
                         "execution sink rejected the action",
                         action.symbol, action.kind, action.direction,
                     )
-                    return
+                    return False
                 self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
@@ -2661,8 +2700,13 @@ class CognitionLoop:
                     action.symbol, action.kind, action.direction, action.confidence,
                     action.reason[:80],
                 )
+                return False
+            return True
         except Exception as exc:  # noqa: BLE001 — management must never break the loop
+            # If the sink raised after a milestone was durably marked, retain the
+            # marker: its broker outcome is ambiguous and must be reconciled.
             logger.debug("[cognition-loop] realise management fault: %s", exc)
+            return False
 
     def _loop(self) -> None:
         # Pure-interval loop when event-driven is off — behaviourally unchanged.

@@ -24,6 +24,7 @@ from typing import Any, Optional
 # Keys accepted in a user's saved trading config (subset of AppConfig surface).
 # Each maps to a setter applied to the constructed AppConfig instance.
 _KNOWN_KEYS = {
+    "universe_mode",
     "enabled_categories",
     "enabled_symbols_override",
     "risk_per_trade_pct",
@@ -44,13 +45,20 @@ def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
     if not overrides:
         return config
 
+    if isinstance(overrides.get("universe_mode"), str):
+        config.universe_mode = overrides["universe_mode"].strip().lower()
+    elif isinstance(overrides.get("enabled_symbols_override"), list) and overrides["enabled_symbols_override"]:
+        config.universe_mode = "selected"
+
     if isinstance(overrides.get("enabled_categories"), list):
         config.enabled_categories = [str(c) for c in overrides["enabled_categories"]]
 
     if isinstance(overrides.get("enabled_symbols_override"), list):
-        config.enabled_symbols_override = [
-            str(s) for s in overrides["enabled_symbols_override"]
-        ]
+        config.enabled_symbols_override = list(dict.fromkeys(
+            str(symbol).strip().upper()
+            for symbol in overrides["enabled_symbols_override"]
+            if str(symbol).strip()
+        ))
 
     risk = getattr(config, "risk", None)
     if risk is not None:

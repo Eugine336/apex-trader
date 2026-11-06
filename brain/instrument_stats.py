@@ -33,6 +33,7 @@ here is *computed*.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 import threading
@@ -496,5 +497,6 @@ class InstrumentStatsStore:
                     self._store[str(sym).upper()] = InstrumentStats.from_dict(blob)
                     loaded += 1
                 except Exception:  # noqa: BLE001 — skip a corrupt entry
+                    logging.getLogger(__name__).debug("Exception handled by fallback in brain/instrument_stats.py:498", exc_info=True)
                     continue
         return loaded

@@ -367,8 +367,8 @@ def test_reallocation_trims_weakest_correlated_campaign():
     targets = reg.reallocation_targets(max_per_component=2, concentration_limit=0.6)
     assert len(targets) == 1
     assert targets[0].symbol == "AUDUSD"        # weakest of the USD cluster
-    assert targets[0].kind == "partial_close"
-    assert 0.0 < targets[0].fraction < 1.0
+    assert targets[0].kind == "candidate"
+    assert not hasattr(targets[0], "fraction")
 
 
 def test_reallocation_none_when_within_allowance():

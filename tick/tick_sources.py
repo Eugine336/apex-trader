@@ -122,6 +122,8 @@ class MT5TickPoller:
                                 getattr(td, "source_timestamp_verified", False) is True
                             ),
                             quote_kind=getattr(td, "quote_kind", "unknown"),
+                            spread_unit=getattr(td, "spread_unit", "unknown"),
+                            raw_fields=getattr(td, "raw_fields", {}),
                         )
                         self._router.on_tick(tick)
                         error_counts[sym] = 0

@@ -1,5 +1,6 @@
 """APEX TRADER — Dashboard Status Mixin."""
 
+import logging
 from datetime import datetime, timezone
 
 from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
@@ -117,11 +118,13 @@ class StatusMixin(HelpersMixin):
                     daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
                     daily_pnl = round(daily_frac * balance, 2)
                 except Exception:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_status.py:119", exc_info=True)
                     pass
             if ctx.risk_engine is not None:
                 try:
                     _risk_pct = getattr(ctx.risk_engine, "_risk_per_trade_pct", 0.75)
                 except Exception:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_status.py:124", exc_info=True)
                     pass
 
         try:
@@ -129,6 +132,7 @@ class StatusMixin(HelpersMixin):
             if cfg_risk is not None:
                 max_daily = float(getattr(cfg_risk.risk, "max_daily_drawdown_pct", 5.0))
         except Exception:
+            logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_status.py:131", exc_info=True)
             pass
 
         records = self._build_history_rows(balance)
@@ -143,6 +147,7 @@ class StatusMixin(HelpersMixin):
             positions = self._platform_manager.get_all_open_positions()
             open_count = len(positions) if positions else 0
         except Exception:
+            logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_status.py:145", exc_info=True)
             pass
 
         return {

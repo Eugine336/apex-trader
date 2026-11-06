@@ -15,6 +15,7 @@ dimension breakdown and the management action log.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import time as _time
@@ -80,6 +81,7 @@ class PositionHealthMixin:
                 try:
                     payload = json.loads(pj) if isinstance(pj, str) else pj
                 except Exception:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_position_health.py:82", exc_info=True)
                     continue
                 payload["_event_ts"] = _ts_iso(row.get("ts_utc_ms", 0))
                 reports.append(payload)
@@ -176,6 +178,7 @@ class PositionHealthMixin:
                 health_sum += float(r.get("health_score", 0.0) or 0.0)
                 health_cnt += 1
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_position_health.py:178", exc_info=True)
                 pass
             for name, mult in (r.get("dimension_scores") or {}).items():
                 acc = dim_acc.setdefault(name, [0.0, 0])
@@ -183,6 +186,7 @@ class PositionHealthMixin:
                     acc[0] += float(mult)
                     acc[1] += 1
                 except (TypeError, ValueError):
+                    logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_position_health.py:185", exc_info=True)
                     pass
         dimensions = [
             {"name": n, "avg_multiplier": round(s / c, 4) if c else 0.0, "count": c}

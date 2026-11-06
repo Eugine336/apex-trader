@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 import json
 import os
@@ -47,6 +48,7 @@ class BinancePaperExecutor:
                 try:
                     self.seen.add(json.loads(line)["signal_id"])
                 except Exception:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in integrations/chatgpt_signals/binance_paper_executor.py:49", exc_info=True)
                     continue
 
     def _book(self, symbol: str) -> tuple[float, float]:

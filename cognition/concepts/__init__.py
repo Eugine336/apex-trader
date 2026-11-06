@@ -21,6 +21,22 @@ from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
 from cognition.concepts.power_of_three import PowerOfThreeConcepts
 from cognition.concepts.regime_switching import RegimeSwitchingConcepts
+from cognition.concepts.strategy_method_readings import StrategyMethodReadings
+from cognition.concepts.wyckoff_volume_readings import WyckoffVolumeReadings
+from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
+from cognition.concepts.execution_cost_readings import ExecutionCostReadings
+from cognition.concepts.order_book_readings import OrderBookReadings
+from cognition.concepts.tick_microstructure_readings import TickMicrostructureReadings
+from cognition.concepts.session_calendar import SessionCalendar
+from cognition.concepts.opening_range import OpeningRange
+from cognition.concepts.vwap import VWAPConcept
+from cognition.concepts.volume_profile import VolumeProfileConcept
+from cognition.concepts.seasonality import SeasonalityConcept
+from cognition.concepts.range_rotation import RangeRotation
+from cognition.concepts.quantitative_state_readings import QuantitativeStateReadings
+from cognition.concepts.quantitative_outcome_readings import QuantitativeOutcomeReadings
+from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
+from cognition.concepts.strategy_lens_readings import StrategyLensReadings
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -36,20 +52,56 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     IndicatorContextConcepts(),
     PivotPointConcepts(),
     PowerOfThreeConcepts(),
+    SessionCalendar(),
+    OpeningRange(),
+    VWAPConcept(),
+    VolumeProfileConcept(),
+    SeasonalityConcept(),
+    RangeRotation(),
     RegimeSwitchingConcepts(),
+    StrategyMethodReadings(),
+    WyckoffVolumeReadings(),
+    InstrumentEconomicsReadings(),
+    ExecutionCostReadings(),
+    OrderBookReadings(),
+    TickMicrostructureReadings(),
+    QuantitativeStateReadings(),
+    QuantitativeOutcomeReadings(),
+    PortfolioRiskReadings(),
+    StrategyLensReadings(),
 )
 
 
-def run_concepts(symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[Any]:
+def run_concepts(
+    symbol: str,
+    bars_by_tf: dict[str, list[dict]],
+    context: dict[str, Any] | None = None,
+) -> list[Any]:
     """Run every concept module over completed bars and return Evidence.
 
     A module that faults is logged and represented by a non-directional runtime
     diagnostic. Subsequent modules still run; no market reading is fabricated.
     """
     evidence: list[Any] = []
+    concept_readings: list[ConceptReading] = []
+    reader_context = context if isinstance(context, dict) else {}
     for module in CONCEPT_MODULES:
         try:
-            for reading in module.read(symbol, bars_by_tf):
+            contextual_reader = getattr(module, "read_with_context", None)
+            module_context = reader_context
+            if getattr(module, "consumes_concept_readings", False):
+                module_context = {
+                    **reader_context,
+                    "concept_readings": tuple(concept_readings),
+                }
+            readings = (
+                contextual_reader(symbol, bars_by_tf, module_context)
+                if callable(contextual_reader)
+                else module.read(symbol, bars_by_tf)
+            )
+            for reading in readings:
+                if isinstance(reading, ConceptReading):
+                    concept_readings.append(reading)
                 evidence.append(reading_to_evidence(symbol, reading))
         except Exception as exc:  # noqa: BLE001
             module_key = str(getattr(module, "key", "unknown") or "unknown")

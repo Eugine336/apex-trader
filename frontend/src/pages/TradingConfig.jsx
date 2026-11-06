@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { extractError } from "../api/client";
-import { getConfig, updateConfig } from "../api/config";
+import { getBrokerInstruments, getConfig, updateConfig } from "../api/config";
 
 const CATEGORIES = ["forex", "commodity", "index", "synthetic", "crypto"];
 const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"];
 
 export default function TradingConfig() {
   const [form, setForm] = useState({
+    universe_mode: "all",
     enabled_categories: [],
     enabled_symbols_override: "",
     risk_per_trade_pct: "",
@@ -16,6 +17,7 @@ export default function TradingConfig() {
     data_path_fixes_enabled: false,
     log_level: "INFO",
   });
+  const [brokerInstruments, setBrokerInstruments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -24,8 +26,13 @@ export default function TradingConfig() {
 
   const load = useCallback(async () => {
     try {
-      const cfg = await getConfig();
+      const [cfg, catalog] = await Promise.all([
+        getConfig(),
+        getBrokerInstruments().catch(() => ({ symbols: [] })),
+      ]);
+      setBrokerInstruments(Array.isArray(catalog?.symbols) ? catalog.symbols : []);
       setForm({
+        universe_mode: cfg.universe_mode || (cfg.enabled_symbols_override?.length ? "selected" : "all"),
         enabled_categories: cfg.enabled_categories || [],
         enabled_symbols_override: (cfg.enabled_symbols_override || []).join(", "),
         risk_per_trade_pct: cfg.risk_per_trade_pct ?? "",
@@ -55,6 +62,24 @@ export default function TradingConfig() {
     }));
   };
 
+  const toggleSymbol = (symbol, checked) => {
+    setForm((current) => {
+      const selected = current.enabled_symbols_override
+        .split(",")
+        .map((value) => value.trim().toUpperCase())
+        .filter(Boolean);
+      let next;
+      if (current.universe_mode === "single") {
+        next = checked ? [symbol.toUpperCase()] : [];
+      } else {
+        next = checked
+          ? [...new Set([...selected, symbol.toUpperCase()])]
+          : selected.filter((value) => value !== symbol.toUpperCase());
+      }
+      return { ...current, enabled_symbols_override: next.join(", ") };
+    });
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
     setError("");
@@ -69,10 +94,12 @@ export default function TradingConfig() {
       .filter(Boolean);
 
     const payload = {
+      universe_mode: form.universe_mode,
       enabled_categories: form.enabled_categories.length
         ? form.enabled_categories
         : null,
-      enabled_symbols_override: symbols.length ? symbols : null,
+      enabled_symbols_override:
+        form.universe_mode === "all" ? null : symbols.length ? symbols : null,
       risk_per_trade_pct:
         form.risk_per_trade_pct === "" ? null : Number(form.risk_per_trade_pct),
       max_daily_drawdown_pct:
@@ -129,6 +156,30 @@ export default function TradingConfig() {
         className="space-y-6 rounded-lg border border-gray-700 bg-gray-800 p-6 shadow-lg"
       >
         <div>
+          <label className="mb-1 block text-sm font-medium text-gray-300">
+            Trading Universe
+          </label>
+          <select
+            value={form.universe_mode}
+            onChange={(e) =>
+              setForm((s) => ({
+                ...s,
+                universe_mode: e.target.value,
+                enabled_symbols_override: e.target.value === "all" ? "" : s.enabled_symbols_override,
+              }))
+            }
+            className={inputClass}
+          >
+            <option value="all">All eligible instruments</option>
+            <option value="selected">Selected instruments (any number)</option>
+            <option value="single">One instrument only</option>
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            Owner selection defines the trading scope. Broker availability and risk checks still apply.
+          </p>
+        </div>
+
+        <div>
           <label className="mb-2 block text-sm font-medium text-gray-300">
             Enabled Categories
           </label>
@@ -157,6 +208,52 @@ export default function TradingConfig() {
         </div>
 
         <div>
+          <label className="mb-2 block text-sm font-medium text-gray-300">
+            Broker-Discovered Instruments
+          </label>
+          {brokerInstruments.filter((item) => item.new_position_eligible).length > 0 ? (
+            <div className="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto rounded-md border border-gray-700 p-3 sm:grid-cols-2 lg:grid-cols-3">
+              {brokerInstruments
+                .filter((item) => item.new_position_eligible)
+                .map((item) => {
+                  const ownerSymbol = String(item.apex_symbol || item.symbol).toUpperCase();
+                  const selected = form.enabled_symbols_override
+                    .split(",")
+                    .map((value) => value.trim().toUpperCase())
+                    .includes(ownerSymbol);
+                  return (
+                    <label key={item.symbol} className="flex items-start gap-2 text-sm text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={form.universe_mode === "all"}
+                        onChange={(event) => toggleSymbol(ownerSymbol, event.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="font-medium">{ownerSymbol}</span>
+                        {item.symbol !== ownerSymbol && (
+                          <span className="ml-1 text-xs text-gray-500">broker: {item.symbol}</span>
+                        )}
+                        <span className="block text-xs text-gray-500">
+                          {item.description || item.path || "MT5 instrument"}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+            </div>
+          ) : (
+            <p className="rounded-md border border-gray-700 p-3 text-xs text-gray-500">
+              No live MT5 catalogue is available. Start the instance and connect the MT5 terminal to load broker symbols; manual symbol entry remains available below.
+            </p>
+          )}
+          <p className="mt-1 text-xs text-gray-500">
+            Only symbols with broker permission for new positions and complete basic contract specifications are listed. A later instrument-capability check still decides whether Apex can trade them safely.
+          </p>
+        </div>
+
+        <div>
           <label className="mb-1 block text-sm font-medium text-gray-300">
             Symbols Override
           </label>
@@ -166,11 +263,16 @@ export default function TradingConfig() {
             onChange={(e) =>
               setForm((s) => ({ ...s, enabled_symbols_override: e.target.value }))
             }
-            placeholder="EURUSD, GBPUSD, XAUUSD"
+            disabled={form.universe_mode === "all"}
+            placeholder={form.universe_mode === "single" ? "XAUUSD" : "EURUSD, GBPUSD, XAUUSD"}
             className={inputClass}
           />
           <p className="mt-1 text-xs text-gray-500">
-            Comma-separated. Overrides categories when set.
+            {form.universe_mode === "single"
+              ? "Enter exactly one broker symbol."
+              : form.universe_mode === "selected"
+                ? "Comma-separated broker symbols. Every requested symbol must be available."
+                : "Disabled in all-instruments mode."}
           </p>
         </div>
 

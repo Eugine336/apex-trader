@@ -28,6 +28,7 @@ anything still get valid JSON (``component`` falls back to the module name).
 """
 
 from __future__ import annotations
+import logging
 
 import json
 from typing import Any, Optional
@@ -149,6 +150,7 @@ def configure_structured_logging(
             if parent:
                 _os.makedirs(parent, exist_ok=True)
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in ops/logging_config.py:151", exc_info=True)
             pass
 
     added: list[int] = []

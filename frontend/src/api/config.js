@@ -11,3 +11,8 @@ export async function updateConfig(payload) {
   const { data } = await client.put("/api/config", payload);
   return data;
 }
+
+export async function getBrokerInstruments() {
+  const { data } = await client.get("/api/engine/instruments");
+  return data;
+}

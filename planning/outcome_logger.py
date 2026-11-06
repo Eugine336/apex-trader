@@ -10,6 +10,7 @@ Leaf module — standard library + loguru only.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 from datetime import datetime, timezone
@@ -93,6 +94,7 @@ class OutcomeLogger:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                logging.getLogger(__name__).debug("Exception handled by fallback in planning/outcome_logger.py:95", exc_info=True)
                 continue
             pid = rec.get("plan_id")
             if not pid:

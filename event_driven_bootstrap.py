@@ -2684,37 +2684,36 @@ class EventDrivenSystem:
                 return p
             return None
 
-        def _protective_sl(pos, kind: str):
-            # Compute a strictly-safer stop for tighten/protect; None if no safe move.
+        def _protective_sl(pos, action: Any):
+            # A management stop must come from the Brain's explicit concept or
+            # structural level. Never synthesize a price fraction or breakeven.
             try:
-                is_long = str(getattr(pos, "direction", "") or "").upper() == "LONG"
+                held_side = str(getattr(pos, "direction", "") or "").upper()
+                is_long = held_side in {"LONG", "BUY"}
+                is_short = held_side in {"SHORT", "SELL"}
+                if not (is_long or is_short):
+                    return None
                 cur_sl = float(getattr(pos, "sl", 0.0) or 0.0)
                 entry = float(getattr(pos, "open_price", 0.0) or 0.0)
                 price = float(getattr(pos, "current_price", 0.0) or 0.0)
-                if price <= 0:
+                candidate = float(getattr(action, "stop_price", 0.0) or 0.0)
+                kind = str(getattr(action, "kind", "") or "")
+                if not all(math.isfinite(value) and value > 0.0 for value in (price, candidate)):
                     return None
-                cog = getattr(self._config, "cognition", None)
-                frac = float(getattr(cog, "origination_stop_fraction", 0.004)
-                             if cog is not None else 0.004)
                 if kind == "protect_sl":
-                    # Lock in at least breakeven (only when actually in profit).
-                    if is_long and price > entry > 0:
-                        cand = entry
-                    elif (not is_long) and 0 < price < entry:
-                        cand = entry
-                    else:
+                    if entry <= 0.0:
                         return None
-                else:  # tighten_sl — halve the distance from price
-                    dist = price * frac * 0.5
-                    cand = price - dist if is_long else price + dist
-                cand = round(cand, 6)
-                # Never widen risk: only move the stop toward price.
-                if is_long and (cur_sl <= 0 or cand > cur_sl) and cand < price:
-                    return cand
-                if (not is_long) and (cur_sl <= 0 or cand < cur_sl) and cand > price:
-                    return cand
+                    if is_long and candidate < entry:
+                        return None
+                    if is_short and candidate > entry:
+                        return None
+                if is_long and (cur_sl <= 0.0 or candidate > cur_sl) and candidate < price:
+                    return candidate
+                if is_short and (cur_sl <= 0.0 or candidate < cur_sl) and candidate > price:
+                    return candidate
                 return None
-            except Exception:  # noqa: BLE001
+            except (TypeError, ValueError, OverflowError):
+                logger.debug("[mgmt-sink] invalid explicit protective stop", exc_info=True)
                 return None
 
         def _sink(action: Any, position: Any) -> bool:
@@ -2757,6 +2756,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
@@ -2764,17 +2764,34 @@ class EventDrivenSystem:
                     frac = float(getattr(action, "fraction", 0.0) or 0.0)
                     if not (0.0 < frac < 1.0):
                         return False
+                    milestone_id = str(getattr(action, "milestone_id", "") or "")
+                    if not milestone_id:
+                        return False
                     intents.append(Intent.partial_close(
                         symbol=symbol, ticket=ticket, fraction=frac,
-                        source="ai_brain", reason=reason,
+                        source="ai_brain",
+                        reason=f"{reason} [milestone_id={milestone_id}]",
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
+                    new_sl = _protective_sl(pos, action) if getattr(action, "stop_price", None) is not None else None
+                    if new_sl is not None:
+                        intents.append(Intent.modify_sl(
+                            symbol=symbol, ticket=ticket, new_sl=float(new_sl),
+                            source="ai_brain", reason=f"{reason} [concept_trailing_stop]",
+                            decision_id=str(getattr(action, "decision_id", "") or ""),
+                            campaign_id=str(getattr(action, "campaign_id", "") or ""),
+                            opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
+                            identity_version=str(getattr(action, "identity_version", "") or ""),
+                            identity=str(getattr(action, "identity", "") or ""),
+                        ))
                 elif kind in ("tighten_sl", "protect_sl"):
-                    new_sl = _protective_sl(pos, kind)
+                    new_sl = _protective_sl(pos, action)
                     if new_sl is None:
                         logger.info("[mgmt-sink] {} {} — no safer stop available", symbol, kind)
                         return False
@@ -2784,6 +2801,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))
@@ -2803,6 +2821,7 @@ class EventDrivenSystem:
                         decision_id=str(getattr(action, "decision_id", "") or ""),
                         campaign_id=str(getattr(action, "campaign_id", "") or ""),
                         opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
+                        action_id=str(getattr(action, "action_id", "") or ""),
                         identity_version=str(getattr(action, "identity_version", "") or ""),
                         identity=str(getattr(action, "identity", "") or ""),
                     ))

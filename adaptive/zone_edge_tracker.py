@@ -21,6 +21,7 @@ Safety properties (carried from the original zone-edge tracker):
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import os
@@ -228,6 +229,6 @@ class ZoneEdgeTracker:
                     try:
                         os.remove(tmp)
                     except OSError:
-                        pass
+                        logging.getLogger(__name__).debug("Unable to remove temporary zone-edge state file", exc_info=True)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[zone-edge] persist failed: {}", exc)

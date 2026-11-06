@@ -20,7 +20,8 @@ with its invalidation conditions. Ambiguous or incomplete assessments HOLD.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any, Optional
 
@@ -79,6 +80,7 @@ class NativeManagementVerdict:
     whole_book_risk_state: str = "unknown"
     evidence_count: int = 0
     hypothesis_count: int = 0
+    management_plan: dict[str, Any] = field(default_factory=dict)
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
 
@@ -101,6 +103,7 @@ class NativeManagementVerdict:
             "whole_book_risk_state": self.whole_book_risk_state,
             "evidence_count": int(self.evidence_count),
             "hypothesis_count": int(self.hypothesis_count),
+            "management_plan": dict(self.management_plan),
         }
 
 
@@ -338,8 +341,27 @@ class NativePositionManager:
             }
 
             concept_action = self._concept_milestone_guidance(
-                context, held_side, position, fresh, symbol,
+                context, held_side, position, fresh, symbol, now=now,
             )
+
+            # The originating concept's completed-close invalidation and
+            # objective are campaign-defining boundaries. They take precedence
+            # over conflicting secondary assessments and risk-review states.
+            if concept_action is not None and concept_action.get("kind") in {
+                "objective_exit", "invalidation_exit",
+            }:
+                plan_kind = str(concept_action.get("kind", "") or "")
+                thesis_state = (
+                    "objective_reached" if plan_kind == "objective_exit"
+                    else "concept_invalidation_confirmed"
+                )
+                return NativeManagementVerdict(
+                    action="exit",
+                    thesis_state=thesis_state,
+                    reason=str(concept_action.get("reason", "concept geometry boundary reached")),
+                    management_plan=concept_action,
+                    **base,
+                )
 
             # A campaign-scoped, explicit portfolio-risk breach only de-risks the
             # position. It never creates an add or reversal.
@@ -395,13 +417,48 @@ class NativePositionManager:
                     **base,
                 )
 
-            # The concept that originated this thesis says the first milestone has
-            # been delivered: protect the profit. This only de-risks and uses the
-            # concept's own level; it never exits or adds.
+            # Fresh concept anchors and milestones de-risk the existing campaign;
+            # they never create an add or reversal.
             if concept_action is not None:
+                plan_kind = str(concept_action.get("kind", "") or "")
+                if plan_kind == "trailing_stop_update":
+                    return NativeManagementVerdict(
+                        action="tighten_risk",
+                        thesis_state="concept_anchor_advanced",
+                        reason=str(concept_action.get("reason", "concept structural anchor advanced")),
+                        management_plan=concept_action,
+                        **base,
+                    )
                 return NativeManagementVerdict(
-                    action="protect_profit", thesis_state="milestone_delivered",
-                    reason=concept_action, **base,
+                    action="scale_out",
+                    thesis_state="milestone_delivered",
+                    reason=str(concept_action.get("reason", "concept milestone reached")),
+                    management_plan=concept_action,
+                    **base,
+                )
+
+            expected_horizon = _finite_number(
+                context.get("expected_holding_horizon_seconds")
+            )
+            elapsed_holding = _finite_number(getattr(position, "hold_seconds", None))
+            if (
+                expected_horizon is not None and expected_horizon > 0.0
+                and elapsed_holding is not None and elapsed_holding >= expected_horizon
+            ):
+                return NativeManagementVerdict(
+                    action="hold",
+                    thesis_state="time_decay_review",
+                    reason=(
+                        "the campaign's original expected holding horizon has elapsed; "
+                        "reassess the thesis and its remaining expected value using fresh evidence"
+                    ),
+                    management_plan={
+                        "kind": "time_decay_review",
+                        "expected_horizon_seconds": expected_horizon,
+                        "elapsed_holding_seconds": elapsed_holding,
+                        "elapsed_ratio": elapsed_holding / expected_horizon,
+                    },
+                    **base,
                 )
 
             # Negative expected value is meaningful only when it is explicitly
@@ -626,48 +683,212 @@ class NativePositionManager:
     @staticmethod
     def _concept_milestone_guidance(
         context: dict, held_side: str, position: Any, fresh: list, symbol: str,
-    ) -> Optional[str]:
-        """Reason string when the originating concept's first milestone has been
-        passed by a fresh completed close while the position is in profit.
+        *, now: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Build campaign-scoped, completed-bar management from original geometry.
 
-        Uses only the stored concept geometry and fresh completed-bar evidence;
-        returns None (no opinion) on anything missing or ambiguous.
+        The original concept's stop and objective remain authoritative. New
+        completed closes can invalidate or complete that thesis; fresh structural
+        anchors can advance protection; milestones are idempotently identified
+        by campaign, concept, bar and level.
         """
         geometry = context.get("concept_geometry")
         if not isinstance(geometry, dict) or held_side not in {"LONG", "SHORT"}:
             return None
-        milestones = [m for m in (_finite_number(x) for x in (geometry.get("milestones") or [])) if m]
-        if not milestones:
+        timeframe = str(geometry.get("concept_timeframe", "") or "").strip().upper()
+        concept = str(geometry.get("concept", "") or "").strip()
+        if not timeframe or not concept:
             return None
+        geometry_symbol = str(geometry.get("symbol", "") or "").strip().upper()
+        geometry_direction = str(geometry.get("direction", "") or "").strip().upper()
+        if geometry_symbol != symbol.strip().upper() or geometry_direction != held_side:
+            return None
+
+        decision_time = _finite_number(now) if now is not None else None
+        if decision_time is None:
+            decision_time = time.time()
+        entry_epoch = _finite_number(geometry.get("evidence_timestamp_epoch"))
+        # Without the original completed-bar timestamp, a later fresh bar
+        # cannot be proven to belong to this campaign's post-entry lifecycle.
+        if entry_epoch is None or entry_epoch <= 0.0:
+            return None
+        campaign_id = str(context.get("campaign_id", "") or "").strip()
+        pending_milestone = bool(context.get("pending_milestone_id"))
+        completed = {
+            str(item) for item in context.get("completed_milestones", []) or []
+            if str(item).strip()
+        }
+        milestones = sorted({
+            value for value in (
+                _finite_number(item) for item in (geometry.get("milestones") or [])
+            ) if value is not None and value > 0.0
+        }, reverse=held_side == "SHORT")
         profit_r = _finite_number(getattr(position, "profit_r", None))
-        if profit_r is None or profit_r <= 0.0:
+        latest_by_epoch: dict[float, list[tuple[float, Any]]] = {}
+        structure_rows: list[tuple[float, float, float]] = []
+
+        for evidence in fresh:
+            if str(getattr(evidence, "symbol", "") or "").strip().upper() != symbol.upper():
+                continue
+            measurements = getattr(evidence, "measurements", None)
+            if not isinstance(measurements, dict) or measurements.get("source_kind") != "market_lens":
+                continue
+            if (
+                measurements.get("source_timestamp_known") is not True
+                or measurements.get("data_basis") != "completed_ohlc"
+                or measurements.get("provisional") is True
+                or measurements.get("completed") is False
+            ):
+                continue
+            epoch = _finite_number(measurements.get("source_bar_epoch"))
+            horizon = _finite_number(getattr(evidence, "relevance_horizon_seconds", None))
+            close = _finite_number(measurements.get("current_close"))
+            if (
+                epoch is None or close is None or horizon is None or horizon <= 0.0
+                or epoch > decision_time or decision_time - epoch > horizon
+                or (entry_epoch is not None and epoch <= entry_epoch)
+            ):
+                continue
+            tf = str(measurements.get("timeframe", "") or "").strip().upper()
+            if tf != timeframe:
+                continue
+            latest_by_epoch.setdefault(epoch, []).append((close, evidence))
+            domain = str(getattr(getattr(evidence, "domain", None), "value", "") or "").lower()
+            if domain == "structure":
+                level_key = "prior_range_low" if held_side == "LONG" else "prior_range_high"
+                level = _finite_number(measurements.get(level_key))
+                if level is not None:
+                    structure_rows.append((epoch, close, level))
+
+        if not latest_by_epoch:
             return None
-        latest: Optional[tuple[float, float]] = None   # (source_epoch, completed close)
-        for ev in fresh:
-            if str(getattr(ev, "symbol", "") or "") not in ("", symbol):
-                continue
-            m = getattr(ev, "measurements", None)
-            if not isinstance(m, dict) or m.get("source_kind") != "market_lens":
-                continue
-            if m.get("source_timestamp_known") is not True or m.get("provisional") is True:
-                continue
-            close = _finite_number(m.get("current_close"))
-            epoch = _finite_number(m.get("source_bar_epoch"))
-            if close is None or epoch is None:
-                continue
-            if latest is None or epoch > latest[0]:
-                latest = (epoch, close)
-        if latest is None:
+        latest_epoch = max(latest_by_epoch)
+        latest_rows = latest_by_epoch[latest_epoch]
+        latest_closes = {row[0] for row in latest_rows}
+        # Same completed bar and timeframe must not disagree on its close. Do
+        # not let iteration order decide whether a campaign exits or remains open.
+        if len(latest_closes) != 1:
             return None
-        close = latest[1]
-        first = min(milestones) if held_side == "LONG" else max(milestones)
-        reached = close >= first if held_side == "LONG" else close <= first
-        if not reached:
-            return None
-        return (
-            f"{geometry.get('concept')} ({geometry.get('concept_timeframe')}) first milestone {first:.10g} "
-            f"has been passed by a completed close at {close:.10g}; protect the profit"
+        close = next(iter(latest_closes))
+        evidence_ids = tuple(dict.fromkeys(
+            str(getattr(item, "evidence_id", "") or "")
+            for _price, item in latest_rows
+            if str(getattr(item, "evidence_id", "") or "")
+        ))
+        action_scope = campaign_id or f"{symbol}:{concept}:{timeframe}"
+
+        stop = _finite_number(geometry.get("stop_price"))
+        if stop is not None:
+            invalidated = close <= stop if held_side == "LONG" else close >= stop
+            if invalidated:
+                # One stable id per campaign boundary: a still-open position
+                # must not create a new close request on every subsequent bar.
+                action_id = (
+                    f"{action_scope}:concept-invalidation:{timeframe}:{stop:.10g}"
+                )
+                return {
+                    "kind": "invalidation_exit",
+                    "action_id": action_id,
+                    "evidence_ids": list(evidence_ids),
+                    "source_bar_epoch": latest_epoch,
+                    "invalidation_price": stop,
+                    "reason": (
+                        f"{concept} ({timeframe}) invalidation {stop:.10g} was breached "
+                        f"by a completed close at {close:.10g}"
+                    ),
+                }
+
+        target = _finite_number(geometry.get("target_price"))
+        if target is not None:
+            target_reached = close >= target if held_side == "LONG" else close <= target
+            if target_reached:
+                action_id = (
+                    f"{action_scope}:concept-objective:{timeframe}:{target:.10g}"
+                )
+                return {
+                    "kind": "objective_exit",
+                    "action_id": action_id,
+                    "evidence_ids": list(evidence_ids),
+                    "source_bar_epoch": latest_epoch,
+                    "objective_price": target,
+                    "reason": (
+                        f"{concept} ({timeframe}) objective {target:.10g} was reached "
+                        f"by a completed close at {close:.10g}"
+                    ),
+                }
+
+        current_sl = _finite_number(getattr(position, "sl", None))
+        initial_sl = _finite_number(geometry.get("stop_price"))
+        known_stops = [value for value in (current_sl, initial_sl) if value is not None]
+        protective_floor = (
+            max(known_stops) if held_side == "LONG" and known_stops
+            else min(known_stops) if held_side == "SHORT" and known_stops
+            else None
         )
+        trailing_candidates = [
+            level for _epoch, row_close, level in structure_rows
+            if protective_floor is not None and (
+                protective_floor < level < row_close < close
+                if held_side == "LONG"
+                else close < row_close < level < protective_floor
+            )
+        ]
+        trailing_stop = (
+            max(trailing_candidates) if held_side == "LONG" and trailing_candidates
+            else min(trailing_candidates) if held_side == "SHORT" and trailing_candidates
+            else None
+        )
+
+        if not pending_milestone and profit_r is not None and profit_r > 0.0 and milestones:
+            remaining = [
+                (index, milestone) for index, milestone in enumerate(milestones, start=1)
+                if f"{concept}:{timeframe}:{index}:{milestone:.10g}" not in completed
+            ]
+            crossed = [
+                (index, milestone) for index, milestone in remaining
+                if (close >= milestone if held_side == "LONG" else close <= milestone)
+            ]
+            if crossed:
+                index, milestone = crossed[0]
+                milestone_id = f"{concept}:{timeframe}:{index}:{milestone:.10g}"
+                # Equal tranches are derived from the remaining concept milestones
+                # plus the terminal objective; no fixed partial fraction is used.
+                partial_fraction = 1.0 / (len(remaining) + 1)
+                action_id = f"{action_scope}:milestone:{milestone_id}"
+                return {
+                    "kind": "milestone_partial",
+                    "action_id": action_id,
+                    "milestone_id": milestone_id,
+                    "milestone_index": index,
+                    "milestone_count": len(milestones),
+                    "milestone_price": milestone,
+                    "partial_fraction": partial_fraction,
+                    "stop_price": trailing_stop,
+                    "evidence_ids": list(evidence_ids),
+                    "source_bar_epoch": latest_epoch,
+                    "reason": (
+                        f"{concept} ({timeframe}) milestone {index}/{len(milestones)} "
+                        f"at {milestone:.10g} was passed by a completed close at {close:.10g}"
+                    ),
+                }
+
+        if trailing_stop is not None and (
+            current_sl is None
+            or (trailing_stop > current_sl if held_side == "LONG" else trailing_stop < current_sl)
+        ):
+            action_id = f"{action_scope}:concept-trail:{timeframe}:{trailing_stop:.10g}"
+            return {
+                "kind": "trailing_stop_update",
+                "action_id": action_id,
+                "stop_price": trailing_stop,
+                "source_bar_epoch": latest_epoch,
+                "evidence_ids": list(evidence_ids),
+                "reason": (
+                    f"{concept} ({timeframe}) completed structure advanced the "
+                    f"protective stop to {trailing_stop:.10g}"
+                ),
+            }
+        return None
 
     @staticmethod
     def _hold(

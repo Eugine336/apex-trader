@@ -241,6 +241,7 @@ class PatternOutcomeTracker:
                 try:
                     domains, _direction, won = entry
                 except (TypeError, ValueError):
+                    logging.getLogger(__name__).debug("Exception handled by fallback in cognition/pattern_evolution.py:243", exc_info=True)
                     continue
                 names = frozenset(
                     str(d or "").strip().lower() for d in (domains or []) if str(d or "").strip()

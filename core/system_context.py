@@ -1077,14 +1077,6 @@ class SystemContext:
                         getattr(cog_cfg, "manage_exit_floor", 0.3)
                         if cog_cfg is not None else 0.3
                     ),
-                    # Part IX Art 1/7 — payoff geometry for the Brain's expected
-                    # value (EV in R). Reuses the same reward multiple the
-                    # origination sink targets so the strategic EV and the
-                    # execution-cost-adjusted EV share one reward-to-risk basis.
-                    reward_r_default=float(
-                        getattr(cog_cfg, "origination_reward_multiple", 2.0)
-                        if cog_cfg is not None else 2.0
-                    ),
                     # Part IX Q35/Q36 — act only when expected value clears this
                     # threshold (in R). Default 0.0 ⇒ decline non-positive-EV
                     # opportunities even when confident. Set to None in config to
@@ -1280,93 +1272,51 @@ class SystemContext:
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("[SystemContext] close sink wiring failed: {}", exc)
 
-                # Violation V9 — per-symbol round-trip execution-cost estimate in
-                # R for the Brain's EV. Uses the instrument's typical spread and a
-                # nominal stop distance: cost_r ≈ spread_pips / stop_distance_pips
-                # (spread + a slippage allowance). Falls back to the Brain's
-                # default_cost_r when the instrument is unknown. Fail-safe.
-                _default_cost_r = float(
-                    getattr(cog_cfg, "default_execution_cost_r", 0.05)
-                    if cog_cfg is not None else 0.05
-                )
-                _stop_distance_pips = float(
-                    getattr(cog_cfg, "execution_cost_stop_distance_pips", 20.0)
-                    if cog_cfg is not None else 20.0
-                )
+                # Native execution-cost analysis. Broker source time is verified only
+                # when the connector attests it; missing cost components remain unknown.
+                try:
+                    _set_execution_monitor = getattr(platform_manager, "set_execution_monitor", None)
+                    if callable(_set_execution_monitor):
+                        _set_execution_monitor(ctx.execution_monitor)
+                except Exception as exc:  # noqa: BLE001 — telemetry wiring is non-authoritative
+                    logger.warning("[cognition] execution monitor wiring unavailable: {}", exc)
 
-                def _execution_cost_source(symbol: str) -> dict:
-                    """Publish live quote costs as verified; configured spread is diagnostic only.
-
-                    The typical-spread registry is a fallback estimate, not a
-                    current broker quote. It must never satisfy the Brain's
-                    verified-cost requirement.
-                    """
+                def _execution_cost_source(
+                    symbol: str, symbol_spec: dict | None = None,
+                ) -> dict:
+                    """Return source-attested quote and separately verified cost components."""
                     try:
+                        from cognition.execution_cost_model import build_execution_cost_reading
+
                         info = platform_manager.get_price(symbol)
-                        if info is None:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "configured fallback; no live quote"}
-                        bid = float(getattr(info, "bid", 0.0) or 0.0)
-                        ask = float(getattr(info, "ask", 0.0) or 0.0)
-                        if bid <= 0.0 or ask <= 0.0 or ask < bid:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "invalid live bid/ask; configured fallback"}
-                        # A quote is only current if its broker source timestamp is
-                        # present, timezone-aware, and within the short live-cost
-                        # validity window. The constant bounds quote freshness; it
-                        # is not a trading signal/confidence cutoff.
-                        from datetime import datetime, timezone
-                        quote_time = getattr(info, "time", None)
-                        if not isinstance(quote_time, datetime):
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "quote timestamp unavailable"}
-                        if quote_time.tzinfo is None:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "quote timestamp has no timezone"}
-                        quote_age = (datetime.now(timezone.utc) - quote_time.astimezone(timezone.utc)).total_seconds()
-                        if quote_age < 0.0 or quote_age > 5.0:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": f"quote stale or future-dated (age={quote_age:.3f}s)"}
-                        # Resolve symbol-specific pip size and a conservative
-                        # risk-distance proxy. The execution sink recomputes the
-                        # final size/EV against the actual stop and broker costs.
-                        from config import INSTRUMENT_REGISTRY
-                        instrument = INSTRUMENT_REGISTRY.get(str(symbol or ""))
-                        pip_size = float(getattr(instrument, "pip_size", 0.0) or 0.0)
-                        stop_pips = _stop_distance_pips if _stop_distance_pips > 0 else 20.0
-                        if pip_size <= 0.0 or stop_pips <= 0.0:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "instrument cost geometry unavailable"}
-                        spread_pips = (ask - bid) / pip_size
-                        spread_r = spread_pips / stop_pips
-                        if not math.isfinite(spread_r) or spread_r < 0.0:
-                            return {"estimated_total_cost_r": _default_cost_r,
-                                    "cost_verified": False,
-                                    "cost_source": "non-finite live spread"}
-                        # Slippage remains an estimate, not a broker guarantee;
-                        # keep it explicit in provenance and validate again at submit.
-                        slippage_r = 0.5 * spread_r
-                        return {
-                            "estimated_spread_r": round(spread_r, 6),
-                            "estimated_slippage_r": round(slippage_r, 6),
-                            "estimated_total_cost_r": round(spread_r + slippage_r, 6),
-                            "cost_verified": True,
-                            "cost_source": "live bid/ask spread + explicit slippage estimate",
-                        }
-                    except Exception as exc:  # noqa: BLE001 — cost estimation must never break cognition
-                        logger.warning(
-                            "[cognition] live execution-cost read unavailable for %s: %s",
-                            symbol, exc,
+                        spec = symbol_spec if isinstance(symbol_spec, dict) else platform_manager.get_symbol_spec(symbol)
+                        observations = (
+                            ctx.execution_monitor.get_cost_observations(symbol)
+                            if ctx.execution_monitor is not None else {}
                         )
-                        return {"estimated_total_cost_r": _default_cost_r,
-                                "cost_verified": False,
-                                "cost_source": "configured fallback; live quote unavailable"}
+                        return build_execution_cost_reading(
+                            symbol,
+                            info,
+                            spec,
+                            commission_per_lot_round_trip=getattr(cog_cfg, "commission_per_lot_round_trip", None) if cog_cfg is not None else None,
+                            commission_model_verified=bool(getattr(cog_cfg, "commission_model_verified", False)) if cog_cfg is not None else False,
+                            financing_per_lot_round_trip=getattr(cog_cfg, "financing_per_lot_round_trip", None) if cog_cfg is not None else None,
+                            financing_model_verified=bool(getattr(cog_cfg, "financing_model_verified", False)) if cog_cfg is not None else False,
+                            execution_observations=observations,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — analysis must never break cognition
+                        logger.warning("[cognition] execution-cost read unavailable for %s: %s", symbol, exc)
+                        return {
+                            "symbol": str(symbol or "").strip().upper(),
+                            "source_timestamp_epoch": None,
+                            "source_timestamp_verified": False,
+                            "cost_verified": False,
+                            "cost_components_complete": False,
+                            "cost_unknown_components": ["execution-cost source failed"],
+                            "cost_source": "unverified execution-cost source failure",
+                            "directional_decision_emitted": False,
+                            "execution_authorization_emitted": False,
+                        }
 
                 # System 1 — feed bounded completed broker timeframes through
                 # the native concept registry. This is independent of optional
@@ -1401,11 +1351,79 @@ class SystemContext:
                         count=_concept_history_bars + 1,
                         include_forming=True,
                     )
+                    # Broker symbol_info is an independent specification
+                    # source. Do not substitute config defaults when the
+                    # connected venue cannot attest its contract fields.
+                    try:
+                        symbol_spec = platform_manager.get_symbol_spec(symbol)
+                    except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
+                        logger.warning(
+                            "[cognition] broker symbol specification unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        symbol_spec = {}
+                    try:
+                        depth_levels = platform_manager.get_market_depth(symbol)
+                        if not isinstance(depth_levels, list):
+                            depth_levels = []
+                        first_depth = depth_levels[0] if depth_levels else {}
+                        market_depth = {
+                            "levels": depth_levels,
+                            "source": first_depth.get("source"),
+                            "source_symbol": first_depth.get("source_symbol"),
+                            "snapshot_received_epoch": first_depth.get("snapshot_received_epoch"),
+                            "source_verified": bool(depth_levels) and all(
+                                isinstance(level, dict)
+                                and level.get("source_verified") is True
+                                and level.get("source") == first_depth.get("source")
+                                for level in depth_levels
+                            ),
+                        }
+                    except Exception as exc:  # noqa: BLE001 — missing optional depth must remain unknown
+                        logger.warning(
+                            "[cognition] broker order-book snapshot unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        market_depth = {}
+                    try:
+                        from datetime import datetime, timedelta, timezone
+                        tick_window_end = datetime.now(timezone.utc)
+                        tick_window_start = tick_window_end - timedelta(seconds=10)
+                        tick_frame = platform_manager.get_tick_history(
+                            symbol, tick_window_start, tick_window_end,
+                        )
+                        tick_attrs = getattr(tick_frame, "attrs", {})
+                        tick_rows = (
+                            tick_frame.to_dict(orient="records")
+                            if callable(getattr(tick_frame, "to_dict", None))
+                            else []
+                        )
+                        tick_history = {
+                            "rows": tick_rows,
+                            "source": tick_attrs.get("source"),
+                            "source_verified": tick_attrs.get("source_verified") is True,
+                            "source_symbol": tick_attrs.get("source_symbol"),
+                            "source_timezone": tick_attrs.get("source_timezone"),
+                            "aggressor_side_basis": tick_attrs.get("aggressor_side_basis"),
+                            "window_start_epoch": tick_window_start.timestamp(),
+                            "window_end_epoch": tick_window_end.timestamp(),
+                        }
+                    except Exception as exc:  # noqa: BLE001 — missing optional tick history must remain unknown
+                        logger.warning(
+                            "[cognition] broker tick history unavailable for %s: %s",
+                            symbol, type(exc).__name__,
+                        )
+                        tick_history = {}
                     from cognition.market_lenses import analyze_market_frames
                     return analyze_market_frames(
                         symbol,
                         frames,
                         source_includes_forming_bar=True,
+                        concept_context={
+                            "symbol_spec": symbol_spec,
+                            "market_depth": market_depth,
+                            "tick_history": tick_history,
+                        },
                     )
 
                 _consolidator = _EvidenceConsolidator(
@@ -1610,10 +1628,6 @@ class SystemContext:
                     reallocation_concentration_limit=float(
                         getattr(cog_cfg, "reallocation_concentration_limit", 0.6)
                         if cog_cfg is not None else 0.6
-                    ),
-                    reallocation_trim_fraction=float(
-                        getattr(cog_cfg, "reallocation_trim_fraction", 0.5)
-                        if cog_cfg is not None else 0.5
                     ),
                 )
                 from cognition.gate import CognitionGate as _CognitionGate

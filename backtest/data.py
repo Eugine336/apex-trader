@@ -7,6 +7,7 @@ loading; pandas is only used at the broker's ``get_ohlcv`` interface boundary.
 """
 
 from __future__ import annotations
+import logging
 
 import csv
 import json
@@ -70,6 +71,7 @@ def _parse_timestamp(raw) -> datetime:
     try:
         return _epoch_to_dt(float(s))
     except ValueError:
+        logging.getLogger(__name__).debug("Exception handled by fallback in backtest/data.py:72", exc_info=True)
         pass
     # ISO-8601 (tolerate a trailing 'Z').
     iso = s.replace("Z", "+00:00")

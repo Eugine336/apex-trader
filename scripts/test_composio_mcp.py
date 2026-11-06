@@ -20,6 +20,7 @@ Exits non-zero on any failed step so it's CI-friendly.
 """
 
 from __future__ import annotations
+import logging
 
 import argparse
 import json
@@ -198,6 +199,9 @@ def _suggested_slug(data: object) -> str:
             if sug:
                 return str(sug[0])
     except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug(
+            "Unable to read Composio HTTP error response body", exc_info=True
+        )
         pass
     return ""
 
@@ -221,6 +225,7 @@ def _load_args(raw: str, args_file: str) -> "tuple[dict, str]":
         data = json.loads(text)
         return (data if isinstance(data, dict) else {}), ""
     except json.JSONDecodeError:
+        logging.getLogger(__name__).debug("Exception handled by fallback in scripts/test_composio_mcp.py:223", exc_info=True)
         pass
     try:
         import ast

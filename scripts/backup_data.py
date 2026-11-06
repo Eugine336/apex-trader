@@ -15,6 +15,7 @@ Usage:
 """
 
 from __future__ import annotations
+import logging
 
 import argparse
 import fnmatch
@@ -408,6 +409,7 @@ def _repo_object_size_mb(work_tree: str) -> float | None:
                     total_kib += float(line.split(":", 1)[1].strip())
                     found = True
                 except ValueError:
+                    logging.getLogger(__name__).debug("Exception handled by fallback in scripts/backup_data.py:410", exc_info=True)
                     pass
     return (total_kib / 1024.0) if found else None
 

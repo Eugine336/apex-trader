@@ -13,6 +13,7 @@ It never opens or closes anything; remediation is left to a human/operator.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 from dataclasses import dataclass, field
@@ -149,6 +150,7 @@ def find_confirmed_close_deals(
         try:
             entry_type = int(raw.get("entry", -1))
         except (TypeError, ValueError, OverflowError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in persistence/recovery.py:151", exc_info=True)
             continue
         if entry_type not in (1, 3):
             continue

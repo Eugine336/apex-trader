@@ -295,7 +295,8 @@ class MarketStructure:
         return ConceptReading(
             concept=self.key, timeframe=tf, domain=EvidenceDomain.STRUCTURE, applicable=True,
             applicability_reason="enough completed bars to confirm external swings on both sides",
-            observation=obs, implications=tuple(implications), facts=facts, source_bar_epoch=epoch,
+            observation=obs, implications=tuple(implications), facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None,
             reference_close=ref_close, reference_timeframe=ref_tf,
             unknowns=tuple(sorted({r for i in implications for r in i.requires})),
         )

@@ -158,8 +158,9 @@ class LiquidityPools:
                 "external_swing_high":external_high[2],"external_swing_low":external_low[2],
                 "external_boundary_preserved":True,
                 "definition":"internal_fractal_pool_sweep_reclaim_with_external_range_intact_v1",
-            },
-            source_bar_epoch=epoch,reference_close=ref_close,reference_timeframe=ref_tf,
+            },source_bar_epoch=epoch,
+
+            source_timestamp_verified=epoch is not None,reference_close=ref_close,reference_timeframe=ref_tf,
             unknowns=("Inducement is inferred from price geometry; participant intent and stop orders are not directly observed.",),
         )
 
@@ -252,13 +253,15 @@ class LiquidityPools:
             return ConceptReading(
                 concept=self.key, timeframe=tf, domain=EvidenceDomain.LIQUIDITY, applicable=True,
                 applicability_reason="untouched liquidity pools around price (draws on liquidity)",
-                observation=obs, implications=(), facts=facts, source_bar_epoch=epoch,
+                observation=obs, implications=(), facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None,
                 reference_close=ref_close, reference_timeframe=ref_tf,
             )
         return ConceptReading(
             concept=self.key, timeframe=tf, domain=EvidenceDomain.LIQUIDITY, applicable=True,
             applicability_reason="a completed bar swept an untouched pool and closed back inside",
-            observation=obs, implications=tuple(implications), facts=facts, source_bar_epoch=epoch,
+            observation=obs, implications=tuple(implications), facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None,
             reference_close=ref_close, reference_timeframe=ref_tf,
             unknowns=tuple(sorted({r for i in implications for r in i.requires})),
         )

@@ -53,6 +53,9 @@ def _positions(**overrides) -> dict[str, dict]:
             "platform": "mt5",
             "lots": 0.10,
             "remaining_lots": 0.10,
+            "volume_min": 0.01,
+            "volume_step": 0.01,
+            "volume_max": 100.0,
         },
     }
     base["12345"].update(overrides)
@@ -118,6 +121,9 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **ove
             "evidence_ids": ["test-evidence-1", "test-evidence-2"],
             "entry_timeframe": "M5",
             "evidence_timestamp_epoch": time.time(),
+            "order_type": str(values.get("order_type", "MARKET") or "MARKET").upper(),
+            "entry_zone_low": values.get("entry_zone_low"),
+            "entry_zone_high": values.get("entry_zone_high"),
         }
         values["payoff_geometry"] = geometry
     return Intent.open(**values)
@@ -241,19 +247,16 @@ class TestPartialClose:
         assert result.success
         assert broker.close_calls[0]["lots"] == 0.05
 
-    def test_zero_lots_skips_to_sl_protection(self):
-        # A position that cannot be split (computed close lots round to zero)
-        # must NOT hard-fail — that would roll back the optimistic
-        # partial_closed flag and re-fire the doomed PARTIAL_CLOSE forever.
-        # Instead the executor reports success with a min-lot skip marker so
-        # the flag sticks and the position falls through to SL protection.
+    def test_zero_remaining_volume_is_rejected_as_unverified(self):
+        # A zero-lot snapshot is not valid broker position data. The executor
+        # must not report a successful management no-op or infer a close size.
         broker = FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
         positions = _positions(remaining_lots=0.0)
         result = executor.execute(_partial_intent(), positions)
-        assert result.success
-        assert "min_lot_skip" in (result.error or "")
-        # Broker close must never be called for an impossible split.
+        assert not result.success
+        assert "broker-verified" in (result.error or "")
+        # Invalid volume data must never result in a broker close call.
         assert broker.close_calls == []
 
     def test_minlot_partial_skips_to_sl_protection(self):
@@ -1051,3 +1054,27 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
     )
     assert not result.success and result.rejected_by_gate
     assert "broker_spec_unverified" in result.gate_reason
+
+
+
+def test_action_executor_never_reinterprets_pending_entry_as_market():
+    intent = _open_intent(
+        order_type="LIMIT",
+        entry_zone_low=1.05,
+        entry_zone_high=1.15,
+    )
+
+    assert ActionExecutor._payoff_geometry_error(intent) == (
+        "pending_order_type_not_supported_by_broker_adapter"
+    )
+
+
+def test_action_executor_rejects_entry_outside_attached_zone():
+    intent = _open_intent(
+        entry_zone_low=1.15,
+        entry_zone_high=1.20,
+    )
+
+    assert ActionExecutor._payoff_geometry_error(intent) == (
+        "market_payoff_geometry_entry_outside_zone"
+    )

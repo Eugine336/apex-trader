@@ -225,6 +225,21 @@ class ActionExecutor:
             return "market_payoff_geometry_direction_mismatch"
         if geometry.get("activated") is not True:
             return "market_payoff_geometry_not_activated"
+        order_type = str(getattr(intent, "order_type", "MARKET") or "MARKET").upper()
+        geometry_order_type = str(geometry.get("order_type", "MARKET") or "MARKET").upper()
+        if order_type not in {"MARKET", "LIMIT", "STOP"} or geometry_order_type != order_type:
+            return "market_payoff_geometry_order_type_mismatch"
+        zone_low_raw = getattr(intent, "entry_zone_low", None)
+        zone_high_raw = getattr(intent, "entry_zone_high", None)
+        geometry_zone_low = geometry.get("entry_zone_low")
+        geometry_zone_high = geometry.get("entry_zone_high")
+        if (
+            (zone_low_raw is None) != (zone_high_raw is None)
+            or (geometry_zone_low is None) != (geometry_zone_high is None)
+            or zone_low_raw != geometry_zone_low
+            or zone_high_raw != geometry_zone_high
+        ):
+            return "market_payoff_geometry_entry_zone_mismatch"
         evidence_ids = geometry.get("evidence_ids")
         if not isinstance(evidence_ids, (list, tuple)) or not any(
             str(item or "").strip() for item in evidence_ids
@@ -266,6 +281,22 @@ class ActionExecutor:
         intent_target = finite_positive(intent.new_tp)
         if None in (entry, stop, target, risk, reward, reward_r, live_entry, intent_stop, intent_target):
             return "market_payoff_geometry_contains_invalid_price_or_distance"
+        if order_type != "MARKET":
+            # The current shared broker adapter only supports market submission.
+            # Never silently reinterpret a Brain-authored pending order as market.
+            return "pending_order_type_not_supported_by_broker_adapter"
+        if zone_low_raw is not None:
+            try:
+                zone_low = float(zone_low_raw)
+                zone_high = float(zone_high_raw)
+            except (TypeError, ValueError, OverflowError):
+                return "market_payoff_geometry_entry_zone_invalid"
+            if (
+                not math.isfinite(zone_low) or not math.isfinite(zone_high)
+                or zone_low <= 0.0 or zone_high < zone_low
+                or not zone_low <= entry <= zone_high
+            ):
+                return "market_payoff_geometry_entry_outside_zone"
 
         tolerance = max(1e-9, abs(entry) * 1e-8)
         if (
@@ -994,23 +1025,31 @@ class ActionExecutor:
                     intent=intent, success=False,
                     error="partial close unsupported on deriv (would over-close)",
                 )
-            remaining = pos.get("remaining_lots", pos.get("lots", 0.0))
-            fraction = intent.close_fraction or 0.5
+            try:
+                remaining = float(pos.get("remaining_lots", pos.get("lots", 0.0)) or 0.0)
+                fraction = float(intent.close_fraction)
+                vol_step = float(pos.get("volume_step", 0.0) or 0.0)
+                volume_min = float(pos.get("volume_min", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                remaining = fraction = vol_step = volume_min = 0.0
+            if (
+                not all(math.isfinite(value) for value in (remaining, fraction, vol_step, volume_min))
+                or remaining <= 0.0
+                or not (0.0 < fraction < 1.0)
+                or vol_step <= 0.0
+                or volume_min <= 0.0
+            ):
+                return ExecutionResult(
+                    intent=intent, success=False,
+                    error="partial close requires broker-verified remaining volume, minimum and step",
+                )
             close_lots = remaining * fraction
-            # Snap to the broker volume step so the partial is not rejected for
-            # an unaligned volume (hard-coded 2dp rounding could violate step).
-            vol_step = pos.get("volume_step", 0.01) or 0.01
+            # Snap to the exact broker volume step; never invent a generic lot step.
             close_lots = round(round(close_lots / vol_step) * vol_step, 8)
-            if close_lots <= 0:
-                # Position is at (or below) the broker minimum lot — it cannot be
-                # split. Reporting a hard failure here would roll back the
-                # optimistic partial_closed / tp1_hit flags (see
-                # _handle_manage_result, which only rolls back on failure), so the
-                # impossible PARTIAL_CLOSE would re-fire every eval cycle forever.
-                # Instead report success with a skip marker: the flags stick, the
-                # system stops retrying the split it can't do, and the position
-                # falls through to SL-based protection (breakeven / trailing) that
-                # the profit-protection ladder already provides.
+            if close_lots < volume_min or remaining - close_lots < volume_min:
+                # The broker's minimum volume would be violated by either the
+                # close or the remaining position. Skip this partial; do not
+                # silently convert it to a full close or claim it was executed.
                 logger.warning(
                     "PARTIAL_CLOSE min-lot skip: {} lots at minimum "
                     "({} × {}) — using SL protection instead | {}",
@@ -1018,7 +1057,7 @@ class ActionExecutor:
                 )
                 return ExecutionResult(
                     intent=intent, success=True,
-                    error="min_lot_skip: position at minimum lot, partial close skipped",
+                    error="min_lot_skip: broker minimum volume prevents this partial close",
                 )
             resp = self._broker.close_trade(
                 order_id=intent.position_ticket,

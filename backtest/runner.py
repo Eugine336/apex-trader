@@ -15,6 +15,7 @@ trading logic.
 """
 
 from __future__ import annotations
+import logging
 
 import tempfile
 from dataclasses import dataclass, field
@@ -301,6 +302,7 @@ class BacktestRunner:
                 if obj is not None and hasattr(obj, "close"):
                     obj.close()
             except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Exception handled by fallback in backtest/runner.py:303", exc_info=True)
                 pass
         if self._tmpdir:
             import shutil

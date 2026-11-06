@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 # ── auth ───────────────────────────────────────────────────────────────────
@@ -80,8 +80,20 @@ class BrokerCredentialResponse(BaseModel):
 class TradingConfig(BaseModel):
     """User-tunable trading preferences applied to their isolated instance."""
 
+    universe_mode: Literal["all", "selected", "single"] = "all"
     enabled_categories: Optional[list[str]] = None
     enabled_symbols_override: Optional[list[str]] = None
+
+    @model_validator(mode="after")
+    def validate_instrument_universe(self) -> "TradingConfig":
+        symbols = [str(value).strip().upper() for value in (self.enabled_symbols_override or []) if str(value).strip()]
+        if self.universe_mode == "all" and symbols:
+            raise ValueError("Clear the symbol list when universe_mode is all")
+        if self.universe_mode == "selected" and not symbols:
+            raise ValueError("Select at least one symbol for selected mode")
+        if self.universe_mode == "single" and len(set(symbols)) != 1:
+            raise ValueError("Single mode requires exactly one symbol")
+        return self
     risk_per_trade_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     max_daily_drawdown_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     max_open_trades: Optional[int] = Field(default=None, ge=1, le=100)

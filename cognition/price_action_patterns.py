@@ -7,6 +7,7 @@ from a forming candle are explicitly provisional and can repaint.
 """
 
 from __future__ import annotations
+import logging
 
 from datetime import datetime, timezone
 from math import isfinite
@@ -33,6 +34,7 @@ def _row_value(row: Any, keys: tuple[str, ...]) -> float | None:
             if value is not None:
                 return _number(value)
         except (KeyError, TypeError, ValueError, IndexError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in cognition/price_action_patterns.py:35", exc_info=True)
             continue
     return None
 
@@ -47,6 +49,7 @@ def _timestamp_epoch(value: Any) -> float | None:
             parsed = float(stamp())
             return parsed if isfinite(parsed) and parsed > 0 else None
         except (TypeError, ValueError, OverflowError, OSError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in cognition/price_action_patterns.py:49", exc_info=True)
             pass
     try:
         numeric = float(value)
@@ -55,6 +58,7 @@ def _timestamp_epoch(value: Any) -> float | None:
                 numeric /= 1000.0
             return numeric
     except (TypeError, ValueError, OverflowError):
+        logging.getLogger(__name__).debug("Exception handled by fallback in cognition/price_action_patterns.py:57", exc_info=True)
         pass
     try:
         text = str(value).strip()
@@ -76,6 +80,7 @@ def _raw_row_value(row: Any, keys: tuple[str, ...]) -> Any:
             if value is not None:
                 return value
         except (KeyError, TypeError, ValueError, IndexError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in cognition/price_action_patterns.py:78", exc_info=True)
             continue
     return None
 

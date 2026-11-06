@@ -1,4 +1,4 @@
-"""Management reads the originating concept: first milestone delivered -> protect the profit."""
+"""Management maps a delivered concept milestone to its geometry-derived partial plan."""
 
 from types import SimpleNamespace
 
@@ -22,9 +22,11 @@ class _State:
 def _lens(close, epoch=1000.0):
     return SimpleNamespace(
         symbol="EURUSD", domain=EvidenceDomain.STRUCTURE, source_module="market_lens.structure.m5",
-        measurements={"source_kind": "market_lens", "source_timestamp_known": True, "provisional": False,
-                      "current_close": close, "source_bar_epoch": epoch},
-        confidence=0.5, uncertainty=0.5, evidence_id="e-%s" % close)
+        measurements={"source_kind": "market_lens", "source_timestamp_known": True,
+                      "data_basis": "completed_ohlc", "completed": True, "provisional": False,
+                      "timeframe": "H1", "current_close": close, "source_bar_epoch": epoch},
+        confidence=0.5, uncertainty=0.5, evidence_id="e-%s" % close,
+        relevance_horizon_seconds=1800.0)
 
 
 def _assess(side, close, profit_r, geometry, extra=None):
@@ -37,20 +39,27 @@ def _assess(side, close, profit_r, geometry, extra=None):
 
 
 LONG_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820], "stop_price": 1.0795,
-            "target_price": 1.0840, "entry_price": 1.0818}
+            "target_price": 1.0840, "entry_price": 1.0818, "symbol": "EURUSD",
+            "direction": "LONG", "evidence_timestamp_epoch": 900.0}
 SHORT_GEO = {"concept": "crt", "concept_timeframe": "H1", "milestones": [1.0820], "stop_price": 1.0845,
-             "target_price": 1.0800, "entry_price": 1.0822}
+             "target_price": 1.0800, "entry_price": 1.0822, "symbol": "EURUSD",
+             "direction": "SHORT", "evidence_timestamp_epoch": 900.0}
 
 
-def test_long_milestone_passed_in_profit_protects_the_profit():
+def test_long_milestone_passed_in_profit_scales_out_geometry_fraction():
     v = _assess("LONG", 1.0824, 0.4, LONG_GEO)
-    assert v.action == "protect_profit" and v.thesis_state == "milestone_delivered"
-    assert "first milestone 1.082" in v.reason and "crt" in v.reason
+    assert v.action == "scale_out" and v.thesis_state == "milestone_delivered"
+    assert v.management_plan["kind"] == "milestone_partial"
+    assert v.management_plan["milestone_id"] == "crt:H1:1:1.082"
+    assert v.management_plan["partial_fraction"] == 0.5
+    assert "milestone 1/1 at 1.082" in v.reason and "crt" in v.reason
 
 
-def test_short_mirror():
+def test_short_mirror_scales_out_geometry_fraction():
     v = _assess("SHORT", 1.0816, 0.4, SHORT_GEO)
-    assert v.action == "protect_profit"
+    assert v.action == "scale_out"
+    assert v.management_plan["kind"] == "milestone_partial"
+    assert v.management_plan["partial_fraction"] == 0.5
 
 
 def test_before_the_milestone_the_position_is_simply_held():

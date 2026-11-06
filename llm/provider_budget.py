@@ -23,6 +23,7 @@ cognitive resource may be spent right now.
 """
 
 from __future__ import annotations
+import logging
 
 import hashlib
 import threading
@@ -87,6 +88,7 @@ def coerce_limits(source: object) -> "tuple[int, int, int, int]":
             try:
                 iv = int(v)
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in llm/provider_budget.py:89", exc_info=True)
                 continue
             if iv > 0:
                 return iv

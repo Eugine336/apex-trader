@@ -37,6 +37,7 @@ guard mixin), so anything may depend on it without an import cycle.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 import sqlite3
@@ -204,6 +205,7 @@ def _closes(candles: Sequence) -> List[float]:
         try:
             f = float(v)
         except (TypeError, ValueError):
+            logging.getLogger(__name__).debug("Exception handled by fallback in adaptive/regime_detector.py:206", exc_info=True)
             continue
         if math.isfinite(f):
             out.append(f)

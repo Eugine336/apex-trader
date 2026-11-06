@@ -3824,16 +3824,13 @@ class CognitionConfig:
     allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
-    # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
-    # over-concentrated in one correlated leg (concentration >= the limit) the
-    # weakest campaign(s) in a cluster carrying more than
-    # ``reallocation_max_per_component`` campaigns are trimmed to free capital
-    # for higher-EV opportunities. Realised through the Brain's own management
-    # sink (management_mode must be "live"); default on.
+    # Part XVIII Art 11 — portfolio capital reallocation. Concentrated,
+    # correlated campaigns are candidates for Brain reassessment. The registry
+    # never supplies an execution kind or reduction fraction; any live action
+    # must come from the Brain's current concept-derived management plan.
     reallocation_enabled: bool = True
     reallocation_max_per_component: int = 2
     reallocation_concentration_limit: float = 0.6
-    reallocation_trim_fraction: float = 0.5
     # Part XIX Art 1/7/8 — opportunity qualification. The market is presumed
     # noise: a Brain-originated entry (and a scale-in) only proceeds if its
     # expected NET value after real round-trip cost (spread + commission +
@@ -3867,14 +3864,6 @@ class CognitionConfig:
     #   "shadow" — record the intended management action, submit nothing.
     #   "live"   — realise it on MT5 via the wired management sink (default).
     management_mode: str = "live"
-    # Part X — when the Brain originates an entry without an explicit protective
-    # stop, execution derives one deterministically: a stop ``origination_stop_fraction``
-    # of price away (0.4% default, instrument-agnostic) with a take-profit at the
-    # nearest structural level >= ``origination_min_rr`` × risk ahead, else
-    # ``origination_reward_multiple`` × risk. Guarantees every entry is protected.
-    origination_stop_fraction: float = 0.004
-    origination_reward_multiple: float = 2.0
-    origination_min_rr: float = 1.0
     # Optional hard cap on the lot size the Brain may originate/scale (0 = no
     # cap; the broker vol_max still applies). Lets an operator bound absolute
     # size regardless of conviction on a small account.
@@ -3954,9 +3943,6 @@ class CognitionConfig:
             ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
             ("COGNITION_MANAGE_MIN_INTERVAL_SECONDS", "manage_min_interval_seconds"),
             ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
-            ("COGNITION_ORIGINATION_STOP_FRACTION", "origination_stop_fraction"),
-            ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
-            ("COGNITION_ORIGINATION_MIN_RR", "origination_min_rr"),
             ("COGNITION_ORIGINATION_MAX_LOTS", "origination_max_lots"),
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
@@ -4300,18 +4286,18 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # ── INSTRUMENT UNIVERSE ───────────────────────────────────────────────
-    # Apex is not tied to one instrument. By default every registered forex,
-    # commodity, index and crypto instrument is in scope (synthetics need a
-    # separate broker setup and stay opt-in). Each instrument runs on its own
-    # profile (brain/instrument_profile.py). To narrow the universe:
-    #   • set TRADING_MODE=gold (commodity / XAUUSD only), or
-    #   • list specific symbols in `enabled_symbols_override`.
+    # ── OWNER-CONTROLLED INSTRUMENT UNIVERSE ───────────────────────────────
+    # "all" = all broker-discovered eligible symbols in enabled categories;
+    # "selected" = exactly the owner's selected symbol set; "single" = one symbol.
+    # Gold is not a special trading identity or hard-coded execution mode.
+    universe_mode: str = "all"
     enabled_categories: list[str] = field(
         default_factory=lambda: ["forex", "commodity", "index", "crypto"]
     )
-    # Empty = every symbol in the enabled categories; list symbols to restrict.
     enabled_symbols_override: list[str] = field(default_factory=list)
+    # Populated by PlatformManager after a successful MT5 discovery cycle.
+    broker_discovery_complete: bool = field(default=False, init=False)
+    broker_enabled_symbols: list[str] = field(default_factory=list, init=False)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
@@ -4372,27 +4358,49 @@ class AppConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
-        # TRADING_MODE toggles the instrument universe from .env without code
-        # changes. "full" (default) scans every instrument across forex,
-        # commodity, index and crypto; "gold" narrows to commodity / XAUUSD.
-        # Any other value falls back to "full" with a warning. Synthetic is
-        # intentionally excluded — Deriv synthetics need a separate broker setup.
-        mode = os.getenv("TRADING_MODE", "full").lower().strip()
-        if mode not in ("gold", "full"):
-            logger.warning(
-                "[config] unknown TRADING_MODE '{}' — falling back to 'full'", mode
-            )
-            mode = "full"
-        if mode == "gold":
-            self.enabled_categories = ["commodity"]
-            self.enabled_symbols_override = ["XAUUSD"]
-        self.trading_mode = mode
+        mode = str(self.universe_mode or "all").strip().lower()
+        mode = {"full": "all", "custom": "selected", "one": "single"}.get(mode, mode)
+        if mode not in {"all", "selected", "single"}:
+            raise ValueError("universe_mode must be all, selected, or single")
+        self.universe_mode = mode
+        self.enabled_symbols_override = list(dict.fromkeys(
+            str(symbol).strip().upper()
+            for symbol in self.enabled_symbols_override
+            if str(symbol).strip()
+        ))
+        if mode == "all" and self.enabled_symbols_override:
+            # Backward compatibility for direct AppConfig construction.
+            self.universe_mode = "selected"
+            mode = "selected"
+        if mode == "selected" and not self.enabled_symbols_override:
+            raise ValueError("selected universe requires at least one symbol")
+        if mode == "single" and len(self.enabled_symbols_override) != 1:
+            raise ValueError("single universe requires exactly one symbol")
+        self.trading_mode = (
+            "gold" if mode == "single" and self.enabled_symbols_override == ["XAUUSD"]
+            else "full"
+        )
 
     @property
     def enabled_pairs(self) -> list[str]:
-        """All symbols from enabled categories, filtered by override if set."""
-        if self.enabled_symbols_override:
-            return self.enabled_symbols_override
+        """Resolve owner scope against live MT5 capability when discovery exists."""
+        if self.broker_discovery_complete:
+            available = set(self.broker_enabled_symbols)
+            if self.universe_mode in {"selected", "single"}:
+                missing = [symbol for symbol in self.enabled_symbols_override if symbol not in available]
+                if missing:
+                    logger.error(
+                        "[config] owner-selected symbols unavailable or unsupported on connected MT5 broker: {}",
+                        missing,
+                    )
+                    return []
+                return list(self.enabled_symbols_override)
+            return [
+                symbol for symbol in self.broker_enabled_symbols
+                if get_instrument(symbol).category.value in self.enabled_categories
+            ]
+        if self.universe_mode in {"selected", "single"}:
+            return list(self.enabled_symbols_override)
         symbols: list[str] = []
         for cat in self.enabled_categories:
             symbols.extend(i.symbol for i in get_instruments_by_category(cat))

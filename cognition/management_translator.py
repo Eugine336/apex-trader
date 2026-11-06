@@ -36,12 +36,16 @@ class ManagementAction:
     kind: str
     direction: str = ""                  # held side (LONG | SHORT)
     target_direction: str = ""           # for reverse: the opposite side
-    fraction: float = 0.0                # for partial_close (0..1)
+    fraction: float = 0.0                # concept-derived partial fraction (0..1)
+    stop_price: Optional[float] = None   # explicit concept/structure-derived stop
+    milestone_id: str = ""
+    milestone_price: Optional[float] = None
     confidence: float = 0.0
     reason: str = ""
     decision_id: str = ""
     campaign_id: str = ""
     opportunity_id: str = ""
+    action_id: str = ""
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
 
@@ -52,11 +56,15 @@ class ManagementAction:
             "direction": self.direction,
             "target_direction": self.target_direction,
             "fraction": round(self.fraction, 4),
+            "stop_price": self.stop_price,
+            "milestone_id": self.milestone_id,
+            "milestone_price": self.milestone_price,
             "confidence": round(self.confidence, 4),
             "reason": self.reason[:200],
             "decision_id": self.decision_id,
             "campaign_id": self.campaign_id,
             "opportunity_id": self.opportunity_id,
+            "action_id": self.action_id,
             "identity_version": self.identity_version,
             "identity": self.identity,
         }
@@ -68,8 +76,6 @@ _OPP = {"LONG": "SHORT", "SHORT": "LONG"}
 def translate_management(
     output: Any,
     position: Any,
-    *,
-    scale_out_fraction: float = 0.5,
 ) -> Optional[ManagementAction]:
     """Map a Brain management ``BrainOutput`` → a :class:`ManagementAction`.
 
@@ -115,12 +121,20 @@ def translate_management(
         decision_campaign_id = str(getattr(decision, "campaign_id", "") or "")
         position_campaign_id = str(getattr(position, "campaign_id", "") or "")
 
+        questions = getattr(decision, "questions_answered", {}) or {}
+        baseline = questions.get("native_management_baseline", {})
+        plan = baseline.get("management_plan", {}) if isinstance(baseline, dict) else {}
+        if not isinstance(plan, dict):
+            plan = {}
+
         def _act(kind: str, **kw: Any) -> ManagementAction:
+            action_id = str(kw.pop("action_id", "") or plan.get("action_id", "") or "")
             return ManagementAction(
                 symbol=symbol, kind=kind, direction=held,
                 confidence=conf, reason=reason, decision_id=dec_id,
                 campaign_id=decision_campaign_id or position_campaign_id,
                 opportunity_id=decision_opportunity_id or position_opportunity_id,
+                action_id=action_id,
                 identity_version=decision_identity_version,
                 identity=decision_identity, **kw,
             )
@@ -133,17 +147,43 @@ def translate_management(
                 return _act("close")   # can't reverse an unknown side — just exit
             return _act("reverse", target_direction=tgt)
         if name == "scale_out":
-            frac = scale_out_fraction
+            if plan.get("kind") not in {"milestone_partial", "news_window_partial"}:
+                return None
             try:
-                frac = float(scale_out_fraction)
-            except (TypeError, ValueError):
-                frac = 0.5
-            frac = min(0.95, max(0.05, frac))
-            return _act("partial_close", fraction=frac)
-        if name == "protect_profit":
-            return _act("protect_sl")
-        if name == "tighten_risk":
-            return _act("tighten_sl")
+                frac = float(plan.get("partial_fraction"))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not (0.0 < frac < 1.0):
+                return None
+            milestone_id = str(plan.get("milestone_id", "") or "").strip()
+            if not milestone_id:
+                return None
+            try:
+                milestone_price = float(plan.get("milestone_price"))
+            except (TypeError, ValueError, OverflowError):
+                milestone_price = None
+            try:
+                stop_price = float(plan.get("stop_price"))
+            except (TypeError, ValueError, OverflowError):
+                stop_price = None
+            return _act(
+                "partial_close",
+                fraction=frac,
+                milestone_id=milestone_id,
+                milestone_price=milestone_price,
+                stop_price=stop_price,
+            )
+        if name in ("protect_profit", "tighten_risk"):
+            try:
+                stop_price = float(plan.get("stop_price"))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not (stop_price > 0.0):
+                return None
+            return _act(
+                "protect_sl" if name == "protect_profit" else "tighten_sl",
+                stop_price=stop_price,
+            )
         if name == "scale_in":
             return _act("scale_in")
         # hold / continue_observing / open_campaign / reject_opportunity / unknown

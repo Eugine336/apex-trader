@@ -5,6 +5,7 @@ situation dimension stats, and governor veto counts to the dashboard.
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import time as _time
@@ -138,6 +139,7 @@ class DecisionMixin:
                     try:
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
+                        logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_decisions.py:140", exc_info=True)
                         continue
                     if len(records) >= max_records:
                         break

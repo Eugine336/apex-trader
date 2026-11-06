@@ -22,6 +22,7 @@ The foundation types here are: :class:`Candidate`, :class:`CandidateEntryDecisio
 """
 
 from __future__ import annotations
+import logging
 
 import uuid
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ def _opportunity_score(opportunity: Any) -> float:
             try:
                 return float(v)
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in brain/candidate_models.py:47", exc_info=True)
                 continue
     return 0.0
 

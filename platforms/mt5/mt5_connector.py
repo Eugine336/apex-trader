@@ -229,6 +229,61 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    @staticmethod
+    def _record_fields(record: Any) -> dict:
+        """Convert an MT5 namedtuple response to a plain field dictionary."""
+        asdict = getattr(record, "_asdict", None)
+        if callable(asdict):
+            return dict(asdict())
+        return {
+            key: value for key, value in vars(record).items()
+            if not key.startswith("_")
+        }
+
+    def get_account_snapshot(self) -> dict:
+        """Return all account_info fields with explicit live-source provenance."""
+        self._require_connection()
+        info = mt5.account_info()
+        if info is None:
+            raise RuntimeError(f"MT5 account_info returned no result: {mt5.last_error()}")
+        return {
+            **self._record_fields(info),
+            "source": "mt5.account_info",
+            "source_verified": True,
+        }
+
+    def get_terminal_snapshot(self) -> dict:
+        """Return terminal health/version metadata without exposing credentials."""
+        self._require_connection()
+        info = mt5.terminal_info()
+        if info is None:
+            raise RuntimeError(f"MT5 terminal_info returned no result: {mt5.last_error()}")
+        return {
+            **self._record_fields(info),
+            "version": mt5.version(),
+            "source": "mt5.terminal_info",
+            "source_verified": True,
+        }
+
+    def get_order_history(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
+        """Return broker order-history records with all MT5-provided fields."""
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 order history requires timezone-aware datetimes")
+        orders = mt5.history_orders_get(
+            from_dt.astimezone(timezone.utc), to_dt.astimezone(timezone.utc)
+        )
+        if orders is None:
+            raise RuntimeError(f"MT5 history_orders_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(order),
+                "source": "mt5.history_orders_get",
+                "source_verified": True,
+            }
+            for order in orders
+        ]
+
     def _get_symbol_sessions(self, mapped_symbol: str) -> list[dict]:
         """Read the broker's weekly per-symbol trade sessions when MT5 exposes them.
 
@@ -279,6 +334,176 @@ class MT5Connector(BaseConnector):
                 })
         return sessions
 
+    def discover_symbols(self) -> list[dict]:
+        """Discover the connected broker's native MT5 symbol universe.
+
+        This is a broker snapshot, not an Apex trading allow-list. It includes
+        disabled and hidden symbols with explicit eligibility/specification
+        fields so the owner can inspect the actual feed without Apex inventing
+        contract metadata.
+        """
+        self._require_connection()
+        try:
+            raw_symbols = mt5.symbols_get()
+        except Exception as exc:
+            raise RuntimeError(f"MT5 symbol discovery failed: {exc}") from exc
+        if raw_symbols is None:
+            raise RuntimeError(f"MT5 symbol discovery returned no result: {mt5.last_error()}")
+
+        disabled = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+        long_only = getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1)
+        short_only = getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2)
+        close_only = getattr(mt5, "SYMBOL_TRADE_MODE_CLOSEONLY", 3)
+        full = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
+        opening_modes = {long_only, short_only, full}
+
+        from brain.symbol_mapper import resolve_to_internal
+        from config import INSTRUMENT_REGISTRY, Platform, get_instrument
+
+        def canonical_symbol(broker_name: str) -> str:
+            canonical = resolve_to_internal(broker_name)
+            if canonical.upper() in INSTRUMENT_REGISTRY:
+                return canonical.upper()
+            normalized = broker_name.strip().upper()
+            candidates = sorted(INSTRUMENT_REGISTRY, key=len, reverse=True)
+            for registered in candidates:
+                if not normalized.startswith(registered):
+                    continue
+                suffix = normalized[len(registered):]
+                if suffix and (
+                    suffix in _COMMON_SUFFIXES
+                    or (
+                        suffix[0] in ".#_!"
+                        and len(suffix) > 1
+                        and suffix[1:].replace(".", "").isalnum()
+                    )
+                ):
+                    return registered
+            return normalized
+
+        named_symbols = [
+            str(getattr(item, "name", "") or "").strip()
+            for item in raw_symbols
+            if str(getattr(item, "name", "") or "").strip()
+        ]
+        aliases: dict[str, list[str]] = {}
+        for broker_name in named_symbols:
+            canonical = canonical_symbol(broker_name)
+            if canonical in INSTRUMENT_REGISTRY:
+                aliases.setdefault(canonical, []).append(broker_name)
+        chosen_broker_symbol: dict[str, str] = {}
+        for canonical, broker_names in aliases.items():
+            if canonical in broker_names:
+                chosen_broker_symbol[canonical] = canonical
+            elif len(broker_names) == 1:
+                chosen_broker_symbol[canonical] = broker_names[0]
+            # Multiple suffixed aliases with no exact canonical name are
+            # ambiguous. They remain visible but cannot enter the trade universe.
+
+        for canonical, broker_name in chosen_broker_symbol.items():
+            self._symbol_cache[canonical] = broker_name
+
+        discovered: list[dict] = []
+        for item in raw_symbols:
+            name = str(getattr(item, "name", "") or "").strip()
+            if not name:
+                continue
+            apex_symbol = canonical_symbol(name)
+            mapping_unique = (
+                apex_symbol in INSTRUMENT_REGISTRY
+                and chosen_broker_symbol.get(apex_symbol) == name
+            )
+            trade_mode = getattr(item, "trade_mode", None)
+            tick_size = float(getattr(item, "trade_tick_size", 0.0) or 0.0)
+            point = float(getattr(item, "point", 0.0) or 0.0)
+            contract_size = float(getattr(item, "trade_contract_size", 0.0) or 0.0)
+            volume_min = float(getattr(item, "volume_min", 0.0) or 0.0)
+            volume_max = float(getattr(item, "volume_max", 0.0) or 0.0)
+            volume_step = float(getattr(item, "volume_step", 0.0) or 0.0)
+            tick_value = float(
+                getattr(item, "trade_tick_value", 0.0)
+                or getattr(item, "trade_tick_value_profit", 0.0)
+                or getattr(item, "trade_tick_value_loss", 0.0)
+                or 0.0
+            )
+            spec_complete = all(value > 0 for value in (
+                tick_size, tick_value, point, contract_size, volume_min, volume_max, volume_step
+            ))
+            try:
+                instrument = get_instrument(apex_symbol)
+                apex_supported = (
+                    mapping_unique
+                    and instrument.platform in {Platform.MT5, Platform.BOTH}
+                )
+            except (KeyError, ValueError):
+                apex_supported = False
+            discovered.append({
+                "symbol": name,
+                "apex_symbol": apex_symbol,
+                "apex_supported": apex_supported,
+                "broker_symbol_mapping_unique": mapping_unique,
+                "description": str(getattr(item, "description", "") or ""),
+                "path": str(getattr(item, "path", "") or ""),
+                "visible_in_market_watch": bool(getattr(item, "visible", False)),
+                "selected_in_terminal": bool(getattr(item, "select", False)),
+                "trade_mode": trade_mode,
+                "can_open_new_positions": trade_mode in opening_modes,
+                "close_only": trade_mode == close_only,
+                "disabled": trade_mode == disabled,
+                "digits": int(getattr(item, "digits", 0) or 0),
+                "point": point,
+                "trade_tick_size": tick_size,
+                "trade_tick_value": tick_value,
+                "trade_contract_size": contract_size,
+                "volume_min": volume_min,
+                "volume_max": volume_max,
+                "volume_step": volume_step,
+                "trade_stops_level": int(getattr(item, "trade_stops_level", 0) or 0),
+                "trade_freeze_level": int(getattr(item, "trade_freeze_level", 0) or 0),
+                "currency_base": str(getattr(item, "currency_base", "") or ""),
+                "currency_profit": str(getattr(item, "currency_profit", "") or ""),
+                "currency_margin": str(getattr(item, "currency_margin", "") or ""),
+                "swap_long": getattr(item, "swap_long", None),
+                "swap_short": getattr(item, "swap_short", None),
+                "specification_complete": spec_complete,
+                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete and apex_supported and mapping_unique),
+                "source": "mt5.symbols_get",
+                "source_verified": True,
+            })
+        return sorted(discovered, key=lambda row: row["symbol"].casefold())
+
+    @staticmethod
+    def _swap_mode_name(value) -> Optional[str]:
+        """Resolve swap units through the installed MetaTrader5 enum constants."""
+        labels = (
+            ("SYMBOL_SWAP_MODE_DISABLED", "disabled"),
+            ("SYMBOL_SWAP_MODE_POINTS", "points"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_SYMBOL", "currency_symbol"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_MARGIN", "currency_margin"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT", "currency_deposit"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_PROFIT", "currency_profit"),
+            ("SYMBOL_SWAP_MODE_INTEREST_CURRENT", "interest_current"),
+            ("SYMBOL_SWAP_MODE_INTEREST_OPEN", "interest_open"),
+            ("SYMBOL_SWAP_MODE_REOPEN_CURRENT", "reopen_current"),
+            ("SYMBOL_SWAP_MODE_REOPEN_BID", "reopen_bid"),
+        )
+        lookup = {}
+        for constant, label in labels:
+            raw_value = getattr(mt5, constant, None)
+            if raw_value is None:
+                continue
+            try:
+                lookup[int(raw_value)] = label
+            # Malformed optional MT5 enum constants are ignored.
+            # SAFE-FALLBACK: unresolved values never become an assumed swap mode.
+            except (TypeError, ValueError, OverflowError):
+                continue
+        try:
+            return lookup.get(int(value)) if value is not None else None
+        except (TypeError, ValueError, OverflowError):
+            # SAFE-FALLBACK: an unknown swap-mode value is not interpreted.
+            return None
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Broker-truth symbol economics from MT5 ``symbol_info``.
 
@@ -309,7 +534,18 @@ class MT5Connector(BaseConnector):
                 "swap_long": getattr(si, "swap_long", None),
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
+                "swap_mode_name": self._swap_mode_name(getattr(si, "swap_mode", None)),
+                "swap_rollover3days": getattr(si, "swap_rollover3days", None),
+                "swap_schedule": {
+                    day: getattr(si, f"swap_{day}", None)
+                    for day in (
+                        "sunday", "monday", "tuesday", "wednesday",
+                        "thursday", "friday", "saturday",
+                    )
+                },
                 "trade_tick_value": getattr(si, "trade_tick_value", None),
+                "trade_tick_value_profit": getattr(si, "trade_tick_value_profit", None),
+                "trade_tick_value_loss": getattr(si, "trade_tick_value_loss", None),
                 "trade_tick_size": getattr(si, "trade_tick_size", None),
                 "trade_contract_size": getattr(si, "trade_contract_size", None),
                 "trade_mode": getattr(si, "trade_mode", None),
@@ -323,6 +559,19 @@ class MT5Connector(BaseConnector):
                 "broker_trading_sessions": self._get_symbol_sessions(mapped),
                 "broker_session_timezone_verified": False,
                 "broker_holiday_calendar_verified": False,
+                "currency_base": getattr(si, "currency_base", None),
+                "currency_profit": getattr(si, "currency_profit", None),
+                "currency_margin": getattr(si, "currency_margin", None),
+                "description": getattr(si, "description", None),
+                "path": getattr(si, "path", None),
+                "trade_calc_mode": getattr(si, "trade_calc_mode", None),
+                "trade_exemode": getattr(si, "trade_exemode", None),
+                "filling_mode": getattr(si, "filling_mode", None),
+                "order_mode": getattr(si, "order_mode", None),
+                "expiration_mode": getattr(si, "expiration_mode", None),
+                "start_time": getattr(si, "start_time", None),
+                "expiration_time": getattr(si, "expiration_time", None),
+                "raw_symbol_info": dict(si._asdict()) if callable(getattr(si, "_asdict", None)) else {},
             }
         except Exception as exc:
             logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
@@ -345,21 +594,9 @@ class MT5Connector(BaseConnector):
         out: list[dict] = []
         for d in deals:
             out.append({
-                "ticket": getattr(d, "ticket", 0),
-                "order": getattr(d, "order", 0),
-                "position_id": getattr(d, "position_id", 0),
-                "time": getattr(d, "time", 0),
-                "symbol": getattr(d, "symbol", ""),
-                "type": getattr(d, "type", -1),
-                "entry": getattr(d, "entry", -1),
-                "volume": getattr(d, "volume", 0.0),
-                "price": getattr(d, "price", 0.0),
-                "commission": getattr(d, "commission", 0.0),
-                "swap": getattr(d, "swap", 0.0),
-                "fee": getattr(d, "fee", 0.0),
-                "profit": getattr(d, "profit", 0.0),
-                "magic": getattr(d, "magic", 0),
-                "comment": getattr(d, "comment", ""),
+                **self._record_fields(d),
+                "source": "mt5.history_deals_get",
+                "source_verified": True,
             })
         return out
 
@@ -415,7 +652,26 @@ class MT5Connector(BaseConnector):
                 f"Stale tick for {mapped}: {age:.1f}s old (limit {self._max_tick_age_seconds}s)"
             )
 
-        pip_size = get_pip_size(symbol)
+        spread_unit = "pips"
+        try:
+            pip_size = get_pip_size(symbol)
+        except KeyError:
+            # Unknown broker-native instruments can still be observed. Their
+            # spread is reported in broker ticks, never mislabeled as pips.
+            info = mt5.symbol_info(mapped)
+            pip_size = float(
+                getattr(info, "trade_tick_size", 0.0)
+                or getattr(info, "point", 0.0)
+                or 0.0
+            )
+            spread_unit = "ticks"
+        if pip_size <= 0:
+            raise RuntimeError(f"MT5 has no usable tick-size/point for {mapped}")
+        raw_fields = (
+            dict(tick._asdict())
+            if callable(getattr(tick, "_asdict", None))
+            else {}
+        )
         return TickData(
             bid=tick.bid,
             ask=tick.ask,
@@ -424,6 +680,8 @@ class MT5Connector(BaseConnector):
             source_timestamp_verified=True,
             quote_kind="bid_ask",
             symbol=str(symbol or "").strip().upper(),
+            spread_unit=spread_unit,
+            raw_fields=raw_fields,
         )
 
     def get_tick(self, symbol: str) -> TickData:
@@ -478,25 +736,218 @@ class MT5Connector(BaseConnector):
             )
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        df = df.rename(
-            columns={"tick_volume": "volume", "real_volume": "real_volume"}
-        )
-        out = df[["time", "open", "high", "low", "close", "volume"]]
+        # Preserve every broker-provided bar field used by market analysis.
+        # "volume" remains a compatibility alias for tick_volume; it is never
+        # silently described as exchange-traded volume.
+        if "tick_volume" in df.columns:
+            df["volume"] = df["tick_volume"]
+        else:
+            df["volume"] = 0
+            df["tick_volume"] = 0
+        if "real_volume" not in df.columns:
+            df["real_volume"] = 0
+        if "spread" not in df.columns:
+            df["spread"] = 0
+        out = df[[
+            "time", "open", "high", "low", "close", "volume",
+            "tick_volume", "real_volume", "spread",
+        ]].copy()
+        out.attrs["volume_basis"] = "tick_volume_alias_with_real_volume_preserved"
         # MT5 copy_rates_from_pos(..., 0, count) returns the in-progress bar as
         # the last row. Callers that need confirmed-closed data can request the
         # forming bar dropped here (default keeps it for the established
         # closed-bar dual-view: structural modules drop it themselves, live
         # observational reads legitimately keep it).
-        if not include_forming and len(out) > 1:
-            out = out.iloc[:-1]
+        if not include_forming:
+            seconds_by_tf = {
+                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
+                "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
+                "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
+                "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
+                "D1": 86400, "W1": 604800,
+            }
+            if timeframe.upper() == "MN1":
+                close_times = out["time"] + pd.offsets.MonthBegin(1)
+                out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+            else:
+                duration = seconds_by_tf.get(timeframe.upper())
+                if duration is not None:
+                    close_times = out["time"] + pd.to_timedelta(duration, unit="s")
+                    out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
         out.attrs.update({
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "mt5",
+            "volume_basis": out.attrs.get("volume_basis"),
+            "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
         return out
+
+    def get_ohlcv_range(
+        self, symbol: str, timeframe: str, from_dt: datetime, to_dt: datetime,
+        *, include_forming: bool = False,
+    ) -> pd.DataFrame:
+        """Fetch a bounded historical bar range with native MT5 volume/spread fields."""
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 bar history requires timezone-aware datetimes")
+        start = from_dt.astimezone(timezone.utc)
+        end = to_dt.astimezone(timezone.utc)
+        if end < start:
+            raise ValueError("to_dt must be greater than or equal to from_dt")
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        rates = mt5.copy_rates_range(mapped, self.timeframe_map(timeframe), start, end)
+        if rates is None:
+            raise RuntimeError(f"MT5 copy_rates_range failed for {mapped}/{timeframe}: {mt5.last_error()}")
+        frame = pd.DataFrame(rates)
+        if frame.empty:
+            frame.attrs.update({
+                "source": "mt5.copy_rates_range",
+                "source_timestamp_verified": True,
+                "source_symbol": mapped,
+                "volume_basis": "tick_volume_alias_with_real_volume_preserved",
+            })
+            return frame
+        frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        if "tick_volume" in frame.columns:
+            frame["volume"] = frame["tick_volume"]
+        else:
+            frame["tick_volume"] = 0
+            frame["volume"] = 0
+        if "real_volume" not in frame.columns:
+            frame["real_volume"] = 0
+        if "spread" not in frame.columns:
+            frame["spread"] = 0
+        columns = [
+            "time", "open", "high", "low", "close", "volume",
+            "tick_volume", "real_volume", "spread",
+        ]
+        frame = frame[[column for column in columns if column in frame.columns]].copy()
+        if not include_forming:
+            seconds_by_tf = {
+                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
+                "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
+                "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
+                "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
+                "D1": 86400, "W1": 604800,
+            }
+            if timeframe.upper() == "MN1":
+                bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
+                frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+            else:
+                duration = seconds_by_tf.get(timeframe.upper())
+                if duration is not None:
+                    bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
+                    frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+        frame.attrs.update({
+            "source": "mt5.copy_rates_range",
+            "source_timestamp_verified": True,
+            "source_symbol": mapped,
+            "source_timezone": "UTC",
+            "volume_basis": "tick_volume_alias_with_real_volume_preserved",
+            "bar_fields": ["tick_volume", "real_volume", "spread"],
+        })
+        return frame
+
+    def get_ticks(
+        self, symbol: str, from_dt: datetime, to_dt: datetime, *, flags: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Fetch the broker's historical tick tape without inventing aggressor flow.
+
+        Datetimes must be timezone-aware; the MT5 request is normalized to UTC.
+        BUY/SELL aggressor flags are exposed only when the broker supplies them.
+        """
+        self._require_connection()
+        if from_dt.tzinfo is None or to_dt.tzinfo is None:
+            raise ValueError("MT5 tick history requires timezone-aware from_dt and to_dt")
+        start = from_dt.astimezone(timezone.utc)
+        end = to_dt.astimezone(timezone.utc)
+        if end < start:
+            raise ValueError("to_dt must be greater than or equal to from_dt")
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        tick_flags = flags if flags is not None else getattr(mt5, "COPY_TICKS_ALL", 0)
+        ticks = mt5.copy_ticks_range(mapped, start, end, tick_flags)
+        if ticks is None:
+            raise RuntimeError(f"No tick history for {mapped}: {mt5.last_error()}")
+        frame = pd.DataFrame(ticks)
+        if frame.empty:
+            frame.attrs.update({
+                "source": "mt5.copy_ticks_range",
+                "source_verified": True,
+                "source_symbol": mapped,
+                "source_timezone": "UTC",
+            })
+            return frame
+        if "time" in frame.columns:
+            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        if "time_msc" in frame.columns:
+            frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
+        raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
+        buy_flag = getattr(mt5, "TICK_FLAG_BUY", 0)
+        sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
+        frame["aggressor_side"] = [
+            "buy" if int(value or 0) & buy_flag else
+            "sell" if int(value or 0) & sell_flag else None
+            for value in raw_flags
+        ]
+        frame.attrs.update({
+            "source": "mt5.copy_ticks_range",
+            "source_verified": True,
+            "source_symbol": mapped,
+            "source_timezone": "UTC",
+            "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
+        })
+        return frame
+
+    def calculate_profit(
+        self, symbol: str, direction: str, volume: float, price_open: float, price_close: float,
+    ) -> float:
+        """Ask MT5 to calculate P&L in account currency for the exact contract."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        if volume <= 0 or price_open <= 0 or price_close <= 0:
+            raise ValueError("volume and prices must be positive")
+        side = str(direction).strip().upper()
+        if side in {"BUY", "LONG"}:
+            action = mt5.ORDER_TYPE_BUY
+        elif side in {"SELL", "SHORT"}:
+            action = mt5.ORDER_TYPE_SELL
+        else:
+            raise ValueError("direction must be BUY/LONG or SELL/SHORT")
+        result = mt5.order_calc_profit(action, mapped, float(volume), float(price_open), float(price_close))
+        if result is None:
+            raise RuntimeError(f"MT5 order_calc_profit failed for {mapped}: {mt5.last_error()}")
+        return float(result)
+
+    def calculate_margin(
+        self, symbol: str, direction: str, volume: float, price: float,
+    ) -> float:
+        """Ask MT5 to calculate required margin in account currency."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
+        if volume <= 0 or price <= 0:
+            raise ValueError("volume and price must be positive")
+        side = str(direction).strip().upper()
+        if side in {"BUY", "LONG"}:
+            action = mt5.ORDER_TYPE_BUY
+        elif side in {"SELL", "SHORT"}:
+            action = mt5.ORDER_TYPE_SELL
+        else:
+            raise ValueError("direction must be BUY/LONG or SELL/SHORT")
+        result = mt5.order_calc_margin(action, mapped, float(volume), float(price))
+        if result is None:
+            raise RuntimeError(f"MT5 order_calc_margin failed for {mapped}: {mt5.last_error()}")
+        return float(result)
 
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread
@@ -1234,6 +1685,7 @@ class MT5Connector(BaseConnector):
             lots_closed=close_lots,
             pnl=position.profit,
             platform="mt5",
+            requested_price=price,
         )
 
     # ── Positions ────────────────────────────────────────────────────────
@@ -1244,6 +1696,40 @@ class MT5Connector(BaseConnector):
         if positions is None:
             return []
         return [self._to_position_info(p) for p in positions]
+
+    def get_position_snapshots(self, symbol: Optional[str] = None) -> list[dict]:
+        """Return unabridged MT5 position records for audit/reconciliation."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol) if symbol else None
+        positions = mt5.positions_get(symbol=mapped) if mapped else mt5.positions_get()
+        if positions is None:
+            raise RuntimeError(f"MT5 positions_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(position),
+                "source": "mt5.positions_get",
+                "source_verified": True,
+                "connector_broker": self._broker_name,
+            }
+            for position in positions
+        ]
+
+    def get_pending_order_snapshots(self, symbol: Optional[str] = None) -> list[dict]:
+        """Return unabridged MT5 pending-order records for audit/reconciliation."""
+        self._require_connection()
+        mapped = self.symbol_map(symbol) if symbol else None
+        orders = mt5.orders_get(symbol=mapped) if mapped else mt5.orders_get()
+        if orders is None:
+            raise RuntimeError(f"MT5 orders_get returned no result: {mt5.last_error()}")
+        return [
+            {
+                **self._record_fields(order),
+                "source": "mt5.orders_get",
+                "source_verified": True,
+                "connector_broker": self._broker_name,
+            }
+            for order in orders
+        ]
 
     def get_position_info(self, order_id: str) -> Optional[PositionInfo]:
         self._require_connection()
@@ -1363,15 +1849,16 @@ class MT5Connector(BaseConnector):
                 mt5.market_book_release(mapped)
             if not book:
                 return []
+            # Local retrieval time is separate from provider source time.
+            snapshot_received_epoch = _time.time()
             out: list[dict] = []
             for item in book:
                 price = float(getattr(item, "price", 0.0) or 0.0)
                 if price <= 0:
                     continue
-                volume = float(
-                    getattr(item, "volume_real", 0.0)
-                    or getattr(item, "volume", 0.0) or 0.0,
-                )
+                reported_volume = float(getattr(item, "volume", 0.0) or 0.0)
+                real_volume = float(getattr(item, "volume_real", 0.0) or 0.0)
+                volume = real_volume if real_volume > 0 else reported_volume
                 # MT5 BOOK_TYPE: 1/3 = SELL (ask), 2/4 = BUY (bid).
                 btype = getattr(item, "type", None)
                 if btype in (2, 4):
@@ -1379,8 +1866,26 @@ class MT5Connector(BaseConnector):
                 elif btype in (1, 3):
                     side = "ask"
                 else:
-                    continue
-                out.append({"price": price, "volume": volume, "side": side})
+                    side = "unknown"
+                raw_fields = (
+                    dict(item._asdict())
+                    if callable(getattr(item, "_asdict", None))
+                    else {}
+                )
+                out.append({
+                    "price": price,
+                    "volume": volume,
+                    "reported_volume": reported_volume,
+                    "volume_real": real_volume,
+                    "volume_basis": "volume_real" if real_volume > 0 else "volume",
+                    "side": side,
+                    "book_type": btype,
+                    "raw_fields": raw_fields,
+                    "source": "mt5.market_book_get",
+                    "source_symbol": mapped,
+                    "snapshot_received_epoch": snapshot_received_epoch,
+                    "source_verified": True,
+                })
             return out
         except Exception as exc:  # noqa: BLE001
             logger.debug("[mt5] market depth unavailable for {}: {}", symbol, exc)
@@ -1411,6 +1916,16 @@ class MT5Connector(BaseConnector):
 
         if not _MT5_AVAILABLE or not self._connected:
             return apex_symbol
+
+        # Owner-selected broker-native symbols may already include a broker
+        # suffix (e.g. EURUSD.a). Resolve that exact name before trying aliases.
+        if _MT5_AVAILABLE and self._connected:
+            direct_info = mt5.symbol_info(apex_symbol)
+            if direct_info is not None:
+                if not getattr(direct_info, "visible", False):
+                    mt5.symbol_select(apex_symbol, True)
+                self._symbol_cache[apex_symbol] = apex_symbol
+                return apex_symbol
 
         for suffix in _COMMON_SUFFIXES:
             candidate = apex_symbol + suffix
@@ -1537,6 +2052,7 @@ class MT5Connector(BaseConnector):
         # ticket and the raw mt5 position object, so this only affects the symbol
         # the rest of the system records and learns under — keeping pip_size,
         # trade-journal, and per-symbol learner keys consistent.
+        info = mt5.symbol_info(p.symbol)
         return PositionInfo(
             order_id=str(p.ticket),
             symbol=resolve_to_internal(p.symbol),
@@ -1550,6 +2066,15 @@ class MT5Connector(BaseConnector):
             swap=p.swap,
             open_time=datetime.fromtimestamp(p.time, tz=timezone.utc),
             platform="mt5",
+            volume_min=float(getattr(info, "volume_min", 0.0) or 0.0),
+            volume_step=float(getattr(info, "volume_step", 0.0) or 0.0),
+            volume_max=float(getattr(info, "volume_max", 0.0) or 0.0),
+            digits=int(getattr(info, "digits", 0) or 0),
+            tick_size=float(
+                getattr(info, "trade_tick_size", 0.0)
+                or getattr(info, "point", 0.0)
+                or 0.0
+            ),
         )
 
     def _fail_order(

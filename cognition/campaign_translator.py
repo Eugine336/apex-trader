@@ -11,6 +11,7 @@ Pure standard library, fully offline-testable.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 from dataclasses import dataclass, field
@@ -55,6 +56,9 @@ class OriginationIntent:
     meta: dict = field(default_factory=dict)
     reference_entry_price: Optional[float] = None
     payoff_geometry: dict = field(default_factory=dict)
+    order_type: str = "MARKET"
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +79,9 @@ class OriginationIntent:
             "confidence": round(self.confidence, 4),
             "reference_entry_price": self.reference_entry_price,
             "payoff_geometry": dict(self.payoff_geometry),
+            "order_type": self.order_type,
+            "entry_zone_low": self.entry_zone_low,
+            "entry_zone_high": self.entry_zone_high,
         }
 
 
@@ -123,6 +130,7 @@ def derive_protective_levels(
             try:
                 tv = float(t)
             except (TypeError, ValueError):
+                logging.getLogger(__name__).debug("Exception handled by fallback in cognition/campaign_translator.py:125", exc_info=True)
                 continue
             if is_long and tv >= price + min_ahead:
                 tp = tv
@@ -200,6 +208,26 @@ def translate(
             or str(geometry.get("symbol", "") or "").strip().upper() != symbol.strip().upper()
         ):
             return None
+        order_type = str(geometry.get("order_type", "MARKET") or "MARKET").upper()
+        intent_order_type = str(intent_meta.get("order_type", order_type) or order_type).upper()
+        intent_kind = str(intent_meta.get("kind", order_type.lower()) or "").strip().lower()
+        if (
+            order_type not in {"MARKET", "LIMIT", "STOP"}
+            or intent_order_type != order_type
+            or intent_kind != order_type.lower()
+        ):
+            return None
+        zone_low = geometry.get("entry_zone_low")
+        zone_high = geometry.get("entry_zone_high")
+        intent_zone_low = intent_meta.get("entry_zone_low", zone_low)
+        intent_zone_high = intent_meta.get("entry_zone_high", zone_high)
+        if (
+            (zone_low is None) != (zone_high is None)
+            or (intent_zone_low is None) != (intent_zone_high is None)
+            or intent_zone_low != zone_low
+            or intent_zone_high != zone_high
+        ):
+            return None
         evidence_ids = geometry.get("evidence_ids")
         if not isinstance(evidence_ids, (list, tuple)) or not any(
             str(item or "").strip() for item in evidence_ids
@@ -228,6 +256,13 @@ def translate(
         ):
             return None
         tolerance = max(1e-9, abs(reference_entry) * 1e-8)
+        if zone_low is not None:
+            zone_low = positive_number(zone_low)
+            zone_high = positive_number(zone_high)
+            if zone_low is None or zone_high is None or zone_low > zone_high:
+                return None
+            if not zone_low <= geometry_entry <= zone_high:
+                return None
         if (
             abs(reference_entry - geometry_entry) > tolerance
             or abs(sl - geometry_stop) > tolerance
@@ -272,6 +307,9 @@ def translate(
             },
             reference_entry_price=reference_entry,
             payoff_geometry=dict(geometry),
+            order_type=order_type,
+            entry_zone_low=zone_low,
+            entry_zone_high=zone_high,
         )
     except Exception:  # noqa: BLE001 — translation must never raise
         return None

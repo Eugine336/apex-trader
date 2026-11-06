@@ -72,6 +72,9 @@ jobs:
           python -c "import tick, pytest;
           raise SystemExit(pytest.main(['-p','pytest_asyncio.plugin','tests/','-v','--tb=short']))"
 
+      - name: Verify generated concept coverage register
+        run: python scripts/concept_coverage.py --check
+
       - name: Audit canonical identity and safety boundaries
         if: always()
         run: python scripts/identity_audit.py

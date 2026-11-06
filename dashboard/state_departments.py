@@ -20,6 +20,7 @@ Department status vocabulary:
 """
 
 from __future__ import annotations
+import logging
 
 from typing import Any
 
@@ -331,6 +332,7 @@ class DepartmentsMixin:
                     approved = int(s.get("approved", 0) or 0)
                     rejected = int(s.get("rejected", 0) or 0)
                 except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_departments.py:333", exc_info=True)
                     pass
             mg = self.get_module_governor()
             counts = mg.get("counts", {}) or {}

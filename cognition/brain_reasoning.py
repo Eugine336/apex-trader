@@ -29,6 +29,7 @@ advisor is available the Brain can still originate from this layer alone
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from hashlib import sha256
 from typing import Any, Optional
 
@@ -38,6 +39,9 @@ from cognition.market_context import analyze_market_context
 from cognition.pattern_rules import detect_patterns, pattern_name
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
 from cognition.analytical_knowledge import assess_analytical_knowledge, knowledge_coverage
+from cognition.concept_synthesis import synthesize_concept_readings
+
+logger = logging.getLogger(__name__)
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -514,6 +518,8 @@ class BrainReasoner:
                     "timeframe": str(m.get("timeframe", "") or ""),
                     "source_bar_epoch": m.get("source_bar_epoch"),
                     "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
+                    "data_basis": str(getattr(e, "data_basis", "") or ""),
+                    "provisional": getattr(e, "provisional", True) is True,
                     "independence_group": str(getattr(e, "independence_group", "") or ""),
                     "applicable": m.get("applicable") is True,
                     "implications": list(m.get("implications") or []),
@@ -1488,125 +1494,186 @@ class BrainReasoner:
             # it does not supply a side, forecast probability or trade permission.
             lens_registry = {lens.key: lens for lens in STRATEGY_LENSES}
             for assessment in analysis.strategy_lenses:
-                if not isinstance(assessment, dict) or assessment.get("status") != "relevant":
-                    continue
-                lens_key = str(assessment.get("key", "") or "")
-                lens = lens_registry.get(lens_key)
-                if lens is None:
-                    continue
-                lens_domains = set(lens.evidence_domains)
-                source_ids = [
-                    item["evidence_id"] for item in analysis.evidence_index
-                    if item.get("domain") in lens_domains
-                ]
-                if not source_ids:
-                    continue
-                lens_support = [
-                    name for name in names
-                    if lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
-                ]
-                lens_challenges = [
-                    name for name in names
-                    if name in _CONTRA_PATTERNS
-                    and lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
-                ]
-                relevance = _clamp01(assessment.get("relevance", 0.0))
-                lens_confidence = min(
-                    0.30,
-                    0.10
-                    + 0.04 * min(3, len(assessment.get("reasons", []) or []))
-                    + 0.02 * min(3, len(source_ids)),
-                )
-                hyps.append(BrainHypothesis(
-                    statement=(
-                        f"{lens.name} is relevant to the current {symbol} evidence. "
-                        f"Current anchors: {'; '.join(assessment.get('reasons', []) or [])}. "
-                        "This is a lens-specific explanation to test, not a validated edge."
-                    )[:500],
-                    supporting_patterns=lens_support,
-                    contradicting_patterns=lens_challenges,
-                    confidence=lens_confidence,
-                    direction_implication=FLAT,
-                    invalidation=(
-                        "The lens's required observations are contradicted, stale, or no longer relevant"
-                    ),
-                    opportunity_implication=(
-                        f"{lens.name} hypothesis; evaluate its required evidence and limitations "
-                        "without assigning direction from the lens itself"
-                    ),
-                    hypothesis_kind=f"strategy_lens:{lens_key}",
-                    supporting_evidence_ids=source_ids,
-                    contradicting_evidence_ids=list(dict.fromkeys(
-                        evidence_id for name in lens_challenges
-                        for evidence_id in analysis.pattern_evidence_ids.get(name, [])
-                    )),
-                    assumptions=[
-                        "Lens relevance does not establish predictive value or profitability."
-                    ],
-                    unresolved_unknowns=list(dict.fromkeys(
-                        list(assessment.get("missing_context", []) or [])
-                        + [lens.limitation]
-                    )),
-                    distinguishing_evidence=list(lens.data_requirements),
-                    horizon=self._evidence_horizon(
-                        analysis, lens_support, lens_challenges,
-                    ),
-                    confidence_components={
-                        "lens_relevance": relevance,
-                        "source_count": len(source_ids),
-                        "score_kind": "lens_relevance_not_forecast_confidence",
-                        "calibrated_probability": False,
-                    },
-                    evidence_lineage_scope="domain_level_candidate_sources",
-                ))
-
-            # Concept readings: each applicable implication of a full concept
-            # reading becomes a hypothesis carrying the concept's own invalidation,
-            # objective and open requirements. Strength is the reading's own
-            # evidence strength versus this instrument's history (uncalibrated);
-            # the Brain still weighs, challenges and may reject every one.
-            for reading in analysis.concept_readings:
-                if not reading.get("applicable"):
-                    continue
-                for imp in reading.get("implications", []):
-                    direction = str(imp.get("direction", "") or "").upper()
-                    if direction not in (LONG, SHORT, FLAT):
+                try:
+                    if not isinstance(assessment, dict) or assessment.get("status") != "relevant":
                         continue
-                    strength = imp.get("strength")
-                    conflicts = list(imp.get("conflicts_with", []) or [])
-                    requires = list(imp.get("requires", []) or [])
-                    objective = imp.get("objective_price")
-                    invalid_px = imp.get("invalidation_price")
+                    lens_key = str(assessment.get("key", "") or "")
+                    lens = lens_registry.get(lens_key)
+                    if lens is None:
+                        continue
+                    lens_domains = set(lens.evidence_domains)
+                    source_ids = [
+                        item["evidence_id"] for item in analysis.evidence_index
+                        if item.get("domain") in lens_domains
+                    ]
+                    if not source_ids:
+                        continue
+                    lens_support = [
+                        name for name in names
+                        if lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
+                    ]
+                    lens_challenges = [
+                        name for name in names
+                        if name in _CONTRA_PATTERNS
+                        and lens_domains.intersection(_PATTERN_DOMAINS.get(name, ()))
+                    ]
+                    relevance = _clamp01(assessment.get("relevance", 0.0))
+                    lens_confidence = min(
+                        0.30,
+                        0.10
+                        + 0.04 * min(3, len(assessment.get("reasons", []) or []))
+                        + 0.02 * min(3, len(source_ids)),
+                    )
+                    regime_fit_challenges = [
+                        str(reason)
+                        for reason in (assessment.get("reasons", []) or [])
+                        if "challenges this style" in str(reason)
+                        or "requires an unconflicted" in str(reason)
+                    ]
                     hyps.append(BrainHypothesis(
-                        statement=str(imp.get("statement", ""))[:500],
-                        confidence=float(strength) if isinstance(strength, (int, float)) else 0.0,
-                        direction_implication=direction,
-                        invalidation=str(imp.get("invalidation_reason", "") or ""),
+                        statement=(
+                            f"{lens.name} is relevant to the current {symbol} evidence. "
+                            f"Current anchors: {'; '.join(assessment.get('reasons', []) or [])}. "
+                            "This is a lens-specific explanation to test, not a validated edge."
+                        )[:500],
+                        supporting_patterns=lens_support,
+                        contradicting_patterns=lens_challenges,
+                        confidence=lens_confidence,
+                        direction_implication=FLAT,
+                        invalidation=(
+                            "The lens's required observations are contradicted, stale, or no longer relevant"
+                        ),
                         opportunity_implication=(
-                            f"{reading.get('concept')} on {reading.get('timeframe')}: "
-                            + (f"objective {objective:.10g}" if isinstance(objective, (int, float)) else "no objective")
-                            + (f"; invalidation {invalid_px:.10g}" if isinstance(invalid_px, (int, float)) else "")
-                            + ("; trigger satisfied" if imp.get("activated") else "; trigger not satisfied")
+                            f"{lens.name} hypothesis; evaluate its required evidence and limitations "
+                            "without assigning direction from the lens itself"
                         ),
-                        hypothesis_kind=f"concept:{reading.get('concept')}:{reading.get('timeframe')}",
-                        supporting_evidence_ids=[reading.get("evidence_id", "")],
-                        assumptions=["Concept reading strength is uncalibrated reasoning strength, "
-                                     "not a probability or a validated edge."],
-                        unresolved_unknowns=requires + conflicts,
-                        distinguishing_evidence=(
-                            [f"requires: {item}" for item in requires]
-                            + [f"weakened by: {item}" for item in conflicts]
-                            + ([f"invalidation: {imp.get('invalidation_reason')}"] if imp.get("invalidation_reason") else [])
+                        hypothesis_kind=f"strategy_lens:{lens_key}",
+                        supporting_evidence_ids=source_ids,
+                        contradicting_evidence_ids=list(dict.fromkeys(
+                            evidence_id for name in lens_challenges
+                            for evidence_id in analysis.pattern_evidence_ids.get(name, [])
+                        )),
+                        assumptions=[
+                            "Lens relevance does not establish predictive value or profitability."
+                        ],
+                        unresolved_unknowns=list(dict.fromkeys(
+                            list(assessment.get("missing_context", []) or [])
+                            + regime_fit_challenges
+                            + [lens.limitation]
+                        )),
+                        distinguishing_evidence=list(lens.data_requirements),
+                        horizon=self._evidence_horizon(
+                            analysis, lens_support, lens_challenges,
                         ),
-                        horizon=f"{reading.get('timeframe')} structure",
                         confidence_components={
-                            "concept": reading.get("concept"),
-                            "reading_strength": strength,
-                            "score_kind": "concept_reading_strength_vs_own_history",
+                            "lens_relevance": relevance,
+                            "source_count": len(source_ids),
+                            "score_kind": "lens_relevance_not_forecast_confidence",
                             "calibrated_probability": False,
                         },
-                        evidence_lineage_scope="concept_reading_evidence",
+                        evidence_lineage_scope="domain_level_candidate_sources",
                     ))
+
+                except Exception as exc:  # noqa: BLE001 — isolate one optional lens from native concepts
+                    logger.exception(
+                        "Strategy lens hypothesis failed for %s (%s): %s",
+                        symbol, assessment.get("key") if isinstance(assessment, dict) else "unknown", exc,
+                    )
+                    continue
+
+            # Select and synthesize concept readings before they become
+            # hypotheses. Shared OHLC provenance is not independent confluence:
+            # same-context readings are grouped, the strongest member anchors
+            # strength, and active opposing groups reduce it.
+            concept_groups = synthesize_concept_readings(analysis.concept_readings)
+            for group in concept_groups:
+                concepts = list(group.get("concepts", []) or [])
+                direction = str(group.get("direction", "") or "").upper()
+                if direction not in (LONG, SHORT, FLAT):
+                    continue
+                opposing_concepts = list(group.get("opposing_concepts", []) or [])
+                requirements = list(group.get("requirements", []) or [])
+                conflicts = list(group.get("conflicts", []) or [])
+                if opposing_concepts:
+                    conflicts.append(
+                        "opposing activated readings: " + ", ".join(opposing_concepts)
+                    )
+                geometry = list(group.get("geometry_candidates", []) or [])
+                geometry_text = [
+                    (
+                        f"{item.get('concept')}: "
+                        + (
+                            f"invalidation {item['invalidation_price']:.10g}"
+                            if isinstance(item.get("invalidation_price"), (int, float))
+                            else "invalidation unknown"
+                        )
+                        + (
+                            f", objective {item['objective_price']:.10g}"
+                            if isinstance(item.get("objective_price"), (int, float))
+                            else ", objective unknown"
+                        )
+                    )
+                    for item in geometry
+                ]
+                statements = list(group.get("statements", []) or [])
+                statement = (
+                    f"{', '.join(concepts)} readings on {group.get('timeframe')} "
+                    f"form one {group.get('status')} {direction} hypothesis: "
+                    + ("; ".join(statements[:3]) if statements else "no explanatory text supplied")
+                )
+                invalidation = "; ".join(
+                    f"{item.get('concept')}: {item.get('invalidation_reason')}"
+                    for item in geometry if item.get("invalidation_reason")
+                )
+                hyps.append(BrainHypothesis(
+                    statement=statement[:700],
+                    supporting_patterns=concepts,
+                    contradicting_patterns=opposing_concepts,
+                    confidence=float(group.get("confidence", 0.0) or 0.0),
+                    direction_implication=direction,
+                    invalidation=invalidation,
+                    opportunity_implication=(
+                        f"{group.get('timeframe')} {group.get('status')} concept group; "
+                        f"member readings={group.get('member_count', 0)}; "
+                        f"distinct concepts={group.get('concept_count', 0)}; "
+                        f"independent evidence groups={group.get('confluence_count', 0)}; "
+                        + ("geometry candidates: " + "; ".join(geometry_text) if geometry_text else "no complete geometry")
+                    ),
+                    hypothesis_kind=(
+                        f"concept_group:{group.get('timeframe')}:{direction}:"
+                        f"{'active' if group.get('activated') else 'watch'}"
+                    ),
+                    supporting_evidence_ids=list(group.get("evidence_ids", []) or []),
+                    contradicting_evidence_ids=list(group.get("opposing_evidence_ids", []) or []),
+                    assumptions=[
+                        "Concept strengths are uncalibrated reasoning measures, not probabilities.",
+                        "Readings from the same OHLC stream are correlated; confluence does not add independent confidence.",
+                    ],
+                    unresolved_unknowns=list(dict.fromkeys(requirements + conflicts)),
+                    distinguishing_evidence=(
+                        [f"supporting concept: {item}" for item in concepts]
+                        + [f"opposing concept: {item}" for item in opposing_concepts]
+                        + [f"geometry: {item}" for item in geometry_text]
+                        + [f"requires: {item}" for item in requirements]
+                        + [f"conflict: {item}" for item in conflicts]
+                    ),
+                    horizon=f"{group.get('timeframe')} structure",
+                    confidence_components={
+                        "raw_strongest_reading": group.get("strength", 0.0),
+                        "opposing_active_strength": group.get("opposing_strength", 0.0),
+                        "confluence_count": group.get("confluence_count", 0),
+                        "concept_count": group.get("concept_count", 0),
+                        "independence_groups": list(group.get("independence_groups", []) or []),
+                        "independence_status": group.get("independence_status", "provenance_unknown"),
+                        "member_count": group.get("member_count", 0),
+                        "confidence_rule": "max_member_strength_times_opposition_penalty",
+                        "additive_confluence_boost": False,
+                        "geometry_divergent": group.get("geometry_divergent", False),
+                        "score_kind": "uncalibrated_concept_group_strength",
+                        "calibrated_probability": False,
+                    },
+                    evidence_lineage_scope="concept_group_evidence",
+                ))
 
             # Generate explicit counter-hypotheses for the strongest distinct
             # directional explanations. When no directional thesis exists, still
@@ -1623,7 +1690,8 @@ class BrainReasoner:
                 primary = max(hyps, key=lambda item: item.confidence)
                 hyps.append(self._counter(primary, analysis))
             return hyps
-        except Exception:  # noqa: BLE001 — hypothesis generation must never break reasoning
+        except Exception as exc:  # noqa: BLE001 — preserve diagnosis while keeping reasoning fail-closed
+            logger.exception("Native hypothesis generation failed for %s: %s", symbol, exc)
             return [BrainHypothesis(
                 statement="No structured hypothesis could be formed from the evidence.",
                 confidence=0.0, direction_implication=FLAT,

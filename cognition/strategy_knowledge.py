@@ -37,6 +37,7 @@ class StrategyLensAssessment:
     missing_context: tuple[str, ...]
     limitation: str
     data_requirements: tuple[str, ...] = ()
+    regime_fit: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +48,7 @@ class StrategyLensAssessment:
             "reasons": list(self.reasons),
             "missing_context": list(self.missing_context),
             "data_requirements": list(self.data_requirements),
+            "regime_fit": self.regime_fit,
             "validation_requirements_not_verified": list(self.data_requirements),
             "validation_state": "relevance_only_not_strategy_validation",
             "limitation": self.limitation,
@@ -298,6 +300,56 @@ def _contains_anchor(surface: str, anchor: str) -> bool:
     return f" {normalized_anchor} " in f" {normalized_surface} "
 
 
+
+
+# These relationships describe when a style's assumptions are supported or
+# challenged by the Brain's measured regime fields. They are context, never gates.
+_LENS_REGIME_FIT_RULES = {
+    # Trend-dependent styles: repeated, unconflicted per-timeframe structure
+    # is required by _classify_regime before trend_context becomes directional.
+    "trend_following": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
+    "trend_strength": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
+    "moving_average": ("trend_context", {"uptrend", "downtrend"}, {"range"}),
+    "mean_reversion": ("trend_context", {"range"}, {"uptrend", "downtrend"}),
+    "range_auction": ("trend_context", {"range"}, {"uptrend", "downtrend"}),
+
+    # Momentum-dependent styles use the Brain's independently aggregated
+    # momentum state. These are compatibility observations, not entry signals.
+    "momentum": ("momentum", {"accelerating"}, {"decelerating"}),
+    # Breakout styles require measured expansion; compression is a challenge
+    # to an active breakout interpretation, not a directional short signal.
+    "breakout": ("volatility", {"expanding"}, {"compressing"}),
+    "volatility_breakout": ("volatility", {"expanding"}, {"compressing"}),
+    # This lens describes both sides of the volatility state rather than
+    # preferring expansion or contraction.
+    "volatility_regime": ("volatility", {"compressing", "expanding"}, set()),
+
+    # Order-flow auction interpretation consumes the Brain's aggregated flow
+    # state. Buying/selling means directional activity is present; it does not
+    # authorize that direction. Tick execution microstructure needs quote/latency
+    # evidence not represented by this field, so its fit remains unknown.
+    "order_flow_auction": ("order_flow", {"buying", "selling"}, {"balanced"}),
+}
+
+
+def _lens_regime_fit(lens_key: str, regime: dict[str, str]) -> tuple[str, str]:
+    rule = _LENS_REGIME_FIT_RULES.get(lens_key)
+    if rule is None:
+        return (
+            "unknown",
+            "no measured regime field currently establishes compatibility for this style",
+        )
+    field, supportive, challenging = rule
+    observed = str(regime.get(field, "unknown") or "unknown").lower()
+    if observed == "conflicted":
+        return "conflicted", f"regime fit requires an unconflicted {field} observation"
+    if observed in supportive:
+        return "supports", f"measured {field}={observed} supports this style's assumptions"
+    if observed in challenging:
+        return "challenges", f"measured {field}={observed} challenges this style's assumptions"
+    return "unknown", f"measured {field} is {observed}; style compatibility remains unknown"
+
+
 def assess_strategy_lenses(
     evidence: Iterable[Any],
     pattern_names: Iterable[str] = (),
@@ -328,12 +380,65 @@ def assess_strategy_lenses(
         ]
         matched = list(dict.fromkeys([*matched_evidence, *matched_context]))
         domain_hits = [domain for domain in lens.evidence_domains if domain in domains]
+        lens_readings = [
+            item for item in items
+            if isinstance(getattr(item, "measurements", None), dict)
+            and item.measurements.get("source_kind") == "concept_reading"
+            and (
+                item.measurements.get("lens_key") == lens.key
+                or (
+                    (
+                        lens.key == "crt" and item.measurements.get("concept") == "crt"
+                    ) or (
+                        lens.key == "market_regime_transition"
+                        and item.measurements.get("concept") == "regime_switching"
+                    )
+                )
+            )
+        ]
+        lens_applicable = [
+            item for item in lens_readings
+            if item.measurements.get("applicable") is True
+        ]
+        lens_missing_methods = sorted({
+            str(method)
+            for item in lens_readings
+            for method in (item.measurements.get("missing_methods") or [])
+        })
+        lens_unknowns = list(dict.fromkeys(
+            str(reason)
+            for item in lens_readings
+            for reason in (item.measurements.get("unknowns") or [])
+            if str(reason).strip()
+        ))
+        lens_data_gated = any(
+            bool(item.measurements.get("data_gated_reason")) for item in lens_readings
+        )
+        lens_provenance_verified = bool(lens_applicable) and all(
+            item.measurements.get("source_timestamp_known") is True
+            and str(item.measurements.get("data_basis") or "").startswith("completed_ohlc")
+            for item in lens_applicable
+        )
+        lens_complete = (
+            bool(lens_applicable)
+            and not lens_missing_methods
+            and not lens_data_gated
+            and lens_provenance_verified
+        )
+        regime_fit, regime_fit_context = _lens_regime_fit(lens.key, reg)
         regime_hits = [
             f"{key}={value}" for key, value in reg.items()
             if value and value not in {"unknown", "none", "balanced", "flat", "mixed"}
             and any(_contains_anchor(value, token) for token in lens.anchors)
         ]
-        if matched_evidence and domain_hits:
+        if lens_readings:
+            if lens_complete:
+                status = "relevant"
+            elif lens_applicable:
+                status = "watch"
+            else:
+                status = "not_evaluable"
+        elif matched_evidence and domain_hits:
             status = "relevant"
         elif matched or domain_hits or regime_hits:
             status = "watch"
@@ -346,11 +451,24 @@ def assess_strategy_lenses(
             reasons.append("available evidence domains: " + ", ".join(domain_hits))
         if regime_hits:
             reasons.append("regime context: " + ", ".join(regime_hits[:3]))
+        if regime_fit_context:
+            reasons.append(regime_fit_context)
+        if lens_readings:
+            reasons.append(
+                "native method composition: "
+                + ("complete and applicable" if lens_complete else
+                   "partial; missing inputs remain explicit" if lens_applicable else
+                   "present but not currently applicable")
+            )
+            if lens_missing_methods:
+                reasons.append("missing method readings: " + ", ".join(lens_missing_methods))
         if not reasons:
             reasons.append("no current evidence anchors; relevance is unknown, not negative")
         source_count = len({
-            str(getattr(item, "source_module", "") or type(item).__name__)
-            for item in items if _domain(item) in lens.evidence_domains
+            str(getattr(item, "independence_group", "") or "")
+            for item in items
+            if _domain(item) in lens.evidence_domains
+            and str(getattr(item, "independence_group", "") or "").strip()
         })
         if status == "relevant":
             relevance = min(1.0, 0.35 + 0.1 * min(len(matched), 3) + 0.05 * min(source_count, 3))
@@ -364,9 +482,19 @@ def assess_strategy_lenses(
             status=status,
             relevance=round(relevance, 3),
             reasons=tuple(reasons),
-            missing_context=tuple(lens.data_requirements) if status != "relevant" else (),
+            missing_context=tuple(dict.fromkeys([
+                *(lens.data_requirements if status != "relevant" else ()),
+                *(
+                    [regime_fit_context]
+                    if regime_fit in {"unknown", "conflicted"} and regime_fit_context
+                    else []
+                ),
+                *lens_missing_methods,
+                *lens_unknowns,
+            ])),
             limitation=lens.limitation,
             data_requirements=tuple(lens.data_requirements),
+            regime_fit=regime_fit,
         ))
 
     order = {"relevant": 0, "watch": 1, "not_evaluable": 2}

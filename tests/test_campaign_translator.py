@@ -234,3 +234,43 @@ def test_lot_size_never_zero_to_broker_and_fault_safe():
     # unusable + harvest off → 0 (caller skips, does not send)
     assert compute_lot_size(risk_usd=0, stop_distance=0, tick_value=0, tick_size=0,
                             vol_min=0.01, vol_step=0.01, floor_to_min=False) == 0.0
+
+
+
+def test_translate_carries_concept_order_type_and_entry_zone():
+    spec = _spec()
+    intent_data = dict(spec.initial_execution_intent)
+    geometry = dict(intent_data["payoff_geometry"])
+    geometry.update({
+        "order_type": "LIMIT",
+        "entry_zone_low": 1.095,
+        "entry_zone_high": 1.105,
+    })
+    intent_data.update({
+        "kind": "limit",
+        "order_type": "LIMIT",
+        "entry_zone_low": 1.095,
+        "entry_zone_high": 1.105,
+        "payoff_geometry": geometry,
+    })
+    spec.initial_execution_intent = intent_data
+
+    intent = translate(spec)
+
+    assert intent is not None
+    assert intent.order_type == "LIMIT"
+    assert intent.entry_zone_low == 1.095
+    assert intent.entry_zone_high == 1.105
+    assert intent.to_dict()["order_type"] == "LIMIT"
+
+
+def test_translate_rejects_entry_instruction_mismatch():
+    spec = _spec()
+    intent_data = dict(spec.initial_execution_intent)
+    geometry = dict(intent_data["payoff_geometry"])
+    geometry["order_type"] = "LIMIT"
+    intent_data["payoff_geometry"] = geometry
+    intent_data["order_type"] = "STOP"
+    spec.initial_execution_intent = intent_data
+
+    assert translate(spec) is None
