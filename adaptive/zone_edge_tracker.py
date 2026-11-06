@@ -21,6 +21,7 @@ Safety properties (carried from the original zone-edge tracker):
 """
 
 from __future__ import annotations
+import logging
 
 import json
 import os
