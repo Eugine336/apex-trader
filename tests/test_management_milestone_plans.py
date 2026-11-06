@@ -14,7 +14,6 @@ def _evidence(close, prior_range_low, *, prior_range_high=None, epoch=1000.0, sy
             "source_timestamp_known": True,
             "data_basis": "completed_ohlc",
             "provisional": False,
-            "completed": True,
             "timeframe": timeframe,
             "source_bar_epoch": epoch,
             "current_close": close,
