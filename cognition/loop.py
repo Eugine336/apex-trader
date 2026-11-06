@@ -2640,28 +2640,22 @@ class CognitionLoop:
             logger.debug("[cognition-loop] pattern outcome fault: %s", exc)
 
     def _realise_management(self, output: Any, position: Any) -> None:
-        """Turn a Brain management verdict into a shadow record or a live action.
+        """Translate and realise management without replaying ambiguous partials.
 
-        ``shadow`` logs the intended action (observational, executes nothing);
-        ``live`` hands it to the wired sink (degrading to shadow-record when no
-        sink is set). Fail-safe — never breaks the management cycle."""
+        Milestone reductions use a durable write-ahead marker before the sink is
+        called. Only an explicit sink rejection clears it; an ambiguous response
+        remains pending until broker-size reconciliation confirms the reduction.
+        """
         try:
             action = _translate_management(output, position)
             if action is None:
                 return  # HOLD / observe — nothing to do
             self._manage_intended += 1
             if self.management_mode == "live" and self._management_sink is not None:
-                sink_result = self._management_sink(action, position)
-                if sink_result is False:
-                    self._manage_suppressed += 1
-                    logger.warning(
-                        "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
-                        "execution sink rejected the action",
-                        action.symbol, action.kind, action.direction,
-                    )
-                    return
-                self._manage_submitted += 1
-                if action.kind == "partial_close" and action.milestone_id and self._memory is not None:
+                milestone_pending = False
+                if action.kind == "partial_close" and action.milestone_id:
+                    memory = self._memory
+                    recorder = getattr(memory, "record_milestone_pending", None)
                     size_before = next((
                         getattr(position, name, None)
                         for name in ("lots", "size", "volume")
@@ -2671,14 +2665,59 @@ class CognitionLoop:
                         size_before = float(size_before)
                     except (TypeError, ValueError, OverflowError):
                         size_before = 0.0
-                    recorder = getattr(self._memory, "record_milestone_pending", None)
-                    if size_before > 0.0 and callable(recorder):
-                        recorder(
+                    if (
+                        memory is None or not callable(recorder)
+                        or not action.campaign_id or size_before <= 0.0
+                    ):
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s milestone %s: "
+                            "durable campaign progress or a valid pre-action size is unavailable",
+                            action.symbol, action.milestone_id,
+                        )
+                        return
+                    try:
+                        recorded = recorder(
                             action.campaign_id,
                             action.milestone_id,
                             size_before=size_before,
                             fraction=action.fraction,
                         )
+                    except Exception:
+                        recorded = False
+                    if recorded is not True:
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s milestone %s: "
+                            "another reduction is pending or progress could not be persisted",
+                            action.symbol, action.milestone_id,
+                        )
+                        return
+                    milestone_pending = True
+
+                sink_result = self._management_sink(action, position)
+                if sink_result is False:
+                    if milestone_pending:
+                        clearer = getattr(self._memory, "clear_milestone_pending", None)
+                        cleared = False
+                        if callable(clearer):
+                            try:
+                                cleared = clearer(action.campaign_id, action.milestone_id)
+                            except Exception:
+                                cleared = False
+                        if not cleared:
+                            logger.error(
+                                "[cognition-loop] milestone rejection could not clear its "
+                                "write-ahead marker; campaign remains blocked pending reconciliation"
+                            )
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
+                        "execution sink rejected the action",
+                        action.symbol, action.kind, action.direction,
+                    )
+                    return
+                self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
                     action.symbol, action.kind, action.direction, action.confidence,
@@ -2690,6 +2729,8 @@ class CognitionLoop:
                     action.reason[:80],
                 )
         except Exception as exc:  # noqa: BLE001 — management must never break the loop
+            # If the sink raised after a milestone was durably marked, retain the
+            # marker: its broker outcome is ambiguous and must be reconciled.
             logger.debug("[cognition-loop] realise management fault: %s", exc)
 
     def _loop(self) -> None:

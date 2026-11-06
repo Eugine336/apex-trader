@@ -36,7 +36,7 @@ def test_milestone_progress_confirms_only_after_broker_size_reduces():
     store.close()
 
 
-def test_pending_milestone_expires_if_broker_does_not_reduce_position():
+def test_ambiguous_pending_milestone_does_not_expire_without_broker_reconciliation():
     store = _store()
     store.record_milestone_pending(
         "campaign-1", "crt:H1:1:1.082",
@@ -48,7 +48,39 @@ def test_pending_milestone_expires_if_broker_does_not_reduce_position():
         pending_timeout_ms=60_000,
     )
     assert progress["completed_milestones"] == []
+    assert progress["pending_milestone"]["milestone_id"] == "crt:H1:1:1.082"
+    store.close()
+
+
+def test_explicit_sink_rejection_can_clear_pending_milestone():
+    store = _store()
+    store.record_milestone_pending(
+        "campaign-1", "crt:H1:1:1.082",
+        size_before=0.20, fraction=0.5, now_ms=2_000,
+    )
+    assert store.clear_milestone_pending("campaign-1", "crt:H1:1:1.082")
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.20, now_ms=63_000,
+    )
+    assert progress["completed_milestones"] == []
     assert progress["pending_milestone"] is None
+    store.close()
+
+
+def test_pending_milestone_cannot_be_resubmitted_or_refreshed():
+    store = _store()
+    assert store.record_milestone_pending(
+        "campaign-1", "crt:H1:1:1.082",
+        size_before=0.20, fraction=0.5, now_ms=2_000,
+    )
+    assert not store.record_milestone_pending(
+        "campaign-1", "crt:H1:1:1.082",
+        size_before=0.10, fraction=0.5, now_ms=3_000,
+    )
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.20, now_ms=4_000,
+    )
+    assert progress["pending_milestone"]["size_before"] == 0.20
     store.close()
 
 
@@ -59,7 +91,7 @@ def test_completed_milestone_cannot_be_requeued():
         size_before=0.20, fraction=0.5, now_ms=2_000,
     )
     store.get_management_progress("campaign-1", current_size=0.10, now_ms=3_000)
-    assert store.record_milestone_pending(
+    assert not store.record_milestone_pending(
         "campaign-1", "crt:H1:1:1.082",
         size_before=0.10, fraction=0.5, now_ms=4_000,
     )
