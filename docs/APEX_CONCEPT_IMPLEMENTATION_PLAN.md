@@ -1,15 +1,12 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `0c578df3` (after PRs #809 calibration-scales-risk, #810 remove instrument directional bias,
-#811 competing directional hypotheses, and #813 RL subsystem retirement). Source of truth for coverage:
+Status baseline: `main` @ `1698c45a` (after PRs #809–#813 and Phase 2 PRs #817, #819–#822). Source of truth for coverage:
 `docs/APEX_CONCEPT_COVERAGE.md` (generated; run `python scripts/concept_coverage.py`).
-Baseline today: **41/79 analytical methods read in full, 2/38 strategy lenses read in full.**
-Full GitHub Actions suite on the PR #813 head immediately before merge: **3,952 passed, 1 failed, 0 skipped**
-on both Python 3.11 and 3.12. Collection, required cognition suites and canonical identity/safety audit passed.
-The sole remaining failure is the pre-existing silent-exception observability audit: 72 unclassified handlers.
-The 12 stale System 4 tests were corrected to use the historical-expectancy API and calibration policy.
+Baseline today: **56/79 analytical methods read in full, 4 data-gated; 2/38 strategy lenses read in full.**
+Latest full GitHub Actions suite on PR #822: **4,111 passed** on both Python 3.11 and 3.12; Ruff,
+coverage synchronization, canonical identity/safety audit and import checks passed on both versions.
 The RL package, nine RL-only test files, training tools and PyTorch dependency were retired in PR #813.
-The earlier audit-sandbox report (58 failures plus one collection error) is historical, not the current CI baseline.
+The earlier audit-sandbox report and pre-PR #822 test counts are historical, not the current CI baseline.
 Every PR must run the full suite and compare with `main` (§9).
 
 ## 0. What "done" means
