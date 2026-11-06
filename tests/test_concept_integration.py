@@ -80,7 +80,11 @@ def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     reasoner = BrainReasoner()
     analysis = reasoner.analyze_evidence(state)
     hyps = reasoner.generate_hypotheses(analysis, "EURUSD")
-    concept = [h for h in hyps if h.hypothesis_kind == "concept:crt:h1"]
+    concept = [
+        h for h in hyps
+        if h.hypothesis_kind == "concept_group:H1:LONG:active"
+        and "crt" in h.supporting_patterns
+    ]
     assert len(concept) == 1
     h = concept[0]
     assert h.direction_implication == "LONG"
