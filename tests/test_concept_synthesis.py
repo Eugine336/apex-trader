@@ -121,3 +121,12 @@ def test_missing_independence_provenance_is_not_counted_as_confluence():
     assert long_group["concept_count"] == 2
     assert long_group["confluence_count"] == 0
     assert long_group["independence_status"] == "provenance_unknown"
+
+
+
+def test_unknown_strength_remains_unknown_instead_of_becoming_zero():
+    reading = _reading("crt", "LONG", None, "e1")
+    (group,) = synthesize_concept_readings([reading])
+
+    assert group["strength"] is None
+    assert group["confidence"] is None
