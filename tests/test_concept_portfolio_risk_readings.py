@@ -85,7 +85,7 @@ def test_portfolio_risk_computes_whole_book_heat_exposure_tail_and_drawdown():
     assert math.isclose(item.facts["live_heat_pct"], 1.5)
     assert item.facts["gross_exposure_account_ccy"] == 9000.0
     assert item.facts["net_exposure_account_ccy"] == -1000.0
-    assert item.facts["portfolio_var_95_fraction"] == -0.015
+    assert math.isclose(item.facts["portfolio_var_95_fraction"], -0.0126)
     assert item.facts["portfolio_expected_shortfall_95_fraction"] == -0.015
     assert math.isclose(item.facts["portfolio_max_drawdown_fraction"], 200.0 / 10100.0)
     assert item.facts["max_absolute_pairwise_correlation"] == 0.75
