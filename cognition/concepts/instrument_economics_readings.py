@@ -49,7 +49,7 @@ def _step_aligned(value: float, step: float) -> bool:
 class InstrumentEconomicsReadings:
     key = "instrument_economics_readings"
     family = "instrument_mechanics"
-    covers_methods = ("instrument_economics",)
+    covers_methods = ("instrument_economics", "carry")
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
@@ -244,7 +244,7 @@ class InstrumentEconomicsReadings:
             "execution_authorization_emitted": False,
             "position_size_emitted": False,
         }
-        return [ConceptReading(
+        instrument_reading = ConceptReading(
             concept="instrument_economics",
             timeframe="SPEC",
             domain=EvidenceDomain.EXECUTION_QUALITY,
@@ -267,4 +267,205 @@ class InstrumentEconomicsReadings:
             data_basis="broker_symbol_specification",
             independence_group=f"broker_symbol_spec:{source}:{str(symbol or '').upper()}",
             relevance_horizon_seconds=900.0,
-        )]
+        )
+        carry_reading = self._carry_reading(
+            symbol, spec, verified, reference, reference_tf,
+        )
+        return [instrument_reading, carry_reading]
+
+    @staticmethod
+    def _carry_reading(
+        symbol: str,
+        spec: dict[str, Any],
+        verified: bool,
+        reference: float | None,
+        reference_tf: str,
+    ) -> ConceptReading:
+        raw_mode = spec.get("swap_mode_name") if verified else None
+        mode = str(raw_mode or "").strip().lower()
+        valid_modes = {
+            "disabled", "points", "currency_symbol", "currency_margin",
+            "currency_deposit", "currency_profit", "interest_current",
+            "interest_open", "reopen_current", "reopen_bid",
+        }
+        unknowns: list[str] = []
+        errors: list[str] = []
+        if not verified:
+            unknowns.append("live broker-verified symbol financing specification")
+        elif spec.get("source_timestamp_epoch") is None:
+            unknowns.append(
+                "provider-originated financing specification timestamp; retrieval time is not a verified source timestamp"
+            )
+        if verified and mode not in valid_modes:
+            unknowns.append(
+                "swap calculation mode resolved by the installed MetaTrader5 enum constants"
+            )
+
+        def number(field: str) -> float | None:
+            return _number(spec.get(field)) if verified else None
+
+        long_value, short_value = number("swap_long"), number("swap_short")
+        point = number("point")
+        if verified and mode in valid_modes - {"disabled"}:
+            if long_value is None:
+                unknowns.append("broker swap_long value")
+            if short_value is None:
+                unknowns.append("broker swap_short value")
+        if mode in {"points", "reopen_current", "reopen_bid"} and (point is None or point <= 0):
+            unknowns.append("positive broker point size for interpreting swap points")
+
+        currency_fields = {
+            "currency_symbol": ("currency_base", "symbol base currency"),
+            "currency_margin": ("currency_margin", "symbol margin currency"),
+            "currency_profit": ("currency_profit", "symbol profit currency"),
+            "currency_deposit": ("account_currency", "client deposit currency"),
+        }
+        currency_field, currency_description = currency_fields.get(mode, (None, None))
+        currency_code = (
+            str(spec.get(currency_field) or "").strip() or None
+            if verified and currency_field in {"currency_base", "currency_margin", "currency_profit"}
+            else None
+        )
+        if mode == "currency_deposit":
+            currency_description = "client deposit currency; account currency code not supplied with symbol specification"
+        elif currency_field and currency_code is None:
+            unknowns.append(f"verified {currency_description} code for swap denomination")
+
+        units = {
+            "disabled": "no_swap_charge",
+            "points": "points",
+            "currency_symbol": "money_in_symbol_base_currency",
+            "currency_margin": "money_in_symbol_margin_currency",
+            "currency_deposit": "money_in_client_deposit_currency",
+            "currency_profit": "money_in_symbol_profit_currency",
+            "interest_current": "annual_interest_percent_of_current_instrument_price",
+            "interest_open": "annual_interest_percent_of_position_open_price",
+            "reopen_current": "points_with_forced_reopen_at_previous_close",
+            "reopen_bid": "points_with_forced_reopen_at_new_day_bid",
+        }
+        year_basis = 360 if mode in {"interest_current", "interest_open"} else None
+        schedule_raw = spec.get("swap_schedule") if verified else None
+        schedule_raw = schedule_raw if isinstance(schedule_raw, dict) else {}
+        schedule = {
+            day: _number(schedule_raw.get(day))
+            for day in ("sunday", "monday", "tuesday", "wednesday",
+                        "thursday", "friday", "saturday")
+        }
+        rollover_raw = spec.get("swap_rollover3days") if verified else None
+        rollover_number = _number(rollover_raw)
+        days = ("sunday", "monday", "tuesday", "wednesday",
+                "thursday", "friday", "saturday")
+        rollover_day = (
+            days[int(rollover_number)]
+            if rollover_number is not None and rollover_number.is_integer()
+            and 0 <= int(rollover_number) < len(days) else None
+        )
+        if verified and mode not in {"", "disabled"}:
+            if rollover_day is None:
+                unknowns.append("broker three-day swap rollover weekday")
+            if any(value is None for value in schedule.values()):
+                unknowns.append("complete broker weekday swap-multiplier schedule")
+        for day, value in schedule.items():
+            if value is not None and value not in {0.0, 1.0, 3.0}:
+                errors.append(f"unsupported broker {day} rollover multiplier: {value}")
+
+        def side_reading(value: float | None) -> dict[str, Any] | None:
+            if mode not in valid_modes or not verified:
+                return None
+            if mode == "disabled":
+                return {"charge": "none", "raw_value": value}
+            if value is None:
+                return None
+            if mode in {"points", "reopen_current", "reopen_bid"}:
+                return {
+                    "raw_value": value,
+                    "unit": "points",
+                    "price_unit_equivalent": value * point if point is not None and point > 0 else None,
+                    "cash_amount": None,
+                    "unit_note": "price-unit equivalent only; not a cash financing amount",
+                    "forced_reopen": mode in {"reopen_current", "reopen_bid"},
+                    "reopen_reference": (
+                        "previous_session_close" if mode == "reopen_current"
+                        else "new_day_bid" if mode == "reopen_bid" else None
+                    ),
+                }
+            if mode in {"interest_current", "interest_open"}:
+                return {
+                    "annual_interest_percent": value,
+                    "daily_rate_fraction_360_day_basis": value / 100.0 / 360.0,
+                    "year_basis_days": 360,
+                    "price_basis": (
+                        "current_instrument_price_at_rollover"
+                        if mode == "interest_current" else "position_open_price"
+                    ),
+                    "cash_charge_calculated": False,
+                }
+            return {
+                "raw_value": value,
+                "unit": units[mode],
+                "currency_code": currency_code,
+                "currency_label": currency_description,
+                "cash_charge_calculated": False,
+            }
+
+        if not verified:
+            state = "unavailable_or_unverified"
+        elif errors:
+            state = "broker_swap_schedule_inconsistent"
+        elif unknowns:
+            state = "verified_but_incomplete"
+        else:
+            state = "verified_carry_terms"
+        facts = {
+            "status": state,
+            "source": spec.get("source") if verified else None,
+            "source_verified": verified,
+            "swap_mode": spec.get("swap_mode") if verified else None,
+            "swap_mode_name": mode or None,
+            "swap_units": units.get(mode),
+            "long": side_reading(long_value),
+            "short": side_reading(short_value),
+            "rollover": {
+                "triple_swap_weekday_raw": rollover_raw,
+                "triple_swap_weekday": rollover_day,
+                "daily_multiplier": schedule,
+                "documented_multiplier_values": [0.0, 1.0, 3.0],
+            },
+            "interest_year_basis_days": year_basis,
+            "cash_carry_cost_calculated": False,
+            "position_context_required_for_cash_cost": [
+                "position volume and contract calculation mode",
+                "position opening price and holding interval where required",
+                "broker conversion rates and account deposit currency where required",
+            ],
+            "forced_reopen_at_session_end": mode in {"reopen_current", "reopen_bid"},
+            "validation_errors": errors,
+            "unknown_fields": list(dict.fromkeys(unknowns)),
+            "no_swap_rate_fallback_used": True,
+            "directional_decision_emitted": False,
+            "execution_authorization_emitted": False,
+        }
+        return ConceptReading(
+            concept="carry",
+            timeframe="SPEC",
+            domain=EvidenceDomain.EXECUTION_QUALITY,
+            applicable=verified and mode in valid_modes and not errors,
+            applicability_reason=(
+                "Broker financing terms have a recognized calculation mode and are available for descriptive carry analysis."
+                if verified and mode in valid_modes else
+                "Broker swap mode or financing specification is unavailable or unresolved; no carry rate is assumed."
+            ),
+            observation=(
+                f"{symbol}: broker carry mode={mode or 'unknown'}; "
+                "side-specific financing is interpreted only in the broker-declared unit and is not converted into a trade decision."
+            ),
+            implications=(),
+            facts=facts,
+            source_bar_epoch=None,
+            reference_close=reference,
+            reference_timeframe=reference_tf,
+            unknowns=tuple(dict.fromkeys(unknowns)),
+            data_basis="broker_symbol_specification",
+            independence_group=f"broker_symbol_spec:{str(spec.get('source') or 'unavailable')}:{str(symbol or '').upper()}",
+            relevance_horizon_seconds=900.0,
+        )

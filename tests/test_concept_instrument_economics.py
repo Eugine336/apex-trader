@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import math
 import time
+from types import SimpleNamespace
 
 import pandas as pd
 
 from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
 from cognition.market_lenses import analyze_market_frames
+from platforms.mt5 import mt5_connector as mt5_connector_module
+from platforms.mt5.mt5_connector import MT5Connector
 
 
 def _spec(**overrides):
@@ -157,10 +160,39 @@ def test_broker_spec_reading_is_emitted_even_when_ohlc_history_is_absent():
         {},
         concept_context={"symbol_spec": _spec()},
     )
-    item = next(
-        ev for ev in evidence
+    selected = {
+        ev.measurements["concept"]: ev
+        for ev in evidence
         if ev.measurements.get("source_kind") == "concept_reading"
-        and ev.measurements.get("concept") == "instrument_economics"
+        and ev.measurements.get("concept") in {"instrument_economics", "carry"}
+    }
+    assert set(selected) == {"instrument_economics", "carry"}
+    assert selected["instrument_economics"].measurements["facts"]["contract_size"] == 100.0
+    assert selected["carry"].measurements["facts"]["swap_mode_name"] == "points"
+    assert selected["instrument_economics"].source_timestamp_verified is False
+    assert selected["carry"].source_timestamp_verified is False
+
+
+
+def test_mt5_swap_mode_resolution_uses_the_installed_package_constants(monkeypatch):
+    constants = {
+        "SYMBOL_SWAP_MODE_DISABLED": 31,
+        "SYMBOL_SWAP_MODE_POINTS": 32,
+        "SYMBOL_SWAP_MODE_CURRENCY_SYMBOL": 33,
+        "SYMBOL_SWAP_MODE_CURRENCY_MARGIN": 34,
+        "SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT": 35,
+        "SYMBOL_SWAP_MODE_CURRENCY_PROFIT": 36,
+        "SYMBOL_SWAP_MODE_INTEREST_CURRENT": 37,
+        "SYMBOL_SWAP_MODE_INTEREST_OPEN": 38,
+        "SYMBOL_SWAP_MODE_REOPEN_CURRENT": 39,
+        "SYMBOL_SWAP_MODE_REOPEN_BID": 40,
+    }
+    monkeypatch.setattr(
+        mt5_connector_module,
+        "mt5",
+        SimpleNamespace(**constants),
     )
-    assert item.measurements["facts"]["contract_size"] == 100.0
-    assert item.source_timestamp_verified is False
+    assert MT5Connector._swap_mode_name(32) == "points"
+    assert MT5Connector._swap_mode_name(37) == "interest_current"
+    assert MT5Connector._swap_mode_name(40) == "reopen_bid"
+    assert MT5Connector._swap_mode_name(999) is None

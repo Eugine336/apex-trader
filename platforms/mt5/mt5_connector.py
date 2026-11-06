@@ -472,6 +472,35 @@ class MT5Connector(BaseConnector):
             })
         return sorted(discovered, key=lambda row: row["symbol"].casefold())
 
+    @staticmethod
+    def _swap_mode_name(value) -> Optional[str]:
+        """Resolve swap units through the installed MetaTrader5 enum constants."""
+        labels = (
+            ("SYMBOL_SWAP_MODE_DISABLED", "disabled"),
+            ("SYMBOL_SWAP_MODE_POINTS", "points"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_SYMBOL", "currency_symbol"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_MARGIN", "currency_margin"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT", "currency_deposit"),
+            ("SYMBOL_SWAP_MODE_CURRENCY_PROFIT", "currency_profit"),
+            ("SYMBOL_SWAP_MODE_INTEREST_CURRENT", "interest_current"),
+            ("SYMBOL_SWAP_MODE_INTEREST_OPEN", "interest_open"),
+            ("SYMBOL_SWAP_MODE_REOPEN_CURRENT", "reopen_current"),
+            ("SYMBOL_SWAP_MODE_REOPEN_BID", "reopen_bid"),
+        )
+        lookup = {}
+        for constant, label in labels:
+            raw_value = getattr(mt5, constant, None)
+            if raw_value is None:
+                continue
+            try:
+                lookup[int(raw_value)] = label
+            except (TypeError, ValueError, OverflowError):
+                continue
+        try:
+            return lookup.get(int(value)) if value is not None else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Broker-truth symbol economics from MT5 ``symbol_info``.
 
@@ -502,6 +531,15 @@ class MT5Connector(BaseConnector):
                 "swap_long": getattr(si, "swap_long", None),
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
+                "swap_mode_name": self._swap_mode_name(getattr(si, "swap_mode", None)),
+                "swap_rollover3days": getattr(si, "swap_rollover3days", None),
+                "swap_schedule": {
+                    day: getattr(si, f"swap_{day}", None)
+                    for day in (
+                        "sunday", "monday", "tuesday", "wednesday",
+                        "thursday", "friday", "saturday",
+                    )
+                },
                 "trade_tick_value": getattr(si, "trade_tick_value", None),
                 "trade_tick_value_profit": getattr(si, "trade_tick_value_profit", None),
                 "trade_tick_value_loss": getattr(si, "trade_tick_value_loss", None),
