@@ -12,6 +12,7 @@ is detached or the ops layer is disabled so the endpoint never 500s.
 """
 
 from __future__ import annotations
+import logging
 
 from typing import Any
 
@@ -163,12 +164,14 @@ def _ed_store_sizes_mb(cfg: Any) -> dict:
             if path and Path(path).exists():
                 sizes[label] = round(Path(path).stat().st_size / (1024.0 * 1024.0), 3)
         except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_health.py:165", exc_info=True)
             continue
     try:
         p = Path("data/post_close_tracker.db")
         if p.exists():
             sizes["post_close_tracker"] = round(p.stat().st_size / (1024.0 * 1024.0), 3)
     except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug("Exception handled by fallback in dashboard/state_health.py:171", exc_info=True)
         pass
     return sizes
 
