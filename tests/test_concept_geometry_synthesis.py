@@ -109,3 +109,56 @@ def test_short_geometry_uses_most_protective_stop_and_nearest_objective():
     assert geometry.stop_price == 101.0
     assert geometry.target_price == 96.0
     assert geometry.reward_r == 4.0
+
+
+
+def test_geometry_preserves_reading_supplied_limit_entry_zone():
+    reading = _reading("crt", "e-limit", 98.0, 105.0)
+    reading["implications"][0].update({
+        "order_type": "LIMIT",
+        "entry_zone_low": 99.0,
+        "entry_zone_high": 101.0,
+        "entry_price": 100.5,
+    })
+
+    geometry = _geometry_from_concept_readings([reading], "LONG", "EURUSD")
+
+    assert geometry is not None
+    assert geometry.entry_price == 100.5
+    assert geometry.order_type == "LIMIT"
+    assert geometry.entry_zone_low == 99.0
+    assert geometry.entry_zone_high == 101.0
+    assert geometry.stop_price == 98.0
+    assert geometry.target_price == 105.0
+
+
+def test_non_market_entry_without_price_or_zone_fails_closed():
+    reading = _reading("crt", "e-stop", 98.0, 105.0)
+    reading["implications"][0]["order_type"] = "STOP"
+
+    assert _geometry_from_concept_readings([reading], "LONG", "EURUSD") is None
+
+
+def test_entry_price_outside_reading_zone_fails_closed():
+    reading = _reading("crt", "e-outside", 98.0, 105.0)
+    reading["implications"][0].update({
+        "order_type": "LIMIT",
+        "entry_price": 102.0,
+        "entry_zone_low": 99.0,
+        "entry_zone_high": 101.0,
+    })
+
+    assert _geometry_from_concept_readings([reading], "LONG", "EURUSD") is None
+
+
+def test_concept_readings_with_conflicting_order_types_do_not_merge():
+    market = _reading("crt", "e-market", 98.0, 105.0)
+    pending = _reading("market_structure", "e-limit", 98.0, 105.0)
+    pending["implications"][0].update({
+        "order_type": "LIMIT",
+        "entry_price": 100.0,
+        "entry_zone_low": 99.0,
+        "entry_zone_high": 101.0,
+    })
+
+    assert _geometry_from_concept_readings([market, pending], "LONG", "EURUSD") is None
