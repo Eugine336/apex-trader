@@ -67,6 +67,38 @@ def test_bayesian_reader_uses_verified_mature_outcomes_and_state_conditional_bet
     assert item.facts["posterior_is_current_trade_probability"] is False
 
 
+
+def test_bayesian_reader_derives_market_state_from_prior_time_series_reading():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    state_reading = ConceptReading(
+        concept="time_series",
+        timeframe="M5",
+        domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+        applicable=True,
+        applicability_reason="confirmed swing state available",
+        observation="upward confirmed swing structure",
+        implications=(),
+        facts={"structural_regime_from_confirmed_swings": "up"},
+    )
+    rows = [
+        {
+            "symbol": "XAUUSD", "concept": "trend_following", "market_state": "up",
+            "decision_epoch": cutoff - 900, "outcome_epoch": cutoff - 600,
+            "source_timestamp_epoch": cutoff - 600, "source_timestamp_verified": True,
+            "outcome": outcome,
+        }
+        for outcome in (1, 0, 1)
+    ]
+    readings = QuantitativeOutcomeReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()},
+        {"concept_readings": (state_reading,), "concept_outcome_history": rows},
+    )
+    item = next(reading for reading in readings if reading.concept == "bayesian")
+    assert item.applicable is True
+    assert item.facts["current_market_state"] == "up"
+    assert item.facts["posterior_by_concept"]["trend_following"]["sample_count"] == 3
+
+
 def test_bayesian_reader_rejects_future_or_unverified_outcomes():
     cutoff = _bars()[-1]["timestamp_epoch"]
     rows = [
@@ -161,6 +193,7 @@ def test_monte_carlo_reader_runs_deterministic_historical_trade_bootstrap():
             "planned_trade_count": 10,
             "source_timestamp_epoch": cutoff + 30.0, "source_timestamp_verified": True,
         },
+        "analysis_epoch": cutoff + 60.0,
         "monte_carlo_iterations": 500,
     }
     first = next(item for item in _readings(context) if item.concept == "monte_carlo")
@@ -196,6 +229,7 @@ def test_monte_carlo_rejects_stale_portfolio_plan_even_with_valid_trade_history(
                 "source_timestamp_epoch": cutoff - 30.0,
                 "source_timestamp_verified": True,
             },
+            "analysis_epoch": cutoff + 60.0,
         })
         if reading.concept == "monte_carlo"
     )
@@ -227,6 +261,7 @@ def test_monte_carlo_reader_rejects_duplicate_and_future_trade_outcomes():
                 "planned_trade_count": 10,
                 "source_timestamp_epoch": cutoff, "source_timestamp_verified": True,
             },
+            "analysis_epoch": cutoff + 60.0,
         })
         if reading.concept == "monte_carlo"
     )

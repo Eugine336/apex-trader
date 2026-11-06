@@ -386,12 +386,14 @@ def _monte_carlo_reading(
     risk_fraction = finite(plan.get("risk_fraction")) if isinstance(plan, dict) else None
     raw_trade_count = finite(plan.get("planned_trade_count")) if isinstance(plan, dict) else None
     plan_epoch = _epoch(plan.get("source_timestamp_epoch")) if isinstance(plan, dict) else None
+    analysis_epoch = _epoch(context.get("analysis_epoch"))
     plan_valid = bool(
         isinstance(plan, dict)
         and plan.get("portfolio_scope") == "whole_book"
         and plan.get("source_timestamp_verified") is True
         and portfolio_id
         and cutoff is not None and plan_epoch is not None and plan_epoch >= cutoff
+        and analysis_epoch is not None and plan_epoch <= analysis_epoch
         and equity is not None and equity > 0.0
         and risk_fraction is not None and 0.0 < risk_fraction <= 1.0
         and raw_trade_count is not None and raw_trade_count.is_integer()
@@ -455,7 +457,7 @@ def _monte_carlo_reading(
         unknowns.append("at least two distinct broker-truth whole-book trade R outcomes with verified close timestamps")
     if not plan_valid:
         unknowns.append(
-            "source-verified whole-book portfolio plan, timestamped at or after the completed-bar cutoff, with equity, risk fraction and planned trade count"
+            "source-verified whole-book portfolio plan, timestamped after the completed-bar cutoff and no later than analysis time, with equity, risk fraction and planned trade count"
         )
     if rejected:
         unknowns.append(f"{rejected} trade outcome row(s) rejected for duplicate, invalid or future provenance")
@@ -508,6 +510,7 @@ def _monte_carlo_reading(
 
 class QuantitativeOutcomeReadings:
     key = "quantitative_outcome_readings"
+    consumes_concept_readings = True
     family = "quantitative"
     covers_methods: tuple[str, ...] = ()
     covers_lenses: tuple[str, ...] = ()
@@ -527,10 +530,29 @@ class QuantitativeOutcomeReadings:
             bars = clean_bars(raw)
             if not bars:
                 continue
+            module_context = dict(context or {})
+            if not str(module_context.get("market_state", "") or "").strip():
+                prior = module_context.get("concept_readings", ())
+                state_reading = next(
+                    (
+                        item for item in reversed(tuple(prior or ()))
+                        if isinstance(item, ConceptReading)
+                        and item.concept == "time_series"
+                        and item.timeframe == timeframe
+                    ),
+                    None,
+                )
+                if state_reading is not None:
+                    state = str(
+                        state_reading.facts.get("structural_regime_from_confirmed_swings", "")
+                        or ""
+                    ).strip().lower()
+                    if state in {"up", "down", "range_or_transition"}:
+                        module_context["market_state"] = state
             readings.extend((
-                _bayesian_reading(symbol, timeframe, bars, context or {}, reference, reference_tf),
-                _calibration_reading(symbol, timeframe, bars, context or {}, reference, reference_tf),
-                _monte_carlo_reading(symbol, timeframe, bars, context or {}, reference, reference_tf),
+                _bayesian_reading(symbol, timeframe, bars, module_context, reference, reference_tf),
+                _calibration_reading(symbol, timeframe, bars, module_context, reference, reference_tf),
+                _monte_carlo_reading(symbol, timeframe, bars, module_context, reference, reference_tf),
             ))
         return readings
 
