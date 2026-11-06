@@ -83,7 +83,10 @@ def test_native_pipeline_composes_method_readings_for_every_lens():
     assert {item.measurements["lens_key"] for item in full_lens_readings} == set(FULL_LENSES)
     registered_methods = {
         method for module in CONCEPT_MODULES
-        for method in getattr(module, "covers_methods", ())
+        for method in (
+            *getattr(module, "covers_methods", ()),
+            *(getattr(module, "data_gated_methods", {}) or {}).keys(),
+        )
     }
     declared_full_methods = {
         method for lens_key in FULL_LENSES
