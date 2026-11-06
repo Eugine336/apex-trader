@@ -21,6 +21,7 @@ from cognition.concepts.indicator_context import IndicatorContextConcepts
 from cognition.concepts.pivot_points import PivotPointConcepts
 from cognition.concepts.power_of_three import PowerOfThreeConcepts
 from cognition.concepts.regime_switching import RegimeSwitchingConcepts
+from cognition.concepts.strategy_method_readings import StrategyMethodReadings
 from cognition.concepts.session_calendar import SessionCalendar
 from cognition.concepts.opening_range import OpeningRange
 from cognition.concepts.vwap import VWAPConcept
@@ -49,6 +50,7 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     SeasonalityConcept(),
     RangeRotation(),
     RegimeSwitchingConcepts(),
+    StrategyMethodReadings(),
 )
 
 
