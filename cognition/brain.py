@@ -303,13 +303,10 @@ class CognitiveBrain:
         # unknown state is ALWAYS logged and recorded (never a silent pass).
         self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
         self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
-        # Payoff geometry used to turn win-probability into a genuine expected
-        # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
-        # not supply explicit excursions. ``min_expected_value`` is retained for
-        # the Part-C3 EV gate (act only when EV clears it); None ⇒ not enforced
-        # here yet, so this change computes/records EV without altering the
-        # current act/no-act behaviour.
-        self.reward_r_default = max(0.0, float(reward_r_default))
+        # ``reward_r_default`` remains an ignored constructor compatibility
+        # argument for older callers. It must never synthesize payoff geometry
+        # or a reward estimate; only verified market-derived opportunity
+        # geometry can supply reward/risk for qualification.
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
