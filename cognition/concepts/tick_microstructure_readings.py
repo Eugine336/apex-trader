@@ -6,7 +6,6 @@ annotations; they are not converted into executed-volume delta.
 """
 from __future__ import annotations
 
-import math
 from statistics import median
 from typing import Any
 
@@ -19,9 +18,14 @@ def _epoch(value: Any, *, unit: str = "seconds") -> float | None:
         return None
     timestamp = getattr(value, "timestamp", None)
     if callable(timestamp):
+        timezone_info = getattr(value, "tzinfo", None)
+        if timezone_info is None:
+            return None
         try:
+            if value.utcoffset() is None:
+                return None
             return finite(timestamp())
-        except (TypeError, ValueError, OverflowError, OSError):
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError):
             return None
     number = finite(value)
     if number is None:
@@ -140,6 +144,8 @@ class TickMicrostructureReadings:
             bid, ask = finite(row.get("bid")), finite(row.get("ask"))
             if epoch is None or bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
                 invalid_count += 1
+                if epoch is None and raw_time is not None:
+                    timestamp_unverified_count += 1
                 continue
             if start is not None and epoch < start:
                 invalid_count += 1

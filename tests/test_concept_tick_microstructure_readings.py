@@ -125,8 +125,9 @@ def test_missing_tick_feed_remains_unknown_not_a_zero_rate():
 
 def test_naive_tick_timestamps_cannot_be_promoted_to_verified_source_time():
     reading = _reading(_tape(naive_time=True))
-    assert reading.facts["accepted_tick_count"] == 5
-    assert reading.facts["tick_rate_hz"] == 0.5
+    assert reading.facts["accepted_tick_count"] == 0
+    assert reading.facts["invalid_tick_count"] == 5
+    assert reading.facts["tick_rate_hz"] is None
     assert reading.facts["source_timestamp_verified"] is False
     assert reading.applicable is False
     assert reading.source_bar_epoch is None
