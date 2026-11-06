@@ -580,7 +580,6 @@ class ApexMarketObserver:
         signature = hashlib.sha256(
             json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        m5_atr = atr(snapshot.bars("M5"), 14) or 0.0
         current_mid = snapshot.mid
         current_spread = snapshot.spread
 
@@ -597,14 +596,13 @@ class ApexMarketObserver:
             if prior_wake is None or should_publish:
                 should_wake = True
             else:
-                # Scale-free (per-instrument) thresholds: ATR/spread relative, with a
-                # tiny price-relative floor so a zero-ATR/zero-spread feed still wakes.
-                tiny = max(abs(current_mid) * 1e-6, 1e-12)
-                price_threshold = max(0.25 * m5_atr, 3.0 * current_spread, tiny)
-                moved_materially = abs(current_mid - prior_wake["mid"]) >= price_threshold
-                prior_spread = prior_wake["spread"]
-                spread_changed = abs(current_spread - prior_spread) >= max(0.50 * prior_spread, tiny)
-                should_wake = moved_materially or spread_changed
+                # Wake on any changed factual quote. Magnitude thresholds here
+                # would decide which market changes receive analysis. The cognition
+                # loop coalesces repeated requests and applies its scheduling bound.
+                should_wake = (
+                    current_mid != prior_wake["mid"]
+                    or current_spread != prior_wake["spread"]
+                )
 
             if should_wake:
                 self._last_brain_wake_state[symbol] = {
