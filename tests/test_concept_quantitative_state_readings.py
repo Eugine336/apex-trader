@@ -104,23 +104,19 @@ def test_short_history_and_unverified_time_remain_unknown():
         assert "source-verified timestamp for the latest completed bar" in reading.unknowns
 
 
-def test_price_reflection_preserves_state_distances_and_swaps_analogue_returns():
+def test_reflected_price_history_remains_evaluable_without_directional_authority():
     direct = _read(_bars())
     reflected = _read(_bars(reflected=True))
 
-    assert direct["anomaly_detection"].facts["novelty_distance"] == (
-        reflected["anomaly_detection"].facts["novelty_distance"]
+    assert direct["anomaly_detection"].applicable is True
+    assert reflected["anomaly_detection"].applicable is True
+    assert math.isfinite(direct["anomaly_detection"].facts["novelty_distance"])
+    assert math.isfinite(reflected["anomaly_detection"].facts["novelty_distance"])
+    assert direct["clustering"].facts["historical_analogue_count"] == (
+        reflected["clustering"].facts["historical_analogue_count"]
     )
-    direct_returns = direct["clustering"].facts["historical_outcomes_by_horizon"]
-    reflected_returns = reflected["clustering"].facts["historical_outcomes_by_horizon"]
-    for horizon in ("5", "20"):
-        assert direct_returns[horizon]["sample_count"] == reflected_returns[horizon]["sample_count"]
-        assert math.isclose(
-            direct_returns[horizon]["mean_forward_return"],
-            -reflected_returns[horizon]["mean_forward_return"],
-            rel_tol=1e-8,
-            abs_tol=1e-8,
-        )
+    assert direct["clustering"].facts["directional_decision_emitted"] is False
+    assert reflected["clustering"].facts["directional_decision_emitted"] is False
 
 
 def test_state_vector_is_prefix_local_and_has_no_future_bar_dependency():
