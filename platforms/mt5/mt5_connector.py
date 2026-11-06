@@ -494,9 +494,9 @@ class MT5Connector(BaseConnector):
                 continue
             try:
                 lookup[int(raw_value)] = label
+            # SAFE-FALLBACK: malformed optional MT5 enum constants are ignored;
+            # the corresponding swap mode remains explicitly unresolved.
             except (TypeError, ValueError, OverflowError):
-                # SAFE-FALLBACK: malformed optional MT5 enum constants are ignored;
-                # the corresponding swap mode remains explicitly unresolved.
                 continue
         try:
             return lookup.get(int(value)) if value is not None else None
