@@ -5,15 +5,12 @@ from __future__ import annotations
 import math
 import time
 from types import SimpleNamespace
-from types import SimpleNamespace
 
 import pandas as pd
 
 from cognition.concepts import CONCEPT_MODULES
 from cognition.concepts.instrument_economics_readings import InstrumentEconomicsReadings
 from cognition.market_lenses import analyze_market_frames
-from platforms.mt5 import mt5_connector as mt5_connector_module
-from platforms.mt5.mt5_connector import MT5Connector
 from platforms.mt5 import mt5_connector as mt5_connector_module
 from platforms.mt5.mt5_connector import MT5Connector
 
