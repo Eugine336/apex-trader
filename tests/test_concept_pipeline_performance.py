@@ -150,9 +150,12 @@ def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
     original = market_lenses._rows
     calls = []
 
-    def counted_rows(frame, limit=32, *, expected_symbol=""):
-        calls.append((limit, expected_symbol))
-        return original(frame, limit=limit, expected_symbol=expected_symbol)
+    def counted_rows(frame, limit=32, *, expected_symbol="", return_tail_limit=0):
+        calls.append((limit, expected_symbol, return_tail_limit))
+        return original(
+            frame, limit=limit, expected_symbol=expected_symbol,
+            return_tail_limit=return_tail_limit,
+        )
 
     monkeypatch.setattr(market_lenses, "_rows", counted_rows)
     frame = pd.DataFrame({
@@ -175,7 +178,7 @@ def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
     )
 
-    assert calls == [(1_000_000, "EURUSD")]
+    assert calls == [(1_000_000, "EURUSD", 32)]
 
 def test_fractal_swings_incrementally_update_appended_and_rolling_history():
     from cognition.concepts.market_structure import (
@@ -248,3 +251,28 @@ def test_prefix_swing_read_does_not_discard_full_history_incremental_state():
     status = fractal_swing_cache_status()
     assert status["prefix_hits"] == 1
     assert status["incremental_updates"] == 1
+
+def test_single_pass_row_conversion_preserves_raw_tail_window_with_invalid_rows():
+    import pandas as pd
+    import cognition.market_lenses as market_lenses
+
+    frame = pd.DataFrame({
+        "time": [1_800_000_000 + index * 300 for index in range(40)],
+        "open": [1.0] * 40,
+        "high": [1.1] * 40,
+        "low": [0.9] * 40,
+        "close": [1.05] * 40,
+    })
+    frame.loc[38, "high"] = 0.5
+    frame.loc[39, "low"] = 1.2
+
+    full, tail_window = market_lenses._rows(
+        frame, limit=1_000_000, expected_symbol="EURUSD",
+        return_tail_limit=32,
+    )
+    prior_tail_result = market_lenses._rows(
+        frame, limit=32, expected_symbol="EURUSD",
+    )
+
+    assert len(full) == 38
+    assert tail_window == prior_tail_result
