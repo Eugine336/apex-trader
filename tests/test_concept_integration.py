@@ -90,7 +90,7 @@ def test_registered_concept_hypotheses_survive_faulty_optional_strategy_lens(mon
 
     hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
     assert any(
-        hypothesis.hypothesis_kind == "concept_group:H1:LONG:active"
+        hypothesis.hypothesis_kind == "concept_group:h1:long:active"
         and "crt" in hypothesis.supporting_patterns
         for hypothesis in hypotheses
     )
@@ -103,7 +103,7 @@ def test_brain_forms_a_hypothesis_carrying_the_concepts_own_invalidation():
     hyps = reasoner.generate_hypotheses(analysis, "EURUSD")
     concept = [
         h for h in hyps
-        if h.hypothesis_kind == "concept_group:H1:LONG:active"
+        if h.hypothesis_kind == "concept_group:h1:long:active"
         and "crt" in h.supporting_patterns
     ]
     assert len(concept) == 1
