@@ -296,7 +296,8 @@ class CandleRangeTheory:
         return ConceptReading(
             concept=self.key, timeframe=tf, domain=EvidenceDomain.LIQUIDITY, applicable=True,
             applicability_reason="three-candle range / sweep / close-back-inside sequence present on completed bars",
-            observation=obs, implications=(implication,), facts=facts, source_bar_epoch=source_epoch,
+            observation=obs, implications=(implication,), facts=facts,source_bar_epoch=source_epoch,
+ source_timestamp_verified=source_epoch is not None,
             reference_close=ref_close, reference_timeframe=ref_tf,
             unknowns=tuple(requires),
         )

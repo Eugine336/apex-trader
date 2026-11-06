@@ -82,7 +82,8 @@ class SessionCalendar:
                     conflicts_with=("Unverified or static session schedules must not be treated as authoritative.",),
                     management={"meaning": "Reassess time-sensitive theses at verified session transitions; never use this reading as an execution veto."},
                 ),),
-                facts=facts, source_bar_epoch=epoch, reference_close=reference,
+                facts=facts,source_bar_epoch=epoch,
+ source_timestamp_verified=epoch is not None, reference_close=reference,
                 reference_timeframe=reference_tf, unknowns=tuple(dict.fromkeys(unknowns)),
             ))
         return readings

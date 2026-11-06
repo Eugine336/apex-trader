@@ -149,8 +149,9 @@ class SeasonalityConcept:
                     "long_effect_log_return": long_effect, "short_effect_log_return": short_effect,
                     "strength_is_percentile_of_own_history": True,
                     "normal_95_critical_value_is_uncertainty_definition": NORMAL_95_CRITICAL_VALUE,
-                },
-                source_bar_epoch=epoch, reference_close=reference, reference_timeframe=reference_tf,
+                },source_bar_epoch=epoch,
+
+                source_timestamp_verified=epoch is not None, reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(dict.fromkeys(unknowns)),
             ))
         return readings

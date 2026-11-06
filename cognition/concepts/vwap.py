@@ -148,8 +148,9 @@ class VWAPConcept:
                     "accepted_above": accepted_above, "accepted_below": accepted_below,
                     "rejected_below": rejected_below, "rejected_above": rejected_above,
                     "completed_bar_close": current["close"],
-                },
-                source_bar_epoch=epoch, reference_close=reference, reference_timeframe=reference_tf,
+                },source_bar_epoch=epoch,
+
+                source_timestamp_verified=epoch is not None, reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(dict.fromkeys(unknowns)),
             ))
         return readings
