@@ -26,9 +26,9 @@ Nothing is invented: where history supplies no objective, the reading says so.
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from functools import lru_cache
-import threading
 from typing import Optional
 
 from cognition.contracts import EvidenceDomain
