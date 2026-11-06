@@ -311,6 +311,51 @@ def test_unverified_method_timestamps_are_not_evaluable():
 
 
 
+
+def test_method_readings_must_share_one_verified_timestamp_to_make_lens_applicable():
+    cutoff = _bars()[-1]["timestamp_epoch"]
+    methods = [
+        ConceptReading(
+            concept="anomaly_detection",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="novelty",
+            implications=(),
+            facts={},
+            source_bar_epoch=cutoff,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+        ConceptReading(
+            concept="clustering",
+            timeframe="M5",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE,
+            applicable=True,
+            applicability_reason="available",
+            observation="analogue",
+            implications=(),
+            facts={},
+            source_bar_epoch=cutoff - 300.0,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            independence_group="ohlc:XAUUSD:M5",
+        ),
+    ]
+    composed = StrategyLensReadings().read_with_context(
+        "XAUUSD", {"M5": _bars()}, {"concept_readings": methods},
+    )
+    lens = next(item for item in composed if item.concept == "pattern_discovery")
+
+    assert lens.facts["missing_methods"] == []
+    assert lens.applicable is False
+    assert lens.facts["source_provenance_verified"] is False
+    assert lens.facts["style_context_state"] == "unsynchronized_method_context"
+    assert any("not all synchronized" in item for item in lens.unknowns)
+
+
 def test_lens_composition_excludes_future_dated_method_readings_from_replay():
     cutoff = _bars()[-1]["timestamp_epoch"]
     methods = [

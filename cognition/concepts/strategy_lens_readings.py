@@ -331,13 +331,6 @@ class StrategyLensReadings:
                         geometry[key].extend(values)
 
                 lens = catalog[lens_key]
-                lens_applicable = all_methods_applicable and data_gate is None
-                style_state = (
-                    "complete_method_context" if lens_applicable
-                    else "data_gated" if data_gate
-                    else "partial_method_context" if selected
-                    else "not_evaluable"
-                )
                 # A completed-bar epoch is trusted only when each method reading
                 # explicitly verifies its source timestamp. Never promote a merely
                 # present timestamp into verified provenance.
@@ -382,6 +375,19 @@ class StrategyLensReadings:
                     unknowns.append(
                         "underlying method readings are not all synchronized to one source-verified completed-bar timestamp"
                     )
+                lens_applicable = (
+                    all_methods_applicable
+                    and data_gate is None
+                    and source_timestamp_epoch is not None
+                )
+                style_state = (
+                    "complete_method_context" if lens_applicable
+                    else "data_gated" if data_gate
+                    else "unsynchronized_method_context"
+                    if all_methods_applicable and source_timestamp_epoch is None
+                    else "partial_method_context" if selected
+                    else "not_evaluable"
+                )
 
                 # Do not synthesize independence for a composition. A shared
                 # group is valid only when every input explicitly declares the
