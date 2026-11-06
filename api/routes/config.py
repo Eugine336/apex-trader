@@ -27,7 +27,9 @@ async def get_trading_config(
 ) -> TradingConfig:
     raw = db.get_user_config(int(user["id"]))
     data = json.loads(raw) if raw else {}
-    if "universe_mode" not in data and data.get("enabled_symbols_override"):
+    if data.get("enabled_symbols_override") and data.get("universe_mode") in (None, "all"):
+        # Preserve an existing explicit symbol restriction rather than
+        # interpreting a stale/legacy all-mode record as permission to expand.
         data["universe_mode"] = "selected"
     return TradingConfig(**{k: v for k, v in data.items() if k in TradingConfig.model_fields})
 
