@@ -55,15 +55,14 @@ variable.
   (`api/instance_config.apply_user_overrides`) — you cannot have N users
   sharing or pushing to one git data repo.
 
-### 2. Shared, read-only reference data → `shared_data_dir()` / `checkpoints_dir()`
-Artifacts that are identical for every user (a trained RL checkpoint, a swap
-rate table, broker symbol configs). These must stay reachable even from a
-per-user instance whose isolated `data_dir()` is empty.
+### 2. Shared, read-only reference data → `shared_data_dir()`
+Reference data that is identical for every user (for example, swap-rate tables)
+remains reachable even from a per-user instance whose isolated `data_dir()` is
+empty.
 
 - `runtime_paths.shared_data_dir()` always returns `<repo>/data` (the junction),
   regardless of `APEX_DATA_DIR`.
-- `runtime_paths.checkpoints_dir()` always returns `<repo>/checkpoints`.
-- Both anchor to `runtime_paths.repo_root()`, which is **cwd-independent**.
+- It anchors to `runtime_paths.repo_root()`, which is **cwd-independent**.
 
 ## Why the subprocess cwd is the per-user workdir (not the repo root)
 
@@ -74,11 +73,11 @@ resolve against the cwd. Pinning cwd to the workdir guarantees those files land
 in `workdir/data` (== `APEX_DATA_DIR`) and **never** leak into the operator's
 shared `<repo>/data` junction.
 
-Because the cwd is therefore *not* the repo root, repo-relative shared resources
-cannot be found relative to the cwd. The process manager exports `APEX_REPO_DIR`
-(the code-repo root) so `runtime_paths.repo_root()` can locate them regardless
-of cwd. This is what keeps `checkpoints/` and the shared junction reachable from
-an isolated instance.
+Because the cwd is therefore *not* the repo root, repo-relative reference
+resources cannot be found relative to the cwd. The process manager exports
+`APEX_REPO_DIR` (the code-repo root) so `runtime_paths.repo_root()` can locate
+them regardless of cwd. This keeps the shared junction and code-shipped
+reference configuration reachable from an isolated instance.
 
 ## Quick reference
 
@@ -86,7 +85,6 @@ an isolated instance.
 |------|-----|-------------|------------------------|
 | Writeable state | `data_dir()` | `<repo>/data` (junction) | `<workdir>/data` (isolated) |
 | Shared read-only data | `shared_data_dir()` | `<repo>/data` (junction) | `<repo>/data` (junction) |
-| Model checkpoints | `checkpoints_dir()` | `<repo>/checkpoints` | `<repo>/checkpoints` |
 | Repo root | `repo_root()` | this checkout | `APEX_REPO_DIR` → this checkout |
 
 ## Environment variables (set automatically by the API; do not set manually)

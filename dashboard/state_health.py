@@ -233,9 +233,7 @@ class HealthMixin:
         if ctx is not None and getattr(ctx, "health_watchdog", None) is not None:
             try:
                 hw_report = ctx.health_watchdog.check_health()
-                for w in getattr(hw_report, "warnings", []):
-                    if "RL" in w:
-                        warnings.append(w)
+                warnings.extend(str(w) for w in getattr(hw_report, "warnings", []))
             except Exception as exc:
                 warnings.append("health watchdog status unavailable")
                 logger.warning("[dashboard-health] health watchdog query failed: {}", exc)

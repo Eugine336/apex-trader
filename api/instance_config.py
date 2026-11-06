@@ -135,7 +135,7 @@ def build_instance_environment(
 
     *repo_root* is the code-repository root. It is exported as ``APEX_REPO_DIR``
     so the spawned engine can locate *shared, read-only* repo-relative resources
-    (the data junction, ``checkpoints/``, ``config/brokers/``) regardless of its
+    (the data junction and ``config/brokers/``) regardless of its
     current working directory — which is the per-user, isolated ``workdir`` and
     therefore cannot be used to find them.
     """
@@ -156,11 +156,9 @@ def build_instance_environment(
     env["APEX_USER_CONFIG"] = str(config_path.resolve())
 
     # ── Shared read-only resources (anchored to the code repo) ────────────
-    # The subprocess runs with cwd = per-user workdir, so relative paths like
-    # ``checkpoints/...`` would resolve under the workdir and miss the shared,
-    # repo-shipped assets (trained RL models, reference configs). Pin the repo
-    # root explicitly so ``runtime_paths.repo_root()`` / ``checkpoints_dir()``
-    # resolve to the shared location for every instance.
+    # The subprocess runs with cwd = per-user workdir. Pin the code-repository
+    # root explicitly so repo-relative reference configs and the shared data
+    # junction remain discoverable regardless of the subprocess working dir.
     if repo_root is not None:
         env["APEX_REPO_DIR"] = str(Path(repo_root).resolve())
     else:

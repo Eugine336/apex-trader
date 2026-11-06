@@ -189,7 +189,6 @@ class SystemContext:
     position_displacer: Optional[Any] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
     win_rate_provider: Optional[Any] = None
-    rl_bridge: Optional[Any] = None
 
     # ── Ops / Dashboard / Persistence (Phase 5) ─────────────────────
     trade_journal: Optional[Any] = None
@@ -597,18 +596,6 @@ class SystemContext:
             ctx.shadow_store = _ShadowStore()
         except Exception as exc:
             logger.warning("[SystemContext] ShadowStore init failed: {}", exc)
-
-        # ── RL bridge ───────────────────────────────────────────────
-        # Dormant unless a trained checkpoint exists (the bridge self-disables
-        # otherwise), so this is default-neutral on a fresh install. Shares the
-        # Phase 4 ShadowStore so RL shadow contracts land in the same place.
-        try:
-            from rl.bridge import build_rl_bridge
-            ctx.rl_bridge = build_rl_bridge()
-            if ctx.rl_bridge is not None and ctx.shadow_store is not None:
-                ctx.rl_bridge._shadow_store = ctx.shadow_store
-        except Exception as exc:
-            logger.warning("[SystemContext] RLBridge init failed: {}", exc)
 
         # ── AdaptiveOptimizer (ML adapter) ──────────────────────────
         try:
@@ -1962,13 +1949,6 @@ class SystemContext:
         try:
             from platforms.health_watchdog import HealthWatchdog as _HealthWatchdog
             ctx.health_watchdog = _HealthWatchdog()
-            rl = getattr(ctx, "rl_bridge", None)
-            if rl is not None:
-                ctx.health_watchdog.record_rl_status(
-                    enabled=bool(getattr(rl, "enabled", False)),
-                    stage=int(getattr(getattr(rl, "authority", None), "stage", 1) or 1),
-                    checkpoint_loaded=bool(getattr(rl, "checkpoint_exists", False)),
-                )
         except Exception as exc:
             logger.warning("[SystemContext] HealthWatchdog init failed: {}", exc)
 

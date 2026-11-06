@@ -244,7 +244,6 @@ def test_order_fill_persists_per_ticket_entry_context_without_database_access(mo
         execution_monitor=None,
         outcome_feedback=None,
         signal_ledger=None,
-        rl_bridge=None,
     )
     system._entry_context = {}
     system._pip_size_fallback_symbols = {"XAUUSD"}

@@ -1,7 +1,7 @@
 """
 APEX TRADER — Loguru → EventStore Tee Sink + stdlib Intercept
 Captures every loguru record as a structured LOG event in the EventStore.
-Also bridges stdlib-logging outliers (rl/bridge, brain/regime_detector) into
+Also bridges stdlib-logging outliers (brain/regime_detector) into
 loguru so their output is captured identically.
 
 Non-blocking: events are enqueued, never written inline.
@@ -87,8 +87,7 @@ def get_sink_error_count() -> int:
 class _LoguruInterceptHandler(logging.Handler):
     """Route stdlib logging records into loguru so they hit the tee sink.
 
-    Targets the two known outliers: ``rl/bridge.py`` (``apex.rl.bridge``)
-    and ``brain/regime_detector.py`` (``apex`` root logger at DEBUG).
+    Targets the two known outliers: ``brain/regime_detector.py`` (``apex`` root logger at DEBUG).
     """
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -112,7 +111,7 @@ def install_stdlib_intercept(logger_names: Optional[list] = None) -> None:
     Defaults to the two known outliers if *logger_names* is not specified.
     """
     if logger_names is None:
-        logger_names = ["apex.rl.bridge", "apex"]
+        logger_names = ["apex"]
 
     handler = _LoguruInterceptHandler()
     for name in logger_names:

@@ -1,10 +1,9 @@
 # Feedback → Learning → Evolution Loop — Multi-Tenant Data Isolation Audit
 
-**Scope:** Verify the full trading lifecycle data loop (scan → rank → decide →
-open → manage → close → feedback → learning → evolution) reads/writes from
-per-user isolated storage in multi-tenant mode, where each user's engine runs as
-a subprocess with `cwd = instances/user_<id>/` and `APEX_DATA_DIR` pointing to
-per-user writeable storage.
+**Scope:** Historical data-isolation audit for the trading lifecycle (scan →
+rank → decide → open → manage → close → feedback → learning → evolution).
+The RL subsystem discussed in earlier versions has been retired; current
+runtime learning is native cognition plus adaptive/statistical outcome learning.
 
 **Method:** Raw-code trace. Every claim carries a `file:line` reference.
 
@@ -29,7 +28,7 @@ Two path-resolution mechanisms were in play before this change:
 | Mechanism | Resolves to | Used by |
 |---|---|---|
 | `runtime_paths.data_dir()` → reads `APEX_DATA_DIR` | absolute `workdir/data` | all `adaptive/*` SQLite stores, `persistence/*`, `execution/management_state`, `ShadowStore` |
-| bare relative `"data/…"` literal default | `cwd/data` = `workdir/data` (cwd-dependent) | gate_tuner, zone_edge, score_optimizer, the 3 ML learners, post_close_tracker, tuner_agent, outcome_logger, RL dbs |
+| bare relative `"data/…"` literal default | `cwd/data` = `workdir/data` (cwd-dependent) | gate_tuner, zone_edge, score_optimizer, the 3 ML learners, post_close_tracker, tuner_agent, outcome_logger |
 
 Both *happened* to resolve to the same per-user location only because
 `APEX_DATA_DIR == workdir/data` **and** `cwd == workdir`. The relative-path
@@ -76,28 +75,12 @@ plane proxies JWT-authenticated requests to the owning user's port
 ([api/process_manager.py:171-191](api/process_manager.py)). LiveState is therefore
 per-process = per-user by construction; panels (`/api/scanner`, `/api/feedback`,
 `/api/learning`, …) serve only that user's engine state. The API server process
-itself never imports `adaptive`/`rl`/engine modules, so there is no shared
+itself never imports `adaptive`/engine modules, so there is no shared
 module-level `_DB_DIR` contamination in the control plane.
 
 ---
 
 ## 3. Findings
-
-### 🔴 BUG 1 — Shared RL checkpoint unreachable in multi-tenant (FIXED)
-
-`resolve_rl_checkpoint()` resolved the trained model via `Path("checkpoints")`
-([rl/bridge.py](rl/bridge.py)) — **relative to cwd**. In multi-tenant mode
-cwd = `instances/user_<id>/`, so every instance looked for
-`instances/user_<id>/checkpoints/apex_rl_best.pt`, which never exists. The
-trained model is a **shared, read-only** asset shipped at `<repo>/checkpoints/`.
-Result: the RL subsystem was **permanently `INACTIVE_NO_CHECKPOINT` for every
-user**, even with a trained model present.
-
-**Fix:** Added `repo_root()` / `shared_data_dir()` / `checkpoints_dir()` to
-`runtime_paths.py` (honour `APEX_REPO_DIR`, fall back to the repo). The process
-manager now injects `APEX_REPO_DIR` ([api/instance_config.py](api/instance_config.py)),
-and `resolve_rl_checkpoint()` resolves through `checkpoints_dir()` — shared and
-read-only, never the per-user cwd.
 
 ### 🟡 RISK 2 — cwd-dependent relative `data/…` defaults (FIXED)
 

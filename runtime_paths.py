@@ -28,12 +28,11 @@ served out of it, and they must NOT be conflated in multi-tenant mode:
   deliberately bypassed (you cannot have N users sharing one git data repo).
   Resolve this via :func:`data_dir`.
 
-* **Shared read-only reference data** (e.g. the trained RL checkpoint, a swap
-  rate table). This is the *same* for every user and lives at the repo root
-  (junction-adjacent). It must stay reachable even when a per-user instance has
-  an isolated, empty ``APEX_DATA_DIR``. Resolve this via :func:`shared_data_dir`
-  / :func:`checkpoints_dir`, which always anchor to the repo root regardless of
-  the per-user override or the process's current working directory.
+* **Shared read-only reference data** (e.g. a swap-rate table). This is the
+  same for every user and lives in the data junction. It remains reachable even
+  when a per-user instance has an isolated, empty ``APEX_DATA_DIR``. Resolve
+  this via :func:`shared_data_dir`, which anchors to the repo root regardless
+  of the per-user override or the process's current working directory.
 """
 
 from __future__ import annotations
@@ -62,8 +61,8 @@ def repo_root() -> Path:
          still locate shared, read-only assets that live with the code).
       2. ``<repo>`` (this file's directory; correct for single-user runs).
 
-    Use this ONLY for read-only resources shipped with the code (trained RL
-    checkpoints, reference configs). Mutable per-user state must use
+    Use this ONLY for locating the code repository and its read-only reference
+    resources. Mutable per-user state must use
     :func:`data_dir`.
     """
     override = os.getenv(_REPO_DIR_ENV, "").strip()
@@ -95,16 +94,6 @@ def shared_data_dir() -> Path:
     per-user isolated tree.
     """
     return repo_root() / "data"
-
-
-def checkpoints_dir() -> Path:
-    """Return the directory holding trained model checkpoints (repo-relative).
-
-    Checkpoints are shared, read-only artifacts produced by training and are the
-    same for every user, so they are anchored to the repo root rather than the
-    per-user (isolated) data directory.
-    """
-    return repo_root() / "checkpoints"
 
 
 def log_dir() -> Path:
