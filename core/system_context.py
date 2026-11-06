@@ -1349,16 +1349,68 @@ class SystemContext:
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
                     _concept_history_bars = 100
 
-                def _concept_market_source(symbol: str) -> list:
-                    """Fetch source-attested OHLCV and emit native concept evidence."""
-                    frames = platform_manager.fetch_market_data(
-                        symbol,
-                        timeframes=list(_concept_timeframes),
-                        # Request one extra broker row because the final
-                        # forming candle is excluded by analyze_market_frames.
-                        count=_concept_history_bars + 1,
-                        include_forming=True,
-                    )
+                _concept_snapshot_cache = {"cycle_key": None, "frames": None}
+                _concept_snapshot_lock = threading.Lock()
+
+                def _concept_market_source(symbol: str, *, now: float | None = None) -> list:
+                    """Fetch one cycle-scoped multi-symbol snapshot and emit native concept evidence."""
+                    cycle_key = None
+                    if now is not None and not isinstance(now, bool):
+                        try:
+                            cycle_key = float(now)
+                        except (TypeError, ValueError, OverflowError):
+                            cycle_key = None
+
+                    all_frames: dict[str, dict] = {}
+                    if cycle_key is not None:
+                        with _concept_snapshot_lock:
+                            if _concept_snapshot_cache["cycle_key"] != cycle_key:
+                                _concept_snapshot_cache["cycle_key"] = cycle_key
+                                _concept_snapshot_cache["frames"] = None
+                            if _concept_snapshot_cache["frames"] is None:
+                                try:
+                                    enabled = list(getattr(config, "enabled_pairs", []) or [])
+                                    active = list(_cognition_symbols() or [])
+                                    symbols = sorted({
+                                        str(item or "").strip().upper()
+                                        for item in [*enabled, *active, symbol]
+                                        if str(item or "").strip()
+                                    })
+                                    from datetime import datetime, timezone
+                                    _concept_snapshot_cache["frames"] = (
+                                        platform_manager.fetch_all_market_data(
+                                            symbols=symbols,
+                                            timeframes=list(_concept_timeframes),
+                                            count=_concept_history_bars + 1,
+                                            now_utc=datetime.fromtimestamp(cycle_key, timezone.utc),
+                                        ) or {}
+                                    )
+                                except Exception as exc:  # noqa: BLE001 — cross-symbol failure degrades to target-only data
+                                    logger.warning(
+                                        "[cognition] multi-symbol snapshot unavailable for cycle %.3f: %s",
+                                        cycle_key, type(exc).__name__,
+                                    )
+                                    _concept_snapshot_cache["frames"] = {}
+                            all_frames = {
+                                str(key or "").strip().upper(): value
+                                for key, value in (_concept_snapshot_cache["frames"] or {}).items()
+                                if isinstance(value, dict)
+                            }
+
+                    frames = all_frames.get(str(symbol or "").strip().upper())
+                    if not frames:
+                        frames = platform_manager.fetch_market_data(
+                            symbol,
+                            timeframes=list(_concept_timeframes),
+                            # Request one extra broker row because the final
+                            # forming candle is excluded by analyze_market_frames.
+                            count=_concept_history_bars + 1,
+                            include_forming=True,
+                        )
+                    related_symbol_frames = {
+                        peer: peer_frames for peer, peer_frames in all_frames.items()
+                        if peer != str(symbol or "").strip().upper()
+                    }
                     # Broker symbol_info is an independent specification
                     # source. Do not substitute config defaults when the
                     # connected venue cannot attest its contract fields.
@@ -1431,6 +1483,8 @@ class SystemContext:
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
                             "tick_history": tick_history,
+                            "related_symbol_frames": related_symbol_frames,
+                            "multi_symbol_cycle_epoch": cycle_key,
                         },
                     )
 
