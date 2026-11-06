@@ -279,6 +279,76 @@ class MT5Connector(BaseConnector):
                 })
         return sessions
 
+    def discover_symbols(self) -> list[dict]:
+        """Discover the connected broker's native MT5 symbol universe.
+
+        This is a broker snapshot, not an Apex trading allow-list. It includes
+        disabled and hidden symbols with explicit eligibility/specification
+        fields so the owner can inspect the actual feed without Apex inventing
+        contract metadata.
+        """
+        self._require_connection()
+        try:
+            raw_symbols = mt5.symbols_get()
+        except Exception as exc:
+            raise RuntimeError(f"MT5 symbol discovery failed: {exc}") from exc
+        if raw_symbols is None:
+            raise RuntimeError(f"MT5 symbol discovery returned no result: {mt5.last_error()}")
+
+        disabled = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+        long_only = getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1)
+        short_only = getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2)
+        close_only = getattr(mt5, "SYMBOL_TRADE_MODE_CLOSEONLY", 3)
+        full = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
+        opening_modes = {long_only, short_only, full}
+
+        discovered: list[dict] = []
+        for item in raw_symbols:
+            name = str(getattr(item, "name", "") or "").strip()
+            if not name:
+                continue
+            trade_mode = getattr(item, "trade_mode", None)
+            tick_size = float(getattr(item, "trade_tick_size", 0.0) or 0.0)
+            point = float(getattr(item, "point", 0.0) or 0.0)
+            contract_size = float(getattr(item, "trade_contract_size", 0.0) or 0.0)
+            volume_min = float(getattr(item, "volume_min", 0.0) or 0.0)
+            volume_max = float(getattr(item, "volume_max", 0.0) or 0.0)
+            volume_step = float(getattr(item, "volume_step", 0.0) or 0.0)
+            spec_complete = all(value > 0 for value in (
+                tick_size, point, contract_size, volume_min, volume_max, volume_step
+            ))
+            discovered.append({
+                "symbol": name,
+                "description": str(getattr(item, "description", "") or ""),
+                "path": str(getattr(item, "path", "") or ""),
+                "visible_in_market_watch": bool(getattr(item, "visible", False)),
+                "selected_in_terminal": bool(getattr(item, "select", False)),
+                "trade_mode": trade_mode,
+                "can_open_new_positions": trade_mode in opening_modes,
+                "close_only": trade_mode == close_only,
+                "disabled": trade_mode == disabled,
+                "digits": int(getattr(item, "digits", 0) or 0),
+                "point": point,
+                "trade_tick_size": tick_size,
+                "trade_tick_value": float(getattr(item, "trade_tick_value", 0.0) or 0.0),
+                "trade_contract_size": contract_size,
+                "volume_min": volume_min,
+                "volume_max": volume_max,
+                "volume_step": volume_step,
+                "trade_stops_level": int(getattr(item, "trade_stops_level", 0) or 0),
+                "trade_freeze_level": int(getattr(item, "trade_freeze_level", 0) or 0),
+                "currency_base": str(getattr(item, "currency_base", "") or ""),
+                "currency_profit": str(getattr(item, "currency_profit", "") or ""),
+                "currency_margin": str(getattr(item, "currency_margin", "") or ""),
+                "swap_long": getattr(item, "swap_long", None),
+                "swap_short": getattr(item, "swap_short", None),
+                "specification_complete": spec_complete,
+                "new_position_eligible": bool(trade_mode in opening_modes and spec_complete),
+                "source": "mt5.symbols_get",
+                "source_verified": True,
+            })
+        return sorted(discovered, key=lambda row: row["symbol"].casefold())
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Broker-truth symbol economics from MT5 ``symbol_info``.
 
