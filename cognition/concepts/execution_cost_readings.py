@@ -29,6 +29,7 @@ class ExecutionCostReadings:
         source_epoch = None
         try:
             source_epoch = float(payload.get("source_timestamp_epoch"))
+        # SAFE-FALLBACK: malformed provider time remains unknown and cannot authorize exposure.
         except (TypeError, ValueError, OverflowError):
             pass
         quote_verified = bool(

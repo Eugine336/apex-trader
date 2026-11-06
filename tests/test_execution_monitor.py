@@ -248,6 +248,6 @@ class TestBrokerAttemptTelemetry:
         assert stats["market_entry_success_count"] == 19
         assert stats["market_entry_fill_success_ratio"] == 0.95
         assert stats["market_entry_fill_rate_sample_floor_met"] is True
-        assert stats["observed_entry_abs_slippage_avg_pips"] == 1.0
+        assert abs(stats["observed_entry_abs_slippage_avg_pips"] - 1.0) < 1e-8
         assert stats["observed_entry_slippage_sample_count"] == 19
         assert stats["observed_submit_response_latency_avg_ms"] == 134.0
