@@ -236,6 +236,7 @@ def test_fully_verified_method_composition_can_be_relevant_to_the_brain():
             implications=(),
             facts={"historical_state_sample_count": 80},
             source_bar_epoch=1_780_000_000.0,
+            source_timestamp_verified=True,
             data_basis="completed_ohlc",
             independence_group="ohlc:XAUUSD:M5",
         ),

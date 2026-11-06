@@ -292,7 +292,7 @@ class StrategyLensReadings:
                 )
                 if selected and source_epoch is None:
                     unknowns.append(
-                        "underlying method readings do not all provide one synchronized, source-verified completed-bar timestamp"
+                        "underlying method readings are not all synchronized to one source-verified completed-bar timestamp"
                     )
 
                 # Do not synthesize independence for a composition. A shared
