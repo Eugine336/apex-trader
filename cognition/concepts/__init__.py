@@ -103,7 +103,9 @@ def read_concept_readings(
                 if callable(contextual_reader)
                 else module.read(symbol, bars_by_tf)
             )
-            for reading in produced or ():
+            if produced is None:
+                raise TypeError(f"{module_key} returned None instead of a reading sequence")
+            for reading in produced:
                 if not isinstance(reading, ConceptReading):
                     raise TypeError(
                         f"{module_key} returned {type(reading).__name__}, expected ConceptReading"
