@@ -6,7 +6,9 @@ historical OHLC without connecting to a broker or submitting orders.
 ## Dataset manifest
 
 Place the manifest beside the referenced CSV files. Timestamps must be UTC and
-must be explicitly identified as either bar-open or bar-close times.
+must be explicitly identified as either bar-open or bar-close times. Use
+`bar_close` for D1 candles; daily session lengths can vary across DST/session
+boundaries, so a fixed 86,400-second close-time derivation is not accepted.
 
 ```json
 {
