@@ -284,7 +284,14 @@ class StrategyLensReadings:
                         "underlying method readings are not all synchronized to one verified completed-bar timestamp"
                     )
                 source_groups = [
-                    str(item.independence_group or "").strip()
+                    str(
+                        item.independence_group
+                        or (
+                            f"ohlc:{str(symbol or '').upper()}:{item.timeframe}"
+                            if (item.data_basis or "completed_ohlc") == "completed_ohlc"
+                            else ""
+                        )
+                    ).strip()
                     for item in selected.values()
                 ]
                 groups = {group for group in source_groups if group}
