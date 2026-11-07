@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.auth import get_current_user, get_db, get_process_manager
 from api.database import Database
 from api.models import TradingConfig
-from api.process_manager import STATUS_RUNNING, ProcessManager
+from api.process_manager import STATUS_RUNNING, STATUS_STARTING, ProcessManager
 from api.instance_config import apply_user_overrides
 from config import AppConfig
 
@@ -65,7 +65,7 @@ async def update_trading_config(
     db.set_user_config(int(user["id"]), json.dumps(current))
 
     status_info = pm.instance_status(int(user["id"]))
-    restart_required = status_info.get("status") == STATUS_RUNNING
+    restart_required = status_info.get("status") in {STATUS_RUNNING, STATUS_STARTING}
     return {
         "config": current,
         "restart_required": restart_required,
