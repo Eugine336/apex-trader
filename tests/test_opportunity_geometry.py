@@ -21,6 +21,8 @@ def _state(
     momentum=0.001,
     range_position=0.5,
     range_rotation=False,
+    failed_low_auction=False,
+    failed_high_auction=False,
 ):
     now = time.time()
     stamp = now if timestamp is None else timestamp
@@ -45,6 +47,8 @@ def _state(
             "breakout_direction": breakout,
             "trend_state": trend,
             "range_rotation": range_rotation,
+            "failed_low_auction": failed_low_auction,
+            "failed_high_auction": failed_high_auction,
             "trend_strength": 0.4,
         },
         timestamp_epoch=stamp,
@@ -146,7 +150,7 @@ def test_other_symbol_evidence_cannot_contaminate_geometry():
 def test_measured_range_rotation_can_activate_without_a_named_pattern():
     state = _state(
         breakout="none", trend="range", momentum=0.001,
-        range_position=0.1, range_rotation=True,
+        range_position=0.1, range_rotation=True, failed_low_auction=True,
     )
     geometry = derive_opportunity_geometry(state, "LONG")
 
@@ -154,6 +158,25 @@ def test_measured_range_rotation_can_activate_without_a_named_pattern():
     assert geometry.activated
     assert "measured range rotation" in geometry.activation_reason
     assert geometry.target_price > geometry.entry_price > geometry.stop_price
+
+
+def test_near_range_position_without_failed_auction_cannot_activate_rotation():
+    state = _state(
+        breakout="none", trend="range", momentum=0.001,
+        range_position=0.01, range_rotation=True,
+    )
+    assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_short_range_rotation_requires_completed_failed_high_auction():
+    state = _state(
+        breakout="none", trend="range", momentum=-0.001,
+        range_position=0.99, range_rotation=True, failed_high_auction=True,
+    )
+    geometry = derive_opportunity_geometry(state, "SHORT")
+    assert geometry is not None
+    assert geometry.activated
+    assert "measured range rotation" in geometry.activation_reason
 
 
 def test_stale_completed_bar_evidence_cannot_define_geometry():
