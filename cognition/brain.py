@@ -229,7 +229,6 @@ class CognitiveBrain:
         reasoner: Optional[Any] = None,
         *,
         min_confidence_to_act: float = 0.55,
-        max_uncertainty_to_act: float = 0.6,
         ev_primary_gate: bool = True,
         ev_action_threshold_r: float = 0.0,
         reasoner_name: str = "ai_brain",
@@ -261,7 +260,6 @@ class CognitiveBrain:
         )
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
-        self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
         # Apex identity invariant: exposure is qualified by net expected value,
         # not a raw confidence-floor shortcut. Keep the argument for constructor
         # compatibility, but an explicit False cannot restore the legacy gate.
@@ -1674,7 +1672,6 @@ class CognitiveBrain:
                 analysis=analysis,
                 hypotheses=native_hypotheses,
                 now=now,
-                max_uncertainty=self.max_uncertainty_to_act,
             )
             payload["native_analysis"] = analysis.to_dict()
             payload["native_hypotheses"] = [
@@ -3601,7 +3598,6 @@ class CognitiveBrain:
                 "available": self.available,
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
-                "max_uncertainty_to_act": self.max_uncertainty_to_act,
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
