@@ -99,7 +99,7 @@ class TradingConfig(BaseModel):
     # Backward-compatible owner-limit keys remain accepted. New settings use
     # the canonical nested contract so the backend can reject unknown fields
     # and validate the complete merged configuration before persistence.
-    risk_per_trade_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    risk_per_trade_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     max_daily_drawdown_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     max_open_trades: Optional[int] = Field(default=None, ge=1, le=100)
     owner_limits: Optional[dict[str, Any]] = None
