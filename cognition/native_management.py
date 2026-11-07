@@ -600,7 +600,6 @@ class NativePositionManager:
                 if (
                     direction in {"LONG", "SHORT"}
                     and direction != held_side
-                    and hypothesis_confidence >= 0.65
                     and active_contradictions
                 ):
                     directional_challengers.append((hypothesis_confidence, hypothesis))
