@@ -78,8 +78,6 @@ _OWNER_EDITABLE_FIELDS = frozenset({
     "max_currency_exposure",
     "max_sector_exposure",
     "max_positions_per_timeframe_class",
-    "max_directional_exposure_pct",
-    "max_regime_exposure_pct",
     "max_campaign_exposure_units",
     "max_campaign_exposure_fraction",
     "hedge_ratio_cap",
@@ -93,6 +91,17 @@ _OWNER_EDITABLE_FIELDS = frozenset({
     "margin_warn_level_pct",
     "margin_block_entry_level_pct",
     "margin_flatten_level_pct",
+})
+_INTERNAL_ONLY_FIELDS = frozenset({
+    "daily_loss_flatten_enabled",
+    "margin_guardian_enabled",
+    "graded_exposure_enabled",
+    "max_directional_exposure_pct",
+    "max_regime_exposure_pct",
+    "cooldown_hours",
+    "cooldown_sizing_factor",
+    "max_correlated_exposure_factor",
+    "correlation_threshold",
 })
 
 
@@ -116,8 +125,6 @@ class OwnerLimits:
     max_currency_exposure: int = 3
     max_sector_exposure: int = 4
     max_positions_per_timeframe_class: int = 3
-    max_directional_exposure_pct: float = 60.0
-    max_regime_exposure_pct: float = 40.0
     max_campaign_exposure_units: float = 3.0
     max_campaign_exposure_fraction: float = 1.0
     hedge_ratio_cap: float = 0.30
@@ -134,10 +141,6 @@ class OwnerLimits:
     margin_block_entry_level_pct: float = 150.0
     margin_flatten_level_pct: float = 100.0
     graded_exposure_enabled: bool = True
-    cooldown_hours: float = 4.0
-    cooldown_sizing_factor: float = 0.50
-    max_correlated_exposure_factor: float = 1.50
-    correlation_threshold: float = 0.70
 
     def __post_init__(self) -> None:
         self.validate()
@@ -218,12 +221,6 @@ class OwnerLimits:
             max_positions_per_timeframe_class=int(_positive_min(
                 _get(governor, "max_positions_per_tf_class", 3), default=3
             )),
-            max_directional_exposure_pct=_positive_min(
-                _get(risk_management, "max_directional_exposure_pct", 60.0), default=60.0
-            ),
-            max_regime_exposure_pct=_positive_min(
-                _get(risk_management, "max_per_regime_pct", 40.0), default=40.0
-            ),
             # Zero is meaningful here: it disables new campaign exposure.
             # Do not use _positive_min(), which would silently replace zero with
             # the default and restore risk the owner explicitly removed.
@@ -260,19 +257,6 @@ class OwnerLimits:
                 _get(risk, "margin_flatten_pct", 100.0), "margin_flatten_pct"
             ),
             graded_exposure_enabled=bool(_get(governor, "graded_exposure", True)),
-            cooldown_hours=_finite(_get(risk_management, "cooldown_hours", 4.0), "cooldown_hours"),
-            cooldown_sizing_factor=_finite(
-                _get(risk_management, "cooldown_sizing_factor", 0.50),
-                "cooldown_sizing_factor",
-            ),
-            max_correlated_exposure_factor=_finite(
-                _get(risk_management, "max_correlated_exposure_factor", 1.50),
-                "max_correlated_exposure_factor",
-            ),
-            correlation_threshold=_finite(
-                _get(risk_management, "correlation_threshold", 0.70),
-                "correlation_threshold",
-            ),
         )
 
     def validate(self) -> None:
@@ -281,7 +265,6 @@ class OwnerLimits:
             "daily_loss_limit_pct", "weekly_drawdown_limit_pct",
             "hard_stop_drawdown_pct", "daily_loss_recovery_pct",
             "daily_loss_flatten_pct", "portfolio_heat_block_pct",
-            "max_directional_exposure_pct", "max_regime_exposure_pct",
         )
         for name in pct_fields:
             value = _finite(getattr(self, name), name)
@@ -366,37 +349,32 @@ class OwnerLimits:
         if not self.margin_guardian_enabled:
             raise ValueError("margin_guardian_enabled cannot be disabled; broker margin protection is mandatory")
 
-        for name in ("max_campaign_exposure_units", "cooldown_hours"):
+        for name in ("max_campaign_exposure_units",):
             value = _finite(getattr(self, name), name)
             if value < 0.0:
                 raise ValueError(f"{name} must be >= 0")
             setattr(self, name, value)
         for name in (
             "max_campaign_exposure_fraction", "hedge_ratio_cap",
-            "cooldown_sizing_factor", "correlation_threshold",
         ):
             value = _finite(getattr(self, name), name)
             if value < 0.0 or value > 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
             setattr(self, name, value)
-        for name in ("max_correlated_exposure_factor",):
-            value = _finite(getattr(self, name), name)
-            if value < 1.0:
-                raise ValueError(f"{name} must be >= 1")
-            setattr(self, name, value)
 
     def apply_updates(self, updates: Mapping[str, Any]) -> None:
         """Validate the complete candidate before atomically mutating this object."""
         allowed = {item.name for item in fields(self)}
-        unknown = set(updates) - allowed
-        if unknown:
-            raise ValueError(f"unknown owner limit(s): {', '.join(sorted(unknown))}")
-        internal = set(updates) - _OWNER_EDITABLE_FIELDS
+        internal = set(updates) & _INTERNAL_ONLY_FIELDS
+        internal |= (set(updates) & allowed) - _OWNER_EDITABLE_FIELDS
         if internal:
             raise ValueError(
                 "owner configuration cannot change internal safety/analysis setting(s): "
                 + ", ".join(sorted(internal))
             )
+        unknown = set(updates) - allowed - _INTERNAL_ONLY_FIELDS
+        if unknown:
+            raise ValueError(f"unknown owner limit(s): {', '.join(sorted(unknown))}")
         candidate = replace(self, **dict(updates))
         candidate.validate()
         for item in fields(self):
