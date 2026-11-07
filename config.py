@@ -4419,12 +4419,8 @@ class AppConfig:
         risk_management.hard_stop_drawdown_pct = limits.hard_stop_drawdown_pct
         risk_management.max_simultaneous_positions = limits.max_open_positions
         risk_management.max_per_pair_positions = limits.max_positions_per_symbol
-        risk_management.max_directional_exposure_pct = limits.max_directional_exposure_pct
-        risk_management.max_per_regime_pct = limits.max_regime_exposure_pct
-        risk_management.max_correlated_exposure_factor = limits.max_correlated_exposure_factor
-        risk_management.correlation_threshold = limits.correlation_threshold
-        risk_management.cooldown_hours = limits.cooldown_hours
-        risk_management.cooldown_sizing_factor = limits.cooldown_sizing_factor
+        # Directional/regime analysis, correlation thresholds and cooldown tuning
+        # remain internal RiskManagementConfig settings, not owner capital limits.
 
         cognition = self.cognition
         cognition.origination_risk_fraction = limits.risk_per_trade_pct / 100.0
