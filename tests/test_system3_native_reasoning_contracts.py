@@ -307,8 +307,8 @@ def test_self_criticism_does_not_apply_another_thesis_counter_to_this_thesis():
         [primary_a, primary_b, counter_a, counter_b], analysis,
     )
     assert primary_a.confidence < 0.6
-    assert primary_b.confidence > before_b
-    assert "survived criticism" in primary_b.criticism
+    assert primary_b.confidence == before_b
+    assert "confidence unchanged" in primary_b.criticism
 
 
 def test_each_leading_directional_hypothesis_gets_its_own_counter():
