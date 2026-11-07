@@ -542,7 +542,7 @@ def test_multitimeframe_trend_uses_strict_majority_without_rounded_ratio():
     ):
         state.add(_evidence(
             "structure",
-            {"timeframe": timeframe, "trend_state": trend},
+            {"source_kind": "market_lens", "timeframe": timeframe, "trend_state": trend},
             source=f"market_lens.structure.{timeframe.lower()}",
         ))
 
