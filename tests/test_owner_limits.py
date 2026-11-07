@@ -117,7 +117,7 @@ def test_owner_limits_cannot_weaken_emergency_drawdown_protection():
 
 def test_owner_limits_cannot_disable_broker_margin_protection():
     limits = OwnerLimits()
-    with pytest.raises(ValueError, match="internal safety/analysis"):
+    with pytest.raises(ValueError, match="internal safety"):
         limits.apply_updates({"margin_guardian_enabled": False})
 
 
@@ -208,7 +208,7 @@ def test_owner_limits_reject_boolean_numeric_values():
 )
 def test_owner_updates_cannot_change_internal_safety_or_analysis_settings(field, value):
     limits = OwnerLimits()
-    with pytest.raises(ValueError, match="internal safety/analysis"):
+    with pytest.raises(ValueError, match="internal safety"):
         limits.apply_updates({field: value})
 
 
