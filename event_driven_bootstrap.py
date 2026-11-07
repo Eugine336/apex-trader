@@ -1481,8 +1481,16 @@ class EventDrivenSystem:
 
         # ── Execution plane ──────────────────────────────────────────
         self._aggregator = IntentAggregator(AggregatorConfig())
+        owner_limits = getattr(config, "owner_limits", None)
+        margin_block_level = max(
+            150.0,
+            float(getattr(owner_limits, "margin_block_entry_level_pct", 150.0)),
+        )
         self._executor = ActionExecutor(
             broker=self._pm,  # PlatformManager satisfies BrokerPort
+            config=ExecutorConfig(
+                margin_block_entry_level_pct=margin_block_level,
+            ),
         )
         # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
