@@ -80,11 +80,10 @@ def test_accumulate_two_near_dims_dim_more_than_one():
     assert two.multiplier < one.multiplier < 1.0
 
 
-def test_accumulate_bounded_by_floor():
+def test_accumulate_has_no_minimum_risk_floor():
     dims = [ra.dimension("a", 100, 1), ra.dimension("b", 100, 1)]
-    score = ra.accumulate(dims, floor=0.2)
-    assert score.multiplier >= 0.2
-    assert score.multiplier <= 1.0
+    score = ra.accumulate(dims)
+    assert 0.0 <= score.multiplier < 0.15
 
 
 def test_accumulate_score_is_nearest_limit():
@@ -93,9 +92,9 @@ def test_accumulate_score_is_nearest_limit():
     assert score.score == 0.95  # the closest limit drives the headline score
 
 
-def test_accumulate_never_zero_multiplier():
-    score = ra.accumulate([ra.dimension("a", 1e9, 1.0)], floor=0.15)
-    assert score.multiplier == 0.15
+def test_accumulate_deep_breach_can_reduce_multiplier_near_zero():
+    score = ra.accumulate([ra.dimension("a", 1e9, 1.0)])
+    assert 0.0 < score.multiplier < 1e-8
 
 
 def test_risk_score_to_dict_round_trip():
