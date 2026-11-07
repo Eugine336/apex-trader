@@ -70,4 +70,23 @@ class TestAccountSnapshot:
         assert s["halted"] is False
         assert s["flatten_breached"] is False
 
+    def test_margin_entry_and_flatten_thresholds_are_distinct(self):
+        am = AccountRiskManager(
+            margin_block_entry_pct=150.0,
+            margin_flatten_pct=100.0,
+        )
+        am.update_margin_level("mt5:1", 140.0)
+        assert am.margin_entry_blocked("mt5:1") is True
+        assert am.margin_flatten_breached("mt5:1") is False
+
+        am.update_margin_level("mt5:1", 95.0)
+        assert am.margin_entry_blocked("mt5:1") is True
+        assert am.margin_flatten_breached("mt5:1") is True
+
+    def test_missing_margin_level_does_not_invent_a_breach(self):
+        am = AccountRiskManager()
+        assert am.margin_entry_blocked("mt5:missing") is False
+        assert am.margin_flatten_breached("mt5:missing") is False
+
+
 
