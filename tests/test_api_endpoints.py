@@ -217,6 +217,19 @@ def test_config_rejects_invalid_owner_limits_without_persisting(client):
     assert saved["owner_limits"]["hard_stop_drawdown_pct"] == 15.0
 
 
+def test_config_rejects_owner_attempt_to_disable_internal_safety_controls(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    rejected = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"margin_guardian_enabled": False}},
+    )
+    assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["margin_block_entry_level_pct"] == 150.0
+
+
 def test_config_rejects_patch_conflicting_with_existing_owner_limits(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)
