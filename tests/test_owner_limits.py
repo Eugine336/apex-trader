@@ -151,3 +151,19 @@ def test_owner_limits_reject_fractional_broker_position_caps():
     limits = OwnerLimits()
     with pytest.raises(ValueError, match="max_broker_positions"):
         limits.apply_updates({"max_broker_positions": 1.5})
+
+
+def test_owner_limits_preserve_hard_per_trade_risk_ceiling():
+    limits = OwnerLimits()
+    with pytest.raises(ValueError, match="5% hard per-trade ceiling"):
+        limits.apply_updates({
+            "risk_per_trade_pct": 6.0,
+            "max_risk_pct_per_trade": 6.0,
+            "max_total_risk_pct": 8.0,
+        })
+
+
+def test_owner_limits_reject_boolean_numeric_values():
+    limits = OwnerLimits()
+    with pytest.raises(ValueError, match="not a boolean"):
+        limits.apply_updates({"risk_per_trade_pct": True})
