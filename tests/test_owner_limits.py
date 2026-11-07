@@ -44,16 +44,12 @@ def test_owner_limits_adopts_strictest_legacy_values_without_loosening():
     assert limits.weekly_drawdown_limit_pct <= limits.hard_stop_drawdown_pct
 
 
-def test_owner_limits_allow_weekly_limit_stricter_than_daily_limit():
+def test_owner_limits_withhold_unenforced_weekly_and_hard_drawdown_controls():
     limits = OwnerLimits()
-    limits.apply_updates({
-        "daily_loss_limit_pct": 5.0,
-        "weekly_drawdown_limit_pct": 3.0,
-        "hard_stop_drawdown_pct": 10.0,
-    })
-    assert limits.daily_loss_limit_pct == 5.0
-    assert limits.weekly_drawdown_limit_pct == 3.0
-    assert limits.hard_stop_drawdown_pct == 10.0
+    with pytest.raises(ValueError, match="internal safety"):
+        limits.apply_updates({"weekly_drawdown_limit_pct": 3.0})
+    with pytest.raises(ValueError, match="internal safety"):
+        limits.apply_updates({"hard_stop_drawdown_pct": 10.0})
 
 
 def test_owner_limits_updates_are_atomic_and_propagate_to_legacy_views():
@@ -73,8 +69,6 @@ def test_owner_limits_updates_are_atomic_and_propagate_to_legacy_views():
         "max_open_positions": 4,
         "max_positions_per_symbol": 1,
         "daily_loss_limit_pct": 2.0,
-        "weekly_drawdown_limit_pct": 6.0,
-        "hard_stop_drawdown_pct": 12.0,
     })
 
     assert cfg.risk.risk_per_trade_pct == 0.5
@@ -109,7 +103,7 @@ def test_owner_limits_reject_margin_thresholds_that_can_never_warn_before_block(
 
 def test_owner_limits_cannot_weaken_emergency_drawdown_protection():
     limits = OwnerLimits()
-    with pytest.raises(ValueError, match="15% hard-stop ceiling"):
+    with pytest.raises(ValueError, match="internal safety"):
         limits.apply_updates({"hard_stop_drawdown_pct": 16.0})
     with pytest.raises(ValueError, match="cannot exceed hard_stop_drawdown_pct"):
         limits.apply_updates({"daily_loss_flatten_pct": 16.0})
@@ -135,15 +129,12 @@ def test_owner_limits_cannot_weaken_broker_margin_protection():
 def test_owner_limits_allow_stricter_margin_and_drawdown_protection():
     limits = OwnerLimits()
     limits.apply_updates({
-        "hard_stop_drawdown_pct": 12.0,
-        "weekly_drawdown_limit_pct": 6.0,
         "daily_loss_limit_pct": 2.0,
         "daily_loss_flatten_pct": 4.0,
         "margin_flatten_level_pct": 120.0,
         "margin_block_entry_level_pct": 180.0,
         "margin_warn_level_pct": 250.0,
     })
-    assert limits.hard_stop_drawdown_pct == 12.0
     assert limits.margin_flatten_level_pct == 120.0
 
 def test_zero_campaign_exposure_is_preserved_when_adopting_legacy_config():
@@ -199,6 +190,8 @@ def test_owner_limits_reject_boolean_numeric_values():
         ("margin_guardian_enabled", False),
         ("graded_exposure_enabled", False),
         ("correlation_threshold", 0.2),
+        ("weekly_drawdown_limit_pct", 3.0),
+        ("hard_stop_drawdown_pct", 10.0),
         ("cooldown_hours", 8.0),
         ("cooldown_sizing_factor", 1.0),
         ("max_correlated_exposure_factor", 2.0),
@@ -218,6 +211,8 @@ def test_owner_serialization_excludes_internal_safety_and_analysis_settings():
     assert "margin_guardian_enabled" not in payload
     assert "graded_exposure_enabled" not in payload
     assert "correlation_threshold" not in payload
+    assert "weekly_drawdown_limit_pct" not in payload
+    assert "hard_stop_drawdown_pct" not in payload
     assert "cooldown_hours" not in payload
     assert "cooldown_sizing_factor" not in payload
     assert "max_correlated_exposure_factor" not in payload
