@@ -22,6 +22,32 @@ from config import AppConfig
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
+def _owner_limits_audit(data: dict[str, Any], effective: AppConfig) -> dict[str, Any]:
+    """Describe the effective owner-limit source without exposing internals."""
+    nested = data.get("owner_limits")
+    nested = nested if isinstance(nested, dict) else {}
+    legacy_sources = {
+        "risk_per_trade_pct": "risk_per_trade_pct",
+        "max_daily_drawdown_pct": "daily_loss_limit_pct",
+        "max_open_trades": "max_open_positions",
+    }
+    sources: dict[str, str] = {}
+    for field in effective.owner_limits.to_owner_dict():
+        if field in nested:
+            sources[field] = "owner_override"
+        elif any(
+            legacy_key in data and owner_key == field
+            for legacy_key, owner_key in legacy_sources.items()
+        ):
+            sources[field] = "legacy_override"
+        else:
+            sources[field] = "runtime_default_or_internal_config"
+    return {
+        "validation_status": "valid",
+        "source_by_field": sources,
+    }
+
+
 @router.get("", response_model=TradingConfig)
 async def get_trading_config(
     user: dict[str, Any] = Depends(get_current_user),
@@ -43,6 +69,7 @@ async def get_trading_config(
     # for older clients, but they mirror the canonical values rather than
     # exposing competing stored values.
     data["owner_limits"] = effective.owner_limits.to_owner_dict()
+    data["owner_limits_audit"] = _owner_limits_audit(data, effective)
     data["risk_per_trade_pct"] = effective.owner_limits.risk_per_trade_pct
     data["max_daily_drawdown_pct"] = effective.owner_limits.daily_loss_limit_pct
     data["max_open_trades"] = effective.owner_limits.max_open_positions
@@ -114,6 +141,8 @@ async def update_trading_config(
     response_config["risk_per_trade_pct"] = validation_config.owner_limits.risk_per_trade_pct
     response_config["max_daily_drawdown_pct"] = validation_config.owner_limits.daily_loss_limit_pct
     response_config["max_open_trades"] = validation_config.owner_limits.max_open_positions
+    response_config["owner_limits"] = validation_config.owner_limits.to_owner_dict()
+    response_config["owner_limits_audit"] = _owner_limits_audit(current, validation_config)
 
     status_info = pm.instance_status(int(user["id"]))
     restart_required = status_info.get("status") in {STATUS_RUNNING, STATUS_STARTING}
