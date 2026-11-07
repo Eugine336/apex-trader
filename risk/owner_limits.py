@@ -37,6 +37,15 @@ def _positive_min(*values: Any, default: float) -> float:
     return min(parsed) if parsed else float(default)
 
 
+# Existing deployed emergency protections are immutable ceilings/floors. Owners
+# may make them stricter, but cannot configure the runtime to act later than
+# these established safety boundaries.
+_HARD_STOP_DRAWDOWN_CEILING_PCT = 15.0
+_MIN_MARGIN_FLATTEN_LEVEL_PCT = 100.0
+_MIN_MARGIN_ENTRY_BLOCK_LEVEL_PCT = 150.0
+_MIN_MARGIN_WARNING_LEVEL_PCT = 200.0
+
+
 @dataclass
 class OwnerLimits:
     """Single source of truth for owner-set capital and portfolio constraints.
@@ -242,6 +251,18 @@ class OwnerLimits:
             raise ValueError("daily_loss_recovery_pct must be within the daily loss limit")
         if self.daily_loss_flatten_pct <= 0.0 or self.portfolio_heat_block_pct <= 0.0:
             raise ValueError("flatten and portfolio heat limits must be > 0")
+        if self.hard_stop_drawdown_pct > _HARD_STOP_DRAWDOWN_CEILING_PCT:
+            raise ValueError(
+                "hard_stop_drawdown_pct cannot exceed the established 15% hard-stop ceiling"
+            )
+        if self.daily_loss_flatten_pct > self.hard_stop_drawdown_pct:
+            raise ValueError("daily_loss_flatten_pct cannot exceed hard_stop_drawdown_pct")
+        if self.margin_flatten_level_pct < _MIN_MARGIN_FLATTEN_LEVEL_PCT:
+            raise ValueError("margin_flatten_level_pct cannot weaken the 100% stop-out guard")
+        if self.margin_block_entry_level_pct < _MIN_MARGIN_ENTRY_BLOCK_LEVEL_PCT:
+            raise ValueError("margin_block_entry_level_pct cannot weaken the 150% entry guard")
+        if self.margin_warn_level_pct < _MIN_MARGIN_WARNING_LEVEL_PCT:
+            raise ValueError("margin_warn_level_pct cannot weaken the 200% warning guard")
         if not (0.0 < self.margin_flatten_level_pct
                 <= self.margin_block_entry_level_pct
                 <= self.margin_warn_level_pct):
