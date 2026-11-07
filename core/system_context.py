@@ -345,11 +345,15 @@ class SystemContext:
         # ── AccountRiskManager ───────────────────────────────────────
         try:
             gcfg = getattr(config, "governor", None)
+            owner_limits = getattr(config, "owner_limits", None)
             ctx.account_risk = AccountRiskManager(
-                daily_loss_cap_pct=getattr(gcfg, "daily_loss_cap_pct", 3.0) if gcfg else 3.0,
-                daily_loss_recovery_pct=getattr(gcfg, "daily_loss_recovery_pct", 1.5) if gcfg else 1.5,
-                heat_block_pct=getattr(risk_cfg, "portfolio_heat_block_pct", 2.0),
-                daily_loss_flatten_pct=getattr(risk_cfg, "daily_loss_flatten_pct", 5.0),
+                daily_loss_cap_pct=getattr(owner_limits, "daily_loss_limit_pct", getattr(gcfg, "daily_loss_cap_pct", 3.0)) if owner_limits is not None or gcfg else 3.0,
+                daily_loss_recovery_pct=getattr(owner_limits, "daily_loss_recovery_pct", getattr(gcfg, "daily_loss_recovery_pct", 1.5)) if owner_limits is not None or gcfg else 1.5,
+                heat_block_pct=getattr(owner_limits, "portfolio_heat_block_pct", getattr(risk_cfg, "portfolio_heat_block_pct", 2.0)),
+                daily_loss_flatten_pct=getattr(owner_limits, "daily_loss_flatten_pct", getattr(risk_cfg, "daily_loss_flatten_pct", 5.0)),
+                margin_guardian_enabled=getattr(owner_limits, "margin_guardian_enabled", True),
+                margin_block_entry_pct=getattr(owner_limits, "margin_block_entry_level_pct", 150.0),
+                margin_flatten_pct=getattr(owner_limits, "margin_flatten_level_pct", 100.0),
             )
         except Exception as exc:
             logger.critical("[SystemContext] AccountRiskManager init failed — SAFETY DEGRADED: {}", exc)
