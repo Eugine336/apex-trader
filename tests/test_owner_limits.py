@@ -5,6 +5,13 @@ from config import AppConfig
 from risk.owner_limits import OwnerLimits
 
 
+def test_default_owner_limits_accept_broker_margin_levels_above_100_percent():
+    limits = OwnerLimits()
+    assert limits.margin_flatten_level_pct == 100.0
+    assert limits.margin_block_entry_level_pct == 150.0
+    assert limits.margin_warn_level_pct == 200.0
+
+
 def test_app_config_creates_one_owner_limits_object_and_syncs_legacy_views():
     cfg = AppConfig()
     limits = cfg.owner_limits
