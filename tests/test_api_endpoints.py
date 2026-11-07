@@ -206,6 +206,25 @@ def test_config_accepts_canonical_owner_limits_and_persists_partial_patch(client
     assert saved["owner_limits"]["max_open_positions"] == 4
 
 
+def test_owner_limit_settings_are_isolated_between_api_users(client):
+    first_token = _register(client, "first@example.com").json()["access_token"]
+    second_token = _register(client, "second@example.com").json()["access_token"]
+    first_headers = _auth_header(first_token)
+    second_headers = _auth_header(second_token)
+
+    saved = client.put(
+        "/api/config",
+        headers=first_headers,
+        json={"owner_limits": {"risk_per_trade_pct": 0.4}},
+    )
+    assert saved.status_code == 200
+
+    first = client.get("/api/config", headers=first_headers).json()
+    second = client.get("/api/config", headers=second_headers).json()
+    assert first["owner_limits"]["risk_per_trade_pct"] == 0.4
+    assert second["owner_limits"]["risk_per_trade_pct"] == 0.75
+
+
 def test_config_rejects_invalid_owner_limits_without_persisting(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)
