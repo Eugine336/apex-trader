@@ -2722,25 +2722,27 @@ class CognitiveBrain:
             # Compare the advisor with the evidence's uncertainty-adjusted support
             # continuously. There is no binary "large gap" or "high uncertainty"
             # cutoff: greater disagreement or uncertainty increases attenuation.
-            evidence_support = _clamp01(ev_mean * (1.0 - ev_unc))
-            disagreement = max(0.0, advisor_confidence - evidence_support)
-            attenuation_weight = _clamp01(max(ev_unc, disagreement))
+            # Attenuation is proportional to the advisor's overstatement
+            # relative to the market evidence mean, amplified continuously by
+            # uncertainty. If the advisor is not more confident than the market
+            # evidence, this cross-check does not penalize it.
+            disagreement = max(0.0, advisor_confidence - ev_mean)
+            attenuation_weight = _clamp01(disagreement * (1.0 + ev_unc))
             blended = (
                 effective_confidence * (1.0 - attenuation_weight)
-                + evidence_support * attenuation_weight
+                + ev_mean * attenuation_weight
             )
             # Evidence cross-check may attenuate an advisor, never promote it.
             attenuated = min(effective_confidence, _clamp01(blended))
             if attenuated < effective_confidence:
                 return attenuated, (
                     f"advisor confidence {advisor_confidence:.2f} was continuously "
-                    f"attenuated against evidence support {evidence_support:.2f} "
+                    f"attenuated against evidence mean {ev_mean:.2f} "
                     f"(uncertainty {ev_unc:.2f}) to {attenuated:.2f}"
                 )
             return effective_confidence, (
-                f"advisor confidence {advisor_confidence:.2f} is not above "
-                f"uncertainty-adjusted evidence support {evidence_support:.2f}; "
-                "confidence unchanged"
+                f"advisor confidence {advisor_confidence:.2f} does not exceed "
+                f"market evidence mean {ev_mean:.2f}; confidence unchanged"
             )
         except Exception:  # noqa: BLE001 — synthesis must never break reasoning
             return effective_confidence, ""
