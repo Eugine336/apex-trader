@@ -106,7 +106,7 @@ def test_owner_limits_cannot_weaken_emergency_drawdown_protection():
 
 def test_owner_limits_cannot_disable_broker_margin_protection():
     limits = OwnerLimits()
-    with pytest.raises(ValueError, match="cannot be disabled"):
+    with pytest.raises(ValueError, match="internal safety/analysis"):
         limits.apply_updates({"margin_guardian_enabled": False})
 
 
