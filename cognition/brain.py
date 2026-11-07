@@ -2719,26 +2719,28 @@ class CognitiveBrain:
                 consolidation.get("mean_confidence", 0.0),
             ))
             ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
-            gap = advisor_confidence - ev_mean
-            # Advisor markedly more confident than the evidence's own mean.
-            if gap > 0.15:
-                attenuated = _clamp01(0.5 * effective_confidence + 0.5 * ev_mean)
+            # Compare the advisor with the evidence's uncertainty-adjusted support
+            # continuously. There is no binary "large gap" or "high uncertainty"
+            # cutoff: greater disagreement or uncertainty increases attenuation.
+            evidence_support = _clamp01(ev_mean * (1.0 - ev_unc))
+            disagreement = max(0.0, advisor_confidence - evidence_support)
+            attenuation_weight = _clamp01(max(ev_unc, disagreement))
+            blended = (
+                effective_confidence * (1.0 - attenuation_weight)
+                + evidence_support * attenuation_weight
+            )
+            # Evidence cross-check may attenuate an advisor, never promote it.
+            attenuated = min(effective_confidence, _clamp01(blended))
+            if attenuated < effective_confidence:
                 return attenuated, (
-                    f"LLM advisor confidence {advisor_confidence:.2f} vs evidence mean "
-                    f"confidence {ev_mean:.2f} — attenuated effective confidence to "
-                    f"{attenuated:.2f}"
-                )
-            # Advisor claims conviction while the evidence picture is very unsure.
-            if advisor_confidence >= self.min_confidence_to_act and ev_unc > 0.6:
-                attenuated = _clamp01(effective_confidence * (1.0 - ev_unc))
-                return attenuated, (
-                    f"confidence-evidence mismatch: advisor confidence "
-                    f"{advisor_confidence:.2f} but evidence uncertainty {ev_unc:.2f} — "
-                    f"attenuated effective confidence to {attenuated:.2f}"
+                    f"advisor confidence {advisor_confidence:.2f} was continuously "
+                    f"attenuated against evidence support {evidence_support:.2f} "
+                    f"(uncertainty {ev_unc:.2f}) to {attenuated:.2f}"
                 )
             return effective_confidence, (
-                f"LLM advisor confidence {advisor_confidence:.2f} consistent with "
-                f"evidence mean confidence {ev_mean:.2f} (uncertainty {ev_unc:.2f})"
+                f"advisor confidence {advisor_confidence:.2f} is not above "
+                f"uncertainty-adjusted evidence support {evidence_support:.2f}; "
+                "confidence unchanged"
             )
         except Exception:  # noqa: BLE001 — synthesis must never break reasoning
             return effective_confidence, ""
