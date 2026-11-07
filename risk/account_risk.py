@@ -222,13 +222,12 @@ class AccountRiskManager:
     def flatten_breached(self, account: str) -> bool:
         """True if combined (realized + unrealized) loss has breached the harder
         flatten cap — the account should be derisked/flattened immediately."""
+        if self.margin_flatten_breached(account):
+            return True
         bal = self._balance.get(account, 0.0)
         if bal <= 0:
             return False
-        return (
-            self.combined_pnl_pct(account) <= -self.daily_loss_flatten_pct
-            or self.margin_flatten_breached(account)
-        )
+        return self.combined_pnl_pct(account) <= -self.daily_loss_flatten_pct
 
     def reset_daily(self) -> None:
         if any(self._halted.values()):
