@@ -41,9 +41,6 @@ class GovernorConfig:
     # Default True reflects the live orchestrator-on mode (main_loop re-affirms
     # it from the orchestrator config).
     graded_exposure: bool = True
-    # Lower bound on the graded risk multiplier — a graded "at every limit" is
-    # still a small trade, never zero.
-    risk_multiplier_floor: float = 0.15
     # When the governor's own code raises, fail CLOSED (block the trade) instead
     # of allowing it. A portfolio-risk veto that silently no-ops on a bug is a
     # safety gate you can't trust, so the default is fail-closed — consistent
