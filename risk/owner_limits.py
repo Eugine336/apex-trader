@@ -80,6 +80,9 @@ class OwnerLimits:
     max_correlated_exposure_factor: float = 1.50
     correlation_threshold: float = 0.70
 
+    def __post_init__(self) -> None:
+        self.validate()
+
     @classmethod
     def from_legacy(
         cls,
@@ -251,9 +254,8 @@ class OwnerLimits:
             "max_positions_per_timeframe_class",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or int(value) < 1:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be an integer >= 1")
-            setattr(self, name, int(value))
         if self.max_positions_per_symbol > self.max_open_positions:
             raise ValueError("max_positions_per_symbol cannot exceed max_open_positions")
         if self.max_correlated_positions > self.max_open_positions:
@@ -261,6 +263,13 @@ class OwnerLimits:
         if isinstance(self.max_broker_positions, bool) or int(self.max_broker_positions) < 0:
             raise ValueError("max_broker_positions must be an integer >= 0")
         self.max_broker_positions = int(self.max_broker_positions)
+
+        for name in (
+            "allow_intentional_hedge", "daily_loss_flatten_enabled",
+            "margin_guardian_enabled", "graded_exposure_enabled",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
 
         for name in ("max_campaign_exposure_units", "cooldown_hours"):
             value = _finite(getattr(self, name), name)
