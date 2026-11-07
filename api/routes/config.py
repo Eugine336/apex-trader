@@ -68,9 +68,35 @@ async def update_trading_config(
     if updates.get("universe_mode") == "all":
         current.pop("enabled_symbols_override", None)
 
+    # Migrate the three historical top-level risk keys into the canonical nested
+    # object. A supplied nested object is a full replacement; otherwise explicit
+    # legacy updates modify the existing canonical value for compatibility.
+    legacy_to_owner = {
+        "risk_per_trade_pct": "risk_per_trade_pct",
+        "max_daily_drawdown_pct": "daily_loss_limit_pct",
+        "max_open_trades": "max_open_positions",
+    }
+    has_nested_owner_patch = "owner_limits" in updates
+    if has_nested_owner_patch:
+        owner_updates = dict(updates.pop("owner_limits") or {})
+        for legacy_key, owner_key in legacy_to_owner.items():
+            if legacy_key in updates and owner_key not in owner_updates:
+                owner_updates[owner_key] = updates[legacy_key]
+            updates.pop(legacy_key, None)
+    else:
+        owner_updates = dict(current.get("owner_limits") or {})
+        for legacy_key, owner_key in legacy_to_owner.items():
+            if legacy_key in current and owner_key not in owner_updates:
+                owner_updates[owner_key] = current[legacy_key]
+            if legacy_key in updates:
+                owner_updates[owner_key] = updates.pop(legacy_key)
+    for legacy_key in legacy_to_owner:
+        current.pop(legacy_key, None)
+    if has_nested_owner_patch or owner_updates:
+        updates["owner_limits"] = owner_updates
+
     # Validate the complete merged owner configuration before writing anything.
-    # This catches conflicts between a partial update and already-persisted limits
-    # (for example, increasing per-trade risk above the existing per-trade cap).
+    # This catches conflicts between a partial update and already-persisted limits.
     candidate = dict(current)
     candidate.update(updates)
     try:
