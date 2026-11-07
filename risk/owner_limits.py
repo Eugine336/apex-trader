@@ -50,6 +50,50 @@ def _positive_min(*values: Any, default: float) -> float:
     return min(parsed) if parsed else float(default)
 
 
+
+def _positive_int_min(*values: Any, default: int) -> int:
+    """Choose the strictest positive legacy integer cap without truncation."""
+    parsed: list[int] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            raise ValueError("owner integer limits cannot be boolean numbers")
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("owner integer limits must be finite integers") from exc
+        if not math.isfinite(number) or number < 0.0 or not number.is_integer():
+            raise ValueError("owner integer limits must be finite non-negative integers")
+        if number > 0.0:
+            parsed.append(int(number))
+    return min(parsed) if parsed else int(default)
+
+
+def _non_negative_int(value: Any, name: str, *, default: int) -> int:
+    """Parse an integer cap where zero has explicit meaning (no extra cap)."""
+    if value is None:
+        return int(default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite integer") from exc
+    if not math.isfinite(number) or number < 0.0 or not number.is_integer():
+        raise ValueError(f"{name} must be a finite non-negative integer")
+    return int(number)
+
+
+def _strict_bool(value: Any, name: str, *, default: bool) -> bool:
+    """Reject truthy strings/numbers instead of silently changing safety flags."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
 def _non_negative_min(*values: Any, default: float) -> float:
     """Minimum valid non-negative limit; zero is an intentional hard stop."""
     parsed = []
@@ -172,25 +216,25 @@ class OwnerLimits:
             _finite(_get(cognition, "origination_risk_fraction", 0.01), "origination_risk_fraction") * 100.0,
             default=0.75,
         )
-        max_open = int(_positive_min(
+        max_open = _positive_int_min(
             _get(risk, "max_open_trades", 5),
             _get(governor, "max_open_positions", 8),
             _get(governor, "max_total_positions", 10),
             _get(risk_management, "max_simultaneous_positions", 10),
             default=5,
-        ))
-        max_pair = int(_positive_min(
+        )
+        max_pair = _positive_int_min(
             _get(governor, "max_positions_per_symbol", 2),
             _get(risk_management, "max_per_pair_positions", 2),
             _get(risk, "max_pair_concentration", 0),
             default=2,
-        ))
-        max_corr = int(_positive_min(
+        )
+        max_corr = _positive_int_min(
             _get(risk, "max_correlated_trades", 2),
             _get(governor, "max_correlated_positions", 2),
             brain_max_correlated_positions,
             default=2,
-        ))
+        )
         daily_limit = _positive_min(
             _get(risk, "max_daily_drawdown_pct", 3.0),
             _get(governor, "daily_loss_cap_pct", 3.0),
@@ -217,19 +261,21 @@ class OwnerLimits:
             max_open_positions=max_open,
             max_positions_per_symbol=max_pair,
             max_correlated_positions=max_corr,
-            max_cluster_same_direction=int(_positive_min(
+            max_cluster_same_direction=_positive_int_min(
                 _get(risk, "max_cluster_same_direction", 3), default=3
-            )),
-            max_broker_positions=max(0, int(_get(risk, "max_broker_positions", 0) or 0)),
-            max_currency_exposure=int(_positive_min(
+            ),
+            max_broker_positions=_non_negative_int(
+                _get(risk, "max_broker_positions", 0), "max_broker_positions", default=0
+            ),
+            max_currency_exposure=_positive_int_min(
                 _get(governor, "max_currency_exposure", 3), default=3
-            )),
-            max_sector_exposure=int(_positive_min(
+            ),
+            max_sector_exposure=_positive_int_min(
                 _get(governor, "max_sector_exposure", 4), default=4
-            )),
-            max_positions_per_timeframe_class=int(_positive_min(
+            ),
+            max_positions_per_timeframe_class=_positive_int_min(
                 _get(governor, "max_positions_per_tf_class", 3), default=3
-            )),
+            ),
             # Zero is meaningful here: it disables new campaign exposure.
             # Do not use _positive_min(), which would silently replace zero with
             # the default and restore risk the owner explicitly removed.
@@ -241,7 +287,9 @@ class OwnerLimits:
                 "origination_max_exposure",
             ))),
             hedge_ratio_cap=_finite(_get(governor, "hedge_ratio_cap", 0.30), "hedge_ratio_cap"),
-            allow_intentional_hedge=bool(_get(risk, "allow_intentional_hedge", False)),
+            allow_intentional_hedge=_strict_bool(
+                _get(risk, "allow_intentional_hedge", False), "allow_intentional_hedge", default=False
+            ),
             daily_loss_limit_pct=daily_limit,
             weekly_drawdown_limit_pct=weekly_limit,
             hard_stop_drawdown_pct=_positive_min(
@@ -250,14 +298,18 @@ class OwnerLimits:
             daily_loss_recovery_pct=_finite(
                 _get(governor, "daily_loss_recovery_pct", 1.5), "daily_loss_recovery_pct"
             ),
-            daily_loss_flatten_enabled=bool(_get(risk, "daily_loss_flatten_enabled", True)),
+            daily_loss_flatten_enabled=_strict_bool(
+                _get(risk, "daily_loss_flatten_enabled", True), "daily_loss_flatten_enabled", default=True
+            ),
             daily_loss_flatten_pct=_finite(
                 _get(risk, "daily_loss_flatten_pct", 5.0), "daily_loss_flatten_pct"
             ),
             portfolio_heat_block_pct=_finite(
                 _get(risk, "portfolio_heat_block_pct", 2.0), "portfolio_heat_block_pct"
             ),
-            margin_guardian_enabled=bool(_get(risk, "margin_guardian_enabled", True)),
+            margin_guardian_enabled=_strict_bool(
+                _get(risk, "margin_guardian_enabled", True), "margin_guardian_enabled", default=True
+            ),
             margin_warn_level_pct=_finite(_get(risk, "margin_warn_pct", 200.0), "margin_warn_pct"),
             margin_block_entry_level_pct=_finite(
                 _get(risk, "margin_block_entry_pct", 150.0), "margin_block_entry_pct"
@@ -265,7 +317,9 @@ class OwnerLimits:
             margin_flatten_level_pct=_finite(
                 _get(risk, "margin_flatten_pct", 100.0), "margin_flatten_pct"
             ),
-            graded_exposure_enabled=bool(_get(governor, "graded_exposure", True)),
+            graded_exposure_enabled=_strict_bool(
+                _get(governor, "graded_exposure", True), "graded_exposure_enabled", default=True
+            ),
         )
 
     def validate(self) -> None:
