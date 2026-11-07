@@ -103,6 +103,7 @@ class TradingConfig(BaseModel):
     max_daily_drawdown_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     max_open_trades: Optional[int] = Field(default=None, ge=1, le=100)
     owner_limits: Optional[dict[str, Any]] = None
+    owner_limits_audit: Optional[dict[str, Any]] = None
 
     @model_validator(mode="after")
     def validate_owner_limit_patch(self) -> "TradingConfig":
