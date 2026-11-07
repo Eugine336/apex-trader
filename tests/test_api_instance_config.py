@@ -39,10 +39,10 @@ def test_apply_user_overrides_mutates_config():
     assert cfg.data_backup.clean_start_on_first_boot is False
 
 
-def test_apply_overrides_rejects_daily_limit_above_weekly_and_hard_stop():
+def test_apply_overrides_rejects_daily_limit_above_hard_stop():
     cfg = AppConfig()
     before = cfg.owner_limits.to_dict()
-    with pytest.raises(ValueError, match="drawdown limits"):
+    with pytest.raises(ValueError, match="cannot exceed hard stop"):
         apply_user_overrides(cfg, {"max_daily_drawdown_pct": 50.0})
     assert cfg.owner_limits.to_dict() == before
     assert cfg.risk.max_daily_drawdown_pct == before["daily_loss_limit_pct"]
@@ -173,8 +173,6 @@ def test_apply_user_overrides_updates_canonical_owner_limits_and_all_legacy_view
                 "max_open_positions": 4,
                 "max_positions_per_symbol": 1,
                 "daily_loss_limit_pct": 2.0,
-                "weekly_drawdown_limit_pct": 6.0,
-                "hard_stop_drawdown_pct": 12.0,
             }
         },
     )
@@ -189,6 +187,8 @@ def test_apply_user_overrides_updates_canonical_owner_limits_and_all_legacy_view
     assert cfg.risk_management.max_per_pair_positions == 1
     assert cfg.governor.daily_loss_cap_pct == 2.0
     assert cfg.risk.max_daily_drawdown_pct == 2.0
+    assert cfg.owner_limits.weekly_drawdown_limit_pct == 8.0
+    assert cfg.owner_limits.hard_stop_drawdown_pct == 15.0
 
 
 def test_invalid_owner_limit_update_is_atomic():
