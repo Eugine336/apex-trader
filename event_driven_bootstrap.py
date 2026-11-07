@@ -4882,10 +4882,13 @@ class EventDrivenSystem:
                                 (i for i, item in enumerate(mt5_connectors) if item is connector),
                                 None,
                             )
+                            # Deriv has no MT5-style margin-level percentage;
+                            # its stake/contract checks remain authoritative.
+                            if mt5_index is None:
+                                continue
                             summary_key = (
-                                f"mt5_{mt5_index}" if mt5_index is not None and len(mt5_connectors) > 1
-                                else "mt5" if mt5_index is not None
-                                else "deriv"
+                                f"mt5_{mt5_index}" if len(mt5_connectors) > 1
+                                else "mt5"
                             )
                             if summary_key == str(acct):
                                 risk_key = ctx.account_key(symbol, self._pm)
