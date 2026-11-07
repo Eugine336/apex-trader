@@ -3737,7 +3737,7 @@ class CognitionConfig:
     Runs the one Brain over consolidated Evidence on a background loop and,
     when explicitly configured for live origination, may drive execution from
     qualified DecisionPackages. The shipped identity-safe defaults require the
-    authoritative cognition gate, net-EV qualification and multi-domain evidence;
+    authoritative cognition gate, candidate-specific evidence lineage and net-EV qualification;
     deterministic risk + broker feasibility (Parts IX/X) still constrain every
     order. Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
@@ -3746,7 +3746,6 @@ class CognitionConfig:
     COGNITION_OPERATIONS_ENABLED (default false),
     COGNITION_INFLUENCE_ENABLED (default false — shadow learning),
     COGNITION_MIN_ADVISORS_FOR_ACTION,
-    COGNITION_MIN_EVIDENCE_DOMAINS.
     """
 
     enabled: bool = True
@@ -3763,7 +3762,6 @@ class CognitionConfig:
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
-    max_uncertainty_to_act: float = 0.6
     # Identity requirement: net expected value is the default actionability gate,
     # not an optional upgrade to a raw confidence floor. A market thesis cannot
     # originate exposure without positive EV after estimated costs.
@@ -3776,11 +3774,6 @@ class CognitionConfig:
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
     min_advisors_for_action: int = 1
-    # Identity requirement: market action needs a minimum breadth of independent
-    # evidence domains. Three permits lean but multi-dimensional market reads while
-    # rejecting single-domain direction proxies; the runtime may require more.
-    # env COGNITION_MIN_EVIDENCE_DOMAINS.
-    min_evidence_domains: int = 3
     # Article XXI / V-013 — when the council under-delivers (most available
     # advisors did not respond) the Brain attenuates its effective confidence by
     # this multiplier: degraded cognition is ENFORCED, not merely observed.
@@ -3801,17 +3794,12 @@ class CognitionConfig:
     # Event-driven "breathing" (Part XII): when enabled, a meaningful shift in a
     # symbol's forming-bar read wakes the Brain to reason on THAT symbol at once,
     # instead of waiting for the next fixed interval. The periodic cycle stays a
-    # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
-    # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
+    # backstop. The per-symbol interval bounds queued compute only.
+    # env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS.
     event_driven: bool = True
     # Material tick/structure changes can trigger a fresh native analysis at most
     # once per second per symbol. Provider calls remain independently rate-limited.
     event_min_interval_seconds: float = 1.0
-    # Lowered 0.15 → 0.10 so smaller (still meaningful) forming-bar shifts wake
-    # the Brain — more responsive entries/management. Extra wakes hit the
-    # per-symbol reasoner throttle (origination + council keep their global
-    # rate), so this adds no provider calls across the scanned universe.
-    event_confidence_delta: float = 0.10
     # Q40 — the Brain re-reasons an OPEN position on its OWN tighter cadence
     # (reasoned management, not a static stop/TP). Independent throttle bucket on
     # the Brain's reasoner: only open positions reason faster; origination + the
@@ -3942,7 +3930,6 @@ class CognitionConfig:
             ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
             ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
             ("COGNITION_MANAGE_MIN_INTERVAL_SECONDS", "manage_min_interval_seconds"),
-            ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
             ("COGNITION_ORIGINATION_MAX_LOTS", "origination_max_lots"),
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
@@ -3985,7 +3972,6 @@ class CognitionConfig:
         for env_name, attr in (
             ("COGNITION_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle"),
             ("COGNITION_MIN_ADVISORS_FOR_ACTION", "min_advisors_for_action"),
-            ("COGNITION_MIN_EVIDENCE_DOMAINS", "min_evidence_domains"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -4023,19 +4009,10 @@ class CognitionConfig:
             raise ValueError(
                 f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
             )
-        if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
-            raise ValueError(
-                f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
-            )
         if int(self.min_advisors_for_action) < 0:
             raise ValueError(
                 "CognitionConfig.min_advisors_for_action must be >= 0, got "
                 f"{self.min_advisors_for_action!r}"
-            )
-        if int(self.min_evidence_domains) < 0:
-            raise ValueError(
-                "CognitionConfig.min_evidence_domains must be >= 0, got "
-                f"{self.min_evidence_domains!r}"
             )
 
         # These are product-identity invariants, not tuning preferences. Keep the
@@ -4070,12 +4047,6 @@ class CognitionConfig:
                 "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
             )
             self.event_driven = True
-        if self.min_evidence_domains < 3:
-            logger.warning(
-                "[config] minimum evidence domains {} is below the identity floor of 3; forcing 3",
-                self.min_evidence_domains,
-            )
-            self.min_evidence_domains = 3
         if self.min_advisors_for_action < 1:
             logger.warning(
                 "[config] minimum advisors {} is below the identity floor of 1; forcing 1",

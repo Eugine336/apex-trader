@@ -65,20 +65,19 @@ def test_identity_is_one_exact_machine_readable_contract():
     assert brain.identity_contract()["identity"] == IDENTITY_STATEMENT
 
 
-def test_identity_safe_configuration_defaults_require_authoritative_net_ev_and_broad_evidence(monkeypatch):
+def test_identity_safe_configuration_uses_candidate_evidence_not_domain_floor(monkeypatch):
     for name in (
         "COGNITION_GATE_MODE",
         "COGNITION_EV_PRIMARY_GATE",
-        "COGNITION_MIN_EVIDENCE_DOMAINS",
         "COGNITION_EVENT_MIN_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     cfg = CognitionConfig()
     assert cfg.gate_mode == "authoritative"
     assert cfg.ev_primary_gate is True
-    assert cfg.min_evidence_domains >= 3
+    assert not hasattr(cfg, "min_evidence_domains")
     assert cfg.event_min_interval_seconds == 1.0
-    assert CognitiveBrain(reasoner=None).min_evidence_domains == 3
+    assert not hasattr(CognitiveBrain(reasoner=None), "min_evidence_domains")
 
 
 def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
@@ -88,7 +87,6 @@ def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
     monkeypatch.setenv("COGNITION_EV_PRIMARY_GATE", "false")
     monkeypatch.setenv("COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED", "false")
     monkeypatch.setenv("COGNITION_EVENT_DRIVEN", "false")
-    monkeypatch.setenv("COGNITION_MIN_EVIDENCE_DOMAINS", "1")
     monkeypatch.setenv("COGNITION_MIN_ADVISORS_FOR_ACTION", "0")
 
     cfg = CognitionConfig()
@@ -96,7 +94,6 @@ def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
     assert cfg.ev_primary_gate is True
     assert cfg.opportunity_qualification_enabled is True
     assert cfg.event_driven is True
-    assert cfg.min_evidence_domains >= 3
     assert cfg.min_advisors_for_action >= 1
 
 

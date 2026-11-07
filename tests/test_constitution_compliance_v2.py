@@ -159,7 +159,6 @@ def test_v3_brain_declines_when_council_metadata_is_missing():
     out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
         min_advisors_for_action=1,
-        min_evidence_domains=2,
     ).reason(ms)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
@@ -167,7 +166,7 @@ def test_v3_brain_declines_when_council_metadata_is_missing():
     assert out.decision.questions_answered["advisor_quorum"].startswith("UNCONFIRMED")
 
 
-def test_v3_brain_declines_when_evidence_domain_count_is_missing():
+def test_v3_brain_does_not_depend_on_aggregate_domain_count_metadata():
     ms = _state_with_advisors(2, 2, 2, extra_domains=("structure", "momentum", "liquidity"))
     base_consolidation = ms.consolidation
 
@@ -181,12 +180,10 @@ def test_v3_brain_declines_when_evidence_domain_count_is_missing():
     out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
         min_advisors_for_action=2,
-        min_evidence_domains=2,
     ).reason(ms)
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    assert out.campaign is None
-    assert "coverage" in out.decision.risk_rationale
-    assert out.decision.questions_answered["evidence_coverage"].startswith("UNCONFIRMED")
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.campaign is not None
+    assert out.decision.questions_answered["evidence_coverage"].startswith("QUALIFIED")
 
 
 # ── V4 — degraded-mode enforcement (V-013: partial council attenuates) ──────
@@ -253,7 +250,7 @@ def test_v10_evidence_with_no_horizon_expires_after_default():
     assert e.is_fresh(now=1000.0 + DEFAULT_EVIDENCE_HORIZON_SECONDS + 1.0) is False
 
 
-# ── V12 — minimum evidence-domain coverage ──────────────────────────────────
+# ── WP-B6 — candidate-specific evidence lineage qualification ───────────────
 
 def _state_domains(n, *, symbol="XAUUSD"):
     domains = ("structure", "momentum", "liquidity", "volume")[:max(1, n)]
@@ -290,22 +287,20 @@ def _state_domains(n, *, symbol="XAUUSD"):
     return ms
 
 
-def test_v12_brain_declines_when_too_few_domains():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=3)
+def test_candidate_geometry_qualifies_without_universal_domain_count():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_state_domains(1))
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    assert "insufficient evidence coverage" in out.decision.risk_rationale
-    cov = out.decision.questions_answered.get("evidence_coverage", "")
-    assert cov.startswith("INSUFFICIENT")
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    coverage = out.decision.questions_answered.get("evidence_coverage", "")
+    assert coverage.startswith("QUALIFIED")
+    assert out.decision.questions_answered.get("evidence_independence_groups") is not None
 
 
-def test_v12_brain_acts_with_adequate_domains():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           min_evidence_domains=3)
+def test_candidate_geometry_qualification_is_not_changed_by_unrelated_domain_count():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_state_domains(3))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.decision.questions_answered.get("evidence_coverage", "").startswith("ADEQUATE")
+    assert out.decision.questions_answered.get("evidence_coverage", "").startswith("QUALIFIED")
 
 
 # ── V17 — provider backoff ──────────────────────────────────────────────────

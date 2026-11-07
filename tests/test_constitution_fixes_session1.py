@@ -372,7 +372,7 @@ def test_v1_attenuates_overconfident_advisor():
                          reward_r_default=2.0, min_expected_value=0.0).reason(
         _evidence_state(conf=0.4))
     synth = out.decision.questions_answered.get("brain_synthesis", "")
-    assert "attenuated effective confidence" in synth
+    assert "continuously attenuated" in synth
     # The recorded effective confidence is pulled below the advisor's 0.9.
     assert out.decision.confidence < 0.9
 
@@ -382,5 +382,5 @@ def test_v1_consistent_advisor_not_attenuated():
                          reward_r_default=2.0, min_expected_value=0.0).reason(
         _evidence_state(conf=0.9))
     synth = out.decision.questions_answered.get("brain_synthesis", "")
-    assert "consistent with" in synth
+    assert "confidence unchanged" in synth
     assert out.decision.confidence == pytest.approx(0.8)

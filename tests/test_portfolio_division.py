@@ -5,7 +5,7 @@ Covers the cohesive sizing layer that replaced the inline fresh-PositionSizer +
 ad-hoc multiplier chain:
 
   1. Neutral factors → positive size, FULL exposure.
-  2. Factor fold de-risks and clamps (≤1.0 ceiling, ≥0.15 floor).
+  2. Factor fold de-risks to the requested size and clamps only above 1.0.
   3. Daily-loss budget reduces the size to fit remaining room (REDUCED).
   4. Daily-loss budget rejects when no room / min-lot floor breaches it.
   5. Non-positive balance / zero base risk are rejected.
@@ -122,13 +122,44 @@ def test_factor_fold_derisks_and_clamps_ceiling():
     assert v2.approved_size == 0.5
 
 
-def test_factor_fold_floor():
+def test_factor_fold_has_no_minimum_risk_floor():
     pf = PortfolioDivision(FakeSizer())
-    # Product 0.01 must clamp up to the 0.15 floor.
+    # A 0.01 product must remain 0.01; it must not be inflated to 0.15.
     v = pf.evaluate(_candidate(), [], _account(),
                     SizingFactors(base_risk_pct=0.01, adapt_mult=0.1,
                                   vol_mult=0.1))
-    assert v.combined_mult == 0.15
+    assert v.approved
+    assert v.combined_mult == 0.01
+    assert v.approved_size == 0.01
+
+
+def test_zero_or_non_finite_factor_rejects_instead_of_restoring_risk():
+    pf = PortfolioDivision(FakeSizer())
+    zero = pf.evaluate(
+        _candidate(), [], _account(),
+        SizingFactors(base_risk_pct=0.01, adapt_mult=0.0),
+    )
+    assert not zero.approved
+    assert "non-finite or non-positive" in zero.reason
+
+
+def test_minimum_lot_cannot_inflate_requested_risk():
+    class BrokerMinimumSizer(FakeSizer):
+        MIN_LOT = 0.01
+
+        def calculate(self, **kw):
+            return FakeSizeResult(
+                lots=0.01, risk_pips=10.0, pip_value=10.0,
+                max_loss=1.0, sizing_mode="lots",
+            )
+
+    pf = PortfolioDivision(BrokerMinimumSizer())
+    v = pf.evaluate(
+        _candidate(), [], _account(),
+        SizingFactors(base_risk_pct=0.01, adapt_mult=0.001),
+    )
+    assert not v.approved
+    assert "below the broker" in v.reason or "exceed the requested risk" in v.reason
 
 
 def test_daily_budget_reduces_size():

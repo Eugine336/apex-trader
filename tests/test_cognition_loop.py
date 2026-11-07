@@ -665,7 +665,7 @@ def _event_loop(clock=None):
     return CognitionLoop(
         _StubBrain(), _StubConsolidator(), lambda: ["XAUUSD"],
         interval_seconds=30.0, event_driven=True,
-        event_min_interval_seconds=8.0, event_confidence_delta=0.15,
+        event_min_interval_seconds=8.0,
         clock=clock or _ManualClock(),
     )
 
@@ -683,13 +683,12 @@ def test_event_first_read_triggers():
     assert "XAUUSD" in loop._drain_pending()
 
 
-def test_event_no_trigger_when_small_magnitude_delta():
+def test_event_wakes_on_small_magnitude_change_without_analysis_threshold():
     clk = _ManualClock()
     loop = _event_loop(clk)
     assert loop.maybe_reason_on_change("XAUUSD", 0.60) is True
-    clk.t += 100.0  # clear the floor
-    # sub-delta magnitude move ⇒ no trigger (non-directional)
-    assert loop.maybe_reason_on_change("XAUUSD", 0.70) is False
+    clk.t += 100.0  # clear the scheduling floor
+    assert loop.maybe_reason_on_change("XAUUSD", 0.61) is True
 
 
 def test_event_triggers_on_bare_nudge():

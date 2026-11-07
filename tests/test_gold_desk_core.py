@@ -326,6 +326,19 @@ def test_observer_passes_only_pattern_facts_and_measurements_to_brain():
         assert forbidden not in observation
     assert wake_requests == ["XAUUSD"]
 
+    # A tiny quote change below the former ATR/spread materiality thresholds
+    # must still wake cognition. The scheduler, not an analytical magnitude
+    # filter, controls how often the queued work executes.
+    small_tick = SimpleNamespace(
+        symbol="XAUUSD",
+        source="mt5",
+        timestamp=snapshot.observed_at + timedelta(seconds=1),
+        source_timestamp_verified=True,
+        bid=snapshot.bid + 0.01,
+        ask=snapshot.ask + 0.01,
+    )
+    observer._evaluate_tick(small_tick)
+    assert wake_requests == ["XAUUSD", "XAUUSD"]
 
 
 

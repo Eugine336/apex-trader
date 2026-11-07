@@ -1051,10 +1051,6 @@ class SystemContext:
                         getattr(cog_cfg, "min_confidence_to_act", 0.55)
                         if cog_cfg is not None else 0.55
                     ),
-                    max_uncertainty_to_act=float(
-                        getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
-                        if cog_cfg is not None else 0.6
-                    ),
                     # V-01 (§I/§VI/§VIII) — opt-in EV-primary actionability gate.
                     # Default off ⇒ the legacy confidence-floor gate is unchanged.
                     ev_primary_gate=bool(
@@ -1103,11 +1099,6 @@ class SystemContext:
                     # least this many advisors that actually responded.
                     min_advisors_for_action=int(
                         getattr(cog_cfg, "min_advisors_for_action", 2)
-                        if cog_cfg is not None else 2
-                    ),
-                    # Article XXXIV — minimum evidence-domain coverage to act.
-                    min_evidence_domains=int(
-                        getattr(cog_cfg, "min_evidence_domains", 2)
                         if cog_cfg is not None else 2
                     ),
                     # Article XXI — attenuate confidence under degraded cognition.
@@ -1611,10 +1602,6 @@ class SystemContext:
                     event_min_interval_seconds=float(
                         getattr(cog_cfg, "event_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
-                    ),
-                    event_confidence_delta=float(
-                        getattr(cog_cfg, "event_confidence_delta", 0.15)
-                        if cog_cfg is not None else 0.15
                     ),
                     campaign_registry=ctx.campaign_registry,
                     reallocation_enabled=bool(

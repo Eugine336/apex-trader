@@ -116,6 +116,9 @@ class _CampaignAssessment:
     confidence: float
     uncertainty: float
     measurements: dict[str, Any]
+    independence_group: str
+    source_timestamp_verified: bool
+    provisional: bool
 
 
 class NativePositionManager:
@@ -143,8 +146,6 @@ class NativePositionManager:
         analysis: Any = None,
         hypotheses: Optional[list[Any]] = None,
         now: Optional[float] = None,
-        max_uncertainty: float = 0.6,
-        min_evidence_domains: int = 3,
     ) -> NativeManagementVerdict:
         """Reassess the held thesis. On any fault, return HOLD (never EXIT)."""
         symbol = str(getattr(position, "symbol", "") or "")
@@ -172,8 +173,6 @@ class NativePositionManager:
             if not con and market_state is not None:
                 con = market_state.consolidation(now)
             uncertainty = _clamp01(con.get("aggregate_uncertainty", 1.0))
-            required_domains = max(3, int(min_evidence_domains))
-            max_unc = _clamp01(max_uncertainty)
             fresh = (
                 list(market_state.fresh_evidence(now))
                 if market_state is not None else []
@@ -199,7 +198,6 @@ class NativePositionManager:
                     uncertainty, 0, len(hypotheses or []),
                 )
 
-            market_domains: set[str] = set()
             assessments: list[_CampaignAssessment] = []
             execution_cost_values: list[float] = []
             ev_after_cost_values: list[float] = []
@@ -215,18 +213,6 @@ class NativePositionManager:
                 measurements = getattr(ev, "measurements", {}) or {}
                 if not isinstance(measurements, dict):
                     continue
-
-                is_non_market_source = (
-                    domain in {
-                        "reasoning", "execution_quality", "risk", "portfolio", "portfolio_risk",
-                    }
-                    or "risk" in source.lower()
-                    or "portfolio" in source.lower()
-                    or "execution" in source.lower()
-                    or "reasoning" in source.lower()
-                )
-                if not is_non_market_source:
-                    market_domains.add(domain)
 
                 for key in ("estimated_total_cost_r", "execution_cost_r", "round_trip_cost_r"):
                     value = _finite_number(measurements.get(key))
@@ -268,6 +254,11 @@ class NativePositionManager:
                     # to OTHER, so source-family checks are needed to prevent
                     # portfolio/risk telemetry from masquerading as market proof.
                     continue
+                # Campaign assessments require an explicit instrument identity.
+                # Global/unknown-symbol telemetry may inform whole-book risk but
+                # cannot invalidate an individual instrument's thesis.
+                if not ev_symbol:
+                    continue
 
                 raw_state = _text(
                     measurements.get("native_thesis_state")
@@ -302,13 +293,20 @@ class NativePositionManager:
                         confidence=confidence,
                         uncertainty=evidence_uncertainty,
                         measurements=measurements,
+                        independence_group=str(
+                            getattr(ev, "independence_group", "")
+                            or measurements.get("independence_group", "") or ""
+                        ).strip(),
+                        source_timestamp_verified=(
+                            getattr(ev, "source_timestamp_verified", False) is True
+                        ),
+                        provisional=bool(getattr(ev, "provisional", False)),
                     ))
                     for key in ("expected_value_after_cost_r", "net_ev_after_cost_r"):
                         value = _finite_number(measurements.get(key))
                         if value is not None:
                             ev_after_cost_values.append(value)
 
-            domains_present = len(market_domains)
             assessment_domains = {item.domain for item in assessments}
             assessment_states = {item.state for item in assessments}
             evidence_ids = tuple(dict.fromkeys(
@@ -386,29 +384,40 @@ class NativePositionManager:
 
             invalidated = [item for item in assessments if item.state == "invalidated"]
             if invalidated:
-                invalidation_domains = {item.domain for item in invalidated}
+                # Corroboration is based on distinct producer-declared source
+                # lineages, not domain labels. Multiple concepts reading the same
+                # OHLC lineage count once. Unknown provenance is not independent.
+                # Evaluate the invalidation evidence itself, not aggregate
+                # uncertainty from unrelated market domains. A source contributes
+                # only when current, source-time-verified, non-provisional, and
+                # its own confidence exceeds its own uncertainty.
+                qualified_invalidations = [
+                    item for item in invalidated
+                    if item.independence_group
+                    and item.source_timestamp_verified
+                    and not item.provisional
+                    and item.confidence > item.uncertainty
+                ]
+                invalidation_groups = {
+                    item.independence_group for item in qualified_invalidations
+                }
                 context_complete = bool(original_thesis and invalidation_conditions)
-                if (
-                    len(invalidation_domains) >= 2
-                    and domains_present >= required_domains
-                    and uncertainty <= max_unc
-                    and context_complete
-                ):
+                if len(invalidation_groups) >= 2 and context_complete:
                     return NativeManagementVerdict(
                         action="exit", thesis_state="invalidated",
                         reason=(
-                            "original thesis invalidation is corroborated across independent "
-                            "domains with fresh evidence and adequate market coverage"
+                            "original thesis invalidation is corroborated by distinct, fresh, "
+                            "source-verified evidence lineages"
                         ),
                         **base,
                     )
                 missing = []
-                if len(invalidation_domains) < 2:
-                    missing.append("independent confirmation")
-                if domains_present < required_domains:
-                    missing.append(f"market-domain coverage ({domains_present}/{required_domains})")
-                if uncertainty > max_unc:
-                    missing.append("market uncertainty to clear")
+                if len(invalidation_groups) < 2:
+                    missing.append(
+                        "two fresh, source-verified invalidation lineages whose "
+                        "source confidence exceeds source uncertainty "
+                        f"({len(invalidation_groups)}/2)"
+                    )
                 if not context_complete:
                     missing.append("original thesis and invalidation conditions")
                 return NativeManagementVerdict(
@@ -539,14 +548,7 @@ class NativePositionManager:
                 }
                 coverage = getattr(analysis, "domain_coverage", {}) or {}
                 if isinstance(coverage, dict):
-                    # Keep the fallback's coverage denominator consistent with
-                    # the source-aware filtering above. Domain normalisation maps
-                    # several non-market producers to OTHER, so a key-name-only
-                    # filter is insufficient.
-                    analysis_domains = {
-                        str(domain).lower() for domain in coverage
-                        if str(domain).lower() in market_domains
-                    }
+                    analysis_domains = {str(key).lower() for key in coverage}
                 analysis_uncertainty = max(
                     uncertainty,
                     _clamp01(getattr(analysis, "evidence_uncertainty", uncertainty)),
@@ -561,7 +563,6 @@ class NativePositionManager:
                     symbol, exc,
                 )
                 native_patterns = set()
-                analysis_domains = set()
                 analysis_contradictions = []
 
             adverse_patterns = native_patterns & {
@@ -598,25 +599,20 @@ class NativePositionManager:
                 if (
                     direction in {"LONG", "SHORT"}
                     and direction != held_side
-                    and hypothesis_confidence >= 0.65
                     and active_contradictions
                 ):
                     directional_challengers.append((hypothesis_confidence, hypothesis))
 
-            sufficient_native_coverage = len(analysis_domains) >= required_domains
-            uncertainty_acceptable = analysis_uncertainty <= max_unc
-            if (
-                sufficient_native_coverage
-                and uncertainty_acceptable
-                and (
-                    len(adverse_patterns) >= 2
-                    or "execution_degraded" in adverse_patterns
-                    or (
-                        directional_challengers
-                        and bool(analysis_contradictions)
-                    )
-                )
-            ):
+            # This fallback can only reduce existing risk; it cannot EXIT or
+            # add/reverse exposure. Do not make protective de-risking wait for an
+            # arbitrary domain count or a low-uncertainty reading. The pattern or
+            # contradicted challenger must still be present in this fresh native
+            # analysis; full EXIT remains reserved for campaign-linked invalidation
+            # or the originating concept's verified geometry boundary.
+            has_adverse_evidence = bool(adverse_patterns) or bool(
+                directional_challengers and analysis_contradictions
+            )
+            if has_adverse_evidence:
                 profit_r = _finite_number(getattr(position, "profit_r", None))
                 action = "scale_out" if profit_r is not None and profit_r > 0.0 else "tighten_risk"
                 challenger = (
@@ -633,9 +629,8 @@ class NativePositionManager:
                     action=action,
                     thesis_state="native_evidence_deteriorating",
                     reason=(
-                        "native Brain found corroborated adverse structure/market conflict "
-                        "with adequate fresh domain coverage; reduce exposure, not exit"
-                        + challenger_note
+                        "native Brain found fresh adverse structure/market conflict; "
+                        "reduce exposure, not exit" + challenger_note
                     ),
                     confidence=(
                         max(directional_challengers, key=lambda item: item[0])[0]

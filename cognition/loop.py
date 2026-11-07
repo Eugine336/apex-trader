@@ -567,7 +567,6 @@ class CognitionLoop:
         management_mode: str = "shadow",
         event_driven: bool = False,
         event_min_interval_seconds: float = 8.0,
-        event_confidence_delta: float = 0.15,
         clock: Optional[Callable[[], float]] = None,
         campaign_registry: Optional[Any] = None,
         reallocation_enabled: bool = False,
@@ -623,12 +622,10 @@ class CognitionLoop:
         # periodic cycle remains a backstop. Off by default (pure interval).
         self.event_driven = bool(event_driven)
         self.event_min_interval_seconds = max(0.0, float(event_min_interval_seconds))
-        self.event_confidence_delta = max(0.0, float(event_confidence_delta))
         self._clock = clock or _time.monotonic
         self._wake = threading.Event()
         self._pending: set = set()
         self._pending_lock = threading.Lock()
-        self._event_last_magnitude: dict = {}
         self._event_last_reason_at: dict = {}
         self._cycles = 0
         self._decisions = 0
@@ -2035,19 +2032,12 @@ class CognitionLoop:
     def maybe_reason_on_change(
         self, symbol: str, change_magnitude: Any = None, *, now: Optional[float] = None,
     ) -> bool:
-        """Queue an immediate Brain reason when a symbol's market read changes
-        materially — NON-DIRECTIONALLY.
+        """Queue a Brain reason for every valid non-directional change notification.
 
-        The wake is driven by a raw *change magnitude* (e.g. a forming-bar
-        activity/conviction level), never by a precomputed LONG/SHORT direction:
-        cognition must not be gated on a directional pre-read (Constitution
-        §XXIV event-driven integrity / §VII Q25 — opportunity discovery is not
-        gated by a precomputed direction). Triggers on the first observation, on
-        a magnitude move ≥ ``event_confidence_delta`` versus the last seen value,
-        or on a bare nudge (``change_magnitude is None``), subject to a per-symbol
-        floor (``event_min_interval_seconds``). The reasoning runs on the loop
-        thread (this only enqueues + wakes it). No-op unless ``event_driven``.
-        Fail-safe. Returns True when a reason was queued.
+        Magnitude is diagnostic only and never filters which changes receive
+        analysis. The per-symbol interval is an operational scheduling bound;
+        the periodic cycle remains a backstop. This method only enqueues work and
+        never changes or discards the evidence snapshot.
         """
         if not self.event_driven:
             return False
@@ -2055,18 +2045,9 @@ class CognitionLoop:
             sym = str(symbol or "")
             if not sym:
                 return False
-            try:
-                m = None if change_magnitude is None else float(change_magnitude)
-            except (TypeError, ValueError):
-                m = None
-            prev = self._event_last_magnitude.get(sym)
-            self._event_last_magnitude[sym] = m
-            if m is None or prev is None:
-                triggered = True
-            else:
-                triggered = abs(m - prev) >= self.event_confidence_delta
-            if not triggered:
-                return False
+            # Magnitude remains in the public signature for older producers,
+            # but never filters analysis. Queue coalescing and the per-symbol
+            # scheduler below bound compute without suppressing evidence changes.
             t = self._clock() if now is None else float(now)
             last = self._event_last_reason_at.get(sym, 0.0)
             if self.event_min_interval_seconds > 0.0 and (t - last) < self.event_min_interval_seconds:

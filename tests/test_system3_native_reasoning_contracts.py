@@ -307,8 +307,8 @@ def test_self_criticism_does_not_apply_another_thesis_counter_to_this_thesis():
         [primary_a, primary_b, counter_a, counter_b], analysis,
     )
     assert primary_a.confidence < 0.6
-    assert primary_b.confidence > before_b
-    assert "survived criticism" in primary_b.criticism
+    assert primary_b.confidence == before_b
+    assert "confidence unchanged" in primary_b.criticism
 
 
 def test_each_leading_directional_hypothesis_gets_its_own_counter():
@@ -531,3 +531,31 @@ def test_native_analysis_uses_same_decision_time_cutoff_as_consolidation():
     assert [item["evidence_id"] for item in analysis.evidence_index] == [valid.evidence_id]
     assert "no order_flow evidence" in analysis.missing_information
     assert "no momentum evidence" in analysis.missing_information
+
+
+def test_multitimeframe_trend_uses_strict_majority_without_rounded_ratio():
+    state = MarketState(symbol="SYNTHETIC")
+    for timeframe, trend in (
+        ("M5", "uptrend"),
+        ("M15", "uptrend"),
+        ("H1", "downtrend"),
+    ):
+        state.add(_evidence(
+            "structure",
+            {"source_kind": "market_lens", "timeframe": timeframe, "trend_state": trend},
+            source=f"market_lens.structure.{timeframe.lower()}",
+        ))
+
+    analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
+    assert analysis.regime_indicators["trend_context"] == "uptrend"
+    assert analysis.regime_indicators["trend_timeframes"] == 3
+
+def test_native_brain_has_no_dead_confidence_or_advisor_absence_sizing_knobs():
+    from cognition.brain import CognitiveBrain
+
+    brain = CognitiveBrain(reasoner=None)
+    assert not hasattr(brain, "independent_sizing_multiplier")
+    assert not hasattr(brain._native, "independent_min_confidence")
+    assert not hasattr(brain._native, "independent_max_uncertainty")
+
+

@@ -229,7 +229,6 @@ class CognitiveBrain:
         reasoner: Optional[Any] = None,
         *,
         min_confidence_to_act: float = 0.55,
-        max_uncertainty_to_act: float = 0.6,
         ev_primary_gate: bool = True,
         ev_action_threshold_r: float = 0.0,
         reasoner_name: str = "ai_brain",
@@ -241,15 +240,11 @@ class CognitiveBrain:
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
-        min_evidence_domains: int = 3,
         degraded_confidence_multiplier: float = 0.7,
         degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
-        independent_min_confidence: float = 0.7,
-        independent_max_uncertainty: float = 0.5,
-        independent_sizing_multiplier: float = 0.5,
         pattern_tracker: Optional[Any] = None,
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
@@ -262,7 +257,6 @@ class CognitiveBrain:
         )
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
-        self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
         # Apex identity invariant: exposure is qualified by net expected value,
         # not a raw confidence-floor shortcut. Keep the argument for constructor
         # compatibility, but an explicit False cannot restore the legacy gate.
@@ -287,11 +281,6 @@ class CognitiveBrain:
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
         self.min_advisors_for_action = max(1, int(min_advisors_for_action))
-        # Article XXXIV — minimum evidence domains: "cannot determine whether an
-        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on a
-        # thin evidence picture. Three is an identity floor, even for callers that
-        # instantiate CognitiveBrain directly instead of using CognitionConfig.
-        self.min_evidence_domains = max(3, int(min_evidence_domains))
         # Article XXI / V-013 — degraded cognition must be recognised AND
         # enforced. When the council under-delivers (most available advisors did
         # not respond) the Brain attenuates its effective conviction by this
@@ -328,13 +317,14 @@ class CognitiveBrain:
         self._native = BrainReasoner(
             agreement_boost=agreement_boost,
             disagreement_penalty=disagreement_penalty,
-            independent_min_confidence=independent_min_confidence,
-            independent_max_uncertainty=independent_max_uncertainty,
         )
         self._native_management = NativePositionManager()
         self._campaign_memory: Optional[Any] = None
-        self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
         self._independent_originations = 0
+        # Native-only reasoning is a first-class path. It is sized by its own
+        # evidence-derived confidence and net EV, with the same shared portfolio
+        # and owner-risk admission as advisor-assisted opportunities. No advisor-
+        # absence discount is applied.
         # Article X — pattern EVOLUTION. An optional
         # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
         # detected structural patterns preceded winning vs losing campaigns and
@@ -1046,36 +1036,47 @@ class CognitiveBrain:
                 "UNCONFIRMED: no council metadata — quorum cannot be verified "
                 f"(required: {self.min_advisors_for_action}); treated as degraded cognition"
             )
-        # Article XXXIV — minimum *market evidence* domains. Council metadata,
-        # execution-cost quotes, portfolio state and unknown buckets do not count
-        # as independent market-analysis domains. Missing count metadata fails closed.
-        raw_market_domain_count = consolidation.get("market_domain_count")
-        try:
-            market_domain_count = (
-                int(raw_market_domain_count)
-                if raw_market_domain_count is not None else None
-            )
-        except (TypeError, ValueError, OverflowError):
-            market_domain_count = None
-        domain_ok = (
-            market_domain_count is not None
-            and market_domain_count >= self.min_evidence_domains
+        # Candidate-specific lineage replaces the old fixed three-domain count.
+        # Geometry is produced only from fresh, source-time-confirmed completed
+        # market evidence. Require every referenced geometry item to resolve in
+        # this exact decision snapshot; a stale, missing, provisional, or
+        # wrong-symbol reference cannot authorize exposure. One valid concept
+        # source may qualify when its own activation, geometry, return, cost and
+        # shared risk requirements all pass.
+        fresh_by_id = {
+            str(getattr(item, "evidence_id", "") or ""): item
+            for item in market_state.fresh_evidence(now)
+            if str(getattr(item, "evidence_id", "") or "")
+        }
+        geometry_ids = tuple(dict.fromkeys(
+            str(item) for item in (geometry.evidence_ids if geometry is not None else ())
+            if str(item)
+        ))
+        geometry_items = [fresh_by_id.get(evidence_id) for evidence_id in geometry_ids]
+        evidence_lineage_ok = bool(geometry_ids) and all(
+            item is not None
+            and str(getattr(item, "symbol", "") or "").strip().upper()
+                == str(symbol or "").strip().upper()
+            and getattr(item, "provisional", False) is False
+            and isinstance(getattr(item, "measurements", None), dict)
+            and item.measurements.get("source_timestamp_known") is True
+            and str(item.measurements.get("data_basis", "") or "").lower() == "completed_ohlc"
+            and item.measurements.get("source_bar_epoch") is not None
+            for item in geometry_items
         )
-        if market_domain_count is None:
-            questions["evidence_coverage"] = (
-                "UNCONFIRMED: market evidence-domain count is missing or invalid; "
-                f"required minimum: {self.min_evidence_domains}"
-            )
-        elif domain_ok:
-            questions["evidence_coverage"] = (
-                f"ADEQUATE: {market_domain_count} market domains present "
-                f"(minimum: {self.min_evidence_domains})"
-            )
-        else:
-            questions["evidence_coverage"] = (
-                f"INSUFFICIENT: {market_domain_count} market domains present, "
-                f"minimum {self.min_evidence_domains} required"
-            )
+        independence_groups = sorted({
+            str(getattr(item, "independence_group", "") or "").strip()
+            for item in geometry_items if item is not None
+            and str(getattr(item, "independence_group", "") or "").strip()
+        })
+        questions["evidence_coverage"] = (
+            f"QUALIFIED: {len(geometry_ids)} current completed-bar geometry evidence "
+            f"record(s); {len(independence_groups)} identified independent source group(s)"
+            if evidence_lineage_ok else
+            "UNCONFIRMED: selected opportunity geometry does not resolve to complete, "
+            "fresh, same-symbol, source-verified completed-bar evidence"
+        )
+        questions["evidence_independence_groups"] = independence_groups
         questions["execution_cost_verification"] = questions_cost_verification
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
@@ -1134,7 +1135,7 @@ class CognitiveBrain:
             directional_and_qualified
             and ev_ok
             and quorum_ok
-            and domain_ok
+            and evidence_lineage_ok
             and cost_verified
             and return_verified
             and has_actionable_opportunity
@@ -1210,22 +1211,15 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — advisor quorum is "
                     f"not met or unconfirmed ({quorum_status})"
                 )
-            elif directional_and_qualified and ev_ok and not domain_ok:
-                # Article XXXIV — a qualified opportunity on too few evidence
-                # domains: cannot determine whether an opportunity exists.
-                coverage_status = (
-                    f"{market_domain_count}/{self.min_evidence_domains} market domains"
-                    if market_domain_count is not None
-                    else f"unknown; {self.min_evidence_domains} market domains required"
-                )
+            elif directional_and_qualified and ev_ok and not evidence_lineage_ok:
                 reason_txt = (
-                    f"insufficient evidence coverage (or unconfirmed coverage): {coverage_status} "
-                    "— cannot determine whether opportunity exists"
+                    "selected opportunity geometry lacks complete, fresh, same-symbol, "
+                    "source-verified completed-bar evidence lineage"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
                 do_nothing_txt = (
-                    "evaluated: doing nothing is correct — evidence coverage is "
-                    f"insufficient or unconfirmed ({coverage_status})"
+                    "evaluated: doing nothing is correct — the selected opportunity's "
+                    "geometry evidence cannot be verified at this decision cutoff"
                 )
             elif directional and not return_verified:
                 reason_txt = (
@@ -1676,8 +1670,6 @@ class CognitiveBrain:
                 analysis=analysis,
                 hypotheses=native_hypotheses,
                 now=now,
-                max_uncertainty=self.max_uncertainty_to_act,
-                min_evidence_domains=self.min_evidence_domains,
             )
             payload["native_analysis"] = analysis.to_dict()
             payload["native_hypotheses"] = [
@@ -2722,26 +2714,30 @@ class CognitiveBrain:
                 consolidation.get("mean_confidence", 0.0),
             ))
             ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
-            gap = advisor_confidence - ev_mean
-            # Advisor markedly more confident than the evidence's own mean.
-            if gap > 0.15:
-                attenuated = _clamp01(0.5 * effective_confidence + 0.5 * ev_mean)
+            # Compare the advisor with the evidence's uncertainty-adjusted support
+            # continuously. There is no binary "large gap" or "high uncertainty"
+            # cutoff: greater disagreement or uncertainty increases attenuation.
+            # Attenuation is proportional to the advisor's overstatement
+            # relative to the market evidence mean, amplified continuously by
+            # uncertainty. If the advisor is not more confident than the market
+            # evidence, this cross-check does not penalize it.
+            disagreement = max(0.0, advisor_confidence - ev_mean)
+            attenuation_weight = _clamp01(disagreement * (1.0 + ev_unc))
+            blended = (
+                effective_confidence * (1.0 - attenuation_weight)
+                + ev_mean * attenuation_weight
+            )
+            # Evidence cross-check may attenuate an advisor, never promote it.
+            attenuated = min(effective_confidence, _clamp01(blended))
+            if attenuated < effective_confidence:
                 return attenuated, (
-                    f"LLM advisor confidence {advisor_confidence:.2f} vs evidence mean "
-                    f"confidence {ev_mean:.2f} — attenuated effective confidence to "
-                    f"{attenuated:.2f}"
-                )
-            # Advisor claims conviction while the evidence picture is very unsure.
-            if advisor_confidence >= self.min_confidence_to_act and ev_unc > 0.6:
-                attenuated = _clamp01(effective_confidence * (1.0 - ev_unc))
-                return attenuated, (
-                    f"confidence-evidence mismatch: advisor confidence "
-                    f"{advisor_confidence:.2f} but evidence uncertainty {ev_unc:.2f} — "
-                    f"attenuated effective confidence to {attenuated:.2f}"
+                    f"advisor confidence {advisor_confidence:.2f} was continuously "
+                    f"attenuated against evidence mean {ev_mean:.2f} "
+                    f"(uncertainty {ev_unc:.2f}) to {attenuated:.2f}"
                 )
             return effective_confidence, (
-                f"LLM advisor confidence {advisor_confidence:.2f} consistent with "
-                f"evidence mean confidence {ev_mean:.2f} (uncertainty {ev_unc:.2f})"
+                f"advisor confidence {advisor_confidence:.2f} does not exceed "
+                f"market evidence mean {ev_mean:.2f}; confidence unchanged"
             )
         except Exception:  # noqa: BLE001 — synthesis must never break reasoning
             return effective_confidence, ""
@@ -2966,29 +2962,14 @@ class CognitiveBrain:
             if lead is None or not lead.is_directional:
                 return None
 
-            # Apply the same market-domain breadth to native fallback. Council,
-            # execution-cost and portfolio metadata cannot inflate the count.
-            required_domains = max(3, int(self.min_evidence_domains))
-            raw_market_domains = (consolidation or {}).get("market_domain_count")
-            try:
-                consolidated_market_domains = (
-                    int(raw_market_domains) if raw_market_domains is not None else None
-                )
-            except (TypeError, ValueError, OverflowError):
-                consolidated_market_domains = None
-            available_market_domains = (
-                len(set(analysis.informative_domains))
-                if analysis.evidence_index else consolidated_market_domains
-            )
-            if available_market_domains is None or available_market_domains < required_domains:
-                return None
-
-
-            # Activation is evaluated from the current evidence, not membership
-            # in a fixed catalogue of familiar pattern names. Require multiple
-            # fresh, independent market domains and at least one concrete current
-            # observation that can be named in the opportunity contract.
+            # Candidate-specific evidence replaces a universal domain-count
+            # floor. The leading hypothesis must cite at least one current,
+            # measurable market fact; geometry below independently proves the
+            # activated completed-bar setup and its source-time lineage.
             fresh = list(market_state.fresh_evidence(now))
+            lead_support_ids = {
+                str(value) for value in (lead.supporting_evidence_ids or []) if str(value)
+            }
             market_evidence = [
                 item for item in fresh
                 if str(getattr(getattr(item, "domain", None), "value",
@@ -2996,32 +2977,27 @@ class CognitiveBrain:
                 in {"structure", "liquidity", "momentum", "volatility", "volume",
                     "order_flow", "multi_timeframe", "correlation", "session", "macro"}
             ]
-            if analysis.evidence_index:
-                informative_evidence_ids = {
-                    str(item.get("evidence_id", ""))
-                    for item in analysis.evidence_index
-                    if item.get("measurement_keys")
-                }
-                informative_facts = [
-                    item for item in market_evidence
-                    if str(getattr(item, "evidence_id", "") or "")
-                    in informative_evidence_ids
-                ]
-            else:
-                # Compatibility for manually constructed test/legacy analyses
-                # without a point-in-time evidence index.
-                informative_facts = [
-                    item for item in market_evidence
-                    if str(getattr(item, "observation", "") or "").strip()
-                    and float(getattr(item, "confidence", 0.0) or 0.0) > 0.0
-                ]
-            independent_domains = {
-                str(getattr(getattr(item, "domain", None), "value",
-                            getattr(item, "domain", ""))).lower()
-                for item in informative_facts
+            evidence_index_ids = {
+                str(item.get("evidence_id", ""))
+                for item in (analysis.evidence_index or [])
+                if isinstance(item, dict) and item.get("measurement_keys")
             }
-            if len(independent_domains) < required_domains or not informative_facts:
+            required_support_ids = lead_support_ids or evidence_index_ids
+            informative_facts = [
+                item for item in market_evidence
+                if (not required_support_ids or str(getattr(item, "evidence_id", "") or "") in required_support_ids)
+                and str(getattr(item, "symbol", "") or "").strip().upper()
+                    == str(symbol or "").strip().upper()
+                and isinstance(getattr(item, "measurements", None), dict)
+                and bool(getattr(item, "measurements", {}))
+            ]
+            if not informative_facts:
                 return None
+            independence_groups = sorted({
+                str(getattr(item, "independence_group", "") or "").strip()
+                for item in informative_facts
+                if str(getattr(item, "independence_group", "") or "").strip()
+            })
 
             # A directional hypothesis may become actionable below 0.70 confidence
             # or above 0.50 uncertainty only when its uncertainty-adjusted,
@@ -3053,7 +3029,13 @@ class CognitiveBrain:
             geometry = derive_opportunity_geometry(
                 market_state, direction, now=now,
             )
-            if geometry is None or not geometry.activated:
+            if (
+                geometry is None or not geometry.activated
+                or not geometry.evidence_ids
+                or not set(geometry.evidence_ids).issubset({
+                    str(getattr(item, "evidence_id", "") or "") for item in fresh
+                })
+            ):
                 return None
 
             # Monetary round-trip cost is comparable with calibrated return only
@@ -3098,20 +3080,9 @@ class CognitiveBrain:
             competing_statements = [
                 item.statement for item in hypotheses if item is not lead
             ]
-            market_coverage_domains = (
-                set(analysis.informative_domains)
-                if analysis.evidence_index else {
-                    key for key in analysis.domain_coverage
-                    if key not in {"execution_quality", "reasoning", "portfolio", "other"}
-                }
-            )
-            market_coverage = {
-                key: value for key, value in analysis.domain_coverage.items()
-                if key in market_coverage_domains
-            }
             evidence_strength = (
-                sum(market_coverage.values()) / len(market_coverage)
-                if market_coverage else 0.0
+                sum(_clamp01(getattr(item, "confidence", 0.0)) for item in informative_facts)
+                / len(informative_facts)
             )
             native_opportunity_id = (
                 f"native:{symbol}:{direction}:{geometry.entry_price:.10g}:"
@@ -3132,7 +3103,8 @@ class CognitiveBrain:
                     "entry_conditions": [
                         geometry.activation_reason,
                         f"Market-derived entry {geometry.entry_price:.10g}; stop {geometry.stop_price:.10g}; target {geometry.target_price:.10g}",
-                        f"Current evidence supports this hypothesis across {len(independent_domains)} independent market domains",
+                        f"Current hypothesis lineage cites {len(informative_facts)} fresh measured fact(s) "
+                        f"across {len(independence_groups)} identified independent source group(s)",
                         *[str(getattr(item, "observation", "") or "")[:180] for item in informative_facts[:4]],
                         "Fresh quote, broker feasibility, protective-risk checks and common admission must pass before submission",
                     ],
@@ -3213,11 +3185,12 @@ class CognitiveBrain:
                 lead_conf,
                 min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
             )
-            desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
+            desired_exposure = round(base_exposure, 4)
             questions["sizing_rationale"] = (
-                f"independent origination sized {desired_exposure:.4f} = "
-                f"{self.independent_sizing_multiplier:.2f}x base {base_exposure:.4f} "
-                "(conservative — no advisor confirmation)")
+                f"native origination sized {desired_exposure:.4f} from its own "
+                "evidence-derived confidence and positive net expected value; "
+                "advisor availability does not change sizing"
+            )
             invalidation_conditions = (
                 ([lead.invalidation] if lead.invalidation else [])
                 + [h.statement for h in hypotheses if h is not lead][:3]
@@ -3624,11 +3597,9 @@ class CognitiveBrain:
                 "available": self.available,
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
-                "max_uncertainty_to_act": self.max_uncertainty_to_act,
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
-                "min_evidence_domains": self.min_evidence_domains,
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "degrade_on_unknown_council": self._degrade_on_unknown_council,
                 "allow_scale_in": self.allow_scale_in,

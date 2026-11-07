@@ -1,5 +1,7 @@
 """Tests for the deterministic, provider-independent campaign manager."""
 
+import time
+
 from cognition.brain import CognitiveBrain, PositionView
 from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.identity import IDENTITY_VERSION
@@ -23,9 +25,11 @@ def _state(*, markers=(), uncertainty=0.1, add_cost=False):
         measurements = {}
         if index < len(markers):
             marker_state = markers[index].get("state", "intact")
+            source_group = f"verified-test-source:{domain}"
             measurements = {
                 "campaign_id": "campaign-1",
                 "native_thesis_state": marker_state,
+                "independence_group": source_group,
             }
             if markers[index].get("ev") is not None:
                 measurements["expected_value_after_cost_r"] = markers[index]["ev"]
@@ -37,6 +41,11 @@ def _state(*, markers=(), uncertainty=0.1, add_cost=False):
             confidence=0.9,
             uncertainty=uncertainty,
             measurements=measurements,
+            source_timestamp_epoch=time.time() if measurements else None,
+            source_timestamp_verified=bool(measurements),
+            independence_group=(
+                str(measurements.get("independence_group", "")) if measurements else ""
+            ),
             relevance_horizon_seconds=900.0,
         ))
     if add_cost:
@@ -97,7 +106,7 @@ def test_invalidation_requires_original_thesis_and_invalidation_conditions():
     assert "original thesis" in result.reason
 
 
-def test_high_market_uncertainty_never_triggers_exit():
+def test_uncertain_invalidation_sources_cannot_trigger_exit():
     manager = NativePositionManager()
     state = _state(
         markers=({"state": "invalidated"}, {"state": "invalidated"}),
@@ -105,10 +114,24 @@ def test_high_market_uncertainty_never_triggers_exit():
     )
     result = manager.assess(
         _position(), state, campaign_context=_context(),
-        consolidation={"aggregate_uncertainty": 0.9, "market_domain_count": 3},
+        consolidation={"aggregate_uncertainty": 0.9},
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
+
+
+def test_unrelated_aggregate_uncertainty_does_not_block_verified_campaign_invalidation():
+    manager = NativePositionManager()
+    state = _state(
+        markers=({"state": "invalidated"}, {"state": "invalidated"}),
+        uncertainty=0.1,
+    )
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.99},
+    )
+    assert result.action == "exit"
+    assert result.thesis_state == "invalidated"
 
 
 def test_deterioration_reduces_exposure_without_exiting_on_doubt():
@@ -339,24 +362,27 @@ def test_brain_ignores_campaign_memory_for_mismatched_position():
         store.close()
 
 
-def test_risk_domain_invalidation_does_not_count_as_market_coverage():
+def test_invalidation_requires_two_verified_independent_source_lineages():
     manager = NativePositionManager()
-    # Construct only two genuine market domains. The normal _state fixture
-    # includes three domains by default, so using it here would already satisfy
-    # the market-coverage floor even when the risk telemetry is correctly ignored.
     state = MarketState(symbol="EURUSD")
-    for domain in ("structure", "momentum"):
+    for domain, group in (("structure", "ohlc:M15:source-a"),
+                          ("momentum", "ticks:source-b")):
+        stamp = time.time()
         state.add(Evidence(
             source_module=f"native.{domain}",
             domain=domain,
             symbol="EURUSD",
-            observation=f"fresh {domain} evidence",
+            observation=f"fresh {domain} campaign invalidation",
             confidence=0.9,
             uncertainty=0.1,
             measurements={
                 "campaign_id": "campaign-1",
                 "native_thesis_state": "invalidated",
+                "independence_group": group,
             },
+            source_timestamp_epoch=stamp,
+            source_timestamp_verified=True,
+            independence_group=group,
             relevance_horizon_seconds=900.0,
         ))
     state.add(Evidence(
@@ -374,11 +400,40 @@ def test_risk_domain_invalidation_does_not_count_as_market_coverage():
     ))
     result = manager.assess(
         _position(), state, campaign_context=_context(),
-        consolidation={"aggregate_uncertainty": 0.1, "market_domain_count": 3},
+        consolidation={"aggregate_uncertainty": 0.1},
+    )
+    assert result.action == "exit"
+    assert result.thesis_state == "invalidated"
+
+
+def test_unknown_or_shared_source_lineage_cannot_manufacture_invalidation_confirmation():
+    manager = NativePositionManager()
+    state = MarketState(symbol="EURUSD")
+    for domain in ("structure", "momentum"):
+        state.add(Evidence(
+            source_module=f"native.{domain}",
+            domain=domain,
+            symbol="EURUSD",
+            observation=f"fresh {domain} evidence",
+            confidence=0.9,
+            uncertainty=0.1,
+            measurements={
+                "campaign_id": "campaign-1",
+                "native_thesis_state": "invalidated",
+                "independence_group": "same-source:ohlc",
+            },
+            source_timestamp_epoch=time.time(),
+            source_timestamp_verified=True,
+            independence_group="same-source:ohlc",
+            relevance_horizon_seconds=900.0,
+        ))
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.1},
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
-    assert "market-domain coverage" in result.reason
+    assert "source confidence exceeds source uncertainty" in result.reason
 
 
 def test_process_local_thesis_is_not_reused_across_campaign_ids():
@@ -471,3 +526,32 @@ def test_campaign_geometry_completed_close_invalidation_is_an_exit_verdict():
     assert result.thesis_state == "concept_invalidation_confirmed"
     assert result.management_plan["kind"] == "invalidation_exit"
     assert result.management_plan["action_id"].startswith("campaign-1:concept-invalidation:")
+
+
+def test_low_confidence_counter_hypothesis_with_fresh_contradiction_can_derisk():
+    from types import SimpleNamespace
+
+    manager = NativePositionManager()
+    state = _state()
+    analysis = SimpleNamespace(
+        domain_coverage={},
+        detected_patterns=["momentum_divergence"],
+        contradictions=["fresh price/momentum divergence"],
+        evidence_uncertainty=0.9,
+    )
+    counter = SimpleNamespace(
+        direction_implication="SHORT",
+        confidence=0.10,
+        contradicting_patterns=["momentum_divergence"],
+    )
+    result = manager.assess(
+        _position(profit_r=0.5),
+        state,
+        campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.9},
+        analysis=analysis,
+        hypotheses=[counter],
+    )
+    assert result.action == "scale_out"
+    assert result.thesis_state == "native_evidence_deteriorating"
+    assert "not exit" in result.reason
