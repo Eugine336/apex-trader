@@ -8,9 +8,9 @@ its proximity to its own limit is recorded, and the dimensions fold together
 into
 
   * a ``score`` in ``[0, 1]`` — how close the nearest/heaviest limit is,
-  * a bounded ``multiplier`` in ``[floor, 1.0]`` — a size dimmer the
+  * a bounded ``multiplier`` in ``[0.0, 1.0]`` — a size dimmer the
     orchestrator folds into sizing (a near-limit dimension sizes the trade
-    DOWN; it never extinguishes it), and
+    DOWN; a sufficiently deep breach can reduce it to zero), and
   * the full lists of breached / near-breach dimensions for the trace and
     dashboard.
 
@@ -122,14 +122,13 @@ def _dim_factor(
     *,
     near_breach_at: float,
     over_limit_factor: float,
-    floor: float,
 ) -> float:
     """The bounded size factor a single dimension contributes.
 
     Plenty of headroom (``prox <= near_breach_at``) → ``1.0`` (no penalty).
     Approaching the limit → linear dim from ``1.0`` down to ``over_limit_factor``
-    at the limit.  Past the limit → decay from ``over_limit_factor`` toward the
-    ``floor`` as the breach deepens.  Never below ``floor``, never above ``1.0``.
+    at the limit. Past the limit → decay toward zero as the breach deepens.
+    No minimum multiplier is imposed: risk reduction is never inflated.
     """
     if prox <= near_breach_at:
         return 1.0
@@ -138,7 +137,7 @@ def _dim_factor(
         frac = (prox - near_breach_at) / span
         return 1.0 - frac * (1.0 - over_limit_factor)
     # prox >= 1.0 — over the limit, decay further.
-    return max(floor, over_limit_factor / (1.0 + (prox - 1.0)))
+    return max(0.0, over_limit_factor / (1.0 + (prox - 1.0)))
 
 
 @dataclass
@@ -146,9 +145,8 @@ class RiskScore:
     """The accumulated read across every measured risk dimension."""
 
     score: float                              # 0..1 — closeness to nearest limit
-    multiplier: float                         # [floor, 1.0] size dimmer
+    multiplier: float                         # [0.0, 1.0] size dimmer
     dimensions: list[RiskDimension] = field(default_factory=list)
-    floor: float = 0.15
 
     @property
     def near_breaches(self) -> list[str]:
@@ -181,23 +179,19 @@ class RiskScore:
 def accumulate(
     dimensions: list[RiskDimension],
     *,
-    floor: float = 0.15,
     near_breach_at: float = NEAR_BREACH_AT,
     over_limit_factor: float = OVER_LIMIT_FACTOR,
 ) -> RiskScore:
     """Fold measured risk dimensions into a graded score + size multiplier.
 
-    The multiplier is the product of every dimension's bounded factor (so being
-    near two limits dims more than being near one), clamped to ``[floor, 1.0]``.
-    The score is the single closest proximity clamped to ``[0, 1]`` — a quick
-    read of "how close is the nearest limit?".  An empty list returns a neutral
-    ``multiplier=1.0``/``score=0.0`` (no dimension → no dimming).
+    The multiplier is the product of every dimension's factor, clamped to
+    [0.0, 1.0]. There is no lower bound that can restore risk after concentration
+    or exposure reductions. The score is the single closest proximity clamped
+    to [0, 1]. An empty list returns a neutral multiplier=1.0 / score=0.0.
     """
-    floor = _safe_float(floor, 0.15)
-    floor = max(0.0, min(1.0, floor))
     dims = list(dimensions or [])
     if not dims:
-        return RiskScore(score=0.0, multiplier=1.0, dimensions=[], floor=floor)
+        return RiskScore(score=0.0, multiplier=1.0, dimensions=[])
 
     product = 1.0
     max_prox = 0.0
@@ -206,15 +200,9 @@ def accumulate(
             d.proximity,
             near_breach_at=near_breach_at,
             over_limit_factor=over_limit_factor,
-            floor=floor,
         )
         if d.proximity > max_prox:
             max_prox = d.proximity
-    multiplier = max(floor, min(1.0, product))
+    multiplier = max(0.0, min(1.0, product))
     score = max(0.0, min(1.0, max_prox))
-    return RiskScore(
-        score=score,
-        multiplier=multiplier,
-        dimensions=dims,
-        floor=floor,
-    )
+    return RiskScore(score=score, multiplier=multiplier, dimensions=dims)
