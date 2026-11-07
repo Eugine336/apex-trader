@@ -245,9 +245,6 @@ class CognitiveBrain:
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
-        independent_min_confidence: float = 0.7,
-        independent_max_uncertainty: float = 0.5,
-        independent_sizing_multiplier: float = 0.5,
         pattern_tracker: Optional[Any] = None,
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
@@ -320,13 +317,14 @@ class CognitiveBrain:
         self._native = BrainReasoner(
             agreement_boost=agreement_boost,
             disagreement_penalty=disagreement_penalty,
-            independent_min_confidence=independent_min_confidence,
-            independent_max_uncertainty=independent_max_uncertainty,
         )
         self._native_management = NativePositionManager()
         self._campaign_memory: Optional[Any] = None
-        self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
         self._independent_originations = 0
+        # Native-only reasoning is a first-class path. It is sized by its own
+        # evidence-derived confidence and net EV, with the same shared portfolio
+        # and owner-risk admission as advisor-assisted opportunities. No advisor-
+        # absence discount is applied.
         # Article X — pattern EVOLUTION. An optional
         # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
         # detected structural patterns preceded winning vs losing campaigns and
@@ -3187,11 +3185,12 @@ class CognitiveBrain:
                 lead_conf,
                 min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
             )
-            desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
+            desired_exposure = round(base_exposure, 4)
             questions["sizing_rationale"] = (
-                f"independent origination sized {desired_exposure:.4f} = "
-                f"{self.independent_sizing_multiplier:.2f}x base {base_exposure:.4f} "
-                "(conservative — no advisor confirmation)")
+                f"native origination sized {desired_exposure:.4f} from its own "
+                "evidence-derived confidence and positive net expected value; "
+                "advisor availability does not change sizing"
+            )
             invalidation_conditions = (
                 ([lead.invalidation] if lead.invalidation else [])
                 + [h.statement for h in hypotheses if h is not lead][:3]
