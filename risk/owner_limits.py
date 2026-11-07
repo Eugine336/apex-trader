@@ -305,9 +305,13 @@ class OwnerLimits:
             raise ValueError("max_risk_pct_per_trade must be >= risk_per_trade_pct")
         if self.max_total_risk_pct < self.max_risk_pct_per_trade:
             raise ValueError("max_total_risk_pct must be >= max_risk_pct_per_trade")
-        if not (0.0 < self.daily_loss_limit_pct <= self.weekly_drawdown_limit_pct
-                <= self.hard_stop_drawdown_pct):
-            raise ValueError("drawdown limits must satisfy daily <= weekly <= hard stop")
+        if not (
+            0.0 < self.daily_loss_limit_pct <= self.hard_stop_drawdown_pct
+            and 0.0 < self.weekly_drawdown_limit_pct <= self.hard_stop_drawdown_pct
+        ):
+            raise ValueError(
+                "daily and weekly loss limits must be positive and cannot exceed hard stop"
+            )
         if not (0.0 <= self.daily_loss_recovery_pct <= self.daily_loss_limit_pct):
             raise ValueError("daily_loss_recovery_pct must be within the daily loss limit")
         if self.daily_loss_flatten_pct <= 0.0 or self.portfolio_heat_block_pct <= 0.0:
