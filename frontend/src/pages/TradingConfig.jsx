@@ -360,8 +360,9 @@ export default function TradingConfig() {
             className={inputClass + " font-mono"}
           />
           <p className="mt-1 text-xs text-gray-500">
-            Optional partial update. Supported keys include per-trade and portfolio risk,
-            daily/weekly drawdown, position and correlation caps, campaign exposure,
+            Full nested override object. Omit fields to inherit defaults; retain every
+            override you want to keep. Supported keys include per-trade and portfolio
+            risk, daily/weekly drawdown, position and correlation caps, campaign exposure,
             hedge limits, margin guards, and cooldown settings. Unknown keys, invalid
             combinations, and attempts to weaken hard safety guards are rejected.
             Changes to a running instance require a restart.
