@@ -512,3 +512,32 @@ def test_campaign_geometry_completed_close_invalidation_is_an_exit_verdict():
     assert result.thesis_state == "concept_invalidation_confirmed"
     assert result.management_plan["kind"] == "invalidation_exit"
     assert result.management_plan["action_id"].startswith("campaign-1:concept-invalidation:")
+
+
+def test_low_confidence_counter_hypothesis_with_fresh_contradiction_can_derisk():
+    from types import SimpleNamespace
+
+    manager = NativePositionManager()
+    state = _state()
+    analysis = SimpleNamespace(
+        domain_coverage={},
+        detected_patterns=["momentum_divergence"],
+        contradictions=["fresh price/momentum divergence"],
+        evidence_uncertainty=0.9,
+    )
+    counter = SimpleNamespace(
+        direction_implication="SHORT",
+        confidence=0.10,
+        contradicting_patterns=["momentum_divergence"],
+    )
+    result = manager.assess(
+        _position(profit_r=0.5),
+        state,
+        campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.9},
+        analysis=analysis,
+        hypotheses=[counter],
+    )
+    assert result.action == "scale_out"
+    assert result.thesis_state == "native_evidence_deteriorating"
+    assert "not exit" in result.reason
