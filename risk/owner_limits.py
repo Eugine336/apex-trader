@@ -374,10 +374,6 @@ class OwnerLimits:
     def apply_updates(self, updates: Mapping[str, Any]) -> None:
         """Validate the complete candidate before atomically mutating this object."""
         allowed = {item.name for item in fields(self)}
-        if updates.get("margin_guardian_enabled") is False:
-            raise ValueError(
-                "margin_guardian_enabled cannot be disabled; broker margin protection is mandatory"
-            )
         internal = set(updates) & _INTERNAL_ONLY_FIELDS
         internal |= (set(updates) & allowed) - _OWNER_EDITABLE_FIELDS
         if internal:
