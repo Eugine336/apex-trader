@@ -145,3 +145,9 @@ def test_owner_limit_updates_are_isolated_between_app_config_instances():
     assert first.owner_limits.risk_per_trade_pct == 0.25
     assert second.owner_limits.risk_per_trade_pct == 0.75
     assert second.risk.risk_per_trade_pct == 0.75
+
+
+def test_owner_limits_reject_fractional_broker_position_caps():
+    limits = OwnerLimits()
+    with pytest.raises(ValueError, match="max_broker_positions"):
+        limits.apply_updates({"max_broker_positions": 1.5})
