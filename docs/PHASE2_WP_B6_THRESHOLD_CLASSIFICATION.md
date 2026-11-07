@@ -92,13 +92,15 @@ The scoped scan of concept, regime, portfolio, risk and execution modules found 
 
 - **Named concept definitions:** candlestick morphology ratios in `cognition/concepts/price_action.py`; displacement/body/rank definitions in `price_delivery.py`; structural body-ratio definitions in `structure_patterns.py`; variance-ratio/autocorrelation regime definitions in `regime_switching.py`; and close-location midpoint semantics in `wyckoff_volume_readings.py`. Retain them as named concept definitions, with LONG/SHORT mirror tests and source-relative measurements. They do not constitute a universal minimum evidence count.
 - **Range context:** `market_lenses.py`'s 15%/85% near-boundary flag is descriptive pattern context only. The geometry fallback no longer uses it as an activation gate; it requires an actual completed-bar failed auction and same-timeframe response. The multi-timeframe `conflict_score` labels are reporting semantics, not an exposure authorization gate.
+- **Microstructure definitions:** `cognition/market_snapshot.py` uses relative velocity, spread and tick-rate ratios plus momentum/range semantics to label acceleration, widening, burst, exhaustion and absorption. These are descriptive microstructure definitions, not direct trade authorization. Keep them named and test them against instrument/timeframe-mirrored fixtures; do not promote them into a universal confidence gate.
 - **Regime classification:** `adaptive/regime_detector.py` exposes trending/volatile/quiet thresholds as tunable regime definitions. They classify a regime; they are not account-risk limits. Their calibration is a separate regime-methodology work item.
-- **Learning validation:** `adaptive/score_optimizer.py`'s validation split, minimum validation sample and per-class/per-symbol trade counts are statistical safeguards against overfit. Keep them as learning protocol requirements; do not lower them to make an entry pass.
+- **Learning validation:** `adaptive/score_optimizer.py`'s validation split, minimum validation sample and per-class/per-symbol trade counts, plus `calibration_artifacts.py`'s selection coverage, missed-rate, Brier, reliability and holdout-gap checks, are statistical safeguards against overfit. Keep them as learning protocol requirements; do not lower them to make an entry pass.
+- **Execution-cost data quality:** `cognition/execution_cost_model.py`'s quote-age bound and minimum slippage sample count qualify whether cost evidence is usable. These are data-quality safeguards, not market direction thresholds; stale/unverified cost data must remain unqualified.
 - **Portfolio triage:** `risk/portfolio_risk_state.py`'s R-multiple and stagnation bands contribute to a position-weakness ranking. They are advisory ranking inputs, not a direct broker order gate. Review them with the portfolio allocation/lifecycle work rather than treating them as evidence-domain safety.
 - **Account risk:** the live drawdown/exposure curves and limits in `RiskConfig`, `RiskManagementConfig`, `RiskManager`, and `GovernorConfig` are account-risk controls. They belong in WP-B7's typed owner-limits migration. Preserve effective deployed limits during migration.
 - **Broker execution:** lot-step/minimum, tick-size/value, stop/freeze distance, margin, quote freshness and trading-mode checks must continue to come from the broker/instrument contract. They are feasibility constraints, not market-analysis thresholds.
 
-The retired score-based risk-scaling helper in `risk/risk_engine.py` is marked deprecated and has no repository call sites in the scan; it is not used as evidence for a live gate. Remove it only with the legacy-path cleanup after the complete route inventory.
+The retired score-based risk-scaling helper in `risk/risk_engine.py` is marked deprecated and has no repository call sites in the scan; it is not used as evidence for a live gate. Remove it only with the legacy-path cleanup after the complete route inventory. The live drawdown scaling curve remains an account-risk control for WP-B7, not an analytical gate.
 
 ### 5. Advisor quorum is not market evidence and must not become a hidden dependency on optional AI
 
@@ -135,7 +137,7 @@ Risk limits currently exist in multiple structures. This is a consolidation prob
 7. **Verified on current branch commit:** Ruff lint, focused Gold Desk tests on Python 3.11/3.12, and full test suites on Python 3.11/3.12 pass.
 8. No live broker orders, credential changes, runtime database changes, or `.env` edits were performed.
 
-Remaining acceptance work: verify all required repository checks on the current head, complete the final call-site/threshold inventory, then merge. WP-B7 owner-limits consolidation remains a separate package.
+Remaining acceptance work: verify all required repository checks on the current head, then merge. WP-B7 owner-limits consolidation remains a separate package.
 ## Acceptance
 
 WP-B6 is complete only when the old analytical gates are absent from all live call paths, their replacements are tested end-to-end, all protective/account/broker controls remain enforced, and full CI passes on both supported Python versions. A green documentation-only CI run is not WP-B6 acceptance.
