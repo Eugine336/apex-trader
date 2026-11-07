@@ -110,6 +110,10 @@ class AccountRiskManager:
     def margin_level(self, account: str) -> float | None:
         return self._margin_level.get(account)
 
+    def clear_margin_level(self, account: str) -> None:
+        """Clear a prior margin ratio only after the broker confirms zero used margin."""
+        self._margin_level.pop(account, None)
+
     def margin_entry_blocked(self, account: str) -> bool:
         """Block new exposure when broker-confirmed margin level is below its guard."""
         if not self.margin_guardian_enabled:
