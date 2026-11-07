@@ -146,7 +146,6 @@ class NativePositionManager:
         analysis: Any = None,
         hypotheses: Optional[list[Any]] = None,
         now: Optional[float] = None,
-        max_uncertainty: float = 0.6,
     ) -> NativeManagementVerdict:
         """Reassess the held thesis. On any fault, return HOLD (never EXIT)."""
         symbol = str(getattr(position, "symbol", "") or "")
@@ -174,9 +173,6 @@ class NativePositionManager:
             if not con and market_state is not None:
                 con = market_state.consolidation(now)
             uncertainty = _clamp01(con.get("aggregate_uncertainty", 1.0))
-            # Campaign invalidation is qualified below from source lineage and
-            # original thesis context, not a fixed count of market-domain labels.
-            max_unc = _clamp01(max_uncertainty)
             fresh = (
                 list(market_state.fresh_evidence(now))
                 if market_state is not None else []
@@ -391,18 +387,22 @@ class NativePositionManager:
                 # Corroboration is based on distinct producer-declared source
                 # lineages, not domain labels. Multiple concepts reading the same
                 # OHLC lineage count once. Unknown provenance is not independent.
-                invalidation_groups = {
-                    item.independence_group for item in invalidated
+                # Evaluate the invalidation evidence itself, not aggregate
+                # uncertainty from unrelated market domains. A source contributes
+                # only when current, source-time-verified, non-provisional, and
+                # its own confidence exceeds its own uncertainty.
+                qualified_invalidations = [
+                    item for item in invalidated
                     if item.independence_group
                     and item.source_timestamp_verified
                     and not item.provisional
+                    and item.confidence > item.uncertainty
+                ]
+                invalidation_groups = {
+                    item.independence_group for item in qualified_invalidations
                 }
                 context_complete = bool(original_thesis and invalidation_conditions)
-                if (
-                    len(invalidation_groups) >= 2
-                    and uncertainty <= max_unc
-                    and context_complete
-                ):
+                if len(invalidation_groups) >= 2 and context_complete:
                     return NativeManagementVerdict(
                         action="exit", thesis_state="invalidated",
                         reason=(
@@ -414,11 +414,10 @@ class NativePositionManager:
                 missing = []
                 if len(invalidation_groups) < 2:
                     missing.append(
-                        "two fresh, source-verified independent invalidation lineages "
+                        "two fresh, source-verified invalidation lineages whose "
+                        "source confidence exceeds source uncertainty "
                         f"({len(invalidation_groups)}/2)"
                     )
-                if uncertainty > max_unc:
-                    missing.append("market uncertainty to clear")
                 if not context_complete:
                     missing.append("original thesis and invalidation conditions")
                 return NativeManagementVerdict(
