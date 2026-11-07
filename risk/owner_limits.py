@@ -136,8 +136,6 @@ _OWNER_EDITABLE_FIELDS = frozenset({
     "hedge_ratio_cap",
     "allow_intentional_hedge",
     "daily_loss_limit_pct",
-    "weekly_drawdown_limit_pct",
-    "hard_stop_drawdown_pct",
     "daily_loss_recovery_pct",
     "daily_loss_flatten_pct",
     "portfolio_heat_block_pct",
@@ -147,6 +145,8 @@ _OWNER_EDITABLE_FIELDS = frozenset({
 })
 _INTERNAL_ONLY_FIELDS = frozenset({
     "daily_loss_flatten_enabled",
+    "weekly_drawdown_limit_pct",
+    "hard_stop_drawdown_pct",
     "margin_guardian_enabled",
     "graded_exposure_enabled",
     "max_directional_exposure_pct",
