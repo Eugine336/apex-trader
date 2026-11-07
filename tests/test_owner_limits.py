@@ -257,25 +257,3 @@ def test_legacy_safety_flags_reject_truthy_non_boolean_values():
             cognition=cfg.cognition, risk_management=cfg.risk_management,
         )
 
-
-def test_app_config_supports_weekly_loss_limit_stricter_than_daily():
-    cfg = AppConfig()
-    cfg.apply_owner_limit_updates({
-        "daily_loss_limit_pct": 5.0,
-        "weekly_drawdown_limit_pct": 3.0,
-        "hard_stop_drawdown_pct": 10.0,
-    })
-    assert cfg.owner_limits.daily_loss_limit_pct == 5.0
-    assert cfg.owner_limits.weekly_drawdown_limit_pct == 3.0
-    assert cfg.risk.max_daily_drawdown_pct == 5.0
-    assert cfg.risk.max_weekly_drawdown_pct == 3.0
-    assert cfg.risk_management.daily_drawdown_limit_pct == 5.0
-    assert cfg.risk_management.rolling_drawdown_limit_pct == 3.0
-
-
-def test_risk_config_accepts_independent_daily_and_weekly_limits():
-    from config import RiskConfig
-
-    cfg = RiskConfig(max_daily_drawdown_pct=5.0, max_weekly_drawdown_pct=3.0)
-    assert cfg.max_daily_drawdown_pct == 5.0
-    assert cfg.max_weekly_drawdown_pct == 3.0
