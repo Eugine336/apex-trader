@@ -93,6 +93,14 @@ Advisor count is infrastructure/council metadata. It must not be added to market
 
 **Disposition:** retain quorum only as a policy for trusting an advisor-assisted response. Verify that an unmet/unknown quorum falls back to native assessment and that native-only decisions can still pass the complete candidate-specific gates. Do not require a fixed number of advisors for native reasoning.
 
+### 5. Portfolio sizing floor is an unsafe risk-inflation constant
+
+**Location:** `portfolio/division.py`, `_SIZE_FLOOR = 0.15`.
+
+The factor fold previously applied `max(0.15, min(1.0, raw_multiplier))`. A product of risk-reduction factors below 0.15 was therefore increased to 15% of base risk. The subsequent `max(_MIN_LOT, ...)` and `max(_MIN_STAKE, ...)` could inflate it again. This contradicts the layer's stated de-risking-only contract.
+
+**Disposition: remove the 15% floor.** Apply the exact finite, positive factor product, capped at 1.0. A zero/non-finite product rejects. If the reduced amount is below the broker's executable minimum, reject rather than restoring risk. Recompute actual max loss after rounding and reject if it exceeds the requested post-factor risk budget. The daily-loss budget applies the same rule after re-sizing. Broker minimums remain feasibility constraints, never permission to increase owner risk.
+
 ### 5. Owner limits and execution constraints
 
 **Existing surfaces:** `config.py::RiskConfig`, `governor/models.py::GovernorConfig`, `adaptive/risk_manager.py`, portfolio sizing, and broker adapters.
