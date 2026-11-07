@@ -93,6 +93,7 @@ async def update_trading_config(
     raw = db.get_user_config(int(user["id"]))
     current = json.loads(raw) if raw else {}
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    updates.pop("owner_limits_audit", None)  # read-only response metadata
     if updates.get("universe_mode") == "all":
         current.pop("enabled_symbols_override", None)
 
