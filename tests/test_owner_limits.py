@@ -41,8 +41,19 @@ def test_owner_limits_adopts_strictest_legacy_values_without_loosening():
     assert limits.max_positions_per_symbol <= cfg.governor.max_positions_per_symbol
     assert limits.max_correlated_positions <= cfg.governor.max_correlated_positions
     assert limits.risk_per_trade_pct <= cfg.risk.max_risk_pct_per_trade
-    assert limits.daily_loss_limit_pct <= limits.weekly_drawdown_limit_pct
     assert limits.weekly_drawdown_limit_pct <= limits.hard_stop_drawdown_pct
+
+
+def test_owner_limits_allow_weekly_limit_stricter_than_daily_limit():
+    limits = OwnerLimits()
+    limits.apply_updates({
+        "daily_loss_limit_pct": 5.0,
+        "weekly_drawdown_limit_pct": 3.0,
+        "hard_stop_drawdown_pct": 10.0,
+    })
+    assert limits.daily_loss_limit_pct == 5.0
+    assert limits.weekly_drawdown_limit_pct == 3.0
+    assert limits.hard_stop_drawdown_pct == 10.0
 
 
 def test_owner_limits_updates_are_atomic_and_propagate_to_legacy_views():
