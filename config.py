@@ -1044,9 +1044,11 @@ class RiskConfig:
                 f"RiskConfig.max_correlated_trades must be an int >= 0, got {self.max_correlated_trades!r}"
             )
 
-        # Daily and rolling-weekly loss limits are independent owner controls.
-        # Either horizon may be the tighter one; the immutable hard-stop ceiling
-        # is validated by the canonical OwnerLimits contract.
+        if self.max_weekly_drawdown_pct < self.max_daily_drawdown_pct:
+            raise ValueError(
+                f"RiskConfig.max_weekly_drawdown_pct ({self.max_weekly_drawdown_pct}) "
+                f"must be >= max_daily_drawdown_pct ({self.max_daily_drawdown_pct})"
+            )
         if not (self.margin_warn_pct >= self.margin_block_entry_pct >= self.margin_flatten_pct):
             raise ValueError(
                 f"RiskConfig margin levels must be descending: "
