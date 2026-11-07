@@ -433,7 +433,7 @@ def test_unknown_or_shared_source_lineage_cannot_manufacture_invalidation_confir
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
-    assert "independent invalidation lineages" in result.reason
+    assert "source confidence exceeds source uncertainty" in result.reason
 
 
 def test_process_local_thesis_is_not_reused_across_campaign_ids():
