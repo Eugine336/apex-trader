@@ -363,6 +363,8 @@ class OwnerLimits:
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
+        if not self.margin_guardian_enabled:
+            raise ValueError("margin_guardian_enabled cannot be disabled; broker margin protection is mandatory")
 
         for name in ("max_campaign_exposure_units", "cooldown_hours"):
             value = _finite(getattr(self, name), name)
