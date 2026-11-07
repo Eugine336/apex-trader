@@ -4843,16 +4843,24 @@ class EventDrivenSystem:
             margin_warned = {}
             self._margin_warned = margin_warned
         try:
+            owner_limits = getattr(getattr(self, "_config", None), "owner_limits", None)
+            margin_block_level = float(
+                getattr(owner_limits, "margin_block_entry_level_pct", 150.0)
+            )
+            margin_warn_level = float(
+                getattr(owner_limits, "margin_warn_level_pct", 200.0)
+            )
             for acct, ainfo in self._pm.get_account_summary().items():
                 ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
-                if 0.0 < ml < 150.0:
+                if 0.0 < ml < margin_block_level:
                     if not margin_warned.get(acct, False):
                         logger.critical(
                             "[risk-state] account {} margin level {:.0f}% — "
-                            "approaching broker stop-out", acct, ml,
+                            "below owner entry-block threshold {:.0f}%",
+                            acct, ml, margin_block_level,
                         )
                         margin_warned[acct] = True
-                elif ml >= 200.0:
+                elif ml >= margin_warn_level:
                     margin_warned[acct] = False
         except Exception as exc:
             logger.debug("[risk-state] margin-level check failed: {}", exc)
