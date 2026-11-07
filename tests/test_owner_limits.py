@@ -87,3 +87,37 @@ def test_owner_limits_reject_margin_thresholds_that_can_never_warn_before_block(
             "margin_warn_level_pct": 100.0,
             "margin_block_entry_level_pct": 150.0,
         })
+
+
+def test_owner_limits_cannot_weaken_emergency_drawdown_protection():
+    limits = OwnerLimits()
+    with pytest.raises(ValueError, match="15% hard-stop ceiling"):
+        limits.apply_updates({"hard_stop_drawdown_pct": 16.0})
+    with pytest.raises(ValueError, match="cannot exceed hard_stop_drawdown_pct"):
+        limits.apply_updates({"daily_loss_flatten_pct": 16.0})
+
+
+def test_owner_limits_cannot_weaken_broker_margin_protection():
+    limits = OwnerLimits()
+    for field, value, message in (
+        ("margin_flatten_level_pct", 99.0, "100% stop-out guard"),
+        ("margin_block_entry_level_pct", 149.0, "150% entry guard"),
+        ("margin_warn_level_pct", 199.0, "200% warning guard"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            limits.apply_updates({field: value})
+
+
+def test_owner_limits_allow_stricter_margin_and_drawdown_protection():
+    limits = OwnerLimits()
+    limits.apply_updates({
+        "hard_stop_drawdown_pct": 12.0,
+        "weekly_drawdown_limit_pct": 6.0,
+        "daily_loss_limit_pct": 2.0,
+        "daily_loss_flatten_pct": 4.0,
+        "margin_flatten_level_pct": 120.0,
+        "margin_block_entry_level_pct": 180.0,
+        "margin_warn_level_pct": 250.0,
+    })
+    assert limits.hard_stop_drawdown_pct == 12.0
+    assert limits.margin_flatten_level_pct == 120.0
