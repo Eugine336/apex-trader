@@ -182,6 +182,61 @@ def test_config_get_update(client):
     assert got["max_open_trades"] == 4
 
 
+def test_config_accepts_canonical_owner_limits_and_persists_partial_patch(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    limits = {
+        "risk_per_trade_pct": 0.5,
+        "max_risk_pct_per_trade": 1.5,
+        "max_total_risk_pct": 4.0,
+        "max_open_positions": 4,
+        "max_positions_per_symbol": 1,
+        "max_correlated_positions": 1,
+        "daily_loss_limit_pct": 2.0,
+        "weekly_drawdown_limit_pct": 6.0,
+        "hard_stop_drawdown_pct": 12.0,
+        "daily_loss_flatten_pct": 4.0,
+    }
+    response = client.put("/api/config", headers=h, json={"owner_limits": limits})
+    assert response.status_code == 200
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["risk_per_trade_pct"] == 0.5
+    assert saved["owner_limits"]["max_open_positions"] == 4
+
+
+def test_config_rejects_invalid_owner_limits_without_persisting(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    rejected = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"hard_stop_drawdown_pct": 16.0}},
+    )
+    assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert saved.get("owner_limits") is None
+
+
+def test_config_rejects_patch_conflicting_with_existing_owner_limits(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    first = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"max_risk_pct_per_trade": 1.0}},
+    )
+    assert first.status_code == 200
+    rejected = client.put(
+        "/api/config",
+        headers=h,
+        json={"risk_per_trade_pct": 1.5},
+    )
+    assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["max_risk_pct_per_trade"] == 1.0
+    assert saved.get("risk_per_trade_pct") is None
+
+
 def test_trading_start_requires_credentials(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)
