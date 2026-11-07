@@ -174,3 +174,29 @@ def test_owner_limits_reject_boolean_numeric_values():
     limits = OwnerLimits()
     with pytest.raises(ValueError, match="not a boolean"):
         limits.apply_updates({"risk_per_trade_pct": True})
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("daily_loss_flatten_enabled", False),
+        ("margin_guardian_enabled", False),
+        ("graded_exposure_enabled", False),
+        ("correlation_threshold", 0.2),
+        ("cooldown_sizing_factor", 1.0),
+    ],
+)
+def test_owner_updates_cannot_change_internal_safety_or_analysis_settings(field, value):
+    limits = OwnerLimits()
+    with pytest.raises(ValueError, match="internal safety/analysis"):
+        limits.apply_updates({field: value})
+
+
+def test_owner_serialization_excludes_internal_safety_and_analysis_settings():
+    payload = OwnerLimits().to_owner_dict()
+    assert "daily_loss_flatten_enabled" not in payload
+    assert "margin_guardian_enabled" not in payload
+    assert "graded_exposure_enabled" not in payload
+    assert "correlation_threshold" not in payload
+    assert "cooldown_sizing_factor" not in payload
+    assert "risk_per_trade_pct" in payload
+    assert "max_total_risk_pct" in payload
