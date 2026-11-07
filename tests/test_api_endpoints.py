@@ -168,6 +168,16 @@ def test_broker_credentials_masked_roundtrip(client):
     assert client.delete("/api/broker/mt5", headers=h).status_code == 404
 
 
+def test_config_exposes_effective_owner_limit_provenance(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    response = client.get("/api/config", headers=h)
+    assert response.status_code == 200
+    audit = response.json()["owner_limits_audit"]
+    assert audit["validation_status"] == "valid"
+    assert audit["source_by_field"]["risk_per_trade_pct"] == "runtime_default_or_internal_config"
+
+
 def test_config_get_update(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)
