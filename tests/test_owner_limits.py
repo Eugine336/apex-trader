@@ -89,7 +89,7 @@ def test_owner_limits_reject_non_integral_position_limits():
 
 def test_owner_limits_reject_margin_thresholds_that_can_never_warn_before_block():
     limits = OwnerLimits()
-    with pytest.raises(ValueError, match="margin levels"):
+    with pytest.raises(ValueError, match="200% warning guard"):
         limits.apply_updates({
             "margin_warn_level_pct": 100.0,
             "margin_block_entry_level_pct": 150.0,
