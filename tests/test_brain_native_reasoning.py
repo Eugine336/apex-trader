@@ -714,3 +714,30 @@ def test_compare_opportunities_ranks_against_book():
     # A stronger new opportunity beats a weaker existing position ⇒ superior.
     weak = [{"symbol": "USDJPY", "direction": "LONG", "confidence": 0.4}]
     assert br.compare_opportunities(opp, "EURUSD", weak) == "superior"
+
+
+def test_advisor_confidence_attenuation_is_continuous_and_never_promotes():
+    brain = CognitiveBrain(reasoner=None)
+
+    def adjusted(mean, uncertainty, advisor=0.85, effective=0.85):
+        value, _ = brain._synthesize_from_evidence(
+            {
+                "evidence_fresh": 4,
+                "market_mean_confidence": mean,
+                "aggregate_uncertainty": uncertainty,
+            },
+            advisor,
+            effective,
+        )
+        return value
+
+    # Crossing the old 0.15 gap boundary must not create a discontinuity.
+    below = adjusted(mean=0.70, uncertainty=0.10, advisor=0.849)
+    above = adjusted(mean=0.70, uncertainty=0.10, advisor=0.851)
+    assert abs(above - below) < 0.01
+
+    # More uncertainty continuously reduces the evidence-supported confidence.
+    lower_uncertainty = adjusted(mean=0.70, uncertainty=0.49)
+    higher_uncertainty = adjusted(mean=0.70, uncertainty=0.50)
+    assert higher_uncertainty < lower_uncertainty
+    assert higher_uncertainty <= 0.85
