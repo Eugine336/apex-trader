@@ -174,8 +174,8 @@ class NativePositionManager:
             if not con and market_state is not None:
                 con = market_state.consolidation(now)
             uncertainty = _clamp01(con.get("aggregate_uncertainty", 1.0))
-            # Deprecated compatibility argument: the fixed three-domain
-            # threshold is not a source-independence or campaign-validity test.
+            # Campaign invalidation is qualified below from source lineage and
+            # original thesis context, not a fixed count of market-domain labels.
             max_unc = _clamp01(max_uncertainty)
             fresh = (
                 list(market_state.fresh_evidence(now))
