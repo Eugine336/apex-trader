@@ -68,8 +68,9 @@ async def get_trading_config(
     # Return one canonical effective view. Legacy keys remain in the response
     # for older clients, but they mirror the canonical values rather than
     # exposing competing stored values.
+    owner_limits_audit = _owner_limits_audit(data, effective)
     data["owner_limits"] = effective.owner_limits.to_owner_dict()
-    data["owner_limits_audit"] = _owner_limits_audit(data, effective)
+    data["owner_limits_audit"] = owner_limits_audit
     data["risk_per_trade_pct"] = effective.owner_limits.risk_per_trade_pct
     data["max_daily_drawdown_pct"] = effective.owner_limits.daily_loss_limit_pct
     data["max_open_trades"] = effective.owner_limits.max_open_positions
