@@ -14,6 +14,7 @@ export default function TradingConfig() {
     risk_per_trade_pct: "",
     max_daily_drawdown_pct: "",
     max_open_trades: "",
+    owner_limits_json: "{}",
     data_path_fixes_enabled: false,
     log_level: "INFO",
   });
@@ -38,6 +39,7 @@ export default function TradingConfig() {
         risk_per_trade_pct: cfg.risk_per_trade_pct ?? "",
         max_daily_drawdown_pct: cfg.max_daily_drawdown_pct ?? "",
         max_open_trades: cfg.max_open_trades ?? "",
+        owner_limits_json: JSON.stringify(cfg.owner_limits || {}, null, 2),
         data_path_fixes_enabled: !!cfg.data_path_fixes_enabled,
         log_level: cfg.log_level || "INFO",
       });
@@ -84,6 +86,18 @@ export default function TradingConfig() {
     e.preventDefault();
     setError("");
     setNotice("");
+
+    let ownerLimits = {};
+    try {
+      ownerLimits = JSON.parse(form.owner_limits_json || "{}");
+      if (!ownerLimits || typeof ownerLimits !== "object" || Array.isArray(ownerLimits)) {
+        throw new Error("Owner limits must be a JSON object.");
+      }
+    } catch (err) {
+      setError(`Invalid owner-limits JSON: ${err.message}`);
+      return;
+    }
+
     setSaving(true);
 
     // Build a payload of only the fields the API accepts. Empty numeric
@@ -108,6 +122,7 @@ export default function TradingConfig() {
           : Number(form.max_daily_drawdown_pct),
       max_open_trades:
         form.max_open_trades === "" ? null : Number(form.max_open_trades),
+      owner_limits: Object.keys(ownerLimits).length ? ownerLimits : null,
       data_path_fixes_enabled: form.data_path_fixes_enabled,
       log_level: form.log_level,
     };
@@ -328,6 +343,29 @@ export default function TradingConfig() {
               className={inputClass}
             />
           </div>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-300">
+            Advanced Owner Risk Limits (JSON)
+          </label>
+          <textarea
+            rows={12}
+            spellCheck={false}
+            value={form.owner_limits_json}
+            onChange={(e) =>
+              setForm((s) => ({ ...s, owner_limits_json: e.target.value }))
+            }
+            placeholder={'{\n  "risk_per_trade_pct": 0.5,\n  "max_risk_pct_per_trade": 1.5,\n  "max_total_risk_pct": 4.0,\n  "max_open_positions": 4\n}'}
+            className={inputClass + " font-mono"}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            Optional partial update. Supported keys include per-trade and portfolio risk,
+            daily/weekly drawdown, position and correlation caps, campaign exposure,
+            hedge limits, margin guards, and cooldown settings. Unknown keys, invalid
+            combinations, and attempts to weaken hard safety guards are rejected.
+            Changes to a running instance require a restart.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
