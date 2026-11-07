@@ -37,6 +37,19 @@ def _positive_min(*values: Any, default: float) -> float:
     return min(parsed) if parsed else float(default)
 
 
+def _non_negative_min(*values: Any, default: float) -> float:
+    """Minimum valid non-negative limit; zero is an intentional hard stop."""
+    parsed = []
+    for value in values:
+        if value is None:
+            continue
+        number = _finite(value, "non-negative owner limit")
+        if number < 0.0:
+            raise ValueError("non-negative owner limit cannot be negative")
+        parsed.append(number)
+    return min(parsed) if parsed else float(default)
+
+
 # Existing deployed emergency protections are immutable ceilings/floors. Owners
 # may make them stricter, but cannot configure the runtime to act later than
 # these established safety boundaries.
@@ -174,7 +187,10 @@ class OwnerLimits:
             max_regime_exposure_pct=_positive_min(
                 _get(risk_management, "max_per_regime_pct", 40.0), default=40.0
             ),
-            max_campaign_exposure_units=_positive_min(
+            # Zero is meaningful here: it disables new campaign exposure.
+            # Do not use _positive_min(), which would silently replace zero with
+            # the default and restore risk the owner explicitly removed.
+            max_campaign_exposure_units=_non_negative_min(
                 brain_max_total_exposure, default=3.0
             ),
             max_campaign_exposure_fraction=min(1.0, max(0.0, _finite(
