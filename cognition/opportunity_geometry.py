@@ -431,6 +431,8 @@ def derive_opportunity_geometry(
                 "trend_state": str(measurements.get("trend_state", "") or "").lower(),
                 "trend_strength": _finite(measurements.get("trend_strength")),
                 "range_rotation": bool(measurements.get("range_rotation", False)),
+                "failed_high_auction": measurements.get("failed_high_auction") is True,
+                "failed_low_auction": measurements.get("failed_low_auction") is True,
                 "upper_wick": _finite(measurements.get("upper_wick")),
                 "lower_wick": _finite(measurements.get("lower_wick")),
                 "timeframe": str(measurements.get("timeframe", "") or "").strip().upper(),
@@ -537,9 +539,9 @@ def derive_opportunity_geometry(
             if side == "LONG" else item["close"] < item["swept_level"]
         )
     ]
-    # Range rotation is a distinct market state, not a pattern-name gate. It
-    # requires a measured range edge plus a fresh response in the candidate
-    # direction; merely being in a range or touching an edge is insufficient.
+    # Range rotation is activated by a completed-bar failed auction at the
+    # actual measured boundary, not by an arbitrary normalized-position band.
+    # The fresh same-timeframe momentum response is still required below.
     matching_range_rotation = [
         record for record in structures
         if record["timeframe"] == entry_record["timeframe"]
@@ -547,9 +549,8 @@ def derive_opportunity_geometry(
         and record["trend_state"] == "range"
         and record["range_rotation"]
         and (
-            (record["range_position"] is not None and record["range_position"] <= 0.15)
-            if side == "LONG" else
-            (record["range_position"] is not None and record["range_position"] >= 0.85)
+            record["failed_low_auction"] if side == "LONG"
+            else record["failed_high_auction"]
         )
     ]
     range_response = bool(matching_range_rotation and matching_momentum)
