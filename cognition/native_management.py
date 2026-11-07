@@ -218,15 +218,6 @@ class NativePositionManager:
                 if not isinstance(measurements, dict):
                     continue
 
-                is_non_market_source = (
-                    domain in {
-                        "reasoning", "execution_quality", "risk", "portfolio", "portfolio_risk",
-                    }
-                    or "risk" in source.lower()
-                    or "portfolio" in source.lower()
-                    or "execution" in source.lower()
-                    or "reasoning" in source.lower()
-                )
                 for key in ("estimated_total_cost_r", "execution_cost_r", "round_trip_cost_r"):
                     value = _finite_number(measurements.get(key))
                     if value is not None and ("execution" in domain or "execution" in source.lower()):
