@@ -549,3 +549,13 @@ def test_multitimeframe_trend_uses_strict_majority_without_rounded_ratio():
     analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
     assert analysis.regime_indicators["trend_context"] == "uptrend"
     assert analysis.regime_indicators["trend_timeframes"] == 3
+
+def test_native_brain_has_no_dead_confidence_or_advisor_absence_sizing_knobs():
+    from cognition.brain import CognitiveBrain
+
+    brain = CognitiveBrain(reasoner=None)
+    assert not hasattr(brain, "independent_sizing_multiplier")
+    assert not hasattr(brain._native, "independent_min_confidence")
+    assert not hasattr(brain._native, "independent_max_uncertainty")
+
+
