@@ -89,6 +89,10 @@ class RecordingFakeBroker:
         })
         return self.close_return
 
+    def get_platform_name(self, symbol: str) -> str:
+        """Test broker defaults to Deriv, which has no MT5 margin-level metric."""
+        return "deriv"
+
     def get_symbol_spec(self, symbol: str) -> dict[str, Any]:
         """Verified synthetic constraints for unit tests only; never live broker data."""
         return {
