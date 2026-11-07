@@ -33,6 +33,24 @@ async def get_trading_config(
         # Preserve an existing explicit symbol restriction rather than
         # interpreting a stale/legacy all-mode record as permission to expand.
         data["universe_mode"] = "selected"
+    try:
+        effective = AppConfig()
+        apply_user_overrides(effective, data)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"stored trading config is invalid: {exc}") from exc
+
+    # Return one canonical effective view. Legacy keys remain in the response
+    # for older clients, but they mirror the canonical values rather than
+    # exposing competing stored values.
+    data["owner_limits"] = effective.owner_limits.to_dict()
+    data["risk_per_trade_pct"] = effective.owner_limits.risk_per_trade_pct
+    data["max_daily_drawdown_pct"] = effective.owner_limits.daily_loss_limit_pct
+    data["max_open_trades"] = effective.owner_limits.max_open_positions
+    data["universe_mode"] = effective.universe_mode
+    data["enabled_categories"] = effective.enabled_categories
+    data["enabled_symbols_override"] = effective.enabled_symbols_override
+    data["log_level"] = effective.log_level
+    data["data_path_fixes_enabled"] = effective.features.data_path_fixes_enabled
     return TradingConfig(**{k: v for k, v in data.items() if k in TradingConfig.model_fields})
 
 
