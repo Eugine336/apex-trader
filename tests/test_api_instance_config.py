@@ -72,7 +72,10 @@ def test_write_and_load_user_config(tmp_path, monkeypatch):
     }  # unknown top-level keys filtered out
 
     monkeypatch.setenv("APEX_USER_CONFIG", str(cfg_path))
-    assert load_user_overrides_from_env() == {"risk_per_trade_pct": 2.0}
+    assert load_user_overrides_from_env() == {
+        "risk_per_trade_pct": 2.0,
+        "owner_limits": {"max_open_positions": 4, "max_positions_per_symbol": 1},
+    }
 
 
 def test_load_overrides_missing_env_returns_empty(monkeypatch):
