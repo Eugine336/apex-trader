@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import get_current_user, get_db, get_process_manager
 from api.database import Database
 from api.models import TradingConfig
 from api.process_manager import STATUS_RUNNING, ProcessManager
+from api.instance_config import apply_user_overrides
+from config import AppConfig
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -47,6 +49,18 @@ async def update_trading_config(
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
     if updates.get("universe_mode") == "all":
         current.pop("enabled_symbols_override", None)
+
+    # Validate the complete merged owner configuration before writing anything.
+    # This catches conflicts between a partial update and already-persisted limits
+    # (for example, increasing per-trade risk above the existing per-trade cap).
+    candidate = dict(current)
+    candidate.update(updates)
+    try:
+        validation_config = AppConfig()
+        apply_user_overrides(validation_config, candidate)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     current.update(updates)
     db.set_user_config(int(user["id"]), json.dumps(current))
 
