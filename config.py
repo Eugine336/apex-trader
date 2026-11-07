@@ -3762,7 +3762,6 @@ class CognitionConfig:
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
-    max_uncertainty_to_act: float = 0.6
     # Identity requirement: net expected value is the default actionability gate,
     # not an optional upgrade to a raw confidence floor. A market thesis cannot
     # originate exposure without positive EV after estimated costs.
@@ -4009,10 +4008,6 @@ class CognitionConfig:
         if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
-            )
-        if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
-            raise ValueError(
-                f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
             )
         if int(self.min_advisors_for_action) < 0:
             raise ValueError(
