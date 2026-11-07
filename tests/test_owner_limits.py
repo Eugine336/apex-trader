@@ -188,7 +188,11 @@ def test_owner_limits_reject_boolean_numeric_values():
         ("margin_guardian_enabled", False),
         ("graded_exposure_enabled", False),
         ("correlation_threshold", 0.2),
+        ("cooldown_hours", 8.0),
         ("cooldown_sizing_factor", 1.0),
+        ("max_correlated_exposure_factor", 2.0),
+        ("max_directional_exposure_pct", 40.0),
+        ("max_regime_exposure_pct", 30.0),
     ],
 )
 def test_owner_updates_cannot_change_internal_safety_or_analysis_settings(field, value):
@@ -203,6 +207,10 @@ def test_owner_serialization_excludes_internal_safety_and_analysis_settings():
     assert "margin_guardian_enabled" not in payload
     assert "graded_exposure_enabled" not in payload
     assert "correlation_threshold" not in payload
+    assert "cooldown_hours" not in payload
     assert "cooldown_sizing_factor" not in payload
+    assert "max_correlated_exposure_factor" not in payload
+    assert "max_directional_exposure_pct" not in payload
+    assert "max_regime_exposure_pct" not in payload
     assert "risk_per_trade_pct" in payload
     assert "max_total_risk_pct" in payload
