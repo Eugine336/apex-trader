@@ -752,6 +752,8 @@ def analyze_market_frames(
         breaks_high = current["close"] > prior_high + buffer
         breaks_low = current["close"] < prior_low - buffer
         breakout_direction = "up" if breaks_high else ("down" if breaks_low else "none")
+        failed_high_auction = current["high"] > prior_high and current["close"] < prior_high
+        failed_low_auction = current["low"] < prior_low and current["close"] > prior_low
         closes_for_trend = [bar["close"] for bar in bars]
         trend_change = (
             closes_for_trend[-1] - closes_for_trend[-6]
@@ -784,6 +786,8 @@ def analyze_market_frames(
             "lower_wick": lower_wick,
             "bos": bool(breaks_high or breaks_low),
             "breakout_direction": breakout_direction,
+            "failed_high_auction": failed_high_auction,
+            "failed_low_auction": failed_low_auction,
             "trend_state": trend_state,
             "trend_strength": trend_strength,
             "range_rotation": range_rotation,
