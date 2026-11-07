@@ -2044,9 +2044,11 @@ class EventDrivenSystem:
             if (
                 bool(account_risk.daily_loss_halted(account_key))
                 or bool(account_risk.flatten_breached(account_key))
+                or bool(account_risk.margin_entry_blocked(account_key))
             ):
                 logger.warning(
-                    "[origination-sink] {} skipped — account {} is daily-loss halted/breached",
+                    "[origination-sink] {} skipped — account {} is loss-halted, "
+                    "margin-entry-blocked, or under a protective flatten threshold",
                     symbol, account_key,
                 )
                 return None
@@ -4852,6 +4854,8 @@ class EventDrivenSystem:
             )
             for acct, ainfo in self._pm.get_account_summary().items():
                 ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
+                if ctx.account_risk is not None and 0.0 < ml:
+                    ctx.account_risk.update_margin_level(str(acct), ml)
                 if 0.0 < ml < margin_block_level:
                     if not margin_warned.get(acct, False):
                         logger.critical(
@@ -4984,7 +4988,11 @@ class EventDrivenSystem:
                             symbol=sym,
                             ticket=ticket,
                             source="account_risk",
-                            reason="account_flatten_cap_breached",
+                            reason=(
+                                "broker_margin_level_below_flatten_guard"
+                                if ctx.account_risk.margin_flatten_breached(acct)
+                                else "account_flatten_cap_breached"
+                            ),
                         )])
                         submitted += 1
                     if submitted:
