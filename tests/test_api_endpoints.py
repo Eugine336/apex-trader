@@ -214,7 +214,7 @@ def test_config_rejects_invalid_owner_limits_without_persisting(client):
     )
     assert rejected.status_code == 422
     saved = client.get("/api/config", headers=h).json()
-    assert saved.get("owner_limits") is None
+    assert saved["owner_limits"]["hard_stop_drawdown_pct"] == 15.0
 
 
 def test_config_rejects_patch_conflicting_with_existing_owner_limits(client):
@@ -234,7 +234,7 @@ def test_config_rejects_patch_conflicting_with_existing_owner_limits(client):
     assert rejected.status_code == 422
     saved = client.get("/api/config", headers=h).json()
     assert saved["owner_limits"]["max_risk_pct_per_trade"] == 1.0
-    assert saved.get("risk_per_trade_pct") is None
+    assert saved["risk_per_trade_pct"] == 0.75
 
 
 def test_trading_start_requires_credentials(client):
