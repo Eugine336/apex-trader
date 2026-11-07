@@ -17,7 +17,7 @@ from llm.reasoner import LLMOpinion
 
 def _brain():
     return CognitiveBrain(reasoner=None, min_confidence_to_act=0.55,
-                          max_uncertainty_to_act=0.6, reward_r_default=2.0,
+                          reward_r_default=2.0,
                           min_expected_value=0.0)
 
 
