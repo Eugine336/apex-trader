@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 NEAR_BREACH_AT = 0.8
 # Per-dimension dimmer at exactly the limit (proximity == 1.0).  A dimension
 # right at its limit is allowed through but sized to this fraction; past the
-# limit it decays further toward the floor.
+# limit it decays further toward zero.
 OVER_LIMIT_FACTOR = 0.6
 
 
