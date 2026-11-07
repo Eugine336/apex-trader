@@ -531,3 +531,21 @@ def test_native_analysis_uses_same_decision_time_cutoff_as_consolidation():
     assert [item["evidence_id"] for item in analysis.evidence_index] == [valid.evidence_id]
     assert "no order_flow evidence" in analysis.missing_information
     assert "no momentum evidence" in analysis.missing_information
+
+
+def test_multitimeframe_trend_uses_strict_majority_without_rounded_ratio():
+    state = MarketState(symbol="SYNTHETIC")
+    for timeframe, trend in (
+        ("M5", "uptrend"),
+        ("M15", "uptrend"),
+        ("H1", "downtrend"),
+    ):
+        state.add(_evidence(
+            "structure",
+            {"timeframe": timeframe, "trend_state": trend},
+            source=f"market_lens.structure.{timeframe.lower()}",
+        ))
+
+    analysis = BrainReasoner().analyze_evidence(state, state.consolidation())
+    assert analysis.regime_indicators["trend_context"] == "uptrend"
+    assert analysis.regime_indicators["trend_timeframes"] == 3
