@@ -30,6 +30,7 @@ _KNOWN_KEYS = {
     "risk_per_trade_pct",
     "max_daily_drawdown_pct",
     "max_open_trades",
+    "owner_limits",
     "data_path_fixes_enabled",
     "log_level",
 }
@@ -60,19 +61,25 @@ def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
             if str(symbol).strip()
         ))
 
-    risk = getattr(config, "risk", None)
-    if risk is not None:
-        if overrides.get("risk_per_trade_pct") is not None:
-            risk.risk_per_trade_pct = float(overrides["risk_per_trade_pct"])
-        if overrides.get("max_daily_drawdown_pct") is not None:
-            risk.max_daily_drawdown_pct = float(overrides["max_daily_drawdown_pct"])
-            # Keep the weekly cap consistent with the (post-init validated)
-            # invariant weekly >= daily — bump it if the user lowered weekly
-            # below daily implicitly.
-            if getattr(risk, "max_weekly_drawdown_pct", 0.0) < risk.max_daily_drawdown_pct:
-                risk.max_weekly_drawdown_pct = risk.max_daily_drawdown_pct
-        if overrides.get("max_open_trades") is not None:
-            risk.max_open_trades = int(overrides["max_open_trades"])
+    owner_updates = dict(overrides.get("owner_limits") or {})
+    if not isinstance(overrides.get("owner_limits", {}), dict):
+        raise ValueError("owner_limits must be a JSON object")
+    # Backward-compatible legacy keys are translated into the canonical
+    # OwnerLimits contract. An explicit nested owner_limits value wins.
+    for legacy_key, owner_key in (
+        ("risk_per_trade_pct", "risk_per_trade_pct"),
+        ("max_daily_drawdown_pct", "daily_loss_limit_pct"),
+        ("max_open_trades", "max_open_positions"),
+    ):
+        if overrides.get(legacy_key) is not None and owner_key not in owner_updates:
+            owner_updates[owner_key] = overrides[legacy_key]
+    if owner_updates:
+        apply_limits = getattr(config, "apply_owner_limit_updates", None)
+        if not callable(apply_limits):
+            raise TypeError("AppConfig does not expose the canonical OwnerLimits update API")
+        # Invalid values fail closed instead of leaving subsystems with divergent
+        # copies of the owner's risk limits.
+        apply_limits(owner_updates)
 
     features = getattr(config, "features", None)
     if features is not None and overrides.get("data_path_fixes_enabled") is not None:
