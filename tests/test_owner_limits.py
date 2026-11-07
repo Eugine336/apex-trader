@@ -225,3 +225,39 @@ def test_owner_serialization_excludes_internal_safety_and_analysis_settings():
     assert "max_regime_exposure_pct" not in payload
     assert "risk_per_trade_pct" in payload
     assert "max_total_risk_pct" in payload
+
+
+def test_legacy_integer_caps_reject_fractional_and_boolean_values():
+    cfg = AppConfig()
+    cfg.risk.max_open_trades = 2.5
+    with pytest.raises(ValueError, match="integer"):
+        OwnerLimits.from_legacy(
+            risk=cfg.risk, governor=cfg.governor,
+            cognition=cfg.cognition, risk_management=cfg.risk_management,
+        )
+
+    cfg = AppConfig()
+    cfg.risk.max_broker_positions = 1.5
+    with pytest.raises(ValueError, match="max_broker_positions"):
+        OwnerLimits.from_legacy(
+            risk=cfg.risk, governor=cfg.governor,
+            cognition=cfg.cognition, risk_management=cfg.risk_management,
+        )
+
+    cfg = AppConfig()
+    cfg.risk.max_broker_positions = True
+    with pytest.raises(ValueError, match="max_broker_positions"):
+        OwnerLimits.from_legacy(
+            risk=cfg.risk, governor=cfg.governor,
+            cognition=cfg.cognition, risk_management=cfg.risk_management,
+        )
+
+
+def test_legacy_safety_flags_reject_truthy_non_boolean_values():
+    cfg = AppConfig()
+    cfg.risk.margin_guardian_enabled = "false"
+    with pytest.raises(ValueError, match="margin_guardian_enabled"):
+        OwnerLimits.from_legacy(
+            risk=cfg.risk, governor=cfg.governor,
+            cognition=cfg.cognition, risk_management=cfg.risk_management,
+        )
