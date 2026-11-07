@@ -14,9 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import get_current_user, get_db, get_process_manager
 from api.database import Database
+from api.instance_config import apply_user_overrides
 from api.models import TradingConfig
 from api.process_manager import STATUS_RUNNING, STATUS_STARTING, ProcessManager
-from api.instance_config import apply_user_overrides
 from config import AppConfig
 
 router = APIRouter(prefix="/api/config", tags=["config"])
