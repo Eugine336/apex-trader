@@ -620,7 +620,9 @@ class BrainReasoner:
         )
         up_n = sum(value == "uptrend" for value in trend_states.values())
         down_n = sum(value == "downtrend" for value in trend_states.values())
-        if len(trend_states) >= 2 and max(up_n, down_n) / len(trend_states) >= 0.67:
+        if len(trend_states) >= 2 and up_n != down_n:
+            # A strict majority of unconflicted timeframe readings is sufficient.
+            # Do not impose a rounded ratio (0.67 incorrectly rejects 2-of-3).
             trend_context = "uptrend" if up_n > down_n else "downtrend"
         elif len(ranged_timeframes) >= 2:
             trend_context = "range"
@@ -2011,16 +2013,15 @@ class BrainReasoner:
                 if counter is not None and h is not counter and counter.confidence > h.confidence:
                     factor *= 0.85
                     notes.append("counter-hypothesis is stronger")
-                # 4) Survives criticism ⇒ a modest reinforcement.
-                if (
-                    not notes and h.is_directional
-                    and analysis.agreement_score >= 0.7
-                    and (h.supporting_evidence_ids or not analysis.evidence_index)
-                ):
-                    factor *= 1.04
-                    notes.append("survived criticism: attributable support and no active challenge")
+                # Absence of a detected criticism is not new positive evidence.
+                # It must never increase confidence by a fixed reinforcement.
                 h.confidence = _clamp01(h.confidence * factor)
-                h.criticism = "; ".join(notes) if notes else "no material criticism"
+                if not notes and h.is_directional and (
+                    h.supporting_evidence_ids or not analysis.evidence_index
+                ):
+                    h.criticism = "no material criticism; confidence unchanged"
+                else:
+                    h.criticism = "; ".join(notes) if notes else "no material criticism"
                 refined.append(h)
             return refined
         except Exception:  # noqa: BLE001 — self-criticism must never break reasoning
