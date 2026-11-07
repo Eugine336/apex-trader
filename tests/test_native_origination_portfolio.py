@@ -85,7 +85,7 @@ class _FakeAggregator:
 
 
 def _system(monkeypatch, *, approved=True, approved_size=0.03,
-            sizing_mode="lots", halted=False, flatten=False,
+            sizing_mode="lots", halted=False, flatten=False, margin_blocked=False,
             book=None, book_error=None, compliance_approved=True):
     symbol = "EURUSD"
     internal = edb.resolve_to_internal(symbol)
