@@ -180,6 +180,8 @@ def test_config_get_update(client):
     assert upd.json()["config"]["risk_per_trade_pct"] == 1.0
     got = client.get("/api/config", headers=h).json()
     assert got["max_open_trades"] == 4
+    assert got["owner_limits"]["risk_per_trade_pct"] == 1.0
+    assert got["owner_limits"]["max_open_positions"] == 4
 
 
 def test_config_accepts_canonical_owner_limits_and_persists_partial_patch(client):
@@ -215,6 +217,21 @@ def test_config_rejects_invalid_owner_limits_without_persisting(client):
     assert rejected.status_code == 422
     saved = client.get("/api/config", headers=h).json()
     assert saved["owner_limits"]["hard_stop_drawdown_pct"] == 15.0
+
+
+def test_config_empty_owner_object_resets_nested_overrides_to_defaults(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    first = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"risk_per_trade_pct": 0.5}},
+    )
+    assert first.status_code == 200
+    reset = client.put("/api/config", headers=h, json={"owner_limits": {}})
+    assert reset.status_code == 200
+    effective = client.get("/api/config", headers=h).json()
+    assert effective["owner_limits"]["risk_per_trade_pct"] == 0.75
 
 
 def test_config_rejects_owner_attempt_to_disable_internal_safety_controls(client):
