@@ -581,9 +581,7 @@ class PortfolioGovernor:
             f"correlated ×{correlated_projected} vs max {cfg.max_correlated_positions}",
         ))
 
-        score = ra.accumulate(
-            dims, floor=float(getattr(cfg, "risk_multiplier_floor", 0.15)),
-        )
+        score = ra.accumulate(dims)
         near = score.near_breaches + score.breaches
         reason = (
             f"portfolio graded ({open_count}/{cfg.max_open_positions} open, daily "
