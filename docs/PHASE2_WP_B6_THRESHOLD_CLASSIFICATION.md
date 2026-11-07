@@ -1,7 +1,7 @@
 # WP-B6 — threshold classification and replacement audit
 
 **Audit baseline:** `main` at `9c1c95a2c6e5c76def1b8e29c4547654c1f19e97` (2026-11-07).
-**Status:** source-path audit; runtime replacement is the next implementation step.
+**Status:** runtime replacements implemented on the WP-B6 branch; Python 3.11/3.12 full CI and focused Gold Desk tests pass. PR acceptance checks and merge remain pending.
 **Safety boundary:** remove incorrect analytical gates only after replacing their intended protection with evidence-linked, campaign-specific qualification. Do not weaken broker, owner-risk, exposure, data-integrity, or fail-closed execution controls.
 
 ## Governing rule
@@ -20,10 +20,10 @@ A threshold is not a safety control merely because it blocks an action. Classifi
 ### 1. `min_evidence_domains = 3` is an analytical gate, not a valid universal safety limit
 
 **Call paths:**
-- `CognitiveBrain._from_opinion()` requires `consolidation["market_domain_count"] >= min_evidence_domains` before advisor-assisted origination.
-- `CognitiveBrain._originate_independent()` independently requires at least three informative market domains and repeats the same requirement against the fresh evidence set. It also describes those domain labels as independent confirmation, although different domains are not necessarily independent sources.
-- `NativePositionManager.assess()` requires three market domains for a campaign-linked invalidation EXIT, in addition to two invalidation assessment domains.
-- `CognitionConfig`, `core/system_context.py`, Brain status, and tests propagate and assert this value.
+- The former `CognitiveBrain._from_opinion()` gate required `consolidation["market_domain_count"] >= 3` before advisor-assisted origination.
+- The former `CognitiveBrain._originate_independent()` path independently required at least three informative market domains.
+- The former `NativePositionManager.assess()` path required three market domains for campaign invalidation EXIT, in addition to two invalidation assessment domains.
+- `CognitionConfig`, `core/system_context.py`, Brain status, and tests propagated this value. The constructor/config/env/status surfaces and all decision call sites have now been removed.
 
 **Why the current implementation is wrong:**
 - Domain labels are not source independence. Several readers can interpret the same OHLC lineage; counting their domains as independent corroboration is false diversity.
@@ -41,7 +41,7 @@ A threshold is not a safety control merely because it blocks an action. Classifi
 6. Preserve contradictions and uncertainty in the hypothesis comparison. Missing information is not positive evidence.
 7. Protective risk reduction and campaign management must not be held behind an entry-analysis breadth threshold. EXIT requires campaign-linked invalidation/geometry evidence; uncertain or conflicting assessments remain HOLD, while valid protective actions remain available.
 
-Keep the old constructor/config argument temporarily only as a deprecated compatibility input if required by callers; it must not affect decisions. Remove the config field, environment setting, status field, and obsolete tests after call-site migration is complete.
+The old constructor/config argument, environment setting, status field, and obsolete count-based tests are removed. No compatibility argument remains in the decision API.
 
 **Required regression matrix:**
 - one valid single-domain concept with complete current evidence can qualify;
@@ -58,7 +58,7 @@ Keep the old constructor/config argument temporarily only as a deprecated compat
 
 **Location:** `gold_desk/apex_observer.py`, per-symbol `_last_brain_wake_state` decision.
 
-The current wake path uses `max(0.25 * M5 ATR, 3 * spread, tiny price floor)` and a 50% spread-change threshold. Those constants decide whether a market snapshot change wakes the Brain. The observer does not itself submit orders, but a wake filter can delay analysis of real changes.
+The former wake path used `max(0.25 * M5 ATR, 3 * spread, tiny price floor)` and a 50% spread-change threshold. Those constants decided whether a market snapshot change woke the Brain.
 
 **Disposition: remove the fixed ATR/spread wake thresholds.** Keep snapshot construction and evidence publication independent of wake coalescing. Every changed factual snapshot should request a Brain wake; the loop's bounded per-symbol queue and operational cadence may coalesce repeated requests. Do not discard or mutate evidence because a wake is coalesced. Add tests for small price moves, spread widening/narrowing, unchanged snapshots, repeated ticks, queue saturation, and bounded wake latency. Confirm position management still receives its required periodic cadence.
 
@@ -66,7 +66,7 @@ The current wake path uses `max(0.25 * M5 ATR, 3 * spread, tiny price floor)` an
 
 **Locations:** `config.py::CognitionConfig.event_confidence_delta` and `cognition/loop.py::maybe_reason_on_change()`.
 
-The delta suppresses a wake unless a scalar change magnitude moves by a configured amount. That is not merely compute scheduling: it determines which changes are analysed. The per-symbol minimum interval is a separate rate limit on queued work.
+The former delta suppressed a wake unless a scalar change magnitude moved by a configured amount. That determined which changes were analysed. The per-symbol minimum interval is a separate rate limit on queued work.
 
 **Disposition:** remove the confidence-delta condition. A valid change notification should enqueue cognition regardless of its magnitude; the existing per-symbol pending set and minimum interval can coalesce/rate-limit execution. Preserve periodic cycle and independent position-management cadence. Prove that queue throttling cannot alter evidence, freshness, or management safety. Instrument queue delay, coalesced notifications, and missed/late wake counts.
 
@@ -85,7 +85,22 @@ Retained and classified rather than deleted:
 - `loop.py` advisor consultation-depth bands are operational compute scheduling. They change the number of optional advisors consulted, not market evidence, candidate direction, or native Brain qualification.
 - Positive net expected value, finite/positive geometry, verified costs, broker lot/tick/stops/freeze constraints, and account drawdown/exposure caps are capital/execution validity boundaries, not analytical tuning constants.
 
-### 4. Advisor quorum is not market evidence and must not become a hidden dependency on optional AI
+
+### 4.1 Other numeric boundaries classified by their actual semantics
+
+The scoped scan of concept, regime, portfolio, risk and execution modules found additional values. These are not universal decision floors and should not be deleted as a batch:
+
+- **Named concept definitions:** candlestick morphology ratios in `cognition/concepts/price_action.py`; displacement/body/rank definitions in `price_delivery.py`; structural body-ratio definitions in `structure_patterns.py`; variance-ratio/autocorrelation regime definitions in `regime_switching.py`; and close-location midpoint semantics in `wyckoff_volume_readings.py`. Retain them as named concept definitions, with LONG/SHORT mirror tests and source-relative measurements. They do not constitute a universal minimum evidence count.
+- **Range context:** `market_lenses.py`'s 15%/85% near-boundary flag is descriptive pattern context only. The geometry fallback no longer uses it as an activation gate; it requires an actual completed-bar failed auction and same-timeframe response. The multi-timeframe `conflict_score` labels are reporting semantics, not an exposure authorization gate.
+- **Regime classification:** `adaptive/regime_detector.py` exposes trending/volatile/quiet thresholds as tunable regime definitions. They classify a regime; they are not account-risk limits. Their calibration is a separate regime-methodology work item.
+- **Learning validation:** `adaptive/score_optimizer.py`'s validation split, minimum validation sample and per-class/per-symbol trade counts are statistical safeguards against overfit. Keep them as learning protocol requirements; do not lower them to make an entry pass.
+- **Portfolio triage:** `risk/portfolio_risk_state.py`'s R-multiple and stagnation bands contribute to a position-weakness ranking. They are advisory ranking inputs, not a direct broker order gate. Review them with the portfolio allocation/lifecycle work rather than treating them as evidence-domain safety.
+- **Account risk:** the live drawdown/exposure curves and limits in `RiskConfig`, `RiskManagementConfig`, `RiskManager`, and `GovernorConfig` are account-risk controls. They belong in WP-B7's typed owner-limits migration. Preserve effective deployed limits during migration.
+- **Broker execution:** lot-step/minimum, tick-size/value, stop/freeze distance, margin, quote freshness and trading-mode checks must continue to come from the broker/instrument contract. They are feasibility constraints, not market-analysis thresholds.
+
+The retired score-based risk-scaling helper in `risk/risk_engine.py` is marked deprecated and has no repository call sites in the scan; it is not used as evidence for a live gate. Remove it only with the legacy-path cleanup after the complete route inventory.
+
+### 5. Advisor quorum is not market evidence and must not become a hidden dependency on optional AI
 
 **Locations:** `CognitionConfig.min_advisors_for_action`, `CognitiveBrain._from_opinion()`, and native-only fallback.
 
@@ -93,7 +108,7 @@ Advisor count is infrastructure/council metadata. It must not be added to market
 
 **Disposition:** retain quorum only as a policy for trusting an advisor-assisted response. Verify that an unmet/unknown quorum falls back to native assessment and that native-only decisions can still pass the complete candidate-specific gates. Do not require a fixed number of advisors for native reasoning.
 
-### 5. Portfolio sizing floor is an unsafe risk-inflation constant
+### 6. Portfolio sizing floor is an unsafe risk-inflation constant
 
 **Location:** `portfolio/division.py`, `_SIZE_FLOOR = 0.15`.
 
@@ -101,7 +116,7 @@ The factor fold previously applied `max(0.15, min(1.0, raw_multiplier))`. A prod
 
 **Disposition: remove the 15% floor.** Apply the exact finite, positive factor product, capped at 1.0. A zero/non-finite product rejects. If the reduced amount is below the broker's executable minimum, reject rather than restoring risk. Recompute actual max loss after rounding and reject if it exceeds the requested post-factor risk budget. The daily-loss budget applies the same rule after re-sizing. Broker minimums remain feasibility constraints, never permission to increase owner risk.
 
-### 5. Owner limits and execution constraints
+### 7. Owner limits and execution constraints
 
 **Existing surfaces:** `config.py::RiskConfig`, `governor/models.py::GovernorConfig`, `adaptive/risk_manager.py`, portfolio sizing, and broker adapters.
 
@@ -109,17 +124,18 @@ Risk limits currently exist in multiple structures. This is a consolidation prob
 
 **Disposition for WP-B7:** inventory every live risk value and consumer; establish one typed, validated owner-limits contract; route every exposure-increasing path through it; preserve broker-imposed constraints separately; and prove no downstream component can loosen the owner's limit. Do not silently change effective deployed values during migration. Do not edit `.env`.
 
-## WP-B6 implementation order
+## WP-B6 implementation status
 
-1. Implement candidate-evidence lineage qualification and remove the three-domain gate from advisor and native entry paths.
-2. Replace native management's three-domain EXIT gate with campaign-specific, provenance-aware invalidation/geometry qualification; retain HOLD on ambiguity and keep protective reductions available.
-3. Remove observer ATR/spread wake constants; use evidence-change notification plus bounded queue coalescing.
-4. Remove `event_confidence_delta`; keep `event_min_interval_seconds` only as an operational scheduler limit.
-5. Remove obsolete config/env/test/status surfaces for deleted analytical constants after all call sites migrate.
-6. Add the regression matrix above, including deterministic fixtures and mirror tests.
-7. Run focused cognition, observer, management, portfolio, and execution suites; then coverage synchronization, canonical identity/safety audit, imports, lint, GitGuardian, and full Python 3.11/3.12 CI.
-8. No live broker orders, credential changes, runtime database changes, or `.env` edits.
+1. **Complete:** candidate-evidence lineage qualification replaces the universal three-domain gate in advisor-assisted and native origination.
+2. **Complete:** native management uses campaign-linked invalidation and verified concept geometry; generic invalidation requires distinct verified source lineages, while direct originating-concept geometry remains authoritative. Ambiguous/conflicting assessments HOLD; risk reduction is not held behind the old breadth floor.
+3. **Complete:** observer ATR/spread wake thresholds removed. Changed factual quote snapshots request a wake; bounded queue coalescing and periodic cycles remain.
+4. **Complete:** `event_confidence_delta` removed. `event_min_interval_seconds` remains an operational scheduler bound only.
+5. **Complete:** obsolete domain-count and confidence-delta config/env/status/test surfaces removed.
+6. **Complete:** removed discontinuous advisor confidence cutoffs, 0.67 regime vote ratio, no-criticism confidence boost, 0.65 counter-hypothesis floor, 15% portfolio sizing floor, and 15%/85% fallback geometry proxy. Replacements and regression fixtures are in this PR.
+7. **Verified on current branch commit:** Ruff lint, focused Gold Desk tests on Python 3.11/3.12, and full test suites on Python 3.11/3.12 pass.
+8. No live broker orders, credential changes, runtime database changes, or `.env` edits were performed.
 
+Remaining acceptance work: verify all required repository checks on the current head, complete the final call-site/threshold inventory, then merge. WP-B7 owner-limits consolidation remains a separate package.
 ## Acceptance
 
 WP-B6 is complete only when the old analytical gates are absent from all live call paths, their replacements are tested end-to-end, all protective/account/broker controls remain enforced, and full CI passes on both supported Python versions. A green documentation-only CI run is not WP-B6 acceptance.
