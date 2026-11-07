@@ -25,6 +25,13 @@ def test_margin_level_below_flatten_guard_triggers_protective_flatten():
     assert risk.flatten_breached("mt5:1") is True
 
 
+def test_margin_flatten_does_not_depend_on_a_positive_cached_balance():
+    risk = AccountRiskManager()
+    risk.update_margin_level("mt5:1", 75.0)
+    assert risk.balance("mt5:1") == 0.0
+    assert risk.flatten_breached("mt5:1") is True
+
+
 def test_margin_guard_accepts_recovered_margin_level():
     risk = AccountRiskManager()
     risk.update_margin_level("mt5:1", 140.0)
