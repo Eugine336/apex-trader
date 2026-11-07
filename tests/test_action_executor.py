@@ -1052,6 +1052,9 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
     connector._mapper = SimpleNamespace(to_broker=lambda symbol: symbol)
     connector._discovered_multipliers = {"R_75": [100, 200, 300]}
     connector._discovered_multipliers_at = {"R_75": time.time()}
+    # This connector is explicitly Deriv; the production PlatformManager
+    # exposes the same platform identity through its broker interface.
+    connector.get_platform_name = lambda _symbol: "deriv"
     result = ActionExecutor(connector, _fast_cfg()).execute(
         _open_intent("R_75"), {}
     )
