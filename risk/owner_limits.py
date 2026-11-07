@@ -63,6 +63,38 @@ _MIN_MARGIN_ENTRY_BLOCK_LEVEL_PCT = 150.0
 _MIN_MARGIN_WARNING_LEVEL_PCT = 200.0
 _MAX_PER_TRADE_RISK_PCT = 5.0
 
+# Only these fields are exposed as owner-editable capital/exposure controls.
+# Operational safety switches and analytical/risk-management tuning remain
+# internal configuration and cannot be changed through the owner API.
+_OWNER_EDITABLE_FIELDS = frozenset({
+    "risk_per_trade_pct",
+    "max_risk_pct_per_trade",
+    "max_total_risk_pct",
+    "max_open_positions",
+    "max_positions_per_symbol",
+    "max_correlated_positions",
+    "max_cluster_same_direction",
+    "max_broker_positions",
+    "max_currency_exposure",
+    "max_sector_exposure",
+    "max_positions_per_timeframe_class",
+    "max_directional_exposure_pct",
+    "max_regime_exposure_pct",
+    "max_campaign_exposure_units",
+    "max_campaign_exposure_fraction",
+    "hedge_ratio_cap",
+    "allow_intentional_hedge",
+    "daily_loss_limit_pct",
+    "weekly_drawdown_limit_pct",
+    "hard_stop_drawdown_pct",
+    "daily_loss_recovery_pct",
+    "daily_loss_flatten_pct",
+    "portfolio_heat_block_pct",
+    "margin_warn_level_pct",
+    "margin_block_entry_level_pct",
+    "margin_flatten_level_pct",
+})
+
 
 @dataclass
 class OwnerLimits:
@@ -357,6 +389,12 @@ class OwnerLimits:
         unknown = set(updates) - allowed
         if unknown:
             raise ValueError(f"unknown owner limit(s): {', '.join(sorted(unknown))}")
+        internal = set(updates) - _OWNER_EDITABLE_FIELDS
+        if internal:
+            raise ValueError(
+                "owner configuration cannot change internal safety/analysis setting(s): "
+                + ", ".join(sorted(internal))
+            )
         candidate = replace(self, **dict(updates))
         candidate.validate()
         for item in fields(self):
@@ -364,3 +402,11 @@ class OwnerLimits:
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
+
+    def to_owner_dict(self) -> dict[str, Any]:
+        """Serialize only owner-editable limits; never expose internal knobs."""
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.name in _OWNER_EDITABLE_FIELDS
+        }
