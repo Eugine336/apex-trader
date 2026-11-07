@@ -143,6 +143,20 @@ class ExecutorConfig:
     circuit_failure_threshold: int = 5
     circuit_cooldown_s: float = 60.0
     gate_config: GateConfig = field(default_factory=GateConfig)
+    # Immutable broker-margin entry floor. Owner settings may only raise it.
+    margin_block_entry_level_pct: float = 150.0
+
+    def __post_init__(self) -> None:
+        value = self.margin_block_entry_level_pct
+        if isinstance(value, bool):
+            raise ValueError("margin_block_entry_level_pct must be numeric")
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("margin_block_entry_level_pct must be finite") from exc
+        if not math.isfinite(value) or value < 150.0:
+            raise ValueError("margin_block_entry_level_pct cannot be below the 150% hard entry guard")
+        self.margin_block_entry_level_pct = value
 
 
 class ActionExecutor:
@@ -442,6 +456,71 @@ class ActionExecutor:
         op = "close" if intent.intent_type == IntentType.CLOSE else "modify"
         return self._manage_breaker(f"{symbol}:{op}" if symbol else op)
 
+    def _margin_entry_constraints_error(self, intent: Intent) -> str | None:
+        """Fail closed on MT5 entries below the effective margin-level guard.
+
+        Deriv does not expose an MT5-style margin-level percentage; its adapter
+        retains its own stake/contract feasibility checks. For MT5, account data
+        is read from the connector selected for this exact symbol. Unknown
+        platform/account/margin data is not treated as safe.
+        """
+        platform_fn = getattr(self._broker, "get_platform_name", None)
+        connector_fn = getattr(self._broker, "get_connector", None)
+        if not callable(platform_fn):
+            return "margin_guard_platform_source_unavailable"
+        try:
+            platform = str(platform_fn(intent.symbol) or "").strip().lower()
+        except Exception as exc:  # noqa: BLE001
+            return f"margin_guard_platform_lookup_failed: {type(exc).__name__}"
+        if platform == "deriv":
+            return None
+        if platform != "mt5":
+            return f"margin_guard_unsupported_platform: {platform or 'unknown'}"
+        if not callable(connector_fn):
+            return "margin_guard_connector_source_unavailable"
+        try:
+            connector = connector_fn(intent.symbol)
+            account_info_fn = getattr(connector, "get_account_info", None)
+            if not callable(account_info_fn):
+                return "margin_guard_account_info_source_unavailable"
+            account_info = account_info_fn()
+        except Exception as exc:  # noqa: BLE001
+            return f"margin_guard_account_info_unavailable: {type(exc).__name__}"
+        if account_info is None:
+            return "margin_guard_account_info_unavailable"
+
+        def finite_number(value: Any) -> float | None:
+            if isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return number if math.isfinite(number) else None
+
+        used_margin = finite_number(getattr(account_info, "margin", None))
+        if used_margin is None or used_margin < 0.0:
+            return "margin_guard_used_margin_unknown"
+        if used_margin == 0.0:
+            # No used margin means the percentage denominator is zero; the
+            # broker is not currently consuming margin on this account.
+            return None
+
+        margin_level = finite_number(getattr(account_info, "margin_level", None))
+        if margin_level is None or margin_level <= 0.0:
+            equity = finite_number(getattr(account_info, "equity", None))
+            if equity is None or equity <= 0.0:
+                return "margin_guard_margin_level_unavailable"
+            margin_level = (equity / used_margin) * 100.0
+
+        threshold = self._cfg.margin_block_entry_level_pct
+        if margin_level < threshold:
+            return (
+                f"margin_level_below_entry_block: {margin_level:.2f}% "
+                f"< {threshold:.2f}%"
+            )
+        return None
+
     def _broker_entry_constraints_error(self, intent: Intent) -> str | None:
         """Fail closed unless the broker exposes a verified, usable MT5-style spec.
 
@@ -659,6 +738,17 @@ class ActionExecutor:
                 return ExecutionResult(
                     intent=intent, success=False, rejected_by_gate=True,
                     gate_reason=reason, error=reason,
+                )
+            margin_error = self._margin_entry_constraints_error(intent)
+            if margin_error:
+                self._inc("intents_rejected")
+                logger.warning(
+                    "EXECUTOR REJECTED | OPEN {} | {}",
+                    intent.symbol, margin_error,
+                )
+                return ExecutionResult(
+                    intent=intent, success=False, rejected_by_gate=True,
+                    gate_reason=margin_error, error=margin_error,
                 )
             broker_constraints_error = self._broker_entry_constraints_error(intent)
             if broker_constraints_error:
