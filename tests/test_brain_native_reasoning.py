@@ -673,21 +673,21 @@ def test_self_criticism_lowers_confidence_on_contradiction():
     assert "contradict" in lead.criticism
 
 
-def test_self_criticism_reinforces_clean_hypothesis():
+def test_absence_of_criticism_does_not_inflate_hypothesis_confidence():
     br = BrainReasoner()
     analysis = EvidenceAnalysis(
         domain_coverage={"structure": 0.9, "volume": 0.9},
         detected_patterns=[
             "displacement_confirmed: structural displacement backed by volume"],
         regime_indicators={"structure": LONG, "order_flow": "buying"},
-        agreement_score=0.85, evidence_uncertainty=0.15,
+        agreement_score=0.99, evidence_uncertainty=0.01,
     )
     hyps = br.generate_hypotheses(analysis, "EURUSD")
     lead = br.leading(hyps)
     before = lead.confidence
     br.self_criticize(hyps, analysis)
-    assert lead.confidence >= before
-    assert "survived criticism" in lead.criticism
+    assert lead.confidence == before
+    assert "confidence unchanged" in lead.criticism
 
 
 # ── the FULL native reasoning chain is recorded ───────────────────────────────
