@@ -70,6 +70,21 @@ The delta suppresses a wake unless a scalar change magnitude moves by a configur
 
 **Disposition:** remove the confidence-delta condition. A valid change notification should enqueue cognition regardless of its magnitude; the existing per-symbol pending set and minimum interval can coalesce/rate-limit execution. Preserve periodic cycle and independent position-management cadence. Prove that queue throttling cannot alter evidence, freshness, or management safety. Instrument queue delay, coalesced notifications, and missed/late wake counts.
 
+### 4. Remaining analysis constants: remove binary tuning, retain actual definitions
+
+The second source scan found three additional analysis cutoffs that are not concept definitions or account/execution limits:
+
+- `CognitiveBrain._synthesize_from_evidence()`: the advisor/evidence gap and uncertainty cutoffs (`0.15`, `0.60`) created discontinuous confidence changes. Replaced with continuous attenuation against uncertainty-adjusted evidence support; it can only reduce, never increase, advisor confidence.
+- `BrainReasoner._classify_regime()`: the `0.67` trend vote ratio rejected a two-of-three strict majority due to floating-point representation. Replaced with a strict majority among unconflicted timeframe readings; ties remain mixed.
+- `BrainReasoner.self_criticize()`: the `0.70` agreement threshold and fixed `1.04` multiplier rewarded a hypothesis merely because no criticism was found. Removed. Lack of criticism is not new positive evidence; confidence remains unchanged.
+- `NativePositionManager.assess()`: the `0.65` confidence floor suppressed counter-hypotheses even when fresh native contradictions were present. Removed. The counter-hypothesis still requires an opposing direction and an actually observed contradicting pattern; this path can only reduce risk, never EXIT or add exposure.
+
+Retained and classified rather than deleted:
+- `opportunity_geometry.py` range-edge fraction (`0.15/0.85`) is part of the explicit range-rotation concept definition, not a universal entry-confidence gate. It remains a concept-level semantic boundary pending a source-defined range-edge contract.
+- `brain.py` calibration artifact requirements (minimum sample count, walk-forward folds, selection coverage, holdout gap) are statistical artifact-integrity requirements. They determine whether historical-return evidence is admissible; they do not select trade direction or pattern. Do not relax them to make an opportunity pass.
+- `loop.py` advisor consultation-depth bands are operational compute scheduling. They change the number of optional advisors consulted, not market evidence, candidate direction, or native Brain qualification.
+- Positive net expected value, finite/positive geometry, verified costs, broker lot/tick/stops/freeze constraints, and account drawdown/exposure caps are capital/execution validity boundaries, not analytical tuning constants.
+
 ### 4. Advisor quorum is not market evidence and must not become a hidden dependency on optional AI
 
 **Locations:** `CognitionConfig.min_advisors_for_action`, `CognitiveBrain._from_opinion()`, and native-only fallback.
