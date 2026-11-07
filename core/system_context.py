@@ -67,6 +67,8 @@ class SystemContext:
     """
 
     # ── Risk layer ───────────────────────────────────────────────────
+    # Shared canonical owner limits; legacy config views are synchronized from it.
+    owner_limits: Optional[Any] = None
     risk_engine: Optional[RiskEngine] = None
     drawdown_guard: Optional[DrawdownGuard] = None
     correlation_engine: Optional[CorrelationEngine] = None
@@ -257,7 +259,7 @@ class SystemContext:
         from risk.risk_reporter import RiskReporter
 
         risk_cfg = config.risk
-        ctx = cls()
+        ctx = cls(owner_limits=getattr(config, "owner_limits", None))
 
         # ── DrawdownGuard ────────────────────────────────────────────
         try:
@@ -1045,8 +1047,15 @@ class SystemContext:
                     getattr(cog_cfg, "influence_weighting_enabled", True)
                     if cog_cfg is not None else True
                 )
+                owner_limits = getattr(config, "owner_limits", None)
                 ctx.cognitive_brain = _CognitiveBrain(
                     reasoner=ctx.llm_reasoner,
+                    max_correlated_positions=int(
+                        getattr(owner_limits, "max_correlated_positions", 3)
+                    ),
+                    max_total_exposure=float(
+                        getattr(owner_limits, "max_campaign_exposure_units", 3.0)
+                    ),
                     min_confidence_to_act=float(
                         getattr(cog_cfg, "min_confidence_to_act", 0.55)
                         if cog_cfg is not None else 0.55
