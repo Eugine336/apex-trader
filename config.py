@@ -1329,9 +1329,6 @@ class OrchestratorConfig:
     # (position limits, daily-loss halt, broker margin). Only honoured when the
     # orchestrator is enabled (the caller gates it).
     accumulate_risk: bool = True
-    # Lower bound on the accumulated risk multiplier — a graded "near every
-    # limit" is still a small trade, never zero.
-    risk_multiplier_floor: float = 0.15
     # Lower bound on any single softened gate's quality multiplier — a graded
     # "barely passed" is still a tiny trade, never zero.
     gate_quality_floor: float = 0.15
@@ -1390,7 +1387,6 @@ class OrchestratorConfig:
             ("scale_down_close_pct", self.scale_down_close_pct),
             ("exit_partial_close_pct", self.exit_partial_close_pct),
             ("de_gate_quality_floor", self.de_gate_quality_floor),
-            ("risk_multiplier_floor", self.risk_multiplier_floor),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(
