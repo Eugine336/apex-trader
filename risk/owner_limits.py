@@ -28,15 +28,24 @@ def _get(obj: Any, name: str, default: Any) -> Any:
 
 
 def _positive_min(*values: Any, default: float) -> float:
+    """Choose the strictest positive legacy limit; zero/None mean unset.
+
+    Malformed or non-finite legacy values are rejected rather than silently
+    discarded, so an invalid duplicate cannot fall through to a looser default.
+    """
     parsed = []
     for value in values:
+        if value is None:
+            continue
         if isinstance(value, bool):
             raise ValueError("owner risk limits cannot be boolean numbers")
         try:
             number = float(value)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(number) and number > 0:
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("owner risk limits must be finite numbers") from exc
+        if not math.isfinite(number) or number < 0.0:
+            raise ValueError("owner risk limits must be finite and non-negative")
+        if number > 0.0:
             parsed.append(number)
     return min(parsed) if parsed else float(default)
 
@@ -365,6 +374,10 @@ class OwnerLimits:
     def apply_updates(self, updates: Mapping[str, Any]) -> None:
         """Validate the complete candidate before atomically mutating this object."""
         allowed = {item.name for item in fields(self)}
+        if updates.get("margin_guardian_enabled") is False:
+            raise ValueError(
+                "margin_guardian_enabled cannot be disabled; broker margin protection is mandatory"
+            )
         internal = set(updates) & _INTERNAL_ONLY_FIELDS
         internal |= (set(updates) & allowed) - _OWNER_EDITABLE_FIELDS
         if internal:
