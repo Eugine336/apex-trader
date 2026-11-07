@@ -4852,10 +4852,36 @@ class EventDrivenSystem:
             margin_warn_level = float(
                 getattr(owner_limits, "margin_warn_level_pct", 200.0)
             )
-            for acct, ainfo in self._pm.get_account_summary().items():
+            account_summary = self._pm.get_account_summary()
+            for acct, ainfo in account_summary.items():
                 ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
                 if ctx.account_risk is not None and 0.0 < ml:
-                    ctx.account_risk.update_margin_level(str(acct), ml)
+                    # get_account_summary() is keyed by connector slot (mt5,
+                    # mt5_0, deriv), while AccountRiskManager is keyed by the
+                    # stable broker:account-id silo. Translate explicitly; using
+                    # the summary key directly silently bypasses the entry guard.
+                    enabled_symbols = getattr(self._config, "enabled_pairs", [])
+                    mt5_connectors = list(getattr(self._pm, "mt5_connectors", []) or [])
+                    for symbol in enabled_symbols:
+                        try:
+                            connector = self._pm.get_connector(symbol)
+                            mt5_index = next(
+                                (i for i, item in enumerate(mt5_connectors) if item is connector),
+                                None,
+                            )
+                            summary_key = (
+                                f"mt5_{mt5_index}" if mt5_index is not None and len(mt5_connectors) > 1
+                                else "mt5" if mt5_index is not None
+                                else "deriv"
+                            )
+                            if summary_key == str(acct):
+                                risk_key = ctx.account_key(symbol, self._pm)
+                                ctx.account_risk.update_margin_level(risk_key, ml)
+                        except Exception as mapping_exc:
+                            logger.warning(
+                                "[risk-state] margin account mapping failed for {}: {}",
+                                symbol, mapping_exc,
+                            )
                 if 0.0 < ml < margin_block_level:
                     if not margin_warned.get(acct, False):
                         logger.critical(
