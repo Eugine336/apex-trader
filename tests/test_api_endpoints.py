@@ -205,8 +205,6 @@ def test_config_accepts_canonical_owner_limits_and_persists_partial_patch(client
         "max_positions_per_symbol": 1,
         "max_correlated_positions": 1,
         "daily_loss_limit_pct": 2.0,
-        "weekly_drawdown_limit_pct": 6.0,
-        "hard_stop_drawdown_pct": 12.0,
         "daily_loss_flatten_pct": 4.0,
     }
     response = client.put("/api/config", headers=h, json={"owner_limits": limits})
@@ -245,7 +243,8 @@ def test_config_rejects_invalid_owner_limits_without_persisting(client):
     )
     assert rejected.status_code == 422
     saved = client.get("/api/config", headers=h).json()
-    assert saved["owner_limits"]["hard_stop_drawdown_pct"] == 15.0
+    assert "hard_stop_drawdown_pct" not in saved["owner_limits"]
+    assert "weekly_drawdown_limit_pct" not in saved["owner_limits"]
 
 
 def test_config_empty_owner_object_resets_nested_overrides_to_defaults(client):
