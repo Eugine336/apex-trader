@@ -121,3 +121,27 @@ def test_owner_limits_allow_stricter_margin_and_drawdown_protection():
     })
     assert limits.hard_stop_drawdown_pct == 12.0
     assert limits.margin_flatten_level_pct == 120.0
+
+def test_zero_campaign_exposure_is_preserved_when_adopting_legacy_config():
+    cfg = AppConfig()
+    limits = OwnerLimits.from_legacy(
+        risk=cfg.risk,
+        governor=cfg.governor,
+        cognition=cfg.cognition,
+        risk_management=cfg.risk_management,
+        brain_max_total_exposure=0.0,
+    )
+    assert limits.max_campaign_exposure_units == 0.0
+
+
+def test_owner_limit_updates_are_isolated_between_app_config_instances():
+    first = AppConfig()
+    second = AppConfig()
+    first.apply_owner_limit_updates({
+        "risk_per_trade_pct": 0.25,
+        "max_risk_pct_per_trade": 1.5,
+        "max_total_risk_pct": 4.0,
+    })
+    assert first.owner_limits.risk_per_trade_pct == 0.25
+    assert second.owner_limits.risk_per_trade_pct == 0.75
+    assert second.risk.risk_per_trade_pct == 0.75
