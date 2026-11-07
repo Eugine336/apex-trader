@@ -54,6 +54,7 @@ def _mock_platform_manager(positions=None):
         time=datetime.now(timezone.utc),
     )
     pm.get_spread.return_value = 1.2
+    pm.get_platform_name.return_value = "deriv"
     pm.fetch_market_data.return_value = {}
     pm.modify_trade.return_value = True
     pm.close_trade.return_value = SimpleNamespace(success=True, error=None)
