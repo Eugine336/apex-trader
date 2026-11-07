@@ -297,9 +297,12 @@ class OwnerLimits:
             raise ValueError("max_positions_per_symbol cannot exceed max_open_positions")
         if self.max_correlated_positions > self.max_open_positions:
             raise ValueError("max_correlated_positions cannot exceed max_open_positions")
-        if isinstance(self.max_broker_positions, bool) or int(self.max_broker_positions) < 0:
+        if (
+            isinstance(self.max_broker_positions, bool)
+            or not isinstance(self.max_broker_positions, int)
+            or self.max_broker_positions < 0
+        ):
             raise ValueError("max_broker_positions must be an integer >= 0")
-        self.max_broker_positions = int(self.max_broker_positions)
 
         for name in (
             "allow_intentional_hedge", "daily_loss_flatten_enabled",
