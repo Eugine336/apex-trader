@@ -249,14 +249,26 @@ class OwnerLimits:
             "daily_loss_limit_pct", "weekly_drawdown_limit_pct",
             "hard_stop_drawdown_pct", "daily_loss_recovery_pct",
             "daily_loss_flatten_pct", "portfolio_heat_block_pct",
-            "margin_warn_level_pct", "margin_block_entry_level_pct",
-            "margin_flatten_level_pct", "max_directional_exposure_pct",
-            "max_regime_exposure_pct",
+            "max_directional_exposure_pct", "max_regime_exposure_pct",
         )
         for name in pct_fields:
             value = _finite(getattr(self, name), name)
             if value < 0.0 or value > 100.0:
                 raise ValueError(f"{name} must be in [0, 100]")
+            setattr(self, name, value)
+
+        # Broker margin level is equity / used margin × 100. Unlike account
+        # drawdown percentages, valid guard levels routinely exceed 100%.
+        # Validate finiteness and ordering separately; the immutable minimum
+        # warning/block/flatten guards below prevent weakening deployed safety.
+        for name in (
+            "margin_warn_level_pct",
+            "margin_block_entry_level_pct",
+            "margin_flatten_level_pct",
+        ):
+            value = _finite(getattr(self, name), name)
+            if value <= 0.0:
+                raise ValueError(f"{name} must be > 0")
             setattr(self, name, value)
 
         if self.risk_per_trade_pct <= 0.0:
