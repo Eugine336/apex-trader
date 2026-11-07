@@ -302,13 +302,9 @@ class BrainReasoner:
         *,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
-        independent_min_confidence: float = 0.7,
-        independent_max_uncertainty: float = 0.5,
     ) -> None:
         self.agreement_boost = max(1.0, float(agreement_boost))
         self.disagreement_penalty = min(1.0, max(0.0, float(disagreement_penalty)))
-        self.independent_min_confidence = _clamp01(independent_min_confidence)
-        self.independent_max_uncertainty = _clamp01(independent_max_uncertainty)
 
     # ── Component 1 — evidence analysis engine ────────────────────────────
 
