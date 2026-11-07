@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 
 def _finite(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, not a boolean")
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -28,6 +30,8 @@ def _get(obj: Any, name: str, default: Any) -> Any:
 def _positive_min(*values: Any, default: float) -> float:
     parsed = []
     for value in values:
+        if isinstance(value, bool):
+            raise ValueError("owner risk limits cannot be boolean numbers")
         try:
             number = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -57,6 +61,7 @@ _HARD_STOP_DRAWDOWN_CEILING_PCT = 15.0
 _MIN_MARGIN_FLATTEN_LEVEL_PCT = 100.0
 _MIN_MARGIN_ENTRY_BLOCK_LEVEL_PCT = 150.0
 _MIN_MARGIN_WARNING_LEVEL_PCT = 200.0
+_MAX_PER_TRADE_RISK_PCT = 5.0
 
 
 @dataclass
@@ -256,6 +261,10 @@ class OwnerLimits:
 
         if self.risk_per_trade_pct <= 0.0:
             raise ValueError("risk_per_trade_pct must be > 0")
+        if self.max_risk_pct_per_trade > _MAX_PER_TRADE_RISK_PCT:
+            raise ValueError(
+                "max_risk_pct_per_trade cannot exceed the established 5% hard per-trade ceiling"
+            )
         if self.max_risk_pct_per_trade < self.risk_per_trade_pct:
             raise ValueError("max_risk_pct_per_trade must be >= risk_per_trade_pct")
         if self.max_total_risk_pct < self.max_risk_pct_per_trade:
