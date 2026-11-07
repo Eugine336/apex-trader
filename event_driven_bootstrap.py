@@ -4863,7 +4863,12 @@ class EventDrivenSystem:
             account_summary = self._pm.get_account_summary()
             for acct, ainfo in account_summary.items():
                 ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
-                if ctx.account_risk is not None and 0.0 < ml:
+                margin_used_raw = getattr(ainfo, "margin", None)
+                try:
+                    margin_used = float(margin_used_raw) if margin_used_raw is not None else None
+                except (TypeError, ValueError, OverflowError):
+                    margin_used = None
+                if ctx.account_risk is not None and (0.0 < ml or margin_used == 0.0):
                     # get_account_summary() is keyed by connector slot (mt5,
                     # mt5_0, deriv), while AccountRiskManager is keyed by the
                     # stable broker:account-id silo. Translate explicitly; using
@@ -4884,7 +4889,10 @@ class EventDrivenSystem:
                             )
                             if summary_key == str(acct):
                                 risk_key = ctx.account_key(symbol, self._pm)
-                                ctx.account_risk.update_margin_level(risk_key, ml)
+                                if margin_used == 0.0:
+                                    ctx.account_risk.clear_margin_level(risk_key)
+                                elif 0.0 < ml:
+                                    ctx.account_risk.update_margin_level(risk_key, ml)
                         except Exception as mapping_exc:
                             logger.warning(
                                 "[risk-state] margin account mapping failed for {}: {}",
