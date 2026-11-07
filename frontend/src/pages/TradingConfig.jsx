@@ -122,7 +122,7 @@ export default function TradingConfig() {
           : Number(form.max_daily_drawdown_pct),
       max_open_trades:
         form.max_open_trades === "" ? null : Number(form.max_open_trades),
-      owner_limits: Object.keys(ownerLimits).length ? ownerLimits : null,
+      owner_limits: ownerLimits,
       data_path_fixes_enabled: form.data_path_fixes_enabled,
       log_level: form.log_level,
     };
