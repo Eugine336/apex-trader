@@ -106,7 +106,7 @@ def test_invalidation_requires_original_thesis_and_invalidation_conditions():
     assert "original thesis" in result.reason
 
 
-def test_high_market_uncertainty_never_triggers_exit():
+def test_uncertain_invalidation_sources_cannot_trigger_exit():
     manager = NativePositionManager()
     state = _state(
         markers=({"state": "invalidated"}, {"state": "invalidated"}),
@@ -114,10 +114,24 @@ def test_high_market_uncertainty_never_triggers_exit():
     )
     result = manager.assess(
         _position(), state, campaign_context=_context(),
-        consolidation={"aggregate_uncertainty": 0.9, "market_domain_count": 3},
+        consolidation={"aggregate_uncertainty": 0.9},
     )
     assert result.action == "hold"
     assert result.thesis_state == "invalidation_unconfirmed"
+
+
+def test_unrelated_aggregate_uncertainty_does_not_block_verified_campaign_invalidation():
+    manager = NativePositionManager()
+    state = _state(
+        markers=({"state": "invalidated"}, {"state": "invalidated"}),
+        uncertainty=0.1,
+    )
+    result = manager.assess(
+        _position(), state, campaign_context=_context(),
+        consolidation={"aggregate_uncertainty": 0.99},
+    )
+    assert result.action == "exit"
+    assert result.thesis_state == "invalidated"
 
 
 def test_deterioration_reduces_exposure_without_exiting_on_doubt():
