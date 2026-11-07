@@ -108,10 +108,17 @@ async def update_trading_config(
     current.update(updates)
     db.set_user_config(int(user["id"]), json.dumps(current))
 
+    # Legacy response aliases are computed from the validated canonical object;
+    # they are never persisted as competing configuration sources.
+    response_config = dict(current)
+    response_config["risk_per_trade_pct"] = validation_config.owner_limits.risk_per_trade_pct
+    response_config["max_daily_drawdown_pct"] = validation_config.owner_limits.daily_loss_limit_pct
+    response_config["max_open_trades"] = validation_config.owner_limits.max_open_positions
+
     status_info = pm.instance_status(int(user["id"]))
     restart_required = status_info.get("status") in {STATUS_RUNNING, STATUS_STARTING}
     return {
-        "config": current,
+        "config": response_config,
         "restart_required": restart_required,
         "message": (
             "config saved — restart your instance to apply"
