@@ -172,3 +172,10 @@ python scripts/audit_broker_data_capabilities.py --output data_capability_audit.
 The audit now reports a separate acceptance decision. A connected terminal alone is not a complete result. Completion requires a source-verified terminal and account snapshot, successful whole-book position/order/deal history queries, unique broker mapping for every requested instrument, verified instrument specifications, and source-attested strictly ordered completed bars for every requested symbol/timeframe. Empty-but-successful broker history is distinguished from a failed history query. Tick and DOM availability are reported as optional capabilities and are not misrepresented as executed trade volume.
 
 The report is an aggregate capability artifact; do not commit it if it contains owner account or broker operational information. Keep it on the owner host and share only the sanitized acceptance summary. This check does not prove strategy profitability, calibration validity, external-provider licensing or production lifecycle acceptance.
+
+
+### Atomic portfolio snapshot contract
+
+`ObservationKind.PORTFOLIO_SNAPSHOT` is now the broker-neutral input to `PortfolioRiskReadings`. A registered broker adapter must publish exactly one complete snapshot per portfolio with source-attested snapshot time, portfolio identity, account-currency equity, complete whole-book positions, per-position risk/notional/net/currency exposure, timestamped whole-portfolio returns, equity history and synchronized pairwise correlations. The assembler rejects ambiguous multiple snapshots, future or stale snapshots, incomplete provenance and provider failures. The Brain reader consumes this snapshot automatically from the registry; it does not calculate missing broker risk or synthesize history.
+
+No live MT5 connector currently registers this normalized atomic snapshot adapter. Therefore the end-to-end bridge is implemented and tested with provider fixtures, but live portfolio risk remains DATA-GATED until a broker adapter supplies the full contract and the owner-host audit confirms its fields.
