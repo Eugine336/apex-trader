@@ -484,6 +484,7 @@ class TestPendingOrderLifecycle:
                 "record": {"ticket": 901, "position_id": 902, "state": 4},
             },
             get_platform_balance=lambda symbol: 5000.0,
+            get_position_entry_order_ids=lambda *args, **kwargs: {"901"},
             get_pending_order_fill_deals=lambda *args, **kwargs: [{
                 "order": "901", "position_id": "902", "symbol": "EURUSD",
                 "entry": 0, "price": 99.0, "volume": 0.1, "source_verified": True,
@@ -653,6 +654,7 @@ class TestPendingOrderLifecycle:
         system._pm = SimpleNamespace(
             reconcile_pending_order=lambda *args, **kwargs: next(outcomes),
             get_platform_balance=lambda symbol: 5000.0,
+            get_position_entry_order_ids=lambda *args, **kwargs: {"ORDER-TRANSITION"},
             get_pending_order_fill_deals=lambda *args, **kwargs: next(deals_progress),
         )
         system._on_order_filled = MagicMock()
