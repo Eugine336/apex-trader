@@ -575,6 +575,7 @@ class CognitionLoop:
         reallocation_concentration_limit: float = 0.6,
         pattern_tracker: Optional[Any] = None,
         candidate_event_store: Optional[Any] = None,
+        quote_history_provider: Optional[Callable[[str, float, float], Any]] = None,
         calibration_provider: Optional[Any] = None,
         concept_track_record_provider: Optional[Any] = None,
         management_action_ledger: Optional[Any] = None,
@@ -692,6 +693,10 @@ class CognitionLoop:
         self._pattern_tracker = pattern_tracker
         # Durable candidate provenance is observational and cannot authorize action.
         self._candidate_event_store = candidate_event_store
+        # Broker historical bid/ask replay is observational calibration input only.
+        # Unsupported connectors remain unavailable; no OHLC/live-quote fallback
+        # is promoted into a quote-history attestation.
+        self._quote_history_provider = quote_history_provider
         self._candidate_label_after_seq = 0
         self._candidate_label_pending: dict[str, dict] = {}
         self._candidate_label_recorded: set[tuple[str, int]] = set()
