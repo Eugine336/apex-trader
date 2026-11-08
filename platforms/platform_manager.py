@@ -32,6 +32,7 @@ from config import (
     Platform,
     get_instrument,
 )
+from brain.symbol_mapper import resolve_to_internal
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -734,7 +735,7 @@ class PlatformManager:
             for row in snapshots:
                 if (
                     str(row.get("ticket", "")) == ticket
-                    and str(row.get("symbol", "")).strip().upper() == canonical_symbol
+                    and resolve_to_internal(str(row.get("symbol", "")).strip().upper()) == canonical_symbol
                     and row.get("source_verified") is True
                 ):
                     matches.append((index, connector, row))
