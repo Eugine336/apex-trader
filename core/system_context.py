@@ -1350,9 +1350,12 @@ class SystemContext:
                 # selected symbol. This is the live bridge from the existing
                 # parallel broker batch API into the native concept readers.
                 _concept_market_cycle_snapshot: dict[str, Any] = {}
+                _concept_market_cycle_meta: dict[str, Any] = {"cutoff_epoch": None}
 
                 def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
                     _concept_market_cycle_snapshot.clear()
+                    from datetime import datetime, timezone
+                    _concept_market_cycle_meta["cutoff_epoch"] = datetime.now(timezone.utc).timestamp()
                     try:
                         batch = platform_manager.fetch_all_market_data(
                             symbols=list(symbols),
@@ -1372,6 +1375,7 @@ class SystemContext:
 
                 def _end_concept_market_cycle() -> None:
                     _concept_market_cycle_snapshot.clear()
+                    _concept_market_cycle_meta["cutoff_epoch"] = None
 
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
@@ -1460,6 +1464,7 @@ class SystemContext:
                             "tick_history": tick_history,
                             "multi_symbol_frames": dict(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
+                            "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
                         },
                     )
 
