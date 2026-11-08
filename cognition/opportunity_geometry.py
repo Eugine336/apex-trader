@@ -461,6 +461,23 @@ def derive_opportunity_geometry(
     if concept_geometry is not None:
         return concept_geometry
 
+    # An activated concept that supplied directional entry/stop/target geometry
+    # is part of the Brain's live structural hypothesis. If those instructions
+    # conflict, are incomplete, or cannot be reconciled into one compatible
+    # group, do not silently replace them with a generic market-lens geometry.
+    # That would discard the very conflict the Brain must challenge.
+    concept_geometry_present = any(
+        str(implication.get("direction", "") or "").strip().upper() == side
+        and implication.get("activated") is True
+        and _finite_positive(implication.get("invalidation_price")) is not None
+        and _finite_positive(implication.get("objective_price")) is not None
+        for reading in concept_readings
+        for implication in reading.get("implications", [])
+        if isinstance(implication, dict)
+    )
+    if concept_geometry_present:
+        return None
+
     structures = [record for record in structures if record["timeframe"]]
     momenta = [record for record in momenta if record["timeframe"]]
     liquidity = [record for record in liquidity if record["timeframe"]]

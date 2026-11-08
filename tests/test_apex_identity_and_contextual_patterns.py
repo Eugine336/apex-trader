@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from cognition.brain import CognitiveBrain
-from cognition.brain_reasoning import BrainReasoner
+from cognition.brain_reasoning import BrainReasoner, EvidenceAnalysis
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
 from cognition.identity import (
     IDENTITY_STATEMENT,
@@ -384,3 +384,31 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
     assert structure.source_timestamp_epoch < now.timestamp() - 2 * 3600 + 1
     assert structure.timestamp_epoch >= now.timestamp() - 5.0
     assert structure.is_fresh(now.timestamp()) is False
+
+
+def test_watch_state_strategy_lens_is_preserved_as_non_directional_brain_hypothesis():
+    analysis = EvidenceAnalysis(
+        strategy_lenses=[{
+            "key": "mean_reversion",
+            "name": "Mean reversion",
+            "status": "watch",
+            "relevance": 0.2,
+            "reasons": ["volatility context is incomplete"],
+            "missing_context": ["verified volatility regime"],
+            "regime_fit": "unknown",
+            "limitation": "An extreme can extend before reverting.",
+            "data_requirements": ["rolling price distribution"],
+        }],
+        evidence_index=[{"evidence_id": "momentum-evidence", "domain": "momentum"}],
+    )
+
+    hypotheses = BrainReasoner().generate_hypotheses(analysis, "XAUUSD")
+    lens = next(
+        item for item in hypotheses
+        if item.hypothesis_kind == "strategy_lens:mean_reversion"
+    )
+    assert lens.direction_implication == "FLAT"
+    assert lens.confidence_components["lens_status"] == "watch"
+    assert lens.confidence_components["regime_fit"] == "unknown"
+    assert "verified volatility regime" in lens.unresolved_unknowns
+    assert lens.confidence_components["calibrated_probability"] is False
