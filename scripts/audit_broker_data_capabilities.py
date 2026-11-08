@@ -147,7 +147,10 @@ def _acceptance_summary(
         }
         symbol_checks[symbol] = {
             "unique_broker_mapping": row.get("status") == "PARTIAL" and bool(row.get("broker_symbol")),
-            "instrument_specification_verified": row.get("instrument_specification", {}).get("specification_verified") is True,
+            "instrument_specification_verified": (
+                row.get("instrument_specification", {}).get("source_verified") is True
+                and row.get("instrument_specification", {}).get("specification_verified") is True
+            ),
             "timeframes": timeframe_checks,
         }
     checks["configured_symbol_catalogue_complete"] = bool(configured_symbols) and all(
