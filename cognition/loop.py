@@ -2841,7 +2841,26 @@ class CognitionLoop:
                     broker_response is not None
                     and getattr(broker_response, "success", None) is False
                 )
-                acknowledged = sink_result is True or getattr(sink_result, "success", None) is True
+                broker_response_fields = (
+                    "order_id", "ticket", "deal", "retcode",
+                )
+                broker_ack_metadata = bool(
+                    broker_response is not None
+                    and (
+                        any(
+                            getattr(broker_response, field, None) is not None
+                            for field in broker_response_fields
+                        )
+                        or (
+                            isinstance(broker_response, dict)
+                            and any(broker_response.get(field) is not None for field in broker_response_fields)
+                        )
+                    )
+                )
+                acknowledged = (
+                    getattr(sink_result, "success", None) is True
+                    and broker_ack_metadata
+                )
                 if sink_result is None and not action_id:
                     # Preserve the documented legacy void-callback contract only
                     # when no canonical action ID exists to deduplicate/reconcile.
@@ -2850,6 +2869,12 @@ class CognitionLoop:
                     outcome = "REJECTED"
                 elif acknowledged:
                     outcome = "ACKNOWLEDGED"
+                elif sink_result is True or getattr(sink_result, "success", None) is True:
+                    # The live management sink currently enqueues into the
+                    # asynchronous IntentAggregator. Queue acceptance is not a
+                    # broker acknowledgement; keep the action non-replayable
+                    # until broker-state reconciliation confirms its effect.
+                    outcome = "DISPATCHED"
                 else:
                     outcome = "AMBIGUOUS"
 
@@ -2888,16 +2913,24 @@ class CognitionLoop:
                         action.symbol, action.kind, action.direction,
                     )
                     return False
-                if outcome == "AMBIGUOUS":
+                if outcome in {"AMBIGUOUS", "DISPATCHED"}:
                     if action_id:
                         self._management_unresolved_actions.add(action_id)
-                    self._manage_ambiguous += 1
-                    logger.error(
-                        "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: "
-                        "no broker acknowledgement; action will not be replayed",
+                    if outcome == "AMBIGUOUS":
+                        self._manage_ambiguous += 1
+                        logger.error(
+                            "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: "
+                            "no dispatch or broker acknowledgement; action will not be replayed",
+                            action.symbol, action.kind, action_id or "legacy",
+                        )
+                        return False
+                    logger.info(
+                        "[cognition-loop] MANAGE-DISPATCHED %s %s action_id=%s: "
+                        "queued; awaiting broker-state reconciliation",
                         action.symbol, action.kind, action_id or "legacy",
                     )
-                    return False
+                    self._manage_submitted += 1
+                    return True
 
                 self._manage_submitted += 1
                 logger.info(
