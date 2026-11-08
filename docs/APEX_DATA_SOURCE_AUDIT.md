@@ -154,3 +154,8 @@ Implemented normalized observation consumers:
 - Session calendar can consume normalized timezone-aware, source-timestamped session observations. Unknown DST, holiday, rollover or tradeability fields remain explicit.
 
 These are reader implementations and contract-level tests, not evidence that any real provider is connected or licensed. The registry is currently initialized without vendor adapters. Actual provider selection, credentials, entitlement checks, historical backfill, rate limits, outage handling and owner-connected validation remain a separate integration gate. Do not mark these concepts FULL solely because a reader exists.
+
+
+### Intermarket synchronization correction
+
+Intermarket return measurements now pair only exact common source timestamps and calculate a return only when the immediately preceding common completed bar is exactly one timeframe interval earlier. Missing intervals are not bridged with multi-bar returns. SMT sweep comparisons are restricted to the latest exact common completed bar for the target/peer pair. Currency-strength aggregation intersects return timestamps across every included, broker-verified instrument specification; it does not combine asynchronous peer returns. These controls improve temporal integrity but do not establish causal relationships, predictive value, stationarity or stable correlations.
