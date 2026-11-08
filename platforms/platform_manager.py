@@ -1086,8 +1086,7 @@ class PlatformManager:
             and row.get("source_verified") is True
             and str(row.get("symbol", "")).strip().upper() == canonical_symbol
             and str(row.get("position_id", "")).strip() == position_ticket
-            and (not ticket or str(row.get("order", "")).strip() == ticket
-                 or str(row.get("position_id", "")).strip() == position_ticket)
+            and (not ticket or str(row.get("order", "")).strip() == ticket)
         ]
 
     def get_symbol_spec(self, symbol: str) -> dict:
