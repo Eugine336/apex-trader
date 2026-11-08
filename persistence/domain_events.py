@@ -20,6 +20,9 @@ SETUP_SKIPPED = "SETUP_SKIPPED"
 # ── Order lifecycle events ───────────────────────────────────────────────────
 ORDER_SENT = "ORDER_SENT"
 ORDER_FILLED = "ORDER_FILLED"
+ORDER_PENDING = "ORDER_PENDING"
+ORDER_CANCELLED = "ORDER_CANCELLED"
+ORDER_RECONCILED = "ORDER_RECONCILED"
 
 # ── Trade lifecycle (Phase 3+) ───────────────────────────────────────────────
 TRADE_OPEN = "TRADE_OPEN"
