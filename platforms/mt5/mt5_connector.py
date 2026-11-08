@@ -17,7 +17,9 @@ from loguru import logger
 from config import get_pip_size
 from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from ops.redaction import mask_account_id
-from platforms.order_idempotency import build_order_comment, extract_idempotency_key
+from platforms.order_idempotency import (
+    build_order_comment, extract_idempotency_key, matches_idempotency_comment,
+)
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -2247,7 +2249,7 @@ class MT5Connector(BaseConnector):
         positions = mt5.positions_get()
         if positions:
             for p in positions:
-                if idem_key in (getattr(p, "comment", "") or ""):
+                if matches_idempotency_comment(idem_key, getattr(p, "comment", "") or ""):
                     return SimpleNamespace(
                         ticket=p.ticket,
                         price=p.price_open,
@@ -2261,7 +2263,7 @@ class MT5Connector(BaseConnector):
         orders = mt5.orders_get()
         if orders:
             for o in orders:
-                if idem_key in (getattr(o, "comment", "") or ""):
+                if matches_idempotency_comment(idem_key, getattr(o, "comment", "") or ""):
                     return SimpleNamespace(
                         ticket=o.ticket,
                         price=getattr(o, "price_open", 0.0),
@@ -2278,7 +2280,7 @@ class MT5Connector(BaseConnector):
             deals = mt5.history_deals_get(history_start.astimezone(timezone.utc), now)
             if deals:
                 for d in deals:
-                    if idem_key in (getattr(d, "comment", "") or ""):
+                    if matches_idempotency_comment(idem_key, getattr(d, "comment", "") or ""):
                         return SimpleNamespace(
                             ticket=getattr(d, "order", d.ticket),
                             price=getattr(d, "price", 0.0),
@@ -2297,7 +2299,7 @@ class MT5Connector(BaseConnector):
             hist_orders = mt5.history_orders_get(history_start.astimezone(timezone.utc), now)
             if hist_orders:
                 for ho in hist_orders:
-                    if idem_key in (getattr(ho, "comment", "") or ""):
+                    if matches_idempotency_comment(idem_key, getattr(ho, "comment", "") or ""):
                         return SimpleNamespace(
                             ticket=ho.ticket,
                             price=getattr(ho, "price_open", 0.0),
