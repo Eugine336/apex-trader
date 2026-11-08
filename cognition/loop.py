@@ -2679,6 +2679,9 @@ class CognitionLoop:
                         action.symbol, action.kind, action_id,
                     )
                     return False
+                if ledger is None and action_id:
+                    ledger_unavailable_tracked = True
+                    self._management_unresolved_actions.add(action_id)
                 if ledger is not None and action_id:
                     begin, ledger_reason = ledger.begin(action, position)
                     if begin is False:
