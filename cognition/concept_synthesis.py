@@ -78,10 +78,17 @@ def synthesize_concept_readings(
         source_epoch = _finite(reading.get("source_timestamp_epoch"))
         if epoch is None or epoch <= 0:
             continue
-        if cutoff is not None and (
-            epoch > cutoff or source_epoch is None or source_epoch <= 0 or source_epoch > cutoff
-        ):
-            continue
+        if cutoff is not None:
+            relevance_horizon = _finite(reading.get("relevance_horizon_seconds"))
+            if (
+                epoch > cutoff
+                or source_epoch is None
+                or source_epoch <= 0
+                or source_epoch > cutoff
+                or relevance_horizon is None
+                or (relevance_horizon > 0.0 and cutoff - epoch > relevance_horizon)
+            ):
+                continue
         concept = str(reading.get("concept", "") or "").strip()
         timeframe = str(reading.get("timeframe", "") or "").strip().upper()
         if not concept or not timeframe:
