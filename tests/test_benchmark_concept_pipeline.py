@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.benchmark_concept_pipeline import run_benchmark, summarize
+from scripts.benchmark_concept_pipeline import _pass_complete, run_benchmark, summarize
 
 
 class _Manager:
@@ -88,3 +88,54 @@ def test_summary_reports_missing_timeframes_even_when_symbol_is_present():
         "symbol": "EURUSD",
         "missing": ["H1"],
     }]
+
+
+def test_complete_benchmark_requires_exact_cold_or_warm_universe_and_bar_depth():
+    requested_symbols = ["EURUSD", "GBPUSD"]
+    requested_timeframes = ["M5", "H1"]
+    complete = summarize(
+        [
+            {"symbol": "EURUSD", "elapsed_ms": 10.0, "timeframes": {"M5": 20, "H1": 20}},
+            {"symbol": "GBPUSD", "elapsed_ms": 12.0, "timeframes": {"M5": 20, "H1": 20}},
+        ],
+        requested_symbols,
+        requested_timeframes,
+    )
+    assert _pass_complete(complete, requested_symbols, requested_timeframes, 20)
+
+    missing_warm_symbol = summarize(
+        [
+            {"symbol": "EURUSD", "elapsed_ms": 10.0, "timeframes": {"M5": 20, "H1": 20}},
+        ],
+        requested_symbols,
+        requested_timeframes,
+    )
+    assert not _pass_complete(missing_warm_symbol, requested_symbols, requested_timeframes, 20)
+
+    insufficient_bars = summarize(
+        [
+            {"symbol": "EURUSD", "elapsed_ms": 10.0, "timeframes": {"M5": 20, "H1": 19}},
+            {"symbol": "GBPUSD", "elapsed_ms": 12.0, "timeframes": {"M5": 20, "H1": 20}},
+        ],
+        requested_symbols,
+        requested_timeframes,
+    )
+    assert not _pass_complete(insufficient_bars, requested_symbols, requested_timeframes, 20)
+
+
+def test_complete_benchmark_rejects_duplicate_symbols_and_timeframes():
+    duplicate_rows = summarize(
+        [
+            {"symbol": "EURUSD", "elapsed_ms": 10.0, "timeframes": {"M5": 20}},
+            {"symbol": "EURUSD", "elapsed_ms": 11.0, "timeframes": {"M5": 20}},
+        ],
+        ["EURUSD", "GBPUSD"],
+        ["M5"],
+    )
+    assert not _pass_complete(duplicate_rows, ["EURUSD", "GBPUSD"], ["M5"], 20)
+    assert not _pass_complete(
+        duplicate_rows, ["EURUSD", "EURUSD"], ["M5"], 20,
+    )
+    assert not _pass_complete(
+        duplicate_rows, ["EURUSD", "GBPUSD"], ["M5", "M5"], 20,
+    )

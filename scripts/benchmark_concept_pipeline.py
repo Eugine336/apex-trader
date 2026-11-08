@@ -66,6 +66,59 @@ def summarize(
     }
 
 
+def _pass_complete(
+    summary: dict[str, Any],
+    requested_symbols: list[str],
+    requested_timeframes: list[str],
+    minimum_bars_per_timeframe: int,
+) -> bool:
+    """Require exact one-to-one universe coverage and complete bar depth."""
+    symbols = [str(item or "").strip().upper() for item in requested_symbols]
+    timeframes = [str(item or "").strip().upper() for item in requested_timeframes]
+    if (
+        not symbols or not timeframes
+        or any(not item for item in symbols)
+        or any(not item for item in timeframes)
+        or len(set(symbols)) != len(symbols)
+        or len(set(timeframes)) != len(timeframes)
+        or isinstance(minimum_bars_per_timeframe, bool)
+        or minimum_bars_per_timeframe < 1
+    ):
+        return False
+    rows = summary.get("samples")
+    if not isinstance(rows, list) or len(rows) != len(symbols):
+        return False
+    row_symbols = [str(row.get("symbol", "") or "").strip().upper() for row in rows]
+    if len(set(row_symbols)) != len(row_symbols) or set(row_symbols) != set(symbols):
+        return False
+    if (
+        summary.get("failures")
+        or summary.get("missing_symbols")
+        or summary.get("incomplete_timeframes")
+        or int(summary.get("completed_symbol_timeframe_pairs", 0) or 0)
+            != len(symbols) * len(timeframes)
+    ):
+        return False
+    for row in rows:
+        counts = row.get("timeframes")
+        if not isinstance(counts, dict):
+            return False
+        normalized = {str(key or "").strip().upper(): value for key, value in counts.items()}
+        if set(normalized) != set(timeframes):
+            return False
+        for timeframe in timeframes:
+            value = normalized.get(timeframe)
+            if isinstance(value, bool):
+                return False
+            try:
+                bars = int(value)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if bars < minimum_bars_per_timeframe:
+                return False
+    return True
+
+
 def run_benchmark(
     manager: Any,
     symbols: list[str],
@@ -166,14 +219,15 @@ def main(argv: list[str] | None = None) -> int:
             args.count, analyze=analyze_market_frames,
         )
         report["connected_platforms"] = connected
+        normalized_timeframes = [str(tf).upper() for tf in args.timeframes]
         report["status"] = (
             "complete"
-            if report["cold"]["completed_symbol_count"] == len(requested)
-            and report["cold"]["completed_symbol_timeframe_pairs"]
-                == len(requested) * len(args.timeframes)
-            and not report["cold"]["incomplete_timeframes"]
-            and not report["cold"]["failures"]
-            and not report["warm"]["failures"]
+            if _pass_complete(
+                report["cold"], requested, normalized_timeframes, args.count,
+            )
+            and _pass_complete(
+                report["warm"], requested, normalized_timeframes, args.count,
+            )
             else "partial"
         )
         print(json.dumps(report, indent=2, sort_keys=True))
