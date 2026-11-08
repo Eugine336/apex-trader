@@ -137,6 +137,21 @@ def test_pending_reconciliation_maps_verified_filled_history_state():
     assert outcome["record"]["position_id"] == 902
 
 
+def test_cancelled_history_order_preserves_confirmed_partial_fill_state():
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 2,
+        "volume_initial": 0.10, "volume_current": 0.04,
+        "position_id": "902", "source_verified": True,
+    }
+    manager = _manager([PendingConnector(history=[record])])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "PARTIALLY_FILLED_TERMINAL"
+    assert outcome["broker_confirmed"] is True
+    assert outcome["record"]["position_id"] == "902"
+
 def test_live_pending_snapshot_reports_partial_fill_without_losing_remaining_order():
     manager = _manager([
         PendingConnector(live=[_pending(volume_initial=0.10, volume_current=0.04)])
