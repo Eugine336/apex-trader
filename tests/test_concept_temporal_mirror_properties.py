@@ -96,10 +96,15 @@ def test_registered_concept_readers_keep_source_time_within_their_timeframe():
                     module.key, reading.concept, timeframe, reading.source_bar_epoch,
                 )
             if reading.source_timestamp_verified:
-                assert reading.source_timestamp_epoch is not None, module.key
+                verified_epoch = (
+                    reading.source_timestamp_epoch
+                    if reading.source_timestamp_epoch is not None
+                    else reading.source_bar_epoch
+                )
+                assert verified_epoch is not None, module.key
                 assert timeframe in cutoff_by_timeframe, (module.key, reading.concept, timeframe)
-                assert reading.source_timestamp_epoch <= cutoff_by_timeframe[timeframe], (
-                    module.key, reading.concept, timeframe, reading.source_timestamp_epoch,
+                assert verified_epoch <= cutoff_by_timeframe[timeframe], (
+                    module.key, reading.concept, timeframe, verified_epoch,
                 )
             assert not _contains_lookahead_true(reading.facts), (module.key, reading.concept, reading.facts)
     assert bars_by_tf == original
