@@ -212,6 +212,28 @@ def test_partial_pending_idempotency_retry_returns_same_order_without_resubmissi
     assert second.order_id == first.order_id
     assert len(fake.requests) == 1
 
+def test_checked_position_deal_history_requires_exact_ticket_and_complete_result(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    deal = SimpleNamespace(ticket=8001, order=7001, position_id=7002, symbol="EURUSD", entry=0, volume=0.04)
+    fake.history_deals = [deal]
+
+    rows = connector.get_position_deal_history_checked("7002")
+
+    assert len(rows) == 1
+    assert rows[0]["ticket"] == 8001
+    assert rows[0]["position_id"] == 7002
+    assert rows[0]["source_verified"] is True
+
+    fake.history_unavailable = True
+    with pytest.raises(RuntimeError, match="position deal history is incomplete"):
+        connector.get_position_deal_history_checked("7002")
+
+
+def test_checked_position_deal_history_rejects_non_numeric_position_identity(monkeypatch):
+    connector, _ = _connector(monkeypatch)
+    with pytest.raises(ValueError, match="exact MT5 ticket"):
+        connector.get_position_deal_history_checked("not-a-ticket")
+
 def test_pending_idempotency_history_fill_keeps_order_and_position_tickets_distinct(monkeypatch):
     connector, fake = _connector(monkeypatch)
     fake.history_orders = [SimpleNamespace(
