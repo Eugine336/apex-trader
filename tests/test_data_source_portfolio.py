@@ -47,7 +47,7 @@ class _PortfolioProvider:
         return [DataObservation(
             provenance=ObservationProvenance(
                 source=SourceIdentity(
-                    "broker-fixture", "mt5", "PORTFOLIO", "account-a",
+                    "broker-fixture", "mt5", "PORTFOLIO", "mt5:account-a",
                 ),
                 kind=kind,
                 source_timestamp_epoch=self.stamp,
