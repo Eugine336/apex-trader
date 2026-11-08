@@ -600,6 +600,108 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
+    def test_partial_pending_order_transitions_to_filled_and_is_removed_once(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-TRANSITION": {
+                "order_id": "ORDER-TRANSITION", "symbol": "EURUSD", "direction": "BUY",
+                "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
+                "sl": 98.0, "tp": 101.0,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        system._entry_context = {}
+        outcomes = iter([
+            {
+                "status": "PARTIALLY_FILLED_PENDING", "broker_confirmed": True,
+                "initial_volume": 0.1, "remaining_volume": 0.06,
+                "record": {"ticket": "ORDER-TRANSITION", "position_id": "POSITION-TRANSITION"},
+            },
+            {
+                "status": "FILLED", "broker_confirmed": True,
+                "order_id": "ORDER-TRANSITION",
+                "record": {"ticket": "ORDER-TRANSITION", "position_id": "POSITION-TRANSITION"},
+            },
+        ])
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: next(outcomes),
+            get_platform_balance=lambda symbol: 5000.0,
+        )
+        system._on_order_filled = MagicMock()
+        store = MagicMock()
+
+        position = SimpleNamespace(
+            order_id="POSITION-TRANSITION", symbol="EURUSD", direction="BUY",
+            open_price=99.0, lots=0.1, sl=98.0, tp=101.0,
+        )
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([position])
+            assert "ORDER-TRANSITION" in system._pending_orders
+            system._reconcile_pending_orders([position])
+
+        assert "ORDER-TRANSITION" not in system._pending_orders
+        system._on_order_filled.assert_called_once()
+        event_types = [call.kwargs.get("event_type") for call in store.emit.call_args_list]
+        assert DE.ORDER_FILLED in event_types
+        assert DE.ORDER_RECONCILED in event_types
+
+
+    def test_confirmed_cancelled_order_is_removed_from_pending_projection(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-CANCELLED": {
+                "order_id": "ORDER-CANCELLED", "symbol": "EURUSD",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
+            "status": "CANCELLED", "broker_confirmed": True,
+            "record": {"ticket": "ORDER-CANCELLED", "state": 2},
+        })
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        assert "ORDER-CANCELLED" not in system._pending_orders
+        assert any(call.kwargs.get("event_type") == DE.ORDER_RECONCILED for call in store.emit.call_args_list)
+
+
+    def test_confirmed_expired_order_is_removed_from_pending_projection(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-EXPIRED": {
+                "order_id": "ORDER-EXPIRED", "symbol": "EURUSD",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
+            "status": "EXPIRED", "broker_confirmed": True,
+            "record": {"ticket": "ORDER-EXPIRED", "state": 6},
+        })
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        assert "ORDER-EXPIRED" not in system._pending_orders
+        assert any(call.kwargs.get("event_type") == DE.ORDER_RECONCILED for call in store.emit.call_args_list)
+
     def test_filled_order_without_position_identity_is_not_attributed_by_order_ticket(self):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
