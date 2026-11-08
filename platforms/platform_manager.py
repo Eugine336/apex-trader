@@ -931,7 +931,8 @@ class PlatformManager:
                         try:
                             entry_kind = int(deal.get("entry"))
                             volume = float(deal.get("volume"))
-                        except (TypeError, ValueError, OverflowError):
+                        except (TypeError, ValueError, OverflowError) as exc:
+                            _pm_logger.warning("[orders] malformed deal row for terminal pending order {}: {}", ticket, exc)
                             malformed_deal = True
                             break
                         if entry_kind in entry_kinds:
