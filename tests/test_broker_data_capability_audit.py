@@ -89,7 +89,7 @@ def test_broker_acceptance_requires_verified_account_books_and_every_requested_s
     symbols = {
         "XAUUSD": {
             "status": "PARTIAL", "broker_symbol": "GOLD",
-            "instrument_specification": {"specification_verified": True},
+            "instrument_specification": {"source_verified": True, "specification_verified": True},
             "timeframes": {
                 "M5": {"status": "AVAILABLE", "source_timestamp_verified": True,
                        "source_symbol_matches": True, "timestamps_parseable": True,
