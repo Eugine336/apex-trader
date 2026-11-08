@@ -2615,13 +2615,40 @@ class CognitionLoop:
         reconcile = getattr(ledger, "reconcile", None)
         if not callable(reconcile):
             return False
+        action_id = str(action_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        pending = next(
+            (
+                item for item in (getattr(ledger, "pending_actions", lambda _symbol: [])(symbol) or [])
+                if str(item.get("action_id", "") or "") == action_id
+            ),
+            None,
+        )
         try:
             reconciled = reconcile(action_id, symbol, broker_evidence)
         except Exception as exc:  # noqa: BLE001 — never clear a pending action on a fault
             logger.error("[cognition-loop] management reconciliation failed: %s", exc)
             return False
         if reconciled:
-            self._management_unresolved_actions.discard(str(action_id or "").strip())
+            self._management_unresolved_actions.discard(action_id)
+            if (
+                isinstance(pending, dict)
+                and str(pending.get("kind", "") or "").lower() == "partial_close"
+                and self._memory is not None
+            ):
+                current_size = broker_evidence.get("current_lots")
+                progress = getattr(self._memory, "get_management_progress", None)
+                if callable(progress):
+                    try:
+                        progress(
+                            str(pending.get("campaign_id", "") or ""),
+                            current_size=current_size,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — milestone stays pending on fault
+                        logger.error(
+                            "[cognition-loop] reconciled partial action could not update milestone memory: %s",
+                            exc,
+                        )
         return reconciled
 
     def _realise_management(self, output: Any, position: Any) -> bool:
