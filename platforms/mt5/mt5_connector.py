@@ -2280,13 +2280,14 @@ class MT5Connector(BaseConnector):
                 for d in deals:
                     if idem_key in (getattr(d, "comment", "") or ""):
                         return SimpleNamespace(
-                            ticket=d.ticket,
+                            ticket=getattr(d, "order", d.ticket),
                             price=getattr(d, "price", 0.0),
                             volume=getattr(d, "volume", 0.0),
                             sl=0.0,
                             tp=0.0,
                             order_status="FILLED",
                             symbol=resolve_to_internal(str(getattr(d, "symbol", "") or "")),
+                            position_id=str(getattr(d, "position_id", "") or ""),
                         )
         except Exception as exc:
             logger.warning("MT5 history_deals_get failed during dedup: {}", exc)
