@@ -5,6 +5,7 @@ Handles Forex, commodities, and indices on MT5.
 """
 
 import platform as sys_platform
+import math
 import time as _time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -1049,6 +1050,12 @@ class MT5Connector(BaseConnector):
         if idempotency_key:
             dup = self._find_order_by_idem_key(idempotency_key)
             if dup is not None:
+                duplicate_status = str(getattr(dup, "order_status", "FILLED") or "FILLED").upper()
+                if duplicate_status != "FILLED":
+                    return self._fail_order(
+                        symbol, direction, lots, sl, tp,
+                        f"idempotency_key_already_bound_to_{duplicate_status.lower()}_order",
+                    )
                 logger.warning(
                     "MT5 duplicate prevented — idem_key {} already filled as ticket {}",
                     idempotency_key, dup.ticket,
