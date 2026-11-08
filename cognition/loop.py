@@ -1858,8 +1858,12 @@ class CognitionLoop:
         try:
             provider = self._concept_track_record_provider
             if provider is None:
-                from cognition.concept_track_records import get_default_concept_track_record_producer
-                provider = get_default_concept_track_record_producer()
+                if self._candidate_event_store is not None:
+                    from cognition.concept_track_records import ConceptTrackRecordProducer
+                    provider = ConceptTrackRecordProducer(self._candidate_event_store)
+                else:
+                    from cognition.concept_track_records import get_default_concept_track_record_producer
+                    provider = get_default_concept_track_record_producer()
                 self._concept_track_record_provider = provider
             providers.append(("concept_track_records", provider))
         except Exception as exc:  # noqa: BLE001 — absent concept history remains absent
