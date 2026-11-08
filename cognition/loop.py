@@ -3088,7 +3088,7 @@ class CognitionLoop:
                     )
                     if not durable_ack:
                         latest_status = ledger.status(action_id, action.symbol)
-                        if latest_status in {"ACKNOWLEDGED", "REJECTED"}:
+                        if latest_status in {"ACKNOWLEDGED", "REJECTED", "AMBIGUOUS"}:
                             # The asynchronous FlushLoop callback won the race;
                             # never overwrite its broker result with queue status.
                             outcome = latest_status
