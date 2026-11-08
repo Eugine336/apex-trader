@@ -5582,6 +5582,14 @@ class EventDrivenSystem:
             if not bool(getattr(result, "success", False)):
                 return
             response = getattr(result, "broker_response", None)
+            if str(getattr(response, "order_status", "FILLED") or "FILLED").upper() == "PENDING":
+                # A resting order is not a filled trade. Its lifecycle is recorded
+                # by PlatformManager; do not create a position-keyed trade snapshot.
+                logger.info(
+                    "[decision-provenance] pending order {} remains unfilled; awaiting broker reconciliation",
+                    getattr(response, "order_id", ""),
+                )
+                return
             ticket = ""
             if isinstance(response, dict):
                 ticket = str(
