@@ -112,11 +112,15 @@ class ProviderDataReadings:
 
         symbol_spec = context.get("symbol_spec")
         symbol_spec = symbol_spec if isinstance(symbol_spec, dict) else {}
+        symbol_spec_verified = bool(
+            symbol_spec.get("source_verified") is True
+            and symbol_spec.get("specification_verified") is True
+        )
         relevant_currencies = {
             str(symbol_spec.get(key) or "").strip().upper()
             for key in ("currency_base", "currency_profit", "currency_margin")
             if str(symbol_spec.get(key) or "").strip()
-        }
+        } if symbol_spec_verified else set()
 
         # Economic calendar: event time and publication/revision vintages are separate.
         events = []
@@ -191,8 +195,12 @@ class ProviderDataReadings:
             if (
                 publication is None or publication > cutoff
                 or observation_epoch is None or observation_epoch > cutoff
-                or (currency and relevant_currencies and currency not in relevant_currencies)
+                or not symbol_spec_verified or not relevant_currencies
+                or (currency and currency not in relevant_currencies)
                 or _number(values.get("value")) is None
+                or (provenance.revision_timestamp_epoch is not None
+                    and (_number(provenance.revision_timestamp_epoch) is None
+                         or provenance.revision_timestamp_epoch > cutoff))
             ):
                 continue
             series.append({
