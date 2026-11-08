@@ -1499,7 +1499,8 @@ class MT5Connector(BaseConnector):
                 return OrderResult(
                     success=False, order_id=str(getattr(duplicate, "ticket", "") or ""),
                     fill_price=0.0, requested_price=entry, slippage_pips=0.0,
-                    lots=requested_lots, symbol=symbol, direction=side,
+                    lots=float(getattr(duplicate, "volume", requested_lots) or 0.0),
+                    symbol=symbol, direction=side,
                     sl=stop, tp=target, platform="mt5",
                     error=f"idempotency_key_already_bound_to_{status.lower()}_order",
                     order_status=status, order_type=kind,
