@@ -5781,17 +5781,17 @@ class EventDrivenSystem:
                 position_id = broker_position_id
                 position = position_by_ticket.get(position_id) if position_id else None
                 terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
+                connector_index = record.get("connector_index")
+                platform = (
+                    f"mt5_{int(connector_index)}"
+                    if connector_index is not None else "mt5"
+                )
 
                 # A pending order can fill and hit its protective exit between
                 # position-book polls. Recover that round trip from source-verified
                 # entry/exit deals; never discard a filled order merely because no
                 # live position remains.
                 if position is None and terminal and broker_position_id:
-                    connector_index = record.get("connector_index")
-                    platform = (
-                        f"mt5_{int(connector_index)}"
-                        if connector_index is not None else "mt5"
-                    )
                     deals = self._pm.get_pending_order_fill_deals(
                         resolved_ticket, broker_position_id,
                         symbol=str(meta.get("symbol", "") or ""),
