@@ -84,7 +84,7 @@ def test_registry_rejects_duplicate_provider_and_invalid_observation_kind():
 
     wrong = DataSourceRegistry()
     wrong.register(_WrongKind())
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError, match="demo:ValueError"):
         wrong.fetch(ObservationKind.ECONOMIC_EVENT)
 
 
