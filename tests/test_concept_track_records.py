@@ -51,6 +51,11 @@ def _outcome():
         "directional_return_r": 0.5,
         "outcome_quote": {
             "symbol": "EURUSD",
+            "bid": 1.1,
+            "ask": 1.2,
+            "mid": 1.15,
+            "quote_kind": "bid_ask",
+            "timestamp_epoch": 1300.0,
             "source_timestamp_epoch": 1300.0,
             "source_timestamp_verified": True,
         },
@@ -98,6 +103,8 @@ def test_concept_track_records_are_producer_owned_and_descriptive_only():
     assert evidence.measurements["source_kind"] == "producer_concept_track_records"
     assert evidence.measurements["concept_track_records"]["crt"]["sample_count"] == 1
     assert evidence.measurements["concept_outcome_history"][0]["outcome"] == 1
+    assert evidence.measurements["selection_complete"] is False
+    assert evidence.measurements["eligible_candidate_sample_only"] is True
     assert evidence.measurements["predictive_probability"] is False
     assert evidence.measurements["trade_win_rate"] is False
     assert evidence.measurements["entry_authorization_emitted"] is False
