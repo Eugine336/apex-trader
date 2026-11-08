@@ -5641,7 +5641,7 @@ class EventDrivenSystem:
                 payload = json.loads(row.get("payload_json", "{}") or "{}")
                 if not isinstance(payload, dict):
                     continue
-                ticket = str(payload.get("order_id") or payload.get("idempotency_key") or row.get("parent_id") or "").strip()
+                ticket = str(payload.get("tracking_key") or payload.get("order_id") or payload.get("idempotency_key") or row.get("parent_id") or "").strip()
                 if not ticket:
                     continue
                 if event_type == DE.ORDER_PENDING:
@@ -5718,7 +5718,7 @@ class EventDrivenSystem:
                             correlation_id=str(meta.get("decision_id", "") or "") or None,
                             parent_id=resolved_ticket, source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": resolved_ticket, "status": status,
+                            payload={"order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
                                      "remaining_volume": outcome.get("remaining_volume"),
                                      "initial_volume": outcome.get("initial_volume"),
                                      "broker_confirmed": True},
@@ -5729,16 +5729,16 @@ class EventDrivenSystem:
                 position_id = str(
                     record.get("position_id") or record.get("position") or resolved_ticket
                 ).strip()
-                position = position_by_ticket.get(position_id) or position_by_ticket.get(ticket)
+                position = position_by_ticket.get(position_id) or position_by_ticket.get(resolved_ticket)
                 terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
                 if position is not None and not meta.get("attributed"):
                     fill_price = float(getattr(position, "open_price", 0.0) or 0.0)
                     fill_lots = float(getattr(position, "lots", 0.0) or 0.0)
                     if fill_price <= 0.0 or fill_lots <= 0.0:
-                        logger.error("[pending-orders] broker reports fill for {} but open position details are incomplete", ticket)
+                        logger.error("[pending-orders] broker reports fill for {} but open position details are incomplete", resolved_ticket)
                         continue
                     payload = {
-                        "order_id": ticket, "position_id": position_id,
+                        "order_id": resolved_ticket, "tracking_key": tracking_key, "position_id": position_id,
                         "symbol": str(meta.get("symbol", "") or ""),
                         "direction": str(meta.get("direction", "") or "").upper(),
                         "order_type": str(meta.get("order_type", "") or "").upper(),
@@ -5757,7 +5757,7 @@ class EventDrivenSystem:
                             event_type=DE.ORDER_FILLED, severity="INFO",
                             symbol=payload["symbol"],
                             correlation_id=payload["decision_id"] or None,
-                            parent_id=ticket,
+                            parent_id=tracking_key,
                             source_module="execution.pending_order_reconciliation",
                             durable=True, payload=payload,
                         )
@@ -5805,7 +5805,7 @@ class EventDrivenSystem:
                         source_module="execution.pending_order_reconciliation",
                         durable=True,
                         payload={
-                            "order_id": ticket, "status": status,
+                            "order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
                             "attribution_status": "attributed" if meta.get("attributed") else "not_applicable",
                             "position_id": position_id if position is not None else "",
                             "broker_record": record,
