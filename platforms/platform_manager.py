@@ -1130,9 +1130,9 @@ class PlatformManager:
     ) -> list[dict]:
         """Return source-verified entry/exit deals for one pending-order position."""
         connector = self._connector_by_platform_str(platform)
-        fetch = getattr(connector, "get_deal_history", None)
+        fetch = getattr(connector, "get_deal_history_checked", None)
         if not callable(fetch):
-            return []
+            raise RuntimeError("source-verified pending fill deal history is unavailable")
         canonical_symbol = str(symbol or "").strip().upper()
         ticket = str(order_id or "").strip()
         position_ticket = str(position_id or "").strip()
