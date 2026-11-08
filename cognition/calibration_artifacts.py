@@ -637,6 +637,13 @@ class CalibrationProducer:
                                     break
                                 status = str(outcome.get("observation_status", "") or "")
                                 tolerance = max(60.0, horizon * 0.10)
+                                batch_id = str(outcome.get("quote_history_batch_id", "") or "")
+                                manifest = quote_history_map.get(batch_id)
+                                try:
+                                    manifest_start = float(manifest.get("query_window_start_epoch")) if manifest else float("nan")
+                                    manifest_end = float(manifest.get("query_window_end_epoch")) if manifest else float("nan")
+                                except (TypeError, ValueError, OverflowError):
+                                    manifest_start = manifest_end = float("nan")
                                 if (
                                     str(outcome.get("candidate_id", "") or "") != member["candidate_id"]
                                     or str(outcome.get("decision_id", "") or "") != decision_id
@@ -644,54 +651,29 @@ class CalibrationProducer:
                                     or str(outcome.get("direction", "") or "").upper() != direction
                                     or str(outcome.get("candidate_family", "") or "").strip().lower() != family
                                     or int(outcome.get("horizon_seconds", 0) or 0) != horizon
-                                    or outcome.get("outcome_source_timestamp_verified") is not True
+                                    or manifest is None
+                                    or str(outcome.get("quote_history_manifest_digest", "") or "") != str(manifest.get("manifest_digest", "") or "")
                                     or not math.isfinite(observed_at)
                                     or observed_at < due_at
+                                    or not math.isfinite(manifest_start)
+                                    or not math.isfinite(manifest_end)
+                                    or abs(manifest_start - due_at) > 1e-6
+                                    or abs(manifest_end - (due_at + tolerance)) > 1e-6
                                     or str(outcome.get("reference_evidence_id", "") or "")
                                         != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
                                 ):
                                     outcomes_match = False
                                     break
                                 outcome_quote = outcome.get("outcome_quote") or {}
-                                try:
-                                    outcome_quote_mid = float(outcome_quote.get("mid"))
-                                    outcome_quote_bid = float(outcome_quote.get("bid"))
-                                    outcome_quote_ask = float(outcome_quote.get("ask"))
-                                    outcome_quote_epoch = float(
-                                        outcome_quote.get("source_timestamp_epoch")
-                                    )
-                                except (TypeError, ValueError, OverflowError):
-                                    outcomes_match = False
-                                    break
-                                if (
-                                    outcome_quote.get("source_timestamp_verified") is not True
-                                    or str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
-                                        not in {"bid_ask", "mid_only"}
-                                    or (
-                                        str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
-                                        == "mid_only" and outcome_quote_ask != outcome_quote_bid
-                                    )
-                                    or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
-                                    or str(outcome_quote.get("evidence_id", "") or "")
-                                        != str(outcome.get("outcome_evidence_id", "") or "")
-                                    or not math.isfinite(outcome_quote_mid)
-                                    or not math.isfinite(outcome_quote_bid)
-                                    or not math.isfinite(outcome_quote_ask)
-                                    or not math.isfinite(outcome_quote_epoch)
-                                    or outcome_quote_bid <= 0.0
-                                    or outcome_quote_ask < outcome_quote_bid
-                                    or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0))
-                                        > max(1e-10, outcome_quote_mid * 1e-8)
-                                    or abs(outcome_quote_epoch - observed_at) > 1e-6
-                                ):
-                                    outcomes_match = False
-                                    break
                                 if status == "OBSERVED":
                                     try:
+                                        outcome_quote_mid = float(outcome_quote.get("mid"))
+                                        outcome_quote_bid = float(outcome_quote.get("bid"))
+                                        outcome_quote_ask = float(outcome_quote.get("ask"))
+                                        outcome_quote_epoch = float(outcome_quote.get("source_timestamp_epoch"))
+                                        manifest_quote_epoch = float(manifest.get("selected_quote_epoch"))
                                         observed_price = float(outcome.get("observed_price"))
-                                        reference_price = float(
-                                            (member.get("payload", {}).get("reference_quote") or {}).get("mid")
-                                        )
+                                        reference_price = float((member.get("payload", {}).get("reference_quote") or {}).get("mid"))
                                         risk_distance = float(member.get("risk_distance"))
                                         supplied_r = float(outcome.get("directional_return_r"))
                                     except (TypeError, ValueError, OverflowError):
@@ -708,21 +690,50 @@ class CalibrationProducer:
                                         else "FLAT"
                                     )
                                     if (
-                                        observed_at > due_at + tolerance
-                                        or not math.isfinite(observed_price)
-                                        or observed_price <= 0.0
+                                        outcome.get("outcome_source_timestamp_verified") is not True
+                                        or manifest.get("selection_complete") is not True
+                                        or outcome.get("outcome_quote_digest") != manifest.get("selected_quote_digest")
+                                        or outcome.get("outcome_quote_digest") != quote_history_quote_digest(outcome_quote)
+                                        or abs(manifest_quote_epoch - observed_at) > 1e-6
+                                        or abs(outcome_quote_epoch - observed_at) > 1e-6
+                                        or observed_at > due_at + tolerance
+                                        or not math.isfinite(outcome_quote_mid)
+                                        or not math.isfinite(outcome_quote_bid)
+                                        or not math.isfinite(outcome_quote_ask)
+                                        or outcome_quote_bid <= 0.0 or outcome_quote_ask < outcome_quote_bid
+                                        or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0)) > max(1e-10, outcome_quote_mid * 1e-8)
+                                        or outcome_quote.get("source_timestamp_verified") is not True
+                                        or outcome_quote.get("source") != "mt5.copy_ticks_range"
+                                        or outcome_quote.get("quote_kind") != "bid_ask"
+                                        or str(outcome_quote.get("symbol", "") or "").strip().upper() != sym
+                                        or str(outcome_quote.get("source_broker", "") or "") != str(manifest.get("source_broker", "") or "")
+                                        or str(outcome_quote.get("source_symbol", "") or "") != str(manifest.get("source_symbol", "") or "")
+                                        or str(outcome_quote.get("evidence_id", "") or "") != str(outcome.get("outcome_evidence_id", "") or "")
+                                        or not math.isfinite(observed_price) or observed_price <= 0.0
                                         or not math.isfinite(expected_r)
-                                        or abs(observed_price - outcome_quote_mid)
-                                            > max(1e-10, outcome_quote_mid * 1e-8)
+                                        or abs(observed_price - outcome_quote_mid) > max(1e-10, outcome_quote_mid * 1e-8)
                                         or abs(supplied_r - expected_r) > 1e-6
                                         or outcome.get("outcome_label") != expected_label
                                     ):
                                         outcomes_match = False
                                         break
                                 elif status == "MISSED_WINDOW":
+                                    try:
+                                        query_completed_at = float(manifest.get("query_completed_at_epoch"))
+                                    except (TypeError, ValueError, OverflowError):
+                                        query_completed_at = float("nan")
                                     if (
-                                        observed_at <= due_at + tolerance
+                                        outcome.get("outcome_source_timestamp_verified") is not False
+                                        or outcome_quote
+                                        or outcome.get("outcome_quote_digest") != ""
+                                        or manifest.get("query_complete") is not True
+                                        or manifest.get("selection_complete") is not False
+                                        or manifest.get("selected_quote_digest") is not None
+                                        or not math.isfinite(query_completed_at)
+                                        or query_completed_at < due_at + tolerance
+                                        or abs(observed_at - query_completed_at) > 1e-6
                                         or outcome.get("outcome_label") != "UNOBSERVED"
+                                        or outcome.get("observed_price") is not None
                                         or outcome.get("directional_return_r") is not None
                                     ):
                                         outcomes_match = False
