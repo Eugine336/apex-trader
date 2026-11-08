@@ -47,7 +47,7 @@ class SessionCalendar:
             cutoff = float(cutoff)
             if not math.isfinite(cutoff) or cutoff <= 0:
                 cutoff = None
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: malformed optional analysis clock keeps calendar timing unknown
             cutoff = None
         provider_sessions: list[dict] = []
         provider_calendar_errors: dict[str, str] = {}
@@ -76,12 +76,12 @@ class SessionCalendar:
                     timezone_name = str(values.get("timezone") or "").strip()
                     try:
                         ZoneInfo(timezone_name)
-                    except (ZoneInfoNotFoundError, ValueError):
+                    except (ZoneInfoNotFoundError, ValueError):  # SAFE-FALLBACK: unknown provider timezone cannot establish a session
                         continue
                     try:
                         opened = float(values.get("session_open_epoch"))
                         closed = float(values.get("session_close_epoch"))
-                    except (TypeError, ValueError, OverflowError):
+                    except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: malformed session bounds remain unavailable
                         continue
                     if not all(math.isfinite(v) for v in (opened, closed)) or opened >= closed:
                         continue
