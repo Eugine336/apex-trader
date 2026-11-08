@@ -204,12 +204,14 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
   `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
   requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
-  and live Brain consumption of the full synthesis output. PR #851 fixes the case where an activated opposing
-  concept with unknown strength was treated as zero opposition. PR #852 adds target-symbol validation, one immutable
-  decision-time cutoff, source-bar/source-timestamp future and staleness checks, and exclusion of duplicate evidence
-  identities. PR #852 is merged; its CI passed 4,305 tests on each of Python 3.11 and 3.12, lint, generated coverage
-  validation and the canonical identity audit. WP-B1 remains partial pending the broader contextual-selection,
-  strongest consistent geometry and live-consumption acceptance. WP-B4 relevance remains non-gating.
+  and live Brain consumption of the full synthesis output. PR #851 preserves unknown opposing strength as unknown;
+  PR #852 enforces target-symbol identity, one immutable decision-time cutoff, source-bar/source-timestamp future and
+  staleness checks, and duplicate evidence-ID exclusion. PR #854 preserves relevant/watch lens states as non-directional
+  Brain hypotheses and prevents conflicting active concept geometry from falling back to generic structure. PR #857
+  audits the 79-method/38-lens registry against reader registration, market-lens Evidence conversion, BrainReasoner
+  projection/synthesis and CognitiveBrain delegation. The call-path audit passed 4,310 tests on Python 3.11 and 3.12,
+  lint, generated coverage and canonical identity checks. WP-B1 implementation acceptance is complete; unavailable
+  regime/session/depth inputs remain explicitly data-gated and are not promoted into active hypotheses.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
   shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
@@ -228,8 +230,11 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   breakeven. PR #847 adds durable SUBMITTED/DISPATCHED/ACKNOWLEDGED/REJECTED/AMBIGUOUS states, atomic idempotent
   transitions, strict event-store history reads, real FlushLoop executor-result callbacks, broker-confirmed milestone
   updates, and verified snapshot reconciliation for restart recovery. Full Python 3.11/3.12, lint, and both Gold desk
-  suites passed before merge. News-window management remains DATA-GATED pending a verified economic-calendar feed
-  with source-time attestation. End-to-end owner-supplied broker lifecycle and restart acceptance remain to be demonstrated.
+  suites passed before merge. PR #856 adds a fresh-ledger process-restart test: an ambiguous action is recovered from
+  durable event history, replay is blocked, unverified broker state is rejected, and only complete platform-confirmed
+  source-time-verified reconciliation resolves it. PR #856 passed 4,308 tests on Python 3.11 and 3.12 plus lint.
+  News-window management remains DATA-GATED pending a verified economic-calendar feed. Live owner-connected broker
+  lifecycle acceptance remains outstanding; simulated event-store restart tests do not substitute for it.
 - **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
   reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
   UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain
@@ -239,12 +244,14 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   market-order opportunities, explicit stop/target geometry, visible geometry evidence IDs and non-overlapping
   decision windows. Calibration seeding is opt-in and idempotent per dataset/protocol. PR #828 passed 4,184 tests on
   Python 3.11 and 3.12, Ruff/lint, GitGuardian and identity/coverage/import checks.
-  **WP-B4 remains open.** PR #838 added producer-owned descriptive concept track records and injected them into the
-  live Brain as non-gating historical context. They are explicitly not calibrated probabilities or trade gates.
-  The manifest's source attestation remains caller-declared, not independently authenticated; OHLC labels exclude
-  spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts. Remaining:
-  connect verified quote-history events to `CalibrationProducer` for development/holdout/walk-forward eligibility,
-  validate on owner-supplied history, and complete the independent outcome-provenance audit.
+  **WP-B4 remains open for external-data acceptance.** PR #838 added producer-owned descriptive concept track records
+  and injected them into the live Brain as non-gating historical context. The verified bid/ask quote path is now wired:
+  decision snapshots carry reference-quote evidence, horizon outcome events preserve verified outcome-quote provenance,
+  and `CalibrationProducer` consumes the snapshot/outcome events for development, holdout and walk-forward eligibility.
+  The producer validates symbol/evidence lineage, source timestamps and non-overlapping decision windows; OHLC hindcast
+  labels remain separate and cannot fabricate spread/slippage/financing/latency. These artifacts are not calibrated
+  probabilities or trade gates. Remaining: independently authenticate source manifests/outcome provenance and validate
+  the complete pipeline on owner-supplied broker history.
 - **WP-B5 Performance — cache/incremental layer and benchmark tooling merged (PRs #829, #836 and #840).** Pure OHLC concept readings are cached
   per module instance and symbol against a digest of the full completed-bar history; historical corrections invalidate
   the entry and contextual readers (ticks, depth, portfolio, execution costs and reading-composition modules) still
@@ -254,19 +261,22 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   swing-pool status now uses suffix extrema in linear time. Per-module elapsed time, total per-symbol elapsed time,
   bar counts and cache hit/miss metrics are exposed in structured debug logs. PR #829 passed 4,196 tests on Python
   3.11 and 3.12, Ruff/lint, GitGuardian and both Gold desk suites.
-  **WP-B5 remains open.** PRs #836 and #840 added a read-only benchmark and made completion require every configured
-  symbol/timeframe pair, with explicit missing-timeframe reporting. No production full-universe benchmark has been run,
-  so no latency reduction or per-symbol budget is claimed. Remaining: measure the real configured universe, set an
-  evidence-based per-symbol budget, and extend incremental computation to other costly structures/pools while
-  preserving source-time and concept semantics.
+  **WP-B5 remains open for production measurement.** PR #855 strengthens the benchmark completion contract: both cold
+  and warm passes must contain each requested symbol exactly once, every requested timeframe exactly once, and at least
+  the requested bar depth, with no analysis failures. PR #855 passed 4,307 tests on Python 3.11 and 3.12 plus lint.
+  No production full-universe benchmark has been run on the owner-connected broker host, so no latency reduction or
+  per-symbol budget is claimed. Remaining: run the read-only benchmark against the actual configured universe, set an
+  evidence-based per-symbol budget, and extend incremental computation to other costly structures/pools.
 - **WP-B6 Remove remaining analysis constants — accepted in PR #830.** The universal three-domain gate, observer
   ATR/spread wake thresholds, event confidence-delta wake gate, and additional fixed analysis cutoffs were removed or
   replaced with evidence-lineage/context-specific logic. Owner/account limits, broker feasibility and statistical
   artifact-integrity requirements were retained. Full Python 3.11/3.12 CI and both Gold desk jobs passed on PR #830.
-- **WP-B7 Owner-limits surface — initial typed contract merged (PR #831).** The canonical owner-editable surface,
-  strict validation, atomic updates, and separation from internal safety controls are implemented. Final acceptance
-  still requires tracing every live exposure-increasing route through the canonical limits and proving no legacy
-  subsystem can loosen the owner's effective limits. Do not edit `.env` or migrate deployed values without approval.
+- **WP-B7 Owner-limits surface — typed contract and static route audit.** PR #831 provides the canonical owner-editable
+  surface, strict validation, atomic updates and separation from internal safety controls. The repository-wide broker
+  mutation route audit and owner-limit synchronization/strictest-legacy tests pass in full CI. The static audit confirms
+  broker mutation call sites remain within the approved executor/connector boundary; configuration tests confirm legacy
+  views cannot loosen the canonical limits. Final production acceptance still requires an owner-connected account trace
+  from Brain/Portfolio admission through the executor and broker response. Do not edit `.env` or migrate deployed values.
 
 ## 7. Tech debt to clear alongside
 - `tests/test_silent_swallow_observability.py`: the old 72-handler count is historical and must not be treated as current main status. Keep the audit enabled; PR #847 also classifies its newly introduced safe fallbacks and reruns the full matrix.
