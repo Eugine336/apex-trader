@@ -939,3 +939,41 @@ class TestPendingOrderLifecycle:
             system._restore_pending_orders()
 
         assert "ORDER-RESTORE-CANCELLED" not in system._pending_orders
+
+    def test_partial_pending_open_callback_persists_durable_pending_projection(self, monkeypatch):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        submitted_at = datetime.now(timezone.utc)
+        store = MagicMock()
+        monkeypatch.setattr("event_driven_bootstrap.get_event_store", lambda: store)
+        intent = SimpleNamespace(
+            symbol="EURUSD", direction="BUY", order_type="LIMIT", lots=0.10,
+            entry_price=99.0, new_sl=98.0, new_tp=101.0,
+            idempotency_key="a1b2c3d4e5f9", decision_id="decision-pending",
+            campaign_id="campaign-pending", opportunity_id="opportunity-pending",
+            decision_feature_snapshot={"snapshot_id": "snapshot-pending"},
+            timestamp=submitted_at,
+        )
+        response = SimpleNamespace(
+            order_id="ORDER-PARTIAL-CALLBACK",
+            order_status="PARTIALLY_FILLED_PENDING",
+            timestamp=submitted_at, lots=0.06,
+        )
+        result = SimpleNamespace(success=True, broker_response=response)
+
+        system._handle_open_result(intent, result)
+
+        meta = system._pending_orders["ORDER-PARTIAL-CALLBACK"]
+        assert meta["status"] == "PARTIALLY_FILLED_PENDING"
+        assert meta["remaining_lots"] == 0.06
+        assert any(
+            call.kwargs.get("event_type") == DE.ORDER_PENDING
+            and call.kwargs.get("durable") is True
+            for call in store.emit.call_args_list
+        )
+
