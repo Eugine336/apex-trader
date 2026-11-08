@@ -5670,6 +5670,9 @@ class EventDrivenSystem:
                     if status == "FILLED" and attribution != "attributed":
                         if ticket in restored:
                             restored[ticket].update(payload)
+                    elif attribution in {"unresolved_position_ticket", "unresolved_closed_fill"}:
+                        if ticket in restored:
+                            restored[ticket].update(payload)
                     elif status in {"PENDING", "PARTIALLY_FILLED_PENDING", "PARTIALLY_FILLED_TERMINAL"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
@@ -5960,7 +5963,9 @@ class EventDrivenSystem:
                     )
                     with self._pending_orders_lock:
                         self._pending_orders.pop(tracking_key, None)
-                elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}:
+                elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"} or (
+                    terminal and broker_position_id and position is None
+                ):
                     if meta.get("status") != status:
                         store.emit(
                             event_type=DE.ORDER_RECONCILED, severity="WARNING",
@@ -5970,7 +5975,7 @@ class EventDrivenSystem:
                             source_module="execution.pending_order_reconciliation",
                             durable=True,
                             payload={"order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
-                                     "attribution_status": "unresolved_position_ticket",
+                                     "attribution_status": "unresolved_position_ticket" if status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"} else "unresolved_closed_fill",
                                      "broker_record": record, "broker_confirmed": True},
                         )
                     meta["status"] = status
