@@ -2773,6 +2773,30 @@ class CognitionLoop:
             recorded = ledger.finish(action, "ACKNOWLEDGED", response=response)
             if recorded:
                 self._management_unresolved_actions.discard(action_id)
+                if kind == "partial_close" and current_size is None:
+                    try:
+                        pending_row = next(
+                            (
+                                item for item in ledger.pending_actions(symbol)
+                                if str(item.get("action_id", "") or "") == action_id
+                            ),
+                            None,
+                        )
+                        before = float(pending_row.get("position_size_before")) if pending_row else None
+                        closed_raw = (
+                            broker_response.get("lots_closed")
+                            if isinstance(broker_response, dict)
+                            else getattr(broker_response, "lots_closed", None)
+                        )
+                        closed = float(closed_raw) if closed_raw is not None else None
+                        if (
+                            before is not None and closed is not None
+                            and math.isfinite(before) and math.isfinite(closed)
+                            and before >= 0.0 and closed >= 0.0
+                        ):
+                            current_size = max(0.0, before - closed)
+                    except (TypeError, ValueError, OverflowError):
+                        current_size = None
                 if kind == "partial_close" and self._memory is not None and current_size is not None:
                     progress = getattr(self._memory, "get_management_progress", None)
                     if callable(progress):
@@ -2780,7 +2804,7 @@ class CognitionLoop:
                             progress(
                                 action.campaign_id,
                                 current_size=current_size,
-                                now_ms=int(time.time() * 1000),
+                                now_ms=int(_time.time() * 1000),
                             )
                         except Exception as exc:  # noqa: BLE001 — pending milestone remains visible
                             logger.error(
