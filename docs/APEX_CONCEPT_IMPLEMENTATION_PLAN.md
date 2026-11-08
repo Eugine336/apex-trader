@@ -221,10 +221,11 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   duplicates and rejects conflicting action-ID reuse. Portfolio reallocation emits candidates only; the Brain must
   author the actual management plan and any partial fraction. The static reallocation trim fraction was removed.
   Protective-stop validation consumes an explicit concept/structural price and does not synthesize a fraction or
-  breakeven. News-window management remains DATA-GATED until a verified economic-calendar feed with source-time
-  attestation exists. A broker-side acknowledgement/reconciliation lifecycle is still required to resolve ambiguous
-  pending actions beyond observed position-size change. Full CI passed on Python 3.11 and 3.12 (4,170 tests each),
-  lint, GitGuardian and both Gold desk jobs; no broker orders were sent.
+  breakeven. PR #847 adds durable SUBMITTED/DISPATCHED/ACKNOWLEDGED/REJECTED/AMBIGUOUS states, atomic idempotent
+  transitions, strict event-store history reads, real FlushLoop executor-result callbacks, broker-confirmed milestone
+  updates, and verified snapshot reconciliation for restart recovery. Full Python 3.11/3.12, lint, and both Gold desk
+  suites passed before merge. News-window management remains DATA-GATED pending a verified economic-calendar feed
+  with source-time attestation. End-to-end owner-supplied broker lifecycle and restart acceptance remain to be demonstrated.
 - **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
   reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
   UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain
