@@ -5824,6 +5824,17 @@ class EventDrivenSystem:
                         ):
                             entry_deals.append((price, volume))
                     if entry_deals:
+                        entry_order_ids = self._pm.get_position_entry_order_ids(
+                            broker_position_id, symbol=str(meta.get("symbol", "") or ""),
+                            platform=platform, from_dt=submitted_at,
+                            to_dt=datetime.now(timezone.utc),
+                        )
+                        if entry_order_ids != {resolved_ticket}:
+                            logger.warning(
+                                "[pending-orders] closed position {} contains other or unresolved entry orders; PnL attribution withheld",
+                                broker_position_id,
+                            )
+                            continue
                         total_volume = sum(volume for _, volume in entry_deals)
                         weighted_entry = sum(price * volume for price, volume in entry_deals) / total_volume
                         close_info = self._pm.get_deal_close_info(broker_position_id, platform)
