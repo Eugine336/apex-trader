@@ -1505,7 +1505,10 @@ class BrainReasoner:
             lens_registry = {lens.key: lens for lens in STRATEGY_LENSES}
             for assessment in analysis.strategy_lenses:
                 try:
-                    if not isinstance(assessment, dict) or assessment.get("status") != "relevant":
+                    if (
+                        not isinstance(assessment, dict)
+                        or assessment.get("status") not in {"relevant", "watch"}
+                    ):
                         continue
                     lens_key = str(assessment.get("key", "") or "")
                     lens = lens_registry.get(lens_key)
@@ -1542,7 +1545,7 @@ class BrainReasoner:
                     ]
                     hyps.append(BrainHypothesis(
                         statement=(
-                            f"{lens.name} is relevant to the current {symbol} evidence. "
+                            f"{lens.name} is {assessment.get('status')} for the current {symbol} evidence. "
                             f"Current anchors: {'; '.join(assessment.get('reasons', []) or [])}. "
                             "This is a lens-specific explanation to test, not a validated edge."
                         )[:500],
@@ -1577,6 +1580,8 @@ class BrainReasoner:
                         ),
                         confidence_components={
                             "lens_relevance": relevance,
+                            "lens_status": str(assessment.get("status", "unknown")),
+                            "regime_fit": str(assessment.get("regime_fit", "unknown")),
                             "source_count": len(source_ids),
                             "score_kind": "lens_relevance_not_forecast_confidence",
                             "calibrated_probability": False,
