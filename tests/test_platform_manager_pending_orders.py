@@ -227,6 +227,36 @@ def test_pending_fill_deal_lookup_requires_exact_order_and_position_identity():
 
     assert rows == [matching]
 
+def test_pending_reconciliation_live_and_history_ticket_collision_is_ambiguous():
+    historical = {
+        "ticket": "901", "symbol": "EURUSD", "state": 4,
+        "volume_initial": 0.10, "volume_current": 0.0,
+        "source_verified": True,
+    }
+    connector = PendingConnector(live=[_pending()], history=[historical])
+    manager = _manager([connector])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "AMBIGUOUS"
+    assert outcome["broker_confirmed"] is False
+
+
+def test_pending_reconciliation_rejects_invalid_terminal_volume_evidence():
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 2,
+        "volume_initial": 0.10, "volume_current": 0.20,
+        "source_verified": True,
+    }
+    manager = _manager([PendingConnector(history=[record])])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "UNKNOWN"
+    assert outcome["reason"] == "terminal_order_volume_evidence_invalid"
+
 def test_pending_reconciliation_never_infers_cancelled_from_live_book_absence():
     manager = _manager([PendingConnector(live=[], history=[])])
     outcome = manager.reconcile_pending_order(
