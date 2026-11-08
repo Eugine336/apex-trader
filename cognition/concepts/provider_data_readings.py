@@ -104,7 +104,14 @@ class ProviderDataReadings:
 
         def fetch(kind: ObservationKind, instrument: str | None = None) -> list[DataObservation]:
             try:
-                result = registry.fetch(kind, canonical_instrument=instrument)
+                if callable(getattr(registry, "fetch_with_status", None)):
+                    result, errors = registry.fetch_with_status(
+                        kind, canonical_instrument=instrument,
+                    )
+                    for provider, error in errors.items():
+                        provider_errors[f"{kind.value}:{provider}"] = error
+                else:
+                    result = registry.fetch(kind, canonical_instrument=instrument)
                 return [item for item in result if _verified(item, kind, cutoff)]
             except Exception as exc:  # noqa: BLE001 — preserve other provider channels
                 provider_errors[kind.value] = type(exc).__name__
