@@ -6096,10 +6096,11 @@ class EventDrivenSystem:
             if not bool(getattr(result, "success", False)):
                 return
             response = getattr(result, "broker_response", None)
-            if str(getattr(response, "order_status", "FILLED") or "FILLED").upper() == "PENDING":
-                # A resting order is not a filled trade. Keep its decision lineage
-                # in the durable pending-order projection until broker history
-                # confirms fill, cancellation, expiry or rejection.
+            response_status = str(getattr(response, "order_status", "FILLED") or "FILLED").upper()
+            if response_status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+                # A resting or partially filled pending order is not a completed
+                # trade. Keep its decision lineage until broker history confirms
+                # terminal disposition.
                 ticket = str(getattr(response, "order_id", "") or "").strip()
                 submitted_at = getattr(response, "timestamp", None)
                 if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
@@ -6119,7 +6120,8 @@ class EventDrivenSystem:
                     "opportunity_id": str(intent.opportunity_id or ""),
                     "decision_feature_snapshot": intent.decision_feature_snapshot,
                     "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
-                    "status": "PENDING",
+                    "status": response_status,
+                    "remaining_lots": float(getattr(response, "lots", intent.lots) or 0.0),
                 })
                 logger.info(
                     "[decision-provenance] pending order {} accepted; broker reconciliation active",
