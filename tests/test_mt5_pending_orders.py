@@ -160,12 +160,12 @@ def test_pending_idempotency_retry_returns_existing_order_without_second_send(mo
     first = connector.place_pending_order(
         symbol="EURUSD", direction="BUY", order_type="LIMIT",
         entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
-        idempotency_key="pending-key-2",
+        idempotency_key="a1b2c3d4e5f6",
     )
     second = connector.place_pending_order(
         symbol="EURUSD", direction="BUY", order_type="LIMIT",
         entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
-        idempotency_key="pending-key-2",
+        idempotency_key="a1b2c3d4e5f6",
     )
     assert first.success and second.success
     assert second.order_status == "PENDING"
