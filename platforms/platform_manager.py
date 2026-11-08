@@ -1199,10 +1199,10 @@ class PlatformManager:
     ) -> set[str]:
         """Return exact source-verified entry order IDs contributing to a position."""
         connector = self._connector_by_platform_str(platform)
-        fetch = getattr(connector, "get_deal_history_checked", None)
+        fetch = getattr(connector, "get_position_deal_history_checked", None)
         if not callable(fetch):
             raise RuntimeError("source-verified position deal history is unavailable")
-        rows = fetch(from_dt, to_dt)
+        rows = fetch(position_id)
         from platforms.mt5 import mt5_connector as mt5_adapter
         mt5_constants = getattr(mt5_adapter, "mt5", None)
         if mt5_constants is None:
