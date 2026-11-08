@@ -43,6 +43,10 @@ def synthesize_concept_readings(
     """
     expected_symbol = str(symbol or "").strip().upper() if symbol is not None else None
     cutoff = _finite(decision_cutoff_epoch)
+    # Production Brain synthesis always has a symbol and decision cutoff.
+    # Missing cutoff cannot establish freshness, so fail closed for that path.
+    if expected_symbol is not None and (not expected_symbol or cutoff is None or cutoff <= 0.0):
+        return []
     reading_rows = list(readings or ())
     seen_ids: set[str] = set()
     duplicate_ids: set[str] = set()
@@ -86,7 +90,13 @@ def synthesize_concept_readings(
                 or source_epoch <= 0
                 or source_epoch > cutoff
                 or relevance_horizon is None
-                or (relevance_horizon > 0.0 and cutoff - epoch > relevance_horizon)
+                or (
+                    relevance_horizon > 0.0
+                    and (
+                        cutoff - epoch > relevance_horizon
+                        or cutoff - source_epoch > relevance_horizon
+                    )
+                )
             ):
                 continue
         concept = str(reading.get("concept", "") or "").strip()
