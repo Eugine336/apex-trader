@@ -5744,7 +5744,10 @@ class EventDrivenSystem:
                     )
                     meta["attributed"] = True
 
-                if terminal and (status != "FILLED" or meta.get("attributed")):
+                if terminal and (
+                    status not in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}
+                    or meta.get("attributed")
+                ):
                     store.emit(
                         event_type=DE.ORDER_RECONCILED, severity="INFO",
                         symbol=str(meta.get("symbol", "") or ""),
