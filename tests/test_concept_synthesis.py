@@ -82,7 +82,7 @@ def test_brain_emits_one_hypothesis_per_synthesized_concept_group():
         _reading("liquidity", "SHORT", 0.7, "e3"),
     ]
     reasoner = BrainReasoner()
-    analysis = EvidenceAnalysis(concept_readings=readings)
+    analysis = EvidenceAnalysis(concept_readings=readings, decision_timestamp_epoch=1100.0)
 
     hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
     concept_groups = [
@@ -158,7 +158,7 @@ def test_brain_hypothesis_exposes_unknown_opposing_strength_as_uncertainty():
         _reading("order_flow", "SHORT", None, "e2"),
     ]
     hypotheses = BrainReasoner().generate_hypotheses(
-        EvidenceAnalysis(concept_readings=readings), "EURUSD",
+        EvidenceAnalysis(concept_readings=readings, decision_timestamp_epoch=1100.0), "EURUSD",
     )
     long_group = next(
         item for item in hypotheses
@@ -263,3 +263,11 @@ def test_stale_source_bar_cannot_qualify_when_recently_reingested():
     assert synthesize_concept_readings(
         [stale], symbol="EURUSD", decision_cutoff_epoch=1100.0,
     ) == []
+
+
+def test_brain_fails_closed_when_concept_decision_cutoff_is_missing():
+    hypotheses = BrainReasoner().generate_hypotheses(
+        EvidenceAnalysis(concept_readings=[_reading("crt", "LONG", 0.8, "e1")]),
+        "EURUSD",
+    )
+    assert not any(item.hypothesis_kind.startswith("concept_group:") for item in hypotheses)
