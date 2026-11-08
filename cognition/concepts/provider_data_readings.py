@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cognition.concepts.base import FLAT, ConceptReading, Implication, reference_price
 from cognition.concepts.auction_utils import last_source_epoch
@@ -36,7 +35,8 @@ def _verified(
     return bool(
         provenance.kind is kind
         and provenance.source_timestamp_verified is True
-        and stamp is not None and stamp > 0 and stamp <= cutoff
+        and stamp is not None and stamp > 0
+        and (kind is ObservationKind.ECONOMIC_EVENT or stamp <= cutoff)
         and provenance.source.provider.strip()
         and provenance.source.venue.strip()
         and provenance.source.canonical_instrument.strip()
@@ -49,6 +49,7 @@ def _make(
     concept: str, symbol: str, timeframe: str, epoch: float,
     reference: float | None, domain: EvidenceDomain, observation: str,
     facts: dict[str, Any], unknowns: tuple[str, ...] = (),
+    *, provider_epoch: float | None = None,
 ) -> ConceptReading:
     return ConceptReading(
         concept=concept, timeframe=timeframe, domain=domain,
@@ -68,7 +69,8 @@ def _make(
         reference_timeframe=timeframe, unknowns=unknowns,
         data_basis="normalized_provider_observations",
         independence_group=f"provider_data:{concept}:{symbol}",
-        source_timestamp_epoch=epoch, source_timestamp_verified=True,
+        source_timestamp_epoch=provider_epoch,
+        source_timestamp_verified=provider_epoch is not None,
     )
 
 
@@ -163,6 +165,7 @@ class ProviderDataReadings:
                  "provider_errors": dict(provider_errors),
                  "vintage_rule": "publication and revision timestamps must be no later than the analysis cutoff"},
                 tuple(f"event records missing {field} values" for field in event_unknowns),
+                provider_epoch=max(event["publication_timestamp_epoch"] for event in events),
             ))
             growth = [event for event in events if event["category"] in {
                 "gdp", "cpi", "pce", "employment", "payrolls", "pmi", "inflation",
@@ -175,6 +178,7 @@ class ProviderDataReadings:
                     {"releases": growth, "release_count": len(growth),
                      "provider_errors": dict(provider_errors)},
                     ("historical point-in-time release vintages and measured instrument reaction history",),
+                    provider_epoch=max(event["publication_timestamp_epoch"] for event in growth),
                 ))
 
         # Macro series: observation dates and publication dates remain distinct.
@@ -214,6 +218,7 @@ class ProviderDataReadings:
                 {"series": rates, "series_count": len(rates),
                  "provider_errors": dict(provider_errors)},
                 ("historical macro vintages and measured instrument co-movement",),
+                provider_epoch=max(row["publication_timestamp_epoch"] for row in rates),
             ))
 
         # Derivatives: exact venue and native contract remain attached to every record.
@@ -237,6 +242,7 @@ class ProviderDataReadings:
                 f"{symbol}: {len(derivative_rows)} venue-specific derivatives observations are available.",
                 {"contracts": derivative_rows, "contract_count": len(derivative_rows)},
                 ("contract expiry and roll conventions verified for the underlying instrument",),
+                provider_epoch=max(row["source_timestamp_epoch"] for row in derivative_rows),
             ))
 
         # Crypto metrics are venue/instrument-specific and never combined across venues.
@@ -258,6 +264,7 @@ class ProviderDataReadings:
                 f"{symbol}: {len(crypto_rows)} venue-specific crypto derivatives observations are available.",
                 {"observations": crypto_rows, "observation_count": len(crypto_rows)},
                 ("venue-specific instrument and contract semantics validated",),
+                provider_epoch=max(row["source_timestamp_epoch"] for row in crypto_rows),
             ))
 
         # True trade prints only: quote ticks and DOM are not relabelled as executed volume.
@@ -302,6 +309,7 @@ class ProviderDataReadings:
                  "volume_basis": "executed_trade_volume",
                  "aggressor_side_basis": "exchange_classified",
                  "source_venues": sorted({row["venue"] for row in prints})},
+                provider_epoch=max(row["source_timestamp_epoch"] for row in prints),
             ))
             output.append(_make(
                 "footprint", symbol, timeframe, bar_epoch, reference,
@@ -309,6 +317,7 @@ class ProviderDataReadings:
                 f"{symbol}: executed volume is attributed to exact traded prices.",
                 {"volume_at_price": profile, "price_level_count": len(profile),
                  "trade_count": len(prints), "volume_basis": "executed_trade_volume"},
+                provider_epoch=max(row["source_timestamp_epoch"] for row in prints),
             ))
 
         return output
