@@ -130,3 +130,19 @@ def test_unknown_strength_remains_unknown_instead_of_becoming_zero():
 
     assert group["strength"] is None
     assert group["confidence"] is None
+
+
+def test_unknown_opposing_strength_does_not_become_zero_conflict_or_fake_confidence():
+    groups = synthesize_concept_readings([
+        _reading("crt", "LONG", 0.8, "e1"),
+        _reading("order_flow", "SHORT", None, "e2"),
+    ])
+    long_group = next(group for group in groups if group["direction"] == "LONG")
+    short_group = next(group for group in groups if group["direction"] == "SHORT")
+
+    assert long_group["opposing_concepts"] == ["order_flow"]
+    assert long_group["opposing_strength"] is None
+    assert long_group["opposing_strength_unknown"] is True
+    assert long_group["confidence"] is None
+    assert short_group["strength"] is None
+    assert short_group["confidence"] is None
