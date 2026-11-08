@@ -2855,6 +2855,8 @@ class CognitionLoop:
                     marker = "[milestone_id="
                     if marker in reason:
                         milestone_id = reason.split(marker, 1)[1].split("]", 1)[0].strip()
+                    if not milestone_id and pending_row:
+                        milestone_id = str(pending_row.get("milestone_id", "") or "").strip()
                     clearer = getattr(self._memory, "clear_milestone_pending", None)
                     if milestone_id and callable(clearer):
                         try:
