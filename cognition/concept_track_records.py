@@ -217,7 +217,7 @@ class ConceptTrackRecordProducer:
                     or outcome.get("outcome_source_timestamp_verified") is not True
                     or not isinstance(outcome.get("outcome_quote"), dict)
                     or outcome["outcome_quote"].get("source_timestamp_verified") is not True
-                    or outcome["outcome_quote"].get("symbol", "").strip().upper() != sym
+                    or str(outcome["outcome_quote"].get("symbol", "") or "").strip().upper() != sym
                     or outcome.get("observation_status") != "OBSERVED"
                     or label not in {"FAVOURABLE", "UNFAVOURABLE"}
                     or disposition.get("_sequence", 0) <= 0
