@@ -1239,6 +1239,10 @@ class EventDrivenSystem:
         # ticket -> {symbol, direction, platform}.
         self._known_open: dict[str, dict] = {}
         self._external_close_attempts: dict[str, int] = {}
+        # Durable pending-order projections are restored from ORDER_PENDING and
+        # advanced only by broker-verified live/history reconciliation.
+        self._pending_orders: dict[str, dict[str, Any]] = {}
+        self._pending_orders_lock = threading.Lock()
 
         # In-flight management mutations awaiting broker confirmation. The
         # management loop applies an optimistic flag (at_breakeven / partial_-
@@ -3582,6 +3586,7 @@ class EventDrivenSystem:
             logger.debug("[startup] crash recovery check failed: {}", exc)
 
         self._recover_open_positions()
+        self._restore_pending_orders()
 
         # ── Event-log reconciliation: surface crash-window discrepancies ──
         # Read-only: fold the replayable event log into the order_ids it
@@ -4938,6 +4943,10 @@ class EventDrivenSystem:
             self._reconcile_external_closes(positions, failed_platforms)
         except Exception as exc:
             logger.debug("[risk-state] external-close reconcile failed: {}", exc)
+        try:
+            self._reconcile_pending_orders(positions)
+        except Exception as exc:
+            logger.error("[risk-state] pending-order reconciliation failed: {}", exc)
 
         position_risks: list = []
         acct_risk_dollars: dict[str, float] = defaultdict(float)
@@ -5571,6 +5580,205 @@ class EventDrivenSystem:
 
         self._known_open = {**current, **still_pending}
 
+    def _restore_pending_orders(self) -> None:
+        """Rebuild the pending-order projection from durable lifecycle events."""
+        try:
+            store = get_event_store()
+            if store is None:
+                return
+            rows = store.query_events(
+                severity_min="INFO",
+                event_types=[DE.ORDER_PENDING, DE.ORDER_CANCELLED, DE.ORDER_RECONCILED, DE.ORDER_FILLED],
+                limit=10000,
+                raise_on_error=True,
+            )
+            restored: dict[str, dict[str, Any]] = {}
+            for row in reversed(rows):
+                event_type = str(row.get("event_type", "") or "")
+                payload = json.loads(row.get("payload_json", "{}") or "{}")
+                if not isinstance(payload, dict):
+                    continue
+                ticket = str(payload.get("order_id") or row.get("parent_id") or "").strip()
+                if not ticket:
+                    continue
+                if event_type == DE.ORDER_PENDING:
+                    submitted_at = str(payload.get("submitted_at", "") or "")
+                    try:
+                        parsed = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+                    except (TypeError, ValueError):
+                        continue
+                    if parsed.tzinfo is None or parsed.utcoffset() is None:
+                        continue
+                    restored[ticket] = {**payload, "submitted_at": parsed.isoformat(), "status": "PENDING"}
+                elif event_type == DE.ORDER_FILLED:
+                    if ticket in restored:
+                        restored[ticket]["fill_event_emitted"] = True
+                        restored[ticket]["position_id"] = str(payload.get("position_id", "") or "")
+                elif event_type == DE.ORDER_CANCELLED:
+                    restored.pop(ticket, None)
+                elif event_type == DE.ORDER_RECONCILED:
+                    status = str(payload.get("status", "UNKNOWN") or "UNKNOWN").upper()
+                    attribution = str(payload.get("attribution_status", "") or "")
+                    if status == "FILLED" and attribution != "attributed":
+                        if ticket in restored:
+                            restored[ticket].update(payload)
+                    elif status in {"PENDING", "PARTIALLY_FILLED_PENDING", "PARTIALLY_FILLED_TERMINAL"}:
+                        if ticket in restored:
+                            restored[ticket].update(payload)
+                    else:
+                        restored.pop(ticket, None)
+            with self._pending_orders_lock:
+                self._pending_orders = restored
+            if restored:
+                logger.warning("[pending-orders] restored {} broker-pending lifecycle record(s)", len(restored))
+        except Exception as exc:  # noqa: BLE001 — no unverified restart reconstruction
+            logger.critical("[pending-orders] durable lifecycle restore failed: {}", exc)
+
+    def _reconcile_pending_orders(self, positions: list) -> None:
+        """Advance pending orders only on verified broker state, never on absence."""
+        with self._pending_orders_lock:
+            pending = list(self._pending_orders.items())
+        if not pending:
+            return
+        store = get_event_store()
+        if store is None:
+            logger.error("[pending-orders] event store unavailable; broker order lifecycle remains unresolved")
+            return
+        position_by_ticket = {
+            str(getattr(pos, "order_id", getattr(pos, "ticket", "")) or ""): pos
+            for pos in (positions or [])
+        }
+        for ticket, meta in pending:
+            try:
+                submitted_at = datetime.fromisoformat(
+                    str(meta.get("submitted_at", "") or "").replace("Z", "+00:00")
+                )
+                outcome = self._pm.reconcile_pending_order(
+                    ticket, symbol=str(meta.get("symbol", "") or ""),
+                    submitted_at=submitted_at,
+                )
+                status = str(outcome.get("status", "UNKNOWN") or "UNKNOWN").upper()
+                record = outcome.get("record") if isinstance(outcome.get("record"), dict) else {}
+                if status in {"UNKNOWN", "AMBIGUOUS", "PENDING"}:
+                    continue
+                if status == "PARTIALLY_FILLED_PENDING":
+                    if meta.get("status") != status:
+                        store.emit(
+                            event_type=DE.ORDER_RECONCILED, severity="INFO",
+                            symbol=str(meta.get("symbol", "") or ""),
+                            correlation_id=str(meta.get("decision_id", "") or "") or None,
+                            parent_id=ticket, source_module="execution.pending_order_reconciliation",
+                            durable=True,
+                            payload={"order_id": ticket, "status": status,
+                                     "remaining_volume": outcome.get("remaining_volume"),
+                                     "initial_volume": outcome.get("initial_volume"),
+                                     "broker_confirmed": True},
+                        )
+                        meta["status"] = status
+                    continue
+
+                position_id = str(
+                    record.get("position_id") or record.get("position") or ticket
+                ).strip()
+                position = position_by_ticket.get(position_id) or position_by_ticket.get(ticket)
+                terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
+                if position is not None and not meta.get("attributed"):
+                    fill_price = float(getattr(position, "open_price", 0.0) or 0.0)
+                    fill_lots = float(getattr(position, "lots", 0.0) or 0.0)
+                    if fill_price <= 0.0 or fill_lots <= 0.0:
+                        logger.error("[pending-orders] broker reports fill for {} but open position details are incomplete", ticket)
+                        continue
+                    payload = {
+                        "order_id": ticket, "position_id": position_id,
+                        "symbol": str(meta.get("symbol", "") or ""),
+                        "direction": str(meta.get("direction", "") or "").upper(),
+                        "order_type": str(meta.get("order_type", "") or "").upper(),
+                        "fill_price": fill_price, "lots": fill_lots,
+                        "sl": float(getattr(position, "sl", 0.0) or 0.0),
+                        "tp": float(getattr(position, "tp", 0.0) or 0.0),
+                        "status": "FILLED" if status == "FILLED" else "PARTIALLY_FILLED",
+                        "decision_id": str(meta.get("decision_id", "") or ""),
+                        "campaign_id": str(meta.get("campaign_id", "") or ""),
+                        "opportunity_id": str(meta.get("opportunity_id", "") or ""),
+                        "decision_feature_snapshot": meta.get("decision_feature_snapshot"),
+                        "broker_confirmed": True,
+                    }
+                    if not meta.get("fill_event_emitted"):
+                        store.emit(
+                            event_type=DE.ORDER_FILLED, severity="INFO",
+                            symbol=payload["symbol"],
+                            correlation_id=payload["decision_id"] or None,
+                            parent_id=ticket,
+                            source_module="execution.pending_order_reconciliation",
+                            durable=True, payload=payload,
+                        )
+                        meta["fill_event_emitted"] = True
+                        meta["position_id"] = position_id
+                    self._entry_context[position_id] = {
+                        "ticket": position_id, "symbol": payload["symbol"],
+                        "direction": payload["direction"],
+                        "decision_id": payload["decision_id"],
+                        "campaign_id": payload["campaign_id"],
+                        "opportunity_id": payload["opportunity_id"],
+                        "decision_feature_snapshot": payload["decision_feature_snapshot"],
+                        "snapshot_id": str((payload["decision_feature_snapshot"] or {}).get("snapshot_id", ""))
+                            if isinstance(payload["decision_feature_snapshot"], dict) else "",
+                        "decision_snapshot_complete": bool(
+                            isinstance(payload["decision_feature_snapshot"], dict)
+                            and payload["decision_feature_snapshot"].get("snapshot_complete") is True
+                        ),
+                    }
+                    try:
+                        balance = float(self._pm.get_platform_balance(payload["symbol"]) or 0.0)
+                    except Exception:
+                        balance = 0.0
+                    fill_result = type("PendingFillResult", (), {
+                        "order_id": position_id, "fill_price": fill_price,
+                        "lots": fill_lots, "sl": payload["sl"], "tp": payload["tp"],
+                        "direction": payload["direction"],
+                    })()
+                    self._on_order_filled(
+                        payload["symbol"], payload["direction"], fill_result,
+                        balance, expected_price=float(meta.get("entry_price", 0.0) or 0.0),
+                        order_ts=submitted_at.timestamp(),
+                    )
+                    meta["attributed"] = True
+
+                if terminal and (status != "FILLED" or meta.get("attributed")):
+                    store.emit(
+                        event_type=DE.ORDER_RECONCILED, severity="INFO",
+                        symbol=str(meta.get("symbol", "") or ""),
+                        correlation_id=str(meta.get("decision_id", "") or "") or None,
+                        parent_id=ticket,
+                        source_module="execution.pending_order_reconciliation",
+                        durable=True,
+                        payload={
+                            "order_id": ticket, "status": status,
+                            "attribution_status": "attributed" if meta.get("attributed") else "not_applicable",
+                            "position_id": position_id if position is not None else "",
+                            "broker_record": record,
+                            "broker_confirmed": bool(outcome.get("broker_confirmed")),
+                        },
+                    )
+                    with self._pending_orders_lock:
+                        self._pending_orders.pop(ticket, None)
+                elif status == "FILLED":
+                    if meta.get("status") != status:
+                        store.emit(
+                            event_type=DE.ORDER_RECONCILED, severity="WARNING",
+                            symbol=str(meta.get("symbol", "") or ""),
+                            correlation_id=str(meta.get("decision_id", "") or "") or None,
+                            parent_id=ticket,
+                            source_module="execution.pending_order_reconciliation",
+                            durable=True,
+                            payload={"order_id": ticket, "status": "FILLED",
+                                     "attribution_status": "unresolved_position_ticket",
+                                     "broker_record": record, "broker_confirmed": True},
+                        )
+                    meta["status"] = status
+            except Exception as exc:  # noqa: BLE001 — retain unresolved order for next broker-confirmed cycle
+                logger.error("[pending-orders] reconciliation failed for {}: {}", ticket, exc)
+
     def _handle_open_result(self, intent: Intent, result: Any) -> None:
         """Persist the Brain's decision-time evidence against the broker ticket.
 
@@ -5583,11 +5791,35 @@ class EventDrivenSystem:
                 return
             response = getattr(result, "broker_response", None)
             if str(getattr(response, "order_status", "FILLED") or "FILLED").upper() == "PENDING":
-                # A resting order is not a filled trade. Its lifecycle is recorded
-                # by PlatformManager; do not create a position-keyed trade snapshot.
+                # A resting order is not a filled trade. Keep its decision lineage
+                # in the durable pending-order projection until broker history
+                # confirms fill, cancellation, expiry or rejection.
+                ticket = str(getattr(response, "order_id", "") or "").strip()
+                if ticket:
+                    submitted_at = getattr(response, "timestamp", None)
+                    if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
+                        submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
+                    with self._pending_orders_lock:
+                        self._pending_orders[ticket] = {
+                            "order_id": ticket,
+                            "symbol": str(intent.symbol or "").upper(),
+                            "direction": str(intent.direction or "").upper(),
+                            "order_type": str(intent.order_type or "").upper(),
+                            "lots": float(intent.lots or 0.0),
+                            "entry_price": float(intent.entry_price or 0.0),
+                            "sl": float(intent.new_sl or 0.0),
+                            "tp": float(intent.new_tp or 0.0),
+                            "idempotency_key": str(intent.idempotency_key or ""),
+                            "decision_id": str(intent.decision_id or ""),
+                            "campaign_id": str(intent.campaign_id or ""),
+                            "opportunity_id": str(intent.opportunity_id or ""),
+                            "decision_feature_snapshot": intent.decision_feature_snapshot,
+                            "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
+                            "status": "PENDING",
+                        }
                 logger.info(
-                    "[decision-provenance] pending order {} remains unfilled; awaiting broker reconciliation",
-                    getattr(response, "order_id", ""),
+                    "[decision-provenance] pending order {} accepted; broker reconciliation active",
+                    ticket,
                 )
                 return
             ticket = ""
