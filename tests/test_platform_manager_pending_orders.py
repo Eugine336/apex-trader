@@ -214,7 +214,7 @@ def test_pending_fill_deal_lookup_requires_exact_order_and_position_identity():
         "order": "901", "position_id": "902", "symbol": "EURUSD",
         "source_verified": False, "entry": 0, "price": 102.0, "volume": 0.01,
     }
-    connector = SimpleNamespace(get_deal_history=lambda *args: [
+    connector = SimpleNamespace(get_deal_history_checked=lambda *args: [
         matching, same_position_different_order, same_order_different_position, unverified,
     ])
     manager = object.__new__(PlatformManager)
