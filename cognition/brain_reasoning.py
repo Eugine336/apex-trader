@@ -523,6 +523,7 @@ class BrainReasoner:
                     "timeframe": str(m.get("timeframe", "") or ""),
                     "source_bar_epoch": m.get("source_bar_epoch"),
                     "source_timestamp_epoch": getattr(e, "source_timestamp_epoch", None),
+                    "relevance_horizon_seconds": getattr(e, "relevance_horizon_seconds", None),
                     "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
                     "data_basis": str(getattr(e, "data_basis", "") or ""),
                     "provisional": getattr(e, "provisional", True) is True,
