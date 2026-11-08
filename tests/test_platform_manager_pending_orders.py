@@ -100,6 +100,55 @@ def test_pending_reconciliation_stays_unknown_when_account_set_is_incomplete():
     assert outcome["reason"] == "mt5_account_set_incomplete"
     assert outcome["broker_confirmed"] is False
 
+def test_pending_reconciliation_duplicate_ticket_across_accounts_is_ambiguous():
+    manager = _manager([
+        PendingConnector(live=[_pending()]),
+        PendingConnector(live=[_pending()]),
+    ])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "AMBIGUOUS"
+    assert outcome["broker_confirmed"] is False
+
+
+def test_pending_reconciliation_maps_verified_cancelled_history_state():
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 2,
+        "volume_initial": 0.10, "volume_current": 0.10,
+        "source_verified": True,
+    }
+    manager = _manager([PendingConnector(history=[record])])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "CANCELLED"
+    assert outcome["broker_confirmed"] is True
+
+
+def test_pending_reconciliation_maps_verified_expired_history_state():
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 6,
+        "volume_initial": 0.10, "volume_current": 0.10,
+        "source_verified": True,
+    }
+    manager = _manager([PendingConnector(history=[record])])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "EXPIRED"
+    assert outcome["broker_confirmed"] is True
+
+
+def test_cancel_pending_fill_race_does_not_report_cancellation():
+    connector = PendingConnector(live=[_pending()], cancel_result=False)
+    manager = _manager([connector])
+    assert manager.cancel_pending_order("901", symbol="EURUSD") is False
+    assert connector.cancelled == ["901"]
+
 def test_pending_reconciliation_never_infers_cancelled_from_live_book_absence():
     manager = _manager([PendingConnector(live=[], history=[])])
     outcome = manager.reconcile_pending_order(
