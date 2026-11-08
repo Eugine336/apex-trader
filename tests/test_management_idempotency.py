@@ -267,3 +267,76 @@ def test_broker_identifier_without_explicit_success_remains_dispatched():
     assert ledger.status(action.action_id, "EURUSD") == "DISPATCHED"
     assert ledger.pending_actions("EURUSD")
     store.close()
+
+
+def test_actual_executor_broker_acknowledgement_resolves_dispatched_milestone():
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    loop = _loop(store, ledger)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or True)
+    loop._realise_management(_output(), _position())
+    action = calls[0]
+    assert ledger.status(action.action_id, "EURUSD") == "DISPATCHED"
+
+    intent = SimpleNamespace(
+        action_id=action.action_id,
+        symbol=action.symbol,
+        intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
+        position_ticket="ticket-1",
+        decision_id=action.decision_id,
+        campaign_id=action.campaign_id,
+        opportunity_id=action.opportunity_id,
+        reason=f"milestone [milestone_id={action.milestone_id}]",
+    )
+    result = SimpleNamespace(
+        success=True,
+        rejected_by_gate=False,
+        error="",
+        broker_response=SimpleNamespace(
+            success=True, order_id="deal-77", lots_closed=0.1,
+        ),
+    )
+    assert loop.record_management_execution_result(intent, result) is True
+    assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
+    assert action.action_id not in loop._management_unresolved_actions
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.1, now_ms=10_000,
+    )
+    assert progress["pending_milestone"] is None
+    assert action.milestone_id in progress["completed_milestones"]
+    store.close()
+
+
+def test_explicit_executor_gate_rejection_resolves_dispatched_milestone_for_retry():
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    loop = _loop(store, ledger)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or True)
+    loop._realise_management(_output(), _position())
+    action = calls[0]
+    intent = SimpleNamespace(
+        action_id=action.action_id,
+        symbol=action.symbol,
+        intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
+        position_ticket="ticket-1",
+        decision_id=action.decision_id,
+        campaign_id=action.campaign_id,
+        opportunity_id=action.opportunity_id,
+        reason=f"milestone [milestone_id={action.milestone_id}]",
+    )
+    result = SimpleNamespace(
+        success=False,
+        rejected_by_gate=True,
+        error="risk gate rejected",
+        broker_response=None,
+    )
+    assert loop.record_management_execution_result(intent, result) is True
+    assert ledger.status(action.action_id, "EURUSD") == "REJECTED"
+    assert action.action_id not in loop._management_unresolved_actions
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.2, now_ms=10_000,
+    )
+    assert progress["pending_milestone"] is None
+    store.close()
