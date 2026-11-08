@@ -159,3 +159,16 @@ These are reader implementations and contract-level tests, not evidence that any
 ### Intermarket synchronization correction
 
 Intermarket return measurements now pair only exact common source timestamps and calculate a return only when the immediately preceding common completed bar is exactly one timeframe interval earlier. Missing intervals are not bridged with multi-bar returns. SMT sweep comparisons are restricted to the latest exact common completed bar for the target/peer pair. Currency-strength aggregation intersects return timestamps across every included, broker-verified instrument specification; it does not combine asynchronous peer returns. These controls improve temporal integrity but do not establish causal relationships, predictive value, stationarity or stable correlations.
+
+
+## 5. Owner-host acceptance commands and interpretation
+
+Run the read-only broker capability audit on the Windows trading host, where the MT5 terminal and broker sessions are already configured:
+
+```powershell
+python scripts/audit_broker_data_capabilities.py --output data_capability_audit.json
+```
+
+The audit now reports a separate acceptance decision. A connected terminal alone is not a complete result. Completion requires a source-verified terminal and account snapshot, successful whole-book position/order/deal history queries, unique broker mapping for every requested instrument, verified instrument specifications, and source-attested strictly ordered completed bars for every requested symbol/timeframe. Empty-but-successful broker history is distinguished from a failed history query. Tick and DOM availability are reported as optional capabilities and are not misrepresented as executed trade volume.
+
+The report is an aggregate capability artifact; do not commit it if it contains owner account or broker operational information. Keep it on the owner host and share only the sanitized acceptance summary. This check does not prove strategy profitability, calibration validity, external-provider licensing or production lifecycle acceptance.
