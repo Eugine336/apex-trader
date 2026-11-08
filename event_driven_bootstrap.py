@@ -5913,68 +5913,116 @@ class EventDrivenSystem:
                             with self._pending_orders_lock:
                                 self._pending_orders.pop(tracking_key, None)
                             continue
-                if position is not None and not meta.get("attributed"):
-                    fill_price = float(getattr(position, "open_price", 0.0) or 0.0)
-                    fill_lots = float(getattr(position, "lots", 0.0) or 0.0)
-                    if fill_price <= 0.0 or fill_lots <= 0.0:
-                        logger.error("[pending-orders] broker reports fill for {} but open position details are incomplete", resolved_ticket)
-                        continue
-                    payload = {
-                        "order_id": resolved_ticket, "tracking_key": tracking_key, "position_id": position_id,
-                        "symbol": str(meta.get("symbol", "") or ""),
-                        "direction": str(meta.get("direction", "") or "").upper(),
-                        "order_type": str(meta.get("order_type", "") or "").upper(),
-                        "fill_price": fill_price, "lots": fill_lots,
-                        "sl": float(getattr(position, "sl", 0.0) or 0.0),
-                        "tp": float(getattr(position, "tp", 0.0) or 0.0),
-                        "status": "FILLED" if status == "FILLED" else "PARTIALLY_FILLED",
-                        "decision_id": str(meta.get("decision_id", "") or ""),
-                        "campaign_id": str(meta.get("campaign_id", "") or ""),
-                        "opportunity_id": str(meta.get("opportunity_id", "") or ""),
-                        "decision_feature_snapshot": meta.get("decision_feature_snapshot"),
-                        "broker_confirmed": True,
-                    }
-                    if not meta.get("fill_event_emitted"):
-                        store.emit(
-                            event_type=DE.ORDER_FILLED, severity="INFO",
-                            symbol=payload["symbol"],
-                            correlation_id=payload["decision_id"] or None,
-                            parent_id=tracking_key,
-                            source_module="execution.pending_order_reconciliation",
-                            durable=True, payload=payload,
-                        )
-                        meta["fill_event_emitted"] = True
-                        meta["position_id"] = position_id
-                    self._entry_context[position_id] = {
-                        "ticket": position_id, "symbol": payload["symbol"],
-                        "direction": payload["direction"],
-                        "decision_id": payload["decision_id"],
-                        "campaign_id": payload["campaign_id"],
-                        "opportunity_id": payload["opportunity_id"],
-                        "decision_feature_snapshot": payload["decision_feature_snapshot"],
-                        "snapshot_id": str((payload["decision_feature_snapshot"] or {}).get("snapshot_id", ""))
-                            if isinstance(payload["decision_feature_snapshot"], dict) else "",
-                        "decision_snapshot_complete": bool(
-                            isinstance(payload["decision_feature_snapshot"], dict)
-                            and payload["decision_feature_snapshot"].get("snapshot_complete") is True
-                        ),
-                    }
+                if position is not None:
                     try:
-                        balance = float(self._pm.get_platform_balance(payload["symbol"]) or 0.0)
-                    except Exception:
-                        balance = 0.0
-                    fill_result = type("PendingFillResult", (), {
-                        "order_id": position_id, "fill_price": fill_price,
-                        "lots": fill_lots, "sl": payload["sl"], "tp": payload["tp"],
-                        "direction": payload["direction"],
-                    })()
-                    self._on_order_filled(
-                        payload["symbol"], payload["direction"], fill_result,
-                        balance, expected_price=float(meta.get("entry_price", 0.0) or 0.0),
-                        order_ts=0.0, record_execution_metrics=False,
-                    )
-                    meta["attributed"] = True
+                        fill_deals = self._pm.get_pending_order_fill_deals(
+                            resolved_ticket, position_id,
+                            symbol=str(meta.get("symbol", "") or ""),
+                            platform=platform, from_dt=submitted_at,
+                            to_dt=datetime.now(timezone.utc),
+                        )
+                        from platforms.mt5 import mt5_connector as mt5_adapter
+                        mt5_constants = getattr(mt5_adapter, "mt5", None)
+                        if mt5_constants is None:
+                            raise RuntimeError("MT5 deal-entry constants unavailable")
+                        entry_kinds = {
+                            getattr(mt5_constants, "DEAL_ENTRY_IN"),
+                            getattr(mt5_constants, "DEAL_ENTRY_INOUT"),
+                        }
+                        verified_entries = []
+                        malformed_fill_deal = False
+                        for deal in fill_deals:
+                            try:
+                                entry_kind = int(deal.get("entry"))
+                                price = float(deal.get("price"))
+                                volume = float(deal.get("volume"))
+                            except (TypeError, ValueError, OverflowError) as exc:
+                                logger.warning("[pending-orders] malformed fill deal for {}: {}", resolved_ticket, exc)
+                                malformed_fill_deal = True
+                                break
+                            if entry_kind in entry_kinds:
+                                if not math.isfinite(price) or not math.isfinite(volume) or price <= 0.0 or volume <= 0.0:
+                                    malformed_fill_deal = True
+                                    break
+                                verified_entries.append((price, volume))
+                        if malformed_fill_deal or not verified_entries:
+                            raise RuntimeError("exact pending-order entry deal evidence is incomplete")
+                        fill_lots = sum(volume for _, volume in verified_entries)
+                        fill_price = sum(price * volume for price, volume in verified_entries) / fill_lots
+                        requested_lots = float(meta.get("lots", 0.0) or 0.0)
+                        if (
+                            not math.isfinite(fill_lots) or not math.isfinite(fill_price)
+                            or fill_lots <= 0.0 or fill_price <= 0.0
+                            or (requested_lots > 0.0 and fill_lots > requested_lots + 1e-8)
+                        ):
+                            raise RuntimeError("pending-order deal volume or price is outside the requested order")
+                    except Exception as exc:
+                        logger.warning("[pending-orders] exact fill attribution unavailable for {}: {}", resolved_ticket, exc)
+                        continue
 
+                    if not meta.get("attributed"):
+                        payload = {
+                            "order_id": resolved_ticket, "tracking_key": tracking_key, "position_id": position_id,
+                            "symbol": str(meta.get("symbol", "") or ""),
+                            "direction": str(meta.get("direction", "") or "").upper(),
+                            "order_type": str(meta.get("order_type", "") or "").upper(),
+                            "fill_price": fill_price, "lots": fill_lots,
+                            "sl": float(getattr(position, "sl", 0.0) or 0.0),
+                            "tp": float(getattr(position, "tp", 0.0) or 0.0),
+                            "status": "FILLED" if status == "FILLED" else "PARTIALLY_FILLED",
+                            "decision_id": str(meta.get("decision_id", "") or ""),
+                            "campaign_id": str(meta.get("campaign_id", "") or ""),
+                            "opportunity_id": str(meta.get("opportunity_id", "") or ""),
+                            "decision_feature_snapshot": meta.get("decision_feature_snapshot"),
+                            "broker_confirmed": True,
+                        }
+                        if not meta.get("fill_event_emitted"):
+                            store.emit(
+                                event_type=DE.ORDER_FILLED, severity="INFO",
+                                symbol=payload["symbol"],
+                                correlation_id=payload["decision_id"] or None,
+                                parent_id=tracking_key,
+                                source_module="execution.pending_order_reconciliation",
+                                durable=True, payload=payload,
+                            )
+                            meta["fill_event_emitted"] = True
+                            meta["position_id"] = position_id
+                        self._entry_context[position_id] = {
+                            "ticket": position_id, "symbol": payload["symbol"],
+                            "direction": payload["direction"],
+                            "decision_id": payload["decision_id"],
+                            "campaign_id": payload["campaign_id"],
+                            "opportunity_id": payload["opportunity_id"],
+                            "decision_feature_snapshot": payload["decision_feature_snapshot"],
+                            "snapshot_id": str((payload["decision_feature_snapshot"] or {}).get("snapshot_id", ""))
+                                if isinstance(payload["decision_feature_snapshot"], dict) else "",
+                            "decision_snapshot_complete": bool(
+                                isinstance(payload["decision_feature_snapshot"], dict)
+                                and payload["decision_feature_snapshot"].get("snapshot_complete") is True
+                            ),
+                        }
+                        try:
+                            balance = float(self._pm.get_platform_balance(payload["symbol"]) or 0.0)
+                        except Exception as exc:
+                            logger.warning("[pending-orders] balance lookup failed for {}: {}", resolved_ticket, exc)
+                            balance = 0.0
+                        fill_result = type("PendingFillResult", (), {
+                            "order_id": position_id, "fill_price": fill_price,
+                            "lots": fill_lots, "sl": payload["sl"], "tp": payload["tp"],
+                            "direction": payload["direction"],
+                        })()
+                        self._on_order_filled(
+                            payload["symbol"], payload["direction"], fill_result,
+                            balance, expected_price=float(meta.get("entry_price", 0.0) or 0.0),
+                            order_ts=0.0, record_execution_metrics=False,
+                        )
+                        meta["attributed"] = True
+                    else:
+                        entry_context = self._entry_context.get(position_id)
+                        if isinstance(entry_context, dict):
+                            entry_context["lots"] = fill_lots
+                            entry_context["entry_price"] = fill_price
+                    meta["attributed_lots"] = fill_lots
                 if terminal and (
                     status not in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}
                     or meta.get("attributed")
