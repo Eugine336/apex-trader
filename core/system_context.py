@@ -1350,10 +1350,12 @@ class SystemContext:
                 # selected symbol. This is the live bridge from the existing
                 # parallel broker batch API into the native concept readers.
                 _concept_market_cycle_snapshot: dict[str, Any] = {}
+                _concept_market_cycle_specs: dict[str, Any] = {}
                 _concept_market_cycle_meta: dict[str, Any] = {"cutoff_epoch": None}
 
                 def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
                     _concept_market_cycle_snapshot.clear()
+                    _concept_market_cycle_specs.clear()
                     from datetime import datetime, timezone
                     _concept_market_cycle_meta["cutoff_epoch"] = datetime.now(timezone.utc).timestamp()
                     try:
@@ -1367,6 +1369,20 @@ class SystemContext:
                             for key, value in (batch or {}).items()
                             if isinstance(value, dict)
                         })
+                        # Contract metadata is gathered through the adapter and
+                        # kept separate from bars. Readers must verify its source;
+                        # symbol-name parsing is never used as a currency fallback.
+                        for canonical in _concept_market_cycle_snapshot:
+                            try:
+                                spec = platform_manager.get_symbol_spec(canonical)
+                            except Exception as spec_exc:  # noqa: BLE001 — one missing spec must not erase other peers
+                                logger.warning(
+                                    "[cognition] peer specification unavailable for %s: %s",
+                                    canonical, type(spec_exc).__name__,
+                                )
+                                continue
+                            if isinstance(spec, dict):
+                                _concept_market_cycle_specs[canonical] = dict(spec)
                     except Exception as exc:  # noqa: BLE001 — intermarket context remains unavailable, not fabricated
                         logger.warning(
                             "[cognition] multi-symbol completed-bar snapshot unavailable: %s",
@@ -1375,6 +1391,7 @@ class SystemContext:
 
                 def _end_concept_market_cycle() -> None:
                     _concept_market_cycle_snapshot.clear()
+                    _concept_market_cycle_specs.clear()
                     _concept_market_cycle_meta["cutoff_epoch"] = None
 
                 def _concept_market_source(symbol: str) -> list:
@@ -1465,6 +1482,8 @@ class SystemContext:
                             "multi_symbol_frames": dict(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
+                            "multi_symbol_specs": dict(_concept_market_cycle_specs),
+                            "multi_symbol_source_includes_forming_bar": True,
                         },
                     )
 
