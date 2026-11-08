@@ -108,6 +108,66 @@ def _safe_call(fn, *args, **kwargs):
         return {"value": None, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
 
+def _acceptance_summary(
+    *,
+    terminal: dict[str, Any],
+    account: dict[str, Any],
+    positions: dict[str, Any],
+    orders: dict[str, Any],
+    deals: dict[str, Any],
+    symbols: dict[str, Any],
+    configured_symbols: list[str],
+    timeframes: list[str],
+) -> dict[str, Any]:
+    """Distinguish a connected terminal from a complete broker-data acceptance."""
+    checks: dict[str, bool] = {
+        "terminal_snapshot_verified": bool(
+            terminal.get("value") and terminal["value"].get("source_verified") is True
+            and terminal["value"].get("connected") is True
+        ),
+        "account_snapshot_verified": bool(
+            account.get("value") and account["value"].get("source_verified") is True
+        ),
+        "whole_book_query_complete": positions.get("value") is not None and positions.get("error") is None,
+        "order_history_query_complete": orders.get("value") is not None and orders.get("error") is None,
+        "deal_history_query_complete": deals.get("value") is not None and deals.get("error") is None,
+    }
+    symbol_checks: dict[str, dict[str, Any]] = {}
+    for symbol in configured_symbols:
+        row = symbols.get(symbol, {})
+        timeframe_checks = {
+            timeframe: bool(
+                row.get("timeframes", {}).get(timeframe, {}).get("status") == "AVAILABLE"
+                and row.get("timeframes", {}).get(timeframe, {}).get("source_timestamp_verified") is True
+                and row.get("timeframes", {}).get(timeframe, {}).get("source_symbol_matches") is True
+                and row.get("timeframes", {}).get(timeframe, {}).get("timestamps_parseable") is True
+                and row.get("timeframes", {}).get(timeframe, {}).get("timestamps_strictly_increasing") is True
+            )
+            for timeframe in timeframes
+        }
+        symbol_checks[symbol] = {
+            "unique_broker_mapping": row.get("status") == "PARTIAL" and bool(row.get("broker_symbol")),
+            "instrument_specification_verified": row.get("instrument_specification", {}).get("specification_verified") is True,
+            "timeframes": timeframe_checks,
+        }
+    checks["configured_symbol_catalogue_complete"] = bool(configured_symbols) and all(
+        row["unique_broker_mapping"] for row in symbol_checks.values()
+    )
+    checks["instrument_specifications_complete"] = bool(configured_symbols) and all(
+        row["instrument_specification_verified"] for row in symbol_checks.values()
+    )
+    checks["completed_ohlcv_complete"] = bool(configured_symbols and timeframes) and all(
+        all(row["timeframes"].values()) for row in symbol_checks.values()
+    )
+    return {
+        "status": "complete" if all(checks.values()) else "partial",
+        "checks": checks,
+        "symbols": symbol_checks,
+        "missing_acceptance_checks": [key for key, passed in checks.items() if not passed],
+        "execution_mutations_performed": 0,
+    }
+
+
 def audit_connector(
     connector: Any,
     connector_index: int,
@@ -266,9 +326,15 @@ def audit_connector(
         positions = _safe_call(connector.get_position_snapshots)
         orders = _safe_call(connector.get_order_history, history_start, now)
         deals = _safe_call(connector.get_deal_history_checked, history_start, now)
+        acceptance = _acceptance_summary(
+            terminal=terminal, account=account, positions=positions,
+            orders=orders, deals=deals, symbols=symbols,
+            configured_symbols=configured_symbols, timeframes=timeframes,
+        )
         return {
             "connector_index": connector_index,
             "connection": {"status": "CONNECTED", "error": None},
+            "acceptance": acceptance,
             "terminal": {
                 "status": "AVAILABLE" if terminal["value"] else "UNAVAILABLE",
                 "fields": {
@@ -360,9 +426,22 @@ def main(argv: list[str] | None = None) -> int:
     report["status"] = (
         "complete" if report["connectors"] and all(
             item.get("connection", {}).get("status") == "CONNECTED"
+            and item.get("acceptance", {}).get("status") == "complete"
             for item in report["connectors"]
         ) else "partial"
     )
+    report["acceptance_summary"] = {
+        "status": report["status"],
+        "connector_count": len(report["connectors"]),
+        "fully_accepted_connector_count": sum(
+            item.get("acceptance", {}).get("status") == "complete"
+            for item in report["connectors"]
+        ),
+        "note": (
+            "Complete means the requested read-only broker capability checks passed; "
+            "it does not certify calibration, production trading, provider licensing or owner limits."
+        ),
+    }
     rendered = json.dumps(report, indent=2, sort_keys=True, default=str)
     if args.output:
         args.output.write_text(rendered + "\n", encoding="utf-8")
