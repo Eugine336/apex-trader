@@ -2226,15 +2226,19 @@ class MT5Connector(BaseConnector):
             return positions[0]
         return None
 
-    def find_order_by_idempotency_key(self, idempotency_key: str) -> Optional[SimpleNamespace]:
+    def find_order_by_idempotency_key(
+        self, idempotency_key: str, *, since: Optional[datetime] = None,
+    ) -> Optional[SimpleNamespace]:
         """Public read-only lookup for an ambiguous pending-order acknowledgement."""
         self._require_connection()
         key = str(idempotency_key or "").strip()
         if not key:
             return None
-        return self._find_order_by_idem_key(key)
+        return self._find_order_by_idem_key(key, since=since)
 
-    def _find_order_by_idem_key(self, idem_key: str) -> Optional[SimpleNamespace]:
+    def _find_order_by_idem_key(
+        self, idem_key: str, *, since: Optional[datetime] = None,
+    ) -> Optional[SimpleNamespace]:
         """Check positions, pending orders, and recent history for an existing idem key.
 
         Returns a normalised SimpleNamespace(ticket, price, volume, sl, tp)
@@ -2251,7 +2255,7 @@ class MT5Connector(BaseConnector):
                         sl=p.sl,
                         tp=p.tp,
                         order_status="FILLED",
-                        symbol=str(getattr(p, "symbol", "") or ""),
+                        symbol=resolve_to_internal(str(getattr(p, "symbol", "") or "")),
                         position_id=str(getattr(p, "ticket", "") or ""),
                     )
         orders = mt5.orders_get()
@@ -2266,12 +2270,12 @@ class MT5Connector(BaseConnector):
                         tp=getattr(o, "tp", 0.0),
                         order_status="PENDING",
                         order_type=str(getattr(o, "type", "") or ""),
-                        symbol=str(getattr(o, "symbol", "") or ""),
+                        symbol=resolve_to_internal(str(getattr(o, "symbol", "") or "")),
                     )
         try:
-            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            history_start = since or (datetime.now(timezone.utc) - timedelta(seconds=900))
             now = datetime.now(timezone.utc)
-            deals = mt5.history_deals_get(since, now)
+            deals = mt5.history_deals_get(history_start.astimezone(timezone.utc), now)
             if deals:
                 for d in deals:
                     if idem_key in (getattr(d, "comment", "") or ""):
@@ -2282,14 +2286,14 @@ class MT5Connector(BaseConnector):
                             sl=0.0,
                             tp=0.0,
                             order_status="FILLED",
-                            symbol=str(getattr(d, "symbol", "") or ""),
+                            symbol=resolve_to_internal(str(getattr(d, "symbol", "") or "")),
                         )
         except Exception as exc:
             logger.warning("MT5 history_deals_get failed during dedup: {}", exc)
         try:
-            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            history_start = since or (datetime.now(timezone.utc) - timedelta(seconds=900))
             now = datetime.now(timezone.utc)
-            hist_orders = mt5.history_orders_get(since, now)
+            hist_orders = mt5.history_orders_get(history_start.astimezone(timezone.utc), now)
             if hist_orders:
                 for ho in hist_orders:
                     if idem_key in (getattr(ho, "comment", "") or ""):
@@ -2299,7 +2303,7 @@ class MT5Connector(BaseConnector):
                             volume=getattr(ho, "volume_current", getattr(ho, "volume_initial", 0.0)),
                             sl=getattr(ho, "sl", 0.0),
                             tp=getattr(ho, "tp", 0.0),
-                            symbol=str(getattr(ho, "symbol", "") or ""),
+                            symbol=resolve_to_internal(str(getattr(ho, "symbol", "") or "")),
                             position_id=str(getattr(ho, "position_id", "") or ""),
                             order_status=(
                                 "FILLED"
