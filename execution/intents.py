@@ -30,6 +30,7 @@ class IntentType(IntEnum):
     MODIFY_TP = 10
     MODIFY_SL = 20
     PARTIAL_CLOSE = 30
+    CANCEL_PENDING = 35
     CLOSE = 40
 
 
@@ -78,6 +79,38 @@ class Intent:
     entry_zone_high: Optional[float] = None
     # Appended to preserve positional compatibility of existing Intent callers.
     action_id: str = ""
+
+    @staticmethod
+    def cancel_pending(
+        *,
+        symbol: str,
+        ticket: str,
+        source: str,
+        reason: str,
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        action_id: str = "",
+        identity_version: str = IDENTITY_VERSION,
+        identity: str = IDENTITY_STATEMENT,
+        timestamp: Optional[datetime] = None,
+    ) -> Intent:
+        """Cancel a broker-confirmed resting order; never close a position."""
+        return Intent(
+            intent_type=IntentType.CANCEL_PENDING,
+            symbol=symbol,
+            position_ticket=str(ticket),
+            timestamp=timestamp or datetime.now(timezone.utc),
+            source=source,
+            reason=reason,
+            decision_id=decision_id,
+            campaign_id=campaign_id,
+            opportunity_id=opportunity_id,
+            action_id=action_id,
+            identity_version=identity_version,
+            identity=identity,
+            priority=IntentType.CANCEL_PENDING,
+        )
 
     @staticmethod
     def close(
