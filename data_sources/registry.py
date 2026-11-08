@@ -49,7 +49,7 @@ class DataSourceRegistry:
                 output.append(state)
         return tuple(output)
 
-    def fetch(
+    def fetch_with_status(
         self,
         kind: ObservationKind,
         *,
@@ -57,9 +57,12 @@ class DataSourceRegistry:
         start_epoch: float | None = None,
         end_epoch: float | None = None,
         providers: Sequence[str] | None = None,
-    ) -> tuple[DataObservation, ...]:
+    ) -> tuple[tuple[DataObservation, ...], dict[str, str]]:
+        """Fetch independently; one provider failure cannot erase healthy providers."""
         if start_epoch is not None and end_epoch is not None and start_epoch > end_epoch:
             raise ValueError("start_epoch cannot exceed end_epoch")
+        if not isinstance(kind, ObservationKind):
+            raise TypeError("kind must be an ObservationKind")
         with self._lock:
             if providers is None:
                 selected = tuple(self._adapters.values())
@@ -70,26 +73,57 @@ class DataSourceRegistry:
                     raise KeyError("unregistered data provider(s): " + ", ".join(unknown))
                 selected = tuple(self._adapters[name] for name in requested)
         output: list[DataObservation] = []
+        errors: dict[str, str] = {}
         for adapter in selected:
-            observations = adapter.fetch(
-                kind,
-                canonical_instrument=canonical_instrument,
-                start_epoch=start_epoch,
-                end_epoch=end_epoch,
-            )
-            for observation in observations or ():
-                if not isinstance(observation, DataObservation):
-                    raise TypeError(f"{adapter.provider_id} returned a non-DataObservation")
-                if observation.provenance.source.provider.strip().lower() != adapter.provider_id.strip().lower():
-                    raise ValueError("observation provider does not match registered adapter")
-                if observation.provenance.kind is not kind:
-                    raise ValueError("observation kind does not match requested kind")
-                stamp = observation.provenance.source_timestamp_epoch
-                if start_epoch is not None and stamp is not None and stamp < start_epoch:
-                    continue
-                if end_epoch is not None and stamp is not None and stamp > end_epoch:
-                    continue
-                if canonical_instrument is not None and observation.provenance.source.canonical_instrument.upper() != canonical_instrument.upper():
-                    continue
-                output.append(observation)
-        return tuple(output)
+            provider = str(adapter.provider_id).strip().lower()
+            provider_rows: list[DataObservation] = []
+            try:
+                observations = adapter.fetch(
+                    kind,
+                    canonical_instrument=canonical_instrument,
+                    start_epoch=start_epoch,
+                    end_epoch=end_epoch,
+                )
+                for observation in observations or ():
+                    if not isinstance(observation, DataObservation):
+                        raise TypeError("provider returned a non-DataObservation")
+                    if observation.provenance.source.provider.strip().lower() != provider:
+                        raise ValueError("observation provider does not match registered adapter")
+                    if observation.provenance.kind is not kind:
+                        raise ValueError("observation kind does not match requested kind")
+                    stamp = observation.provenance.source_timestamp_epoch
+                    if start_epoch is not None and stamp is not None and stamp < start_epoch:
+                        continue
+                    if end_epoch is not None and stamp is not None and stamp > end_epoch:
+                        continue
+                    if (
+                        canonical_instrument is not None
+                        and observation.provenance.source.canonical_instrument.upper()
+                        != canonical_instrument.upper()
+                    ):
+                        continue
+                    provider_rows.append(observation)
+            except Exception as exc:  # noqa: BLE001 — isolate provider faults and expose them to readers
+                errors[provider] = type(exc).__name__
+                continue
+            output.extend(provider_rows)
+        return tuple(output), errors
+
+    def fetch(
+        self,
+        kind: ObservationKind,
+        *,
+        canonical_instrument: str | None = None,
+        start_epoch: float | None = None,
+        end_epoch: float | None = None,
+        providers: Sequence[str] | None = None,
+    ) -> tuple[DataObservation, ...]:
+        """Strict compatibility API: fail visibly if any selected provider fails."""
+        observations, errors = self.fetch_with_status(
+            kind, canonical_instrument=canonical_instrument,
+            start_epoch=start_epoch, end_epoch=end_epoch, providers=providers,
+        )
+        if errors:
+            detail = ", ".join(f"{provider}:{error}" for provider, error in sorted(errors.items()))
+            raise RuntimeError("data provider fetch failure(s): " + detail)
+        return observations
