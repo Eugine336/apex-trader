@@ -1600,6 +1600,7 @@ class SystemContext:
                         if cog_cfg is not None else 1.0
                     ),
                     balance_provider=_cognition_balance,
+                    quote_history_provider=getattr(platform_manager, "get_quote_history_batch", None),
                     memory=_memory,
                     operations_author=_ops_author,
                     operations_sink=(ctx.action_planner.submit
