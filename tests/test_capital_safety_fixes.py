@@ -68,6 +68,7 @@ def _mt5_history_order(ticket=44444, price_open=1.10500,
         ticket=ticket, price_open=price_open,
         volume_initial=volume_initial, volume_current=volume_current,
         sl=sl, tp=tp, symbol=symbol, comment=comment,
+        state=4,  # MT5 ORDER_STATE_FILLED; history rows must carry explicit state
         time_setup=1717800000, time_done=1717800050,
     )
 
