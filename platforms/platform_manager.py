@@ -747,7 +747,8 @@ class PlatformManager:
             or not isinstance(submitted_at, datetime)
             or submitted_at.tzinfo is None or submitted_at.utcoffset() is None
         ):
-            return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}        if (
+            return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}
+        if (
             len(self._mt5_connected_flags) != len(self.mt5_connectors)
             or not all(self._mt5_connected_flags)
         ):
