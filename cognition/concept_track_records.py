@@ -201,9 +201,27 @@ class ConceptTrackRecordProducer:
                 ).strip().upper()
                 decision_epoch = _finite(snapshot.get("decision_epoch"))
                 outcome_epoch = _finite(outcome.get("observed_at_epoch"))
-                source_epoch = _finite(
-                    (outcome.get("outcome_quote") or {}).get("source_timestamp_epoch")
-                    if isinstance(outcome.get("outcome_quote"), dict) else None
+                quote = outcome.get("outcome_quote")
+                quote = quote if isinstance(quote, dict) else {}
+                source_epoch = _finite(quote.get("source_timestamp_epoch"))
+                quote_timestamp = _finite(quote.get("timestamp_epoch"))
+                quote_bid = _finite(quote.get("bid"))
+                quote_ask = _finite(quote.get("ask"))
+                quote_mid = _finite(quote.get("mid"))
+                quote_kind = str(quote.get("quote_kind", "") or "").strip().lower()
+                quote_valid = bool(
+                    quote.get("source_timestamp_verified") is True
+                    and str(quote.get("symbol", "") or "").strip().upper() == sym
+                    and quote_kind in {"bid_ask", "mid_only"}
+                    and quote_bid is not None and quote_ask is not None and quote_mid is not None
+                    and quote_bid > 0.0 and quote_ask >= quote_bid
+                    and (
+                        quote_kind != "mid_only" or quote_ask == quote_bid
+                    )
+                    and abs(quote_mid - ((quote_bid + quote_ask) / 2.0))
+                        <= max(1e-10, abs(quote_mid) * 1e-8)
+                    and quote_timestamp is not None and source_epoch is not None
+                    and abs(quote_timestamp - source_epoch) <= 1e-6
                 )
                 label = str(outcome.get("outcome_label", "") or "").upper()
                 disposition = disposition_by_id.get(candidate_id) or {}
@@ -215,9 +233,9 @@ class ConceptTrackRecordProducer:
                     or decision_epoch is None or outcome_epoch is None or source_epoch is None
                     or not (0.0 < decision_epoch < outcome_epoch <= source_epoch <= cutoff)
                     or outcome.get("outcome_source_timestamp_verified") is not True
-                    or not isinstance(outcome.get("outcome_quote"), dict)
-                    or outcome["outcome_quote"].get("source_timestamp_verified") is not True
-                    or str(outcome["outcome_quote"].get("symbol", "") or "").strip().upper() != sym
+                    or not quote_valid
+                    or source_epoch is None or outcome_epoch is None
+                    or abs(source_epoch - outcome_epoch) > 1e-6
                     or outcome.get("observation_status") != "OBSERVED"
                     or label not in {"FAVOURABLE", "UNFAVOURABLE"}
                     or disposition.get("_sequence", 0) <= 0
@@ -266,7 +284,8 @@ class ConceptTrackRecordProducer:
                     "unfavourable_count": sum(1 - row["outcome"] for row in rows),
                     "mean_directional_return_r": sum(row["directional_return_r"] for row in rows) / len(rows),
                     "horizons_seconds": sorted({row["horizon_seconds"] for row in rows}),
-                    "selection_complete": True,
+                    "selection_complete": False,
+                    "eligible_candidate_sample_only": True,
                     "probability_forecast": False,
                     "trade_win_rate": False,
                     "outcome_semantics": "directional_favourability_at_fixed_quote_horizon",
@@ -289,7 +308,12 @@ class ConceptTrackRecordProducer:
                     "concept_outcome_history": [
                         row for concept_rows in records.values() for row in concept_rows
                     ],
-                    "selection_complete": True,
+                    "selection_complete": False,
+                    "eligible_candidate_sample_only": True,
+                    "sample_scope": (
+                        "broker-quote-labelled candidates with complete source evidence, geometry and disposition; "
+                        "not the full opportunity population"
+                    ),
                     "predictive_probability": False,
                     "trade_win_rate": False,
                     "directional_decision_emitted": False,
