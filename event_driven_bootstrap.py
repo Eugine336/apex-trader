@@ -5667,7 +5667,7 @@ class EventDrivenSystem:
                 elif event_type == DE.ORDER_RECONCILED:
                     status = str(payload.get("status", "UNKNOWN") or "UNKNOWN").upper()
                     attribution = str(payload.get("attribution_status", "") or "")
-                    if status == "FILLED" and attribution != "attributed":
+                    if status == "FILLED" and attribution not in {"attributed", "closed_before_position_poll"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
                     elif attribution in {"unresolved_position_ticket", "unresolved_closed_fill"}:
@@ -5806,7 +5806,8 @@ class EventDrivenSystem:
                                 "direction": str(meta.get("direction", "") or "").upper(),
                                 "order_type": str(meta.get("order_type", "") or "").upper(),
                                 "fill_price": weighted_entry, "lots": total_volume,
-                                "status": "FILLED", "closed_before_position_poll": True,
+                                "status": "FILLED" if status == "FILLED" else "PARTIALLY_FILLED",
+                                "closed_before_position_poll": True,
                                 "decision_id": str(meta.get("decision_id", "") or ""),
                                 "campaign_id": str(meta.get("campaign_id", "") or ""),
                                 "opportunity_id": str(meta.get("opportunity_id", "") or ""),
@@ -5862,6 +5863,8 @@ class EventDrivenSystem:
                                 })(),
                             })()
                             self._handle_close_result(close_intent, close_result)
+                            self._known_open.pop(broker_position_id, None)
+                            self._entry_context.pop(broker_position_id, None)
                             store.emit(
                                 event_type=DE.ORDER_RECONCILED, severity="INFO",
                                 symbol=closed_payload["symbol"],
