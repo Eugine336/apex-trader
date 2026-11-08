@@ -128,6 +128,8 @@ class PlatformManager:
         self.config = config or AppConfig()
         # Attached by SystemContext; execution telemetry is never an admission control.
         self.execution_monitor = None
+        # EventDrivenSystem installs this callback to maintain its durable pending-order projection.
+        self.pending_order_callback = None
 
         # ── Intraday candle cache (Phase 5): transparent TTL cache in front of
         # per-symbol/timeframe broker fetches. See platforms/candle_cache.py. ─
@@ -626,35 +628,50 @@ class PlatformManager:
                 entry_price=entry_price, lots=lots, sl=sl, tp=tp,
                 comment=comment, idempotency_key=idempotency_key,
             )
-        if result.success and result.order_status == "PENDING":
+        trackable = bool(result.order_id) or (
+            str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
+            and bool(idempotency_key)
+        )
+        if trackable:
+            lifecycle_context = {
+                "order_id": str(result.order_id or ""), "order_type": str(order_type or "").upper(),
+                "direction": str(direction or "").upper(), "lots": float(result.lots or lots),
+                "entry_price": float(result.requested_price or entry_price),
+                "sl": float(result.sl or sl), "tp": float(result.tp or tp),
+                "platform": str(result.platform or "mt5"),
+                "idempotency_key": idempotency_key,
+                "submitted_at": result.timestamp.astimezone(timezone.utc).isoformat(),
+                "decision_id": decision_id, "campaign_id": campaign_id,
+                "opportunity_id": opportunity_id,
+                "decision_feature_snapshot": (
+                    dict(decision_feature_snapshot)
+                    if isinstance(decision_feature_snapshot, dict) else None
+                ),
+                "status": "PENDING" if result.success else "UNKNOWN",
+                "broker_confirmed": bool(result.success and result.order_status == "PENDING"),
+                "reconciliation_required": not bool(result.success),
+            }
             try:
                 from persistence import domain_events as DE
                 from persistence.event_store import get_event_store
                 store = get_event_store()
                 if store is not None:
                     store.emit(
-                        event_type=DE.ORDER_PENDING, severity="INFO", symbol=symbol,
-                        correlation_id=idempotency_key or None, parent_id=result.order_id,
+                        event_type=DE.ORDER_PENDING,
+                        severity="INFO" if result.success else "WARNING",
+                        symbol=symbol, correlation_id=idempotency_key or None,
+                        parent_id=result.order_id or idempotency_key,
                         source_module="platforms.platform_manager", durable=True,
-                        payload={
-                            "order_id": result.order_id, "order_type": result.order_type,
-                            "direction": result.direction, "lots": result.lots,
-                            "entry_price": result.requested_price, "sl": result.sl,
-                            "tp": result.tp, "platform": result.platform,
-                            "idempotency_key": idempotency_key,
-                            "submitted_at": result.timestamp.astimezone(timezone.utc).isoformat(),
-                            "decision_id": decision_id,
-                            "campaign_id": campaign_id,
-                            "opportunity_id": opportunity_id,
-                            "decision_feature_snapshot": (
-                                dict(decision_feature_snapshot)
-                                if isinstance(decision_feature_snapshot, dict) else None
-                            ),
-                            "status": "PENDING", "broker_confirmed": True,
-                        },
+                        payload=lifecycle_context,
                     )
-            except Exception as exc:  # noqa: BLE001 — report persistence fault, do not resubmit
-                _pm_logger.critical("[orders] pending order {} accepted but lifecycle event persistence failed: {}", result.order_id, exc)
+            except Exception as exc:  # noqa: BLE001 — accepted/ambiguous send must be reconciled, never resubmitted
+                _pm_logger.critical("[orders] pending order {} lifecycle event persistence failed: {}", result.order_id or idempotency_key, exc)
+            callback = getattr(self, "pending_order_callback", None)
+            if callable(callback):
+                try:
+                    callback(result, lifecycle_context)
+                except Exception as exc:  # noqa: BLE001 — callback failure leaves durable event for restart restore
+                    _pm_logger.critical("[orders] pending order projection callback failed for {}: {}", result.order_id or idempotency_key, exc)
         return result
 
     def cancel_pending_order(self, order_id: str, *, symbol: str = "") -> bool:
