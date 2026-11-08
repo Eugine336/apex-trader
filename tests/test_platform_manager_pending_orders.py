@@ -149,6 +149,36 @@ def test_cancel_pending_fill_race_does_not_report_cancellation():
     assert manager.cancel_pending_order("901", symbol="EURUSD") is False
     assert connector.cancelled == ["901"]
 
+def test_pending_fill_deal_lookup_requires_exact_order_and_position_identity():
+    matching = {
+        "order": "901", "position_id": "902", "symbol": "EURUSD",
+        "source_verified": True, "entry": 0, "price": 99.0, "volume": 0.04,
+    }
+    same_position_different_order = {
+        "order": "903", "position_id": "902", "symbol": "EURUSD",
+        "source_verified": True, "entry": 0, "price": 100.0, "volume": 0.03,
+    }
+    same_order_different_position = {
+        "order": "901", "position_id": "904", "symbol": "EURUSD",
+        "source_verified": True, "entry": 0, "price": 101.0, "volume": 0.02,
+    }
+    unverified = {
+        "order": "901", "position_id": "902", "symbol": "EURUSD",
+        "source_verified": False, "entry": 0, "price": 102.0, "volume": 0.01,
+    }
+    connector = SimpleNamespace(get_deal_history=lambda *args: [
+        matching, same_position_different_order, same_order_different_position, unverified,
+    ])
+    manager = object.__new__(PlatformManager)
+    manager.mt5_connectors = [connector]
+
+    rows = manager.get_pending_order_fill_deals(
+        "901", "902", symbol="EURUSD", platform="mt5_0",
+        from_dt=datetime.now(timezone.utc), to_dt=datetime.now(timezone.utc),
+    )
+
+    assert rows == [matching]
+
 def test_pending_reconciliation_never_infers_cancelled_from_live_book_absence():
     manager = _manager([PendingConnector(live=[], history=[])])
     outcome = manager.reconcile_pending_order(
