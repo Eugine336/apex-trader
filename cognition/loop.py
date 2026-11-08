@@ -137,6 +137,18 @@ class EvidenceConsolidator:
         """
         self._concept_source = source
 
+    def begin_concept_cycle(self, symbols: list[str]) -> None:
+        """Prepare one immutable multi-symbol data snapshot for this Brain cycle."""
+        hook = getattr(self._concept_source, "begin_cycle", None)
+        if callable(hook):
+            hook(tuple(str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()))
+
+    def end_concept_cycle(self) -> None:
+        """Release the cycle snapshot after every selected symbol has been reasoned."""
+        hook = getattr(self._concept_source, "end_cycle", None)
+        if callable(hook):
+            hook()
+
     def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
         """Wire (or clear) the live portfolio-assessment source (Part XVIII Art 11).
 
@@ -818,11 +830,22 @@ class CognitionLoop:
             )
         made = 0
         cycle_outputs: list = []
-        for symbol in self._select_cycle_batch(symbols):
-            output = self._reason_over_symbol(symbol, now=now)
-            if output is not None:
-                made += 1
-                cycle_outputs.append(output)
+        begin_concept_cycle = getattr(self._consolidator, "begin_concept_cycle", None)
+        end_concept_cycle = getattr(self._consolidator, "end_concept_cycle", None)
+        try:
+            if callable(begin_concept_cycle):
+                begin_concept_cycle(symbols)
+            for symbol in self._select_cycle_batch(symbols):
+                output = self._reason_over_symbol(symbol, now=now)
+                if output is not None:
+                    made += 1
+                    cycle_outputs.append(output)
+        finally:
+            if callable(end_concept_cycle):
+                try:
+                    end_concept_cycle()
+                except Exception as exc:  # noqa: BLE001 — snapshot cleanup cannot authorize or block execution
+                    logger.warning("[cognition-loop] concept snapshot cleanup failed: %s", exc)
         self._cycles += 1
         self._decisions += made
         # Articles XXVII / XXVIII — reason across the WHOLE book at once before
