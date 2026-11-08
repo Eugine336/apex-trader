@@ -48,8 +48,6 @@ def _verified_rows(frame: Any, symbol: str, timeframe: str, cutoff: float) -> li
     """Convert provider frames using the same provenance rules as market-lens OHLC."""
     from cognition.market_lenses import _rows
 
-    attrs = getattr(frame, "attrs", {})
-    attrs = attrs if isinstance(attrs, dict) else {}
     rows = _rows(frame, limit=1_000_000, expected_symbol=symbol)
     # The live batch API returns a forming final bar. Exclude it unconditionally;
     # a row is also excluded unless its complete interval ended by the cycle cutoff.
