@@ -263,7 +263,9 @@ class ManagementActionLedger:
         kind = str(pending.get("kind", "") or "").strip().lower()
         ticket = str(pending.get("position_ticket", "") or "").strip()
         evidence_ticket = str(
-            broker_evidence.get("position_ticket")
+            broker_evidence.get("closed_position_ticket")
+            if kind in {"close", "reverse"}
+            else broker_evidence.get("position_ticket")
             or broker_evidence.get("closed_position_ticket")
             or ""
         ).strip()
@@ -313,6 +315,7 @@ class ManagementActionLedger:
                 position_present is True
                 and str(broker_evidence.get("direction", "") or "").upper()
                     == str(pending.get("target_direction", "") or "").upper()
+                and broker_evidence.get("closed_deal_verified") is True
                 and broker_evidence.get("opening_deal_verified") is True
             )
         if not matched:
