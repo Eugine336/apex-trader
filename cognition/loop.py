@@ -29,6 +29,7 @@ module stays natively importable/testable); fail-safe throughout.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time as _time
 from typing import Any, Callable, Optional
