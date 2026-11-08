@@ -189,3 +189,18 @@ def test_reverse_reconciliation_requires_closed_original_and_verified_opposite_o
     }
     assert ledger.reconcile(action.action_id, "EURUSD", evidence) is True
     assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
+
+
+def test_ledger_fails_closed_when_event_history_query_raises():
+    store = _Store()
+    original_query = store.query_events
+
+    def broken_query(**kwargs):
+        raise OSError("sqlite read failure")
+
+    store.query_events = broken_query
+    ledger = ManagementActionLedger(store)
+    assert ledger.begin(_action(), SimpleNamespace(ticket="ticket-1", lots=0.2)) == (
+        None, "management_action_ledger_unavailable",
+    )
+    store.query_events = original_query
