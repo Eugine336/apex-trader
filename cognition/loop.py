@@ -1703,7 +1703,9 @@ class CognitionLoop:
                         "horizon_seconds": horizon,
                         "due_at_epoch": due_epoch,
                         "observed_at_epoch": observed_epoch,
-                        "outcome_source_timestamp_verified": True,
+                        "outcome_source_timestamp_verified": bool(
+                            outcome_quote and outcome_quote.get("source_timestamp_verified") is True
+                        ),
                         "actual_elapsed_seconds": observed_epoch - decision_epoch,
                         "observation_window_tolerance_seconds": tolerance,
                         "observation_status": status,
@@ -1717,8 +1719,13 @@ class CognitionLoop:
                         "directional_return_fraction": signed_return_value,
                         "directional_return_r": r_multiple,
                         "reference_evidence_id": str(reference.get("evidence_id", "") or ""),
-                        "outcome_evidence_id": quote.get("evidence_id", ""),
-                        "outcome_quote": dict(quote),
+                        "outcome_evidence_id": str(outcome_quote.get("evidence_id", "") or ""),
+                        "outcome_quote": outcome_quote,
+                        "quote_history_batch_id": str((history_manifest or {}).get("batch_id", "") or ""),
+                        "quote_history_manifest_digest": str((history_manifest or {}).get("manifest_digest", "") or ""),
+                        "outcome_quote_digest": (
+                            quote_history_quote_digest(outcome_quote) if history_manifest and outcome_quote else ""
+                        ),
                         "predictive_validity": "DESCRIPTIVE_ONLY_UNVALIDATED",
                         "calibration_authority": False,
                     }
