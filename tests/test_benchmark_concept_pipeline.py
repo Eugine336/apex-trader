@@ -19,6 +19,7 @@ def test_summary_reports_incomplete_universe_instead_of_hiding_missing_symbols()
     result = summarize(
         [{"symbol": "EURUSD", "elapsed_ms": 10.0}],
         ["EURUSD", "GBPUSD"],
+        ["M5", "H1"],
     )
     assert result["requested_symbol_count"] == 2
     assert result["completed_symbol_count"] == 1
@@ -68,3 +69,22 @@ def test_benchmark_records_analysis_faults_without_claiming_complete_coverage():
         "error": "reader pipeline fault",
     }]
     assert report["warm"]["failures"] == report["cold"]["failures"]
+
+
+def test_summary_reports_missing_timeframes_even_when_symbol_is_present():
+    result = summarize(
+        [{
+            "symbol": "EURUSD",
+            "elapsed_ms": 10.0,
+            "timeframes": {"M5": 20},
+        }],
+        ["EURUSD"],
+        ["M5", "H1"],
+    )
+    assert result["completed_symbol_count"] == 1
+    assert result["completed_symbol_timeframe_pairs"] == 1
+    assert result["expected_symbol_timeframe_pairs"] == 2
+    assert result["incomplete_timeframes"] == [{
+        "symbol": "EURUSD",
+        "missing": ["H1"],
+    }]
