@@ -2699,16 +2699,16 @@ class CognitionLoop:
                     if begin is True:
                         ledger_started = True
                     elif begin is None:
+                        if action.kind in {"scale_in", "reverse"}:
+                            self._manage_suppressed += 1
+                            logger.error(
+                                "[cognition-loop] MANAGE-SUPPRESSED %s %s: "
+                                "risk-increasing action requires durable action ledger (%s)",
+                                action.symbol, action.kind, ledger_reason,
+                            )
+                            return False
                         ledger_unavailable_tracked = True
                         self._management_unresolved_actions.add(action_id)
-                    elif action.kind in {"scale_in", "reverse"}:
-                        self._manage_suppressed += 1
-                        logger.error(
-                            "[cognition-loop] MANAGE-SUPPRESSED %s %s: "
-                            "risk-increasing action requires durable action ledger (%s)",
-                            action.symbol, action.kind, ledger_reason,
-                        )
-                        return False
                     else:
                         logger.error(
                             "[cognition-loop] protective management proceeding without durable "
