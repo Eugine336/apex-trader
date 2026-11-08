@@ -1291,6 +1291,126 @@ class PlatformManager:
             return pd.DataFrame()
         return fetch(symbol, from_dt, to_dt)
 
+    def get_quote_history_batch(
+        self, symbol: str, from_epoch: float, to_epoch: float,
+    ) -> dict[str, Any]:
+        """Fetch and normalize one broker-authenticated MT5 bid/ask history window.
+
+        Missing history capability, provenance attributes, or millisecond source
+        timestamps raise instead of silently falling back to live quotes/OHLC.
+        """
+        import math
+        from platforms.quote_history import (
+            build_quote_history_manifest, quote_history_quote_digest,
+        )
+
+        start_epoch = float(from_epoch)
+        end_epoch = float(to_epoch)
+        if not math.isfinite(start_epoch) or not math.isfinite(end_epoch) or start_epoch <= 0.0 or end_epoch < start_epoch:
+            raise ValueError("quote history requires a finite, ordered UTC epoch range")
+        connector = self.get_connector(symbol)
+        fetch = getattr(connector, "get_ticks", None)
+        if not callable(fetch):
+            raise NotImplementedError(f"Broker quote history is unavailable for {symbol}")
+        start_dt = datetime.fromtimestamp(start_epoch, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(end_epoch, tz=timezone.utc)
+        frame = fetch(symbol, start_dt, end_dt)
+        attrs = getattr(frame, "attrs", {})
+        if (
+            not isinstance(attrs, dict)
+            or attrs.get("source") != "mt5.copy_ticks_range"
+            or attrs.get("source_verified") is not True
+            or attrs.get("source_timezone") != "UTC"
+        ):
+            raise RuntimeError("MT5 tick history lacks verified adapter provenance")
+        source_broker = str(getattr(connector, "_broker_name", "") or "").strip()
+        source_symbol = str(attrs.get("source_symbol", "") or "").strip()
+        if not source_broker or not source_symbol:
+            raise RuntimeError("MT5 tick history lacks broker or native symbol identity")
+
+        rows_by_msc: dict[int, dict[str, Any]] = {}
+        if frame is not None and not getattr(frame, "empty", True):
+            required = {"time_msc", "bid", "ask"}
+            if not required.issubset(set(getattr(frame, "columns", []))):
+                raise RuntimeError("MT5 tick history omitted millisecond time or bid/ask fields")
+            for _, raw in frame.iterrows():
+                try:
+                    time_msc = int(raw.get("time_msc"))
+                    bid = float(raw.get("bid"))
+                    ask = float(raw.get("ask"))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                epoch = time_msc / 1000.0
+                if (
+                    time_msc <= 0 or not math.isfinite(epoch)
+                    or epoch < start_epoch or epoch > end_epoch
+                    or not math.isfinite(bid) or not math.isfinite(ask)
+                    or bid <= 0.0 or ask < bid
+                ):
+                    continue
+                try:
+                    flags = int(raw.get("flags", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    flags = 0
+                quote = {
+                    "symbol": resolve_to_internal(str(symbol or "").strip().upper()),
+                    "source_symbol": source_symbol,
+                    "source_broker": source_broker,
+                    "source": "mt5.copy_ticks_range",
+                    "quote_kind": "bid_ask",
+                    "bid": bid, "ask": ask, "mid": (bid + ask) / 2.0,
+                    "source_timestamp_epoch": epoch, "timestamp_epoch": epoch,
+                    "source_timestamp_verified": True,
+                    "time_msc": time_msc, "flags": flags,
+                    "aggressor_side": (
+                        str(raw.get("aggressor_side"))
+                        if raw.get("aggressor_side") in {"buy", "sell"} else None
+                    ),
+                }
+                for field in ("last", "volume", "volume_real"):
+                    try:
+                        value = float(raw.get(field))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(value):
+                        quote[field] = value
+                identity = {key: value for key, value in quote.items() if key != "evidence_id"}
+                quote["evidence_id"] = "mt5-quote-" + quote_history_quote_digest(identity)
+                previous = rows_by_msc.get(time_msc)
+                if previous is not None and previous != quote:
+                    raise RuntimeError("MT5 tick history contains conflicting quotes at one millisecond")
+                rows_by_msc[time_msc] = quote
+        rows = [rows_by_msc[key] for key in sorted(rows_by_msc)]
+        now_epoch = _time.time()
+        queried_through = min(end_epoch, now_epoch)
+        query_complete = now_epoch >= end_epoch
+        selected = rows[0] if rows else None
+        tick_digest = quote_history_quote_digest({"rows": rows})
+        fields = {
+            "schema_version": "1.0.0",
+            "source_module": "platform_manager.quote_history",
+            "source": "mt5.copy_ticks_range",
+            "source_verified": True,
+            "source_timezone": "UTC",
+            "symbol": resolve_to_internal(str(symbol or "").strip().upper()),
+            "source_broker": source_broker,
+            "source_symbol": source_symbol,
+            "query_window_start_epoch": start_epoch,
+            "query_window_end_epoch": end_epoch,
+            "queried_through_epoch": max(start_epoch, queried_through),
+            "query_completed_at_epoch": now_epoch,
+            "query_complete": query_complete,
+            "selection_complete": selected is not None,
+            "tick_count": len(rows),
+            "tick_digest": tick_digest,
+            "first_tick_epoch": rows[0]["source_timestamp_epoch"] if rows else None,
+            "last_tick_epoch": rows[-1]["source_timestamp_epoch"] if rows else None,
+            "selected_quote_epoch": selected["source_timestamp_epoch"] if selected else None,
+            "selected_quote_digest": quote_history_quote_digest(selected) if selected else None,
+        }
+        manifest = build_quote_history_manifest(fields)
+        return {"manifest": manifest, "quotes": rows, "selected_quote": selected}
+
     def calculate_broker_profit(
         self, symbol: str, direction: str, volume: float, price_open: float, price_close: float,
     ) -> float:
