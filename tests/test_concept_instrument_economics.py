@@ -227,6 +227,12 @@ def test_mt5_swap_mode_resolution_uses_the_installed_package_constants(monkeypat
 def test_instrument_and_carry_method_registration_is_explicit():
     module = next(item for item in CONCEPT_MODULES if item.key == "instrument_economics_readings")
     assert set(module.covers_methods) == {"instrument_economics"}
+    assert module.data_gated_methods == {
+        "carry": (
+            "verified direction-specific broker swap/financing schedule, rollover multipliers, "
+            "and instrument/account-currency conversion"
+        ),
+    }
     assert module.covers_lenses == ()
     assert _carry(_spec()).facts["coverage_status"] == "PARTIAL"
     assert "position-specific cash financing amount after broker contract volume and calculation mode are applied" in _carry(_spec()).facts["unimplemented_components"]
