@@ -1466,6 +1466,10 @@ class CognitionLoop:
                 ):
                     raise RuntimeError("quote-history provider returned an invalid or mismatched source manifest")
                 selected = batch.get("selected_quote")
+                if bool(manifest.get("selection_complete")) != (selected is not None):
+                    raise RuntimeError("quote-history selection does not match its source manifest")
+                if selected is None and manifest.get("selected_quote_digest") is not None:
+                    raise RuntimeError("empty quote-history selection has a non-empty digest")
                 if selected is None and manifest.get("query_complete") is not True:
                     quote_history_cache[cache_key] = None
                     return None
