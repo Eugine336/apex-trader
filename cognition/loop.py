@@ -2772,14 +2772,17 @@ class CognitionLoop:
                     "ticket": str(getattr(intent, "position_ticket", "") or ""),
                 }
             else:
-                response = broker_response
-                if getattr(response, "success", None) is not True:
-                    response = {
-                        "success": True,
-                        "ticket": str(getattr(intent, "position_ticket", "") or ""),
-                        "deal": getattr(response, "order_id", None),
-                        "retcode": getattr(response, "retcode", None),
-                    }
+                response = {
+                    "success": True,
+                    "ticket": str(getattr(intent, "position_ticket", "") or ""),
+                }
+                for field in (
+                    "order_id", "deal", "retcode", "fill_price", "close_price",
+                    "lots_closed", "pnl", "comment", "error",
+                ):
+                    value = getattr(broker_response, field, None)
+                    if value is not None:
+                        response[field] = value
             recorded = ledger.finish_if_status(
                 action, "ACKNOWLEDGED",
                 expected_statuses={"SUBMITTED", "DISPATCHED", "AMBIGUOUS"},
