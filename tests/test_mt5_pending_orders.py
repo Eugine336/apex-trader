@@ -110,7 +110,7 @@ def test_buy_limit_is_submitted_as_pending_and_verified_in_broker_book(monkeypat
     assert fake.requests[0]["action"] == fake.TRADE_ACTION_PENDING
     assert fake.requests[0]["type"] == fake.ORDER_TYPE_BUY_LIMIT
     assert fake.requests[0]["type_filling"] == fake.ORDER_FILLING_RETURN
-    assert fake.requests[0]["comment"].startswith("APND-a1b2c3d4e5f6")
+    assert fake.requests[0]["comment"].startswith("APND-a1b2c3d4e5f1")
 
 
 @pytest.mark.parametrize(
@@ -181,6 +181,27 @@ def test_pending_idempotency_retry_returns_existing_order_without_second_send(mo
     assert second.order_id == first.order_id
     assert len(fake.requests) == 1
 
+
+def test_partial_pending_idempotency_retry_returns_same_order_without_resubmission(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    first = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f2",
+    )
+    fake.orders[0].volume_current = 0.04
+
+    second = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f2",
+    )
+
+    assert first.success is True
+    assert second.success is True
+    assert second.order_status == "PARTIALLY_FILLED_PENDING"
+    assert second.order_id == first.order_id
+    assert len(fake.requests) == 1
 
 def test_cancel_pending_order_removes_only_the_named_ticket(monkeypatch):
     connector, fake = _connector(monkeypatch)
