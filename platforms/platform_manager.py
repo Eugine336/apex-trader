@@ -628,9 +628,12 @@ class PlatformManager:
                 entry_price=entry_price, lots=lots, sl=sl, tp=tp,
                 comment=comment, idempotency_key=idempotency_key,
             )
-        trackable = bool(result.order_id) or (
-            str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
-            and bool(idempotency_key)
+        trackable = (
+            bool(result.success and result.order_status == "PENDING" and result.order_id)
+            or (
+                str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
+                and bool(idempotency_key)
+            )
         )
         if trackable:
             lifecycle_context = {
