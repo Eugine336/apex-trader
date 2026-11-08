@@ -5708,7 +5708,7 @@ class EventDrivenSystem:
                     elif attribution in {"unresolved_position_ticket", "unresolved_closed_fill"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
-                    elif status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+                    elif status in {"UNKNOWN", "AMBIGUOUS", "PENDING", "PARTIALLY_FILLED_PENDING"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
                     elif status == "PARTIALLY_FILLED_TERMINAL" and attribution not in {"attributed", "closed_before_position_poll"}:
