@@ -519,6 +519,12 @@ class MT5Connector(BaseConnector):
         Returns ``{}`` when unavailable.
         """
         self._require_connection()
+        if idempotency_key and (
+            len(str(idempotency_key)) != 12
+            or any(character not in "0123456789abcdefABCDEF" for character in str(idempotency_key))
+        ):
+            return fail_pending("pending_order_idempotency_key_must_be_12_hex_characters")
+
         mapped = self.symbol_map(symbol)
         if mapped is None:
             return {}
@@ -1540,9 +1546,12 @@ class MT5Connector(BaseConnector):
             mt5.ORDER_TYPE_SELL_LIMIT if kind == "LIMIT" else
             mt5.ORDER_TYPE_SELL_STOP
         )
-        order_comment = str(comment or "APEX")[:31]
+        order_comment = (
+            build_order_comment("APND", idempotency_key)
+            if idempotency_key else str(comment or "APND")[:31]
+        )
         if idempotency_key and extract_idempotency_key(order_comment) != idempotency_key:
-            order_comment = build_order_comment("APEX", idempotency_key)
+            return fail_pending("pending_order_idempotency_key_not_representable_in_broker_comment")
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": mapped,
