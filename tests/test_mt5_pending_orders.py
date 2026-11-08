@@ -21,6 +21,11 @@ class FakeMT5:
     TRADE_RETCODE_PLACED = 10008
     TRADE_RETCODE_DONE = 10009
     SYMBOL_TRADE_MODE_DISABLED = 0
+    ORDER_STATE_CANCELED = 2
+    ORDER_STATE_PARTIAL = 3
+    ORDER_STATE_FILLED = 4
+    ORDER_STATE_REJECTED = 5
+    ORDER_STATE_EXPIRED = 6
 
     def __init__(self):
         self.orders = []
@@ -28,6 +33,9 @@ class FakeMT5:
         self.retcode = self.TRADE_RETCODE_PLACED
         self.omit_confirmation = False
         self.lookup_unavailable = False
+        self.history_orders = []
+        self.history_deals = []
+        self.history_unavailable = False
 
     @staticmethod
     def symbol_select(symbol, enabled):
@@ -57,13 +65,11 @@ class FakeMT5:
             return None
         return [] if self.omit_confirmation else list(self.orders)
 
-    @staticmethod
-    def history_orders_get(*args, **kwargs):
-        return []
+    def history_orders_get(self, *args, **kwargs):
+        return None if self.history_unavailable else list(self.history_orders)
 
-    @staticmethod
-    def history_deals_get(*args, **kwargs):
-        return []
+    def history_deals_get(self, *args, **kwargs):
+        return None if self.history_unavailable else list(self.history_deals)
 
     def order_send(self, request):
         self.requests.append(dict(request))
@@ -205,6 +211,58 @@ def test_partial_pending_idempotency_retry_returns_same_order_without_resubmissi
     assert second.order_status == "PARTIALLY_FILLED_PENDING"
     assert second.order_id == first.order_id
     assert len(fake.requests) == 1
+
+def test_pending_idempotency_history_fill_keeps_order_and_position_tickets_distinct(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_orders = [SimpleNamespace(
+        ticket=7001, symbol="EURUSD", state=fake.ORDER_STATE_FILLED,
+        volume_initial=0.10, volume_current=0.0, price_open=99.0,
+        sl=98.0, tp=101.0, position_id=7002, comment="APND-a1b2c3d4e5f4",
+    )]
+
+    found = connector.find_pending_order_by_idempotency_key("a1b2c3d4e5f4")
+
+    assert found.order_status == "FILLED"
+    assert str(found.ticket) == "7001"
+    assert found.position_id == "7002"
+
+
+def test_pending_idempotency_cancelled_history_preserves_partial_fill(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_orders = [SimpleNamespace(
+        ticket=7003, symbol="EURUSD", state=fake.ORDER_STATE_CANCELED,
+        volume_initial=0.10, volume_current=0.06, price_open=99.0,
+        sl=98.0, tp=101.0, position_id=7004, comment="APND-a1b2c3d4e5f5",
+    )]
+
+    found = connector.find_pending_order_by_idempotency_key("a1b2c3d4e5f5")
+
+    assert found.order_status == "PARTIALLY_FILLED_TERMINAL"
+    assert str(found.ticket) == "7003"
+    assert found.position_id == "7004"
+
+
+def test_pending_idempotency_deal_only_evidence_is_unknown_not_filled(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_deals = [SimpleNamespace(
+        order=7005, position_id=7006, symbol="EURUSD",
+        comment="APND-a1b2c3d4e5f7", price=99.0, volume=0.04,
+    )]
+
+    found = connector.find_pending_order_by_idempotency_key("a1b2c3d4e5f7")
+
+    assert found.order_status == "UNKNOWN"
+    assert str(found.ticket) == "7005"
+    assert found.position_id == "7006"
+
+
+def test_pending_idempotency_history_lookup_failure_stays_unknown(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_unavailable = True
+
+    found = connector.find_pending_order_by_idempotency_key("a1b2c3d4e5f8")
+
+    assert found.order_status == "UNKNOWN"
 
 def test_pending_retry_stays_unknown_when_broker_order_book_lookup_fails(monkeypatch):
     connector, fake = _connector(monkeypatch)
