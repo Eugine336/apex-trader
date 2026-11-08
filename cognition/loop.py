@@ -1836,7 +1836,12 @@ class CognitionLoop:
     def _inject_calibration_evidence(self, market_state: MarketState) -> None:
         """Supply producer-owned learning context; it never authorizes a decision."""
         symbol = str(getattr(market_state, "symbol", "") or "")
-        cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+        try:
+            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            cutoff = 0.0
+        if not math.isfinite(cutoff) or cutoff <= 0.0:
+            cutoff = 0.0
         providers = []
         try:
             provider = self._calibration_provider
