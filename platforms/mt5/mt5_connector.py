@@ -592,6 +592,23 @@ class MT5Connector(BaseConnector):
             for deal in deals
         ]
 
+    def get_position_deal_history_checked(self, position_id: str) -> list[dict]:
+        """Return complete broker deal history for one exact position identifier."""
+        self._require_connection()
+        try:
+            ticket = int(str(position_id).strip())
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("position identifier must be an exact MT5 ticket") from exc
+        if ticket <= 0:
+            raise ValueError("position identifier must be positive")
+        deals = mt5.history_deals_get(position=ticket)
+        if deals is None:
+            raise RuntimeError(f"MT5 position deal history is incomplete: {mt5.last_error()}")
+        return [
+            {**self._record_fields(deal), "source": "mt5.history_deals_get(position)", "source_verified": True}
+            for deal in deals
+        ]
+
     def get_deal_history(self, from_dt, to_dt) -> list[dict]:
         """Return the account's closed deals in [from_dt, to_dt] as plain dicts.
 
