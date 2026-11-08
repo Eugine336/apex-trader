@@ -264,6 +264,43 @@ def test_pending_idempotency_history_lookup_failure_stays_unknown(monkeypatch):
 
     assert found.order_status == "UNKNOWN"
 
+def test_pending_retry_preserves_confirmed_cancelled_terminal_state(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_orders = [SimpleNamespace(
+        ticket=7010, symbol="EURUSD", state=fake.ORDER_STATE_CANCELED,
+        volume_initial=0.10, volume_current=0.10, price_open=99.0,
+        sl=98.0, tp=101.0, position_id=0, comment="APND-a1b2c3d4e5f9",
+    )]
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f9",
+    )
+
+    assert result.success is False
+    assert result.order_status == "CANCELLED"
+    assert len(fake.requests) == 0
+
+
+def test_pending_retry_preserves_partial_terminal_state(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.history_orders = [SimpleNamespace(
+        ticket=7011, symbol="EURUSD", state=fake.ORDER_STATE_CANCELED,
+        volume_initial=0.10, volume_current=0.06, price_open=99.0,
+        sl=98.0, tp=101.0, position_id=7012, comment="APND-a1b2c3d4e5fa",
+    )]
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5fa",
+    )
+
+    assert result.success is False
+    assert result.order_status == "PARTIALLY_FILLED_TERMINAL"
+    assert len(fake.requests) == 0
+
 def test_pending_retry_stays_unknown_when_broker_order_book_lookup_fails(monkeypatch):
     connector, fake = _connector(monkeypatch)
     first = connector.place_pending_order(
