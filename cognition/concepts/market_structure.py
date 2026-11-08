@@ -49,23 +49,35 @@ def fractal_swings(bars: list[dict]) -> list[tuple[int, str, float]]:
     """Confirmed three-bar fractal swings as (index, 'H'|'L', price), alternating.
 
     A swing at bar i is confirmed only once bar i+1 has completed (no look-ahead).
-    Consecutive swings of the same kind keep only the more extreme one.
+    Consecutive swings of the same kind keep only the more extreme one. A bar that is
+    both a swing high and a swing low (an outside bar) is ordered so that it
+    alternates with the previous swing, or, with no previous swing, by its own
+    direction — never by the letter, so the result is identical on a mirrored chart.
     """
-    raw: list[tuple[int, str, float]] = []
-    for i in range(1, len(bars) - 1):
-        if bars[i]["high"] > bars[i - 1]["high"] and bars[i]["high"] >= bars[i + 1]["high"]:
-            raw.append((i, "H", bars[i]["high"]))
-        if bars[i]["low"] < bars[i - 1]["low"] and bars[i]["low"] <= bars[i + 1]["low"]:
-            raw.append((i, "L", bars[i]["low"]))
-    raw.sort(key=lambda s: (s[0], s[1]))
     out: list[tuple[int, str, float]] = []
-    for sw in raw:
+
+    def push(sw: tuple[int, str, float]) -> None:
         if out and out[-1][1] == sw[1]:
             keep_new = sw[2] > out[-1][2] if sw[1] == "H" else sw[2] < out[-1][2]
             if keep_new:
                 out[-1] = sw
-            continue
+            return
         out.append(sw)
+
+    for i in range(1, len(bars) - 1):
+        found = []
+        if bars[i]["high"] > bars[i - 1]["high"] and bars[i]["high"] >= bars[i + 1]["high"]:
+            found.append((i, "H", bars[i]["high"]))
+        if bars[i]["low"] < bars[i - 1]["low"] and bars[i]["low"] <= bars[i + 1]["low"]:
+            found.append((i, "L", bars[i]["low"]))
+        if len(found) == 2:
+            if out:
+                first = "L" if out[-1][1] == "H" else "H"
+            else:
+                first = "L" if bars[i]["close"] >= bars[i]["open"] else "H"
+            found.sort(key=lambda sw: sw[1] != first)
+        for sw in found:
+            push(sw)
     return out
 
 

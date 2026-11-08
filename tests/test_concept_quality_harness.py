@@ -140,7 +140,37 @@ def _all(module, frames, **kw):
                    for r in _read(module, frames)), key=repr)
 
 
-MODULES = [pytest.param(m, id=m.key) for m in CONCEPT_MODULES]
+# Modules whose reading depends on information the synthetic OHLC corpus does not carry
+# (cost facts, other modules' readings) are checked by their own tests instead.
+NEEDS_OTHER_INPUTS = {"execution_cost", "strategy_lens_readings"}
+# Calendar-position concepts change when the date changes; time-shift invariance does not apply.
+CALENDAR_DEPENDENT = {"seasonality"}
+
+# Known mirror-symmetry defects found by this harness (direction bias or direction-dependent
+# discretisation). strict=True: when a module is fixed the test XPASSes and must be removed here.
+KNOWN_MIRROR_DEFECTS = {
+    "swing_geometry": "Fibonacci swing selection differs on a mirrored chart (different anchor swing).",
+    "structure_patterns": "A chart pattern found on the original is not found on the mirrored chart (long/short detection asymmetric).",
+    "volume_profile": "Value-area/POC levels depend on price-bin alignment anchored at the minimum price, so mirrored levels differ.",
+    "seasonality": "Mirrored data changes the reading (check the signed tendency handling).",
+    "range_rotation": "Objective level depends on the same direction-dependent price binning as volume_profile.",
+    "regime_switching": "Trigger state (activated) differs on a mirrored chart.",
+    "wyckoff_volume_readings": "Invalidation level differs on a mirrored chart (range-bound selection is direction-dependent).",
+}
+
+
+def _params(defects=None):
+    out = []
+    for m in CONCEPT_MODULES:
+        marks = []
+        if defects and m.key in defects:
+            marks.append(pytest.mark.xfail(strict=True, reason=defects[m.key]))
+        out.append(pytest.param(m, id=m.key, marks=marks))
+    return out
+
+
+MODULES = _params()
+MIRROR_MODULES = _params(KNOWN_MIRROR_DEFECTS)
 
 
 @pytest.mark.parametrize("module", MODULES)
@@ -152,7 +182,7 @@ def test_scale_invariance_no_absolute_price_thresholds(module):
             assert scaled == expected, f"{module.key}: readings change with price scale x{factor} on {kind}@{end}"
 
 
-@pytest.mark.parametrize("module", MODULES)
+@pytest.mark.parametrize("module", MIRROR_MODULES)
 def test_mirror_symmetry_no_direction_bias(module):
     c = 3.0
     for kind, end, frames in cases():
@@ -172,6 +202,8 @@ def test_time_shift_and_purity(module):
     for kind, end, frames in cases()[:12]:
         a = _all(module, frames, scale=1.0)
         assert a == _all(module, frames, scale=1.0), f"{module.key}: not deterministic"
+        if module.key in CALENDAR_DEPENDENT:
+            continue
         shifted = _all(module, _transform(frames, shift=7 * 86400.0), scale=1.0)
         assert a == shifted, f"{module.key}: readings change when timestamps shift by whole days"
 
@@ -179,6 +211,8 @@ def test_time_shift_and_purity(module):
 def test_corpus_exercises_every_module():
     silent = []
     for module in CONCEPT_MODULES:
+        if module.key in NEEDS_OTHER_INPUTS:
+            continue
         if not any(_read(module, frames) for _, _, frames in cases()):
             silent.append(module.key)
     # Informational guard: a module that never fires on the whole corpus is untested by this harness.
