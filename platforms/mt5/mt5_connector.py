@@ -581,6 +581,17 @@ class MT5Connector(BaseConnector):
             logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
             return {}
 
+    def get_deal_history_checked(self, from_dt, to_dt) -> list[dict]:
+        """Return verified deal history or raise when the broker query is incomplete."""
+        self._require_connection()
+        deals = mt5.history_deals_get(from_dt, to_dt)
+        if deals is None:
+            raise RuntimeError(f"MT5 history_deals_get returned no result: {mt5.last_error()}")
+        return [
+            {**self._record_fields(deal), "source": "mt5.history_deals_get", "source_verified": True}
+            for deal in deals
+        ]
+
     def get_deal_history(self, from_dt, to_dt) -> list[dict]:
         """Return the account's closed deals in [from_dt, to_dt] as plain dicts.
 
