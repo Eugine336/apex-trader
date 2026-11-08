@@ -725,7 +725,8 @@ class PlatformManager:
         return bool(cancelled)
 
     def reconcile_pending_order(
-        self, order_id: str, *, symbol: str, submitted_at: datetime,
+        self, order_id: str = "", *, symbol: str, submitted_at: datetime,
+        idempotency_key: str = "",
     ) -> dict:
         """Resolve a pending order only from a source-verified live or historical broker record.
 
@@ -733,12 +734,43 @@ class PlatformManager:
         """
         ticket = str(order_id or "").strip()
         canonical_symbol = str(symbol or "").strip().upper()
+        idem_key = str(idempotency_key or "").strip()
         if (
-            not ticket or not canonical_symbol
+            (not ticket and not idem_key) or not canonical_symbol
             or not isinstance(submitted_at, datetime)
             or submitted_at.tzinfo is None or submitted_at.utcoffset() is None
         ):
             return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}
+        if not ticket:
+            discoveries: list[tuple[int, Any]] = []
+            discovery_failures: list[int] = []
+            for index, connector in enumerate(self.mt5_connectors):
+                if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                    continue
+                try:
+                    finder = getattr(connector, "find_order_by_idempotency_key", None)
+                    candidate = finder(idem_key) if callable(finder) else None
+                    candidate_symbol = str(getattr(candidate, "symbol", "") or "").strip().upper()
+                    if candidate is not None and candidate_symbol == canonical_symbol:
+                        discoveries.append((index, candidate))
+                except Exception:
+                    discovery_failures.append(index)
+            if discovery_failures:
+                return {"status": "UNKNOWN", "reason": "idempotency_lookup_incomplete", "failed_accounts": discovery_failures, "broker_confirmed": False}
+            if len(discoveries) > 1:
+                return {"status": "AMBIGUOUS", "reason": "idempotency_key_matches_multiple_mt5_accounts", "broker_confirmed": False}
+            if not discoveries:
+                return {"status": "UNKNOWN", "reason": "idempotency_key_not_found_in_broker_history_or_live_book", "broker_confirmed": False}
+            _, candidate = discoveries[0]
+            ticket = str(getattr(candidate, "ticket", "") or "").strip()
+            candidate_status = str(getattr(candidate, "order_status", "UNKNOWN") or "UNKNOWN").upper()
+            if candidate_status == "FILLED":
+                candidate_record = {
+                    "ticket": ticket, "position_id": str(getattr(candidate, "position_id", "") or ticket),
+                    "symbol": canonical_symbol, "state": getattr(candidate, "state", 4),
+                    "source": "mt5.idempotency_lookup", "source_verified": True,
+                }
+                return {"status": "FILLED", "order_id": ticket, "broker_confirmed": True, "record": candidate_record}
         now = datetime.now(timezone.utc)
         if submitted_at.astimezone(timezone.utc) > now:
             return {"status": "UNKNOWN", "reason": "submission_time_in_future", "broker_confirmed": False}
@@ -784,7 +816,7 @@ class PlatformManager:
         if len(live_matches) > 1 or len(history_matches) > 1:
             return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
         if failed_accounts:
-            return {"status": "UNKNOWN", "reason": "broker_history_or_live_book_incomplete", "failed_accounts": failed_accounts, "broker_confirmed": False}
+            return {"status": "UNKNOWN", "order_id": ticket, "reason": "broker_history_or_live_book_incomplete", "failed_accounts": failed_accounts, "broker_confirmed": False}
         if len(history_matches) == 1:
             record = history_matches[0]
             state = getattr(record.get("state"), "value", record.get("state"))
@@ -803,8 +835,8 @@ class PlatformManager:
             }
             # MT5 history state is a numeric enum; preserve unknown values rather than guessing.
             normalized = state_map.get(state_name, "UNKNOWN")
-            return {"status": normalized, "broker_confirmed": normalized != "UNKNOWN", "record": record}
-        return {"status": "UNKNOWN", "reason": "not_present_in_live_or_history_book", "broker_confirmed": False}
+            return {"status": normalized, "order_id": ticket, "broker_confirmed": normalized != "UNKNOWN", "record": record}
+        return {"status": "UNKNOWN", "order_id": ticket, "reason": "not_present_in_live_or_history_book", "broker_confirmed": False}
 
     def execute_entry(
         self,
