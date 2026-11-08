@@ -45,6 +45,7 @@ class FlushLoop:
         on_manage_callback: Optional[Any] = None,
         on_open_callback: Optional[Any] = None,
         interval: float = 0.1,
+        on_execution_result_callback: Optional[Any] = None,
     ) -> None:
         self._aggregator = aggregator
         self._executor = executor
@@ -53,6 +54,7 @@ class FlushLoop:
         self._on_close = on_close_callback
         self._on_manage = on_manage_callback
         self._on_open = on_open_callback
+        self._on_execution_result = on_execution_result_callback
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -90,6 +92,14 @@ class FlushLoop:
                     )
                     for i, r in enumerate(results):
                         intent = intents[i] if i < len(intents) else None
+                        if intent is not None and self._on_execution_result is not None:
+                            try:
+                                self._on_execution_result(intent, r)
+                            except Exception as callback_exc:
+                                logger.error(
+                                    "[flush-loop] execution-result callback failed for {}: {}",
+                                    getattr(intent, "action_id", ""), callback_exc,
+                                )
                         if r.success:
                             self._intents_executed += 1
                             if intent is not None and intent.intent_type == IntentType.CLOSE:
