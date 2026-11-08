@@ -71,7 +71,7 @@ def _frame_quality(frame: Any, expected_symbol: str, timeframe: str) -> dict[str
         "source_timestamp_verified": attrs.get("source_timestamp_verified") is True,
         "source_timestamp_origin": attrs.get("source_timestamp_origin"),
         "source_symbol_matches": str(attrs.get("source_symbol", "")).strip().upper()
-        in {expected_symbol.upper(), ""},
+        == expected_symbol.upper(),
         "volume_basis": attrs.get("volume_basis"),
         "bar_fields": list(attrs.get("bar_fields") or []),
     }
@@ -174,7 +174,7 @@ def audit_connector(
                     }
                 else:
                     row["timeframes"][timeframe] = _frame_quality(
-                        result["value"], broker_symbol, timeframe,
+                        result["value"], canonical, timeframe,
                     )
 
             spec_result = _safe_call(connector.get_symbol_spec, canonical)
@@ -199,7 +199,7 @@ def audit_connector(
                 "swap_mode": spec.get("swap_mode"),
                 "swap_mode_name": spec.get("swap_mode_name"),
                 "swap_rollover3days": spec.get("swap_rollover3days"),
-                "trade_sessions_server_time": spec.get("trade_sessions_server_time"),
+                "broker_trading_sessions": spec.get("broker_trading_sessions"),\n                "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,\n                "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,\n                "swap_schedule": spec.get("swap_schedule"),
                 "error": spec_result["error"],
             }
 
@@ -293,7 +293,7 @@ def audit_connector(
             },
         }
     finally:
-        connector.disconnect()
+        _safe_call(connector.disconnect)
 
 
 def main(argv: list[str] | None = None) -> int:
