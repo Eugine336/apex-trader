@@ -1085,6 +1085,7 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
         management_action_ledger=SimpleNamespace(
             begin=lambda action, position: (True, "SUBMITTED"),
             finish=lambda *args, **kwargs: True,
+            finish_if_status=lambda *args, **kwargs: True,
         ),
         clock=_ManualClock(),
     )
