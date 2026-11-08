@@ -73,6 +73,7 @@ class _FixtureProvider:
             _obs(
                 ObservationKind.TRADE_PRINT, "trade-sell",
                 {"price": 2000.5, "quantity": 1.0, "aggressor_side": "sell"},
+                source_epoch=CUTOFF - 90,
                 volume_basis="executed_trade_volume", aggressor_basis="exchange_classified",
             ),
             _obs(
