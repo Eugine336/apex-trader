@@ -1390,6 +1390,202 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def place_pending_order(
+        self,
+        symbol: str,
+        direction: str,
+        order_type: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        idempotency_key: str = "",
+    ) -> OrderResult:
+        """Place a Brain-authorized MT5 LIMIT/STOP order without market fallback.
+
+        The requested size and all price levels are validated, never inflated or
+        silently adjusted. A successful return means the exact order ticket was
+        observed in the broker's current pending-order book. An acknowledgement
+        without that confirmation is AMBIGUOUS and must be reconciled, not retried.
+        """
+        self._require_connection()
+        side = str(direction or "").strip().upper()
+        kind = str(order_type or "").strip().upper()
+        try:
+            entry = float(entry_price)
+            requested_lots = float(lots)
+            stop = float(sl)
+            target = float(tp)
+        except (TypeError, ValueError, OverflowError):
+            return self._fail_order(symbol, side, lots, sl, tp, "invalid_pending_order_numeric_fields")
+        if (
+            side not in {"BUY", "SELL", "LONG", "SHORT"}
+            or kind not in {"LIMIT", "STOP"}
+            or not all(math.isfinite(value) and value > 0.0 for value in (entry, requested_lots, stop, target))
+        ):
+            return self._fail_order(symbol, side, requested_lots, stop, target, "invalid_pending_order_request")
+        is_buy = side in {"BUY", "LONG"}
+        if not (stop < entry < target if is_buy else target < entry < stop):
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_sl_tp_not_ordered")
+
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_unavailable")
+        if idempotency_key:
+            duplicate = self._find_order_by_idem_key(idempotency_key)
+            if duplicate is not None:
+                status = str(getattr(duplicate, "order_status", "UNKNOWN") or "UNKNOWN").upper()
+                if status == "PENDING":
+                    return OrderResult(
+                        success=True, order_id=str(duplicate.ticket), fill_price=0.0,
+                        requested_price=entry, slippage_pips=0.0,
+                        lots=float(duplicate.volume), symbol=symbol, direction=side,
+                        sl=stop, tp=target, platform="mt5",
+                        order_status="PENDING", order_type=kind,
+                    )
+                if status == "FILLED":
+                    return OrderResult(
+                        success=True, order_id=str(duplicate.ticket),
+                        fill_price=float(duplicate.price), requested_price=entry,
+                        slippage_pips=0.0, lots=float(duplicate.volume),
+                        symbol=symbol, direction=side, sl=float(duplicate.sl),
+                        tp=float(duplicate.tp), platform="mt5",
+                        order_status="FILLED", order_type=kind,
+                    )
+                return self._fail_order(
+                    symbol, side, requested_lots, stop, target,
+                    f"idempotency_key_already_bound_to_{status.lower()}_order",
+                )
+
+        tick = mt5.symbol_info_tick(mapped)
+        if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_quote_unavailable")
+        tick_age = (datetime.now(timezone.utc) - datetime.fromtimestamp(tick.time, tz=timezone.utc)).total_seconds()
+        if tick_age < -2.0 or tick_age > self._max_tick_age_seconds:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_quote_stale_or_future")
+        if is_buy and kind == "LIMIT" and not entry < tick.ask:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "buy_limit_must_be_below_ask")
+        if is_buy and kind == "STOP" and not entry > tick.ask:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "buy_stop_must_be_above_ask")
+        if not is_buy and kind == "LIMIT" and not entry > tick.bid:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "sell_limit_must_be_above_bid")
+        if not is_buy and kind == "STOP" and not entry < tick.bid:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "sell_stop_must_be_below_bid")
+
+        mt5.symbol_select(mapped, True)
+        info = mt5.symbol_info(mapped)
+        if info is None:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_spec_unavailable")
+        volume_min = float(getattr(info, "volume_min", 0.0) or 0.0)
+        volume_max = float(getattr(info, "volume_max", 0.0) or 0.0)
+        volume_step = float(getattr(info, "volume_step", 0.0) or 0.0)
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        digits = int(getattr(info, "digits", 0) or 0)
+        trade_mode = getattr(info, "trade_mode", None)
+        if (
+            not all(math.isfinite(value) and value > 0.0 for value in (volume_min, volume_max, volume_step, point))
+            or volume_max < volume_min
+            or digits <= 0
+            or trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", object())
+        ):
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_constraints_invalid")
+        steps = round(requested_lots / volume_step)
+        normalized_lots = round(steps * volume_step, 10)
+        if (
+            normalized_lots < volume_min - 1e-10
+            or normalized_lots > volume_max + 1e-10
+            or abs(normalized_lots - requested_lots) > max(1e-9, volume_step * 1e-6)
+        ):
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_volume_not_exactly_broker_aligned")
+        min_distance = self._effective_min_stop_distance(
+            mapped, point, int(getattr(info, "trade_stops_level", 0) or 0),
+            int(getattr(info, "trade_freeze_level", 0) or 0),
+        )
+        if abs(entry - stop) < min_distance or abs(target - entry) < min_distance:
+            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_stops_inside_broker_minimum_distance")
+
+        mt5_order_type = (
+            mt5.ORDER_TYPE_BUY_LIMIT if is_buy and kind == "LIMIT" else
+            mt5.ORDER_TYPE_BUY_STOP if is_buy else
+            mt5.ORDER_TYPE_SELL_LIMIT if kind == "LIMIT" else
+            mt5.ORDER_TYPE_SELL_STOP
+        )
+        order_comment = str(comment or "APEX")[:31]
+        if idempotency_key and extract_idempotency_key(order_comment) != idempotency_key:
+            order_comment = build_order_comment("APEX", idempotency_key)
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": mapped,
+            "volume": normalized_lots,
+            "type": mt5_order_type,
+            "price": round(entry, digits),
+            "sl": round(stop, digits),
+            "tp": round(target, digits),
+            "deviation": self._deviation_points(symbol, point),
+            "magic": self._magic,
+            "comment": order_comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+        }
+        try:
+            result = mt5.order_send(request)
+        except Exception as exc:  # noqa: BLE001 — broker send may have reached server
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error=f"AMBIGUOUS_PENDING_ORDER_ACK: {type(exc).__name__}",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        if result is None:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error=f"AMBIGUOUS_PENDING_ORDER_ACK: {mt5.last_error()}",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        accepted = {
+            getattr(mt5, "TRADE_RETCODE_PLACED", -1),
+            getattr(mt5, "TRADE_RETCODE_DONE", -2),
+        }
+        if getattr(result, "retcode", None) not in accepted:
+            return self._fail_order(
+                symbol, side, normalized_lots, stop, target,
+                str(getattr(result, "comment", "") or f"pending_order_retcode_{getattr(result, 'retcode', 'unknown')}"),
+            )
+        ticket = str(getattr(result, "order", 0) or getattr(result, "ticket", 0) or "")
+        if not ticket:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error="AMBIGUOUS_PENDING_ORDER_ACK: broker accepted without order ticket",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        try:
+            live_orders = mt5.orders_get()
+            observed = next((o for o in (live_orders or []) if str(getattr(o, "ticket", "")) == ticket), None)
+        except Exception as exc:  # noqa: BLE001 — accepted order may still be live
+            observed = None
+            logger.error("[mt5] pending order confirmation failed for {}: {}", ticket, exc)
+        if observed is None:
+            return OrderResult(
+                success=False, order_id=ticket, fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error="AMBIGUOUS_PENDING_ORDER_ACK: accepted order not yet visible in broker order book",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        logger.info("[MT5] pending {} {} {} {} lots @ {} ticket={}", kind, side, symbol, normalized_lots, entry, ticket)
+        return OrderResult(
+            success=True, order_id=ticket, fill_price=0.0, requested_price=entry,
+            slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+            direction=side, sl=stop, tp=target, platform="mt5",
+            order_status="PENDING", order_type=kind,
+        )
+
     def cancel_pending_order(self, order_id: str) -> bool:
         """Delete a resting pending (limit/stop) order by its ticket.
 
@@ -1999,6 +2195,7 @@ class MT5Connector(BaseConnector):
                         volume=p.volume,
                         sl=p.sl,
                         tp=p.tp,
+                        order_status="FILLED",
                     )
         orders = mt5.orders_get()
         if orders:
@@ -2010,6 +2207,8 @@ class MT5Connector(BaseConnector):
                         volume=getattr(o, "volume_current", getattr(o, "volume_initial", 0.0)),
                         sl=getattr(o, "sl", 0.0),
                         tp=getattr(o, "tp", 0.0),
+                        order_status="PENDING",
+                        order_type=str(getattr(o, "type", "") or ""),
                     )
         try:
             since = datetime.now(timezone.utc) - timedelta(seconds=900)
