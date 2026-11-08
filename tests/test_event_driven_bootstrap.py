@@ -977,3 +977,63 @@ class TestPendingOrderLifecycle:
             for call in store.emit.call_args_list
         )
 
+
+    def test_restart_recovery_does_not_resurrect_attributed_terminal_partial_fill(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending = {
+            "order_id": "ORDER-TERMINAL-ATTRIBUTED",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        reconciled = {
+            "order_id": "ORDER-TERMINAL-ATTRIBUTED",
+            "status": "PARTIALLY_FILLED_TERMINAL",
+            "attribution_status": "attributed",
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_RECONCILED, "parent_id": "ORDER-TERMINAL-ATTRIBUTED",
+             "payload_json": json.dumps(reconciled)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-TERMINAL-ATTRIBUTED",
+             "payload_json": json.dumps(pending)},
+        ]
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+        assert "ORDER-TERMINAL-ATTRIBUTED" not in system._pending_orders
+
+
+    def test_restart_recovery_retains_unresolved_terminal_partial_fill(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending = {
+            "order_id": "ORDER-TERMINAL-UNRESOLVED",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        reconciled = {
+            "order_id": "ORDER-TERMINAL-UNRESOLVED",
+            "status": "PARTIALLY_FILLED_TERMINAL",
+            "attribution_status": "unresolved_closed_fill",
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_RECONCILED, "parent_id": "ORDER-TERMINAL-UNRESOLVED",
+             "payload_json": json.dumps(reconciled)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-TERMINAL-UNRESOLVED",
+             "payload_json": json.dumps(pending)},
+        ]
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+        assert system._pending_orders["ORDER-TERMINAL-UNRESOLVED"]["attribution_status"] == "unresolved_closed_fill"
+
