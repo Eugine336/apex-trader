@@ -32,6 +32,20 @@ def _response_summary(response: Any) -> dict:
         "success", "order_id", "ticket", "deal", "retcode", "comment",
         "error", "fill_price", "close_price", "lots_closed", "pnl",
     )
+    if isinstance(response, dict):
+        allowed = set(fields) | {
+            "source", "source_timestamp_epoch", "source_timestamp_verified",
+            "position_ticket", "closed_position_ticket", "book_complete",
+            "platform_confirmed", "position_present", "current_lots", "current_sl",
+            "direction", "opening_deal_verified", "closed_deal_verified",
+            "reconciled", "reconciled_epoch", "reconciliation_basis",
+        }
+        return {
+            str(key): value for key, value in response.items()
+            if key in allowed
+            and (isinstance(value, (str, int, float, bool)) or value is None)
+            and not (isinstance(value, float) and not math.isfinite(value))
+        }
     result = {}
     for name in fields:
         value = getattr(response, name, None)
