@@ -685,6 +685,13 @@ class PlatformManager:
         canonical_symbol = str(symbol or "").strip().upper()
         if not ticket or not canonical_symbol:
             return False
+        if (
+            not self.mt5_connectors
+            or len(self._mt5_connected_flags) != len(self.mt5_connectors)
+            or not all(self._mt5_connected_flags)
+        ):
+            _pm_logger.error("[orders] pending cancel refused: MT5 account set is incomplete")
+            return False
         matches: list[tuple[int, MT5Connector, dict]] = []
         for index, connector in enumerate(self.mt5_connectors):
             if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
@@ -740,7 +747,15 @@ class PlatformManager:
             or not isinstance(submitted_at, datetime)
             or submitted_at.tzinfo is None or submitted_at.utcoffset() is None
         ):
-            return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}
+            return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}        if (
+            len(self._mt5_connected_flags) != len(self.mt5_connectors)
+            or not all(self._mt5_connected_flags)
+        ):
+            return {
+                "status": "UNKNOWN",
+                "reason": "mt5_account_set_incomplete",
+                "broker_confirmed": False,
+            }
         if not ticket:
             discoveries: list[tuple[int, Any]] = []
             discovery_failures: list[int] = []
