@@ -5669,7 +5669,15 @@ class EventDrivenSystem:
                     snapshot = payload.get("post_cancel_broker_record")
                     if ticket not in restored:
                         continue
-                    if not isinstance(snapshot, dict) or snapshot.get("source_verified") is not True:
+                    try:
+                        confirmed_cancel_state = int(snapshot.get("state")) == 2 if isinstance(snapshot, dict) else False
+                    except (TypeError, ValueError, OverflowError):
+                        confirmed_cancel_state = False
+                    if (
+                        not isinstance(snapshot, dict)
+                        or snapshot.get("source_verified") is not True
+                        or not confirmed_cancel_state
+                    ):
                         restored[ticket].update({
                             "status": "UNKNOWN",
                             "cancellation_event": payload,
