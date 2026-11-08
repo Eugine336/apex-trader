@@ -1243,6 +1243,10 @@ class EventDrivenSystem:
         # advanced only by broker-verified live/history reconciliation.
         self._pending_orders: dict[str, dict[str, Any]] = {}
         self._pending_orders_lock = threading.Lock()
+        try:
+            self._pm.pending_order_callback = self._record_pending_order_result
+        except Exception as exc:  # noqa: BLE001 — restart event replay remains the durable fallback
+            logger.warning("[pending-orders] runtime callback could not be attached: {}", exc)
 
         # In-flight management mutations awaiting broker confirmation. The
         # management loop applies an optimistic flag (at_breakeven / partial_-
@@ -5580,6 +5584,45 @@ class EventDrivenSystem:
 
         self._known_open = {**current, **still_pending}
 
+    def _record_pending_order_result(self, result: Any, context: dict[str, Any]) -> None:
+        """Keep broker-confirmed and ambiguous pending submissions in the live projection."""
+        if not isinstance(context, dict):
+            return
+        ticket = str(getattr(result, "order_id", "") or context.get("order_id") or "").strip()
+        idem_key = str(context.get("idempotency_key", "") or "").strip()
+        tracking_key = ticket or idem_key
+        if not tracking_key:
+            logger.critical("[pending-orders] ambiguous submission has neither broker ticket nor idempotency key")
+            return
+        meta = dict(context)
+        meta["order_id"] = ticket
+        meta["idempotency_key"] = idem_key
+        submitted_at = meta.get("submitted_at") or getattr(result, "timestamp", None)
+        if isinstance(submitted_at, datetime):
+            if submitted_at.tzinfo is None or submitted_at.utcoffset() is None:
+                logger.critical("[pending-orders] refusing naive pending submission timestamp for {}", tracking_key)
+                return
+            meta["submitted_at"] = submitted_at.astimezone(timezone.utc).isoformat()
+        elif isinstance(submitted_at, str):
+            try:
+                parsed = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+            except ValueError:
+                logger.critical("[pending-orders] invalid pending submission timestamp for {}", tracking_key)
+                return
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                logger.critical("[pending-orders] naive pending submission timestamp for {}", tracking_key)
+                return
+            meta["submitted_at"] = parsed.astimezone(timezone.utc).isoformat()
+        else:
+            logger.critical("[pending-orders] pending submission timestamp unavailable for {}", tracking_key)
+            return
+        meta.setdefault("status", "PENDING" if getattr(result, "success", False) else "UNKNOWN")
+        with self._pending_orders_lock:
+            prior = self._pending_orders.get(tracking_key, {})
+            merged = dict(prior) if isinstance(prior, dict) else {}
+            merged.update(meta)
+            self._pending_orders[tracking_key] = merged
+
     def _restore_pending_orders(self) -> None:
         """Rebuild the pending-order projection from durable lifecycle events."""
         try:
@@ -5598,7 +5641,7 @@ class EventDrivenSystem:
                 payload = json.loads(row.get("payload_json", "{}") or "{}")
                 if not isinstance(payload, dict):
                     continue
-                ticket = str(payload.get("order_id") or row.get("parent_id") or "").strip()
+                ticket = str(payload.get("order_id") or payload.get("idempotency_key") or row.get("parent_id") or "").strip()
                 if not ticket:
                     continue
                 if event_type == DE.ORDER_PENDING:
@@ -5609,7 +5652,8 @@ class EventDrivenSystem:
                         continue
                     if parsed.tzinfo is None or parsed.utcoffset() is None:
                         continue
-                    restored[ticket] = {**payload, "submitted_at": parsed.isoformat(), "status": "PENDING"}
+                    restored[ticket] = {**payload, "submitted_at": parsed.isoformat(),
+                                        "status": str(payload.get("status", "PENDING") or "PENDING").upper()}
                 elif event_type == DE.ORDER_FILLED:
                     if ticket in restored:
                         restored[ticket]["fill_event_emitted"] = True
@@ -5648,7 +5692,8 @@ class EventDrivenSystem:
             str(getattr(pos, "order_id", getattr(pos, "ticket", "")) or ""): pos
             for pos in (positions or [])
         }
-        for ticket, meta in pending:
+        for tracking_key, meta in pending:
+            ticket = str(meta.get("order_id", "") or "").strip()
             try:
                 submitted_at = datetime.fromisoformat(
                     str(meta.get("submitted_at", "") or "").replace("Z", "+00:00")
@@ -5656,7 +5701,11 @@ class EventDrivenSystem:
                 outcome = self._pm.reconcile_pending_order(
                     ticket, symbol=str(meta.get("symbol", "") or ""),
                     submitted_at=submitted_at,
+                    idempotency_key=str(meta.get("idempotency_key", "") or ""),
                 )
+                resolved_ticket = str(outcome.get("order_id", "") or ticket or tracking_key)
+                if resolved_ticket and not ticket:
+                    meta["order_id"] = resolved_ticket
                 status = str(outcome.get("status", "UNKNOWN") or "UNKNOWN").upper()
                 record = outcome.get("record") if isinstance(outcome.get("record"), dict) else {}
                 if status in {"UNKNOWN", "AMBIGUOUS", "PENDING"}:
@@ -5667,9 +5716,9 @@ class EventDrivenSystem:
                             event_type=DE.ORDER_RECONCILED, severity="INFO",
                             symbol=str(meta.get("symbol", "") or ""),
                             correlation_id=str(meta.get("decision_id", "") or "") or None,
-                            parent_id=ticket, source_module="execution.pending_order_reconciliation",
+                            parent_id=resolved_ticket, source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": ticket, "status": status,
+                            payload={"order_id": resolved_ticket, "status": status,
                                      "remaining_volume": outcome.get("remaining_volume"),
                                      "initial_volume": outcome.get("initial_volume"),
                                      "broker_confirmed": True},
@@ -5678,7 +5727,7 @@ class EventDrivenSystem:
                     continue
 
                 position_id = str(
-                    record.get("position_id") or record.get("position") or ticket
+                    record.get("position_id") or record.get("position") or resolved_ticket
                 ).strip()
                 position = position_by_ticket.get(position_id) or position_by_ticket.get(ticket)
                 terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
@@ -5764,7 +5813,7 @@ class EventDrivenSystem:
                         },
                     )
                     with self._pending_orders_lock:
-                        self._pending_orders.pop(ticket, None)
+                        self._pending_orders.pop(tracking_key, None)
                 elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}:
                     if meta.get("status") != status:
                         store.emit(
@@ -5780,7 +5829,7 @@ class EventDrivenSystem:
                         )
                     meta["status"] = status
             except Exception as exc:  # noqa: BLE001 — retain unresolved order for next broker-confirmed cycle
-                logger.error("[pending-orders] reconciliation failed for {}: {}", ticket, exc)
+                logger.error("[pending-orders] reconciliation failed for {}: {}", tracking_key, exc)
 
     def _handle_open_result(self, intent: Intent, result: Any) -> None:
         """Persist the Brain's decision-time evidence against the broker ticket.
@@ -5798,28 +5847,26 @@ class EventDrivenSystem:
                 # in the durable pending-order projection until broker history
                 # confirms fill, cancellation, expiry or rejection.
                 ticket = str(getattr(response, "order_id", "") or "").strip()
-                if ticket:
-                    submitted_at = getattr(response, "timestamp", None)
-                    if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
-                        submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
-                    with self._pending_orders_lock:
-                        self._pending_orders[ticket] = {
-                            "order_id": ticket,
-                            "symbol": str(intent.symbol or "").upper(),
-                            "direction": str(intent.direction or "").upper(),
-                            "order_type": str(intent.order_type or "").upper(),
-                            "lots": float(intent.lots or 0.0),
-                            "entry_price": float(intent.entry_price or 0.0),
-                            "sl": float(intent.new_sl or 0.0),
-                            "tp": float(intent.new_tp or 0.0),
-                            "idempotency_key": str(intent.idempotency_key or ""),
-                            "decision_id": str(intent.decision_id or ""),
-                            "campaign_id": str(intent.campaign_id or ""),
-                            "opportunity_id": str(intent.opportunity_id or ""),
-                            "decision_feature_snapshot": intent.decision_feature_snapshot,
-                            "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
-                            "status": "PENDING",
-                        }
+                submitted_at = getattr(response, "timestamp", None)
+                if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
+                    submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
+                self._record_pending_order_result(response, {
+                    "order_id": ticket,
+                    "symbol": str(intent.symbol or "").upper(),
+                    "direction": str(intent.direction or "").upper(),
+                    "order_type": str(intent.order_type or "").upper(),
+                    "lots": float(intent.lots or 0.0),
+                    "entry_price": float(intent.entry_price or 0.0),
+                    "sl": float(intent.new_sl or 0.0),
+                    "tp": float(intent.new_tp or 0.0),
+                    "idempotency_key": str(intent.idempotency_key or ""),
+                    "decision_id": str(intent.decision_id or ""),
+                    "campaign_id": str(intent.campaign_id or ""),
+                    "opportunity_id": str(intent.opportunity_id or ""),
+                    "decision_feature_snapshot": intent.decision_feature_snapshot,
+                    "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
+                    "status": "PENDING",
+                })
                 logger.info(
                     "[decision-provenance] pending order {} accepted; broker reconciliation active",
                     ticket,
