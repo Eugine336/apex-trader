@@ -1,6 +1,8 @@
 """Verified venue session-calendar reading; never substitutes static UTC windows."""
 from __future__ import annotations
 
+import logging
+import math
 from cognition.concepts.auction_utils import clean_bars, last_source_epoch, session_info
 from cognition.concepts.base import FLAT, ConceptReading, Implication, reference_price
 from cognition.contracts import EvidenceDomain
@@ -43,7 +45,7 @@ class SessionCalendar:
         cutoff = context.get("analysis_epoch", context.get("multi_symbol_snapshot_cutoff_epoch")) if isinstance(context, dict) else None
         try:
             cutoff = float(cutoff)
-            if not __import__("math").isfinite(cutoff) or cutoff <= 0:
+            if not math.isfinite(cutoff) or cutoff <= 0:
                 cutoff = None
         except (TypeError, ValueError, OverflowError):
             cutoff = None
@@ -72,7 +74,7 @@ class SessionCalendar:
                         closed = float(values.get("session_close_epoch"))
                     except (TypeError, ValueError, OverflowError):
                         continue
-                    if not all(__import__("math").isfinite(v) for v in (opened, closed)) or opened >= closed:
+                    if not all(math.isfinite(v) for v in (opened, closed)) or opened >= closed:
                         continue
                     provider_sessions.append({
                         "provider": provenance.source.provider,
@@ -90,7 +92,6 @@ class SessionCalendar:
                         "is_tradeable": values.get("is_tradeable") if isinstance(values.get("is_tradeable"), bool) else None,
                     })
             except Exception as exc:  # noqa: BLE001 — unavailable provider calendar remains unknown
-                import logging
                 logging.getLogger("apex.cognition.session").warning(
                     "provider session calendar unavailable: %s", type(exc).__name__,
                 )
@@ -153,7 +154,6 @@ class SessionCalendar:
                 "provider_session_calendar_verified": provider_session is not None,
             }
             if provider_session is not None:
-                provider_epoch = provider_session["source_timestamp_epoch"]
                 facts.update({
                     "provider_session_timezone": provider_session["timezone"],
                     "provider_session_open_epoch": provider_session["session_open_epoch"],
