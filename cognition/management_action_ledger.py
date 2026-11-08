@@ -84,14 +84,20 @@ class ManagementActionLedger:
         query = getattr(store, "query_events", None)
         if not callable(query) or getattr(store, "is_degraded", False) is True:
             return None
-        rows = query(
-            severity_min="DEBUG",
-            event_types=[_SUBMITTED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
-            symbol=symbol,
-            correlation_id=action_id,
-            limit=1000,
-            offset=0,
-        )
+        try:
+            rows = query(
+                severity_min="DEBUG",
+                event_types=[_SUBMITTED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
+                symbol=symbol,
+                correlation_id=action_id,
+                limit=1000,
+                offset=0,
+                raise_on_error=True,
+            )
+        except Exception:
+            # A failed read must never look like an empty history: that would
+            # permit a duplicate action after a database/query failure.
+            return None
         if rows is None:
             return None
         return list(rows)
