@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from platforms.platform_manager import PlatformManager
 from platforms.base_connector import OrderResult
