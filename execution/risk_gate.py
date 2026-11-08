@@ -30,7 +30,7 @@ from config import get_pip_size
 # drawdown block in ``_check_exposure`` (plus MODIFY_SL, whose loosening is
 # already blocked upstream by ``_check_sl_direction``).
 _RISK_REDUCING_TYPES = frozenset(
-    {IntentType.CLOSE, IntentType.PARTIAL_CLOSE, IntentType.MODIFY_SL}
+    {IntentType.CLOSE, IntentType.PARTIAL_CLOSE, IntentType.MODIFY_SL, IntentType.CANCEL_PENDING}
 )
 
 
@@ -85,6 +85,13 @@ class RiskGate:
         """
         if intent.intent_type == IntentType.OPEN:
             return self._validate_open(intent, account_drawdown_pct)
+        if intent.intent_type == IntentType.CANCEL_PENDING:
+            if not intent.symbol or not str(intent.position_ticket or "").strip():
+                return GateResult(allowed=False, reason="CANCEL_PENDING missing symbol/order ticket")
+            # Cancelling an unfilled entry reduces future exposure. It is allowed
+            # during emergency drawdown and must not depend on an open-position row.
+            result = self._check_rate_limit(intent)
+            return result
 
         result = self._check_position_exists(intent, open_positions)
         if not result.allowed:

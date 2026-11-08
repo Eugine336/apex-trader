@@ -264,3 +264,12 @@ class TestIntegration:
         )
         assert not result.allowed
         assert "no longer open" in result.reason
+
+
+def test_pending_order_cancellation_is_allowed_without_position_during_emergency_drawdown():
+    gate = RiskGate(GateConfig(max_calls_per_second=1))
+    intent = Intent.cancel_pending(
+        symbol="EURUSD", ticket="901", source="test", reason="invalidate resting entry",
+    )
+    result = gate.validate(intent, {}, account_drawdown_pct=35.0)
+    assert result.allowed

@@ -101,12 +101,12 @@ def test_legacy_atomic_reversal_runtime_wiring_is_disabled():
     ), "the legacy reversal manager must not open the opposite side itself"
 
 
-def test_pending_order_staging_routes_are_retired():
-    """No scheduler, planner or callback may place broker pending orders.
+def test_pending_order_staging_routes_are_retired_and_brain_gateway_is_canonical():
+    """Only the shared PlatformManager may invoke the MT5 pending adapter.
 
-    The NewsPlanner/zone-stager routes were deleted rather than left inert, so
-    their entry points must not reappear in the bootstrap, and nothing outside
-    the connector boundary may call ``place_pending_order``.
+    Legacy news/zone staging remains deleted. The new LIMIT/STOP lifecycle is
+    admitted by the Brain and ActionExecutor, then submitted by PlatformManager
+    to the MT5 connector; no scheduler or alternate planner may stage orders.
     """
     module = _parse("event_driven_bootstrap.py")
     defined = {n.name for n in ast.walk(module) if isinstance(n, ast.FunctionDef)}
@@ -116,13 +116,15 @@ def test_pending_order_staging_routes_are_retired():
     ):
         assert retired not in defined, f"{retired} must stay deleted"
     assert not (ROOT / "brain" / "news_planner.py").exists()
+    allowed_pending_calls = {Path("platforms/platform_manager.py")}
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT)
         if rel.parts[0] in {"tests", "node_modules", "backtest", "test_support"}:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        assert not _calls(tree, attribute="place_pending_order"), f"{rel} places pending orders"
-        assert not _calls(tree, attribute="place_pending_entry"), f"{rel} places pending orders"
+        if _calls(tree, attribute="place_pending_order"):
+            assert rel in allowed_pending_calls, f"{rel} bypasses the canonical pending-order gateway"
+        assert not _calls(tree, attribute="place_pending_entry"), f"{rel} stages pending orders outside the shared executor"
 
 
 def test_brain_identity_and_provenance_reach_execution_intent():

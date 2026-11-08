@@ -5,6 +5,7 @@ Handles Forex, commodities, and indices on MT5.
 """
 
 import platform as sys_platform
+import math
 import time as _time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -16,7 +17,9 @@ from loguru import logger
 from config import get_pip_size
 from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from ops.redaction import mask_account_id
-from platforms.order_idempotency import build_order_comment, extract_idempotency_key
+from platforms.order_idempotency import (
+    build_order_comment, extract_idempotency_key, matches_idempotency_comment,
+)
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -516,6 +519,7 @@ class MT5Connector(BaseConnector):
         Returns ``{}`` when unavailable.
         """
         self._require_connection()
+
         mapped = self.symbol_map(symbol)
         if mapped is None:
             return {}
@@ -576,6 +580,34 @@ class MT5Connector(BaseConnector):
         except Exception as exc:
             logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
             return {}
+
+    def get_deal_history_checked(self, from_dt, to_dt) -> list[dict]:
+        """Return verified deal history or raise when the broker query is incomplete."""
+        self._require_connection()
+        deals = mt5.history_deals_get(from_dt, to_dt)
+        if deals is None:
+            raise RuntimeError(f"MT5 history_deals_get returned no result: {mt5.last_error()}")
+        return [
+            {**self._record_fields(deal), "source": "mt5.history_deals_get", "source_verified": True}
+            for deal in deals
+        ]
+
+    def get_position_deal_history_checked(self, position_id: str) -> list[dict]:
+        """Return complete broker deal history for one exact position identifier."""
+        self._require_connection()
+        try:
+            ticket = int(str(position_id).strip())
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("position identifier must be an exact MT5 ticket") from exc
+        if ticket <= 0:
+            raise ValueError("position identifier must be positive")
+        deals = mt5.history_deals_get(position=ticket)
+        if deals is None:
+            raise RuntimeError(f"MT5 position deal history is incomplete: {mt5.last_error()}")
+        return [
+            {**self._record_fields(deal), "source": "mt5.history_deals_get(position)", "source_verified": True}
+            for deal in deals
+        ]
 
     def get_deal_history(self, from_dt, to_dt) -> list[dict]:
         """Return the account's closed deals in [from_dt, to_dt] as plain dicts.
@@ -1049,6 +1081,12 @@ class MT5Connector(BaseConnector):
         if idempotency_key:
             dup = self._find_order_by_idem_key(idempotency_key)
             if dup is not None:
+                duplicate_status = str(getattr(dup, "order_status", "FILLED") or "FILLED").upper()
+                if duplicate_status != "FILLED":
+                    return self._fail_order(
+                        symbol, direction, lots, sl, tp,
+                        f"idempotency_key_already_bound_to_{duplicate_status.lower()}_order",
+                    )
                 logger.warning(
                     "MT5 duplicate prevented — idem_key {} already filled as ticket {}",
                     idempotency_key, dup.ticket,
@@ -1390,6 +1428,244 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def place_pending_order(
+        self,
+        symbol: str,
+        direction: str,
+        order_type: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        idempotency_key: str = "",
+    ) -> OrderResult:
+        """Place a Brain-authorized MT5 LIMIT/STOP order without market fallback.
+
+        The requested size and all price levels are validated, never inflated or
+        silently adjusted. A successful return means the exact order ticket was
+        observed in the broker's current pending-order book. An acknowledgement
+        without that confirmation is AMBIGUOUS and must be reconciled, not retried.
+        """
+        self._require_connection()
+        side = str(direction or "").strip().upper()
+        kind = str(order_type or "").strip().upper()
+        entry = requested_lots = stop = target = 0.0
+        def fail_pending(message: str) -> OrderResult:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry, slippage_pips=0.0, lots=requested_lots,
+                symbol=symbol, direction=side, sl=stop, tp=target, platform="mt5",
+                error=message, order_status="REJECTED", order_type=kind,
+            )
+        if idempotency_key and (
+            len(str(idempotency_key)) != 12
+            or any(character not in "0123456789abcdefABCDEF" for character in str(idempotency_key))
+        ):
+            return fail_pending("pending_order_idempotency_key_must_be_12_hex_characters")
+        try:
+            entry = float(entry_price)
+            requested_lots = float(lots)
+            stop = float(sl)
+            target = float(tp)
+        except (TypeError, ValueError, OverflowError):
+            return fail_pending("invalid_pending_order_numeric_fields")
+        if (
+            side not in {"BUY", "SELL", "LONG", "SHORT"}
+            or kind not in {"LIMIT", "STOP"}
+            or not all(math.isfinite(value) and value > 0.0 for value in (entry, requested_lots, stop, target))
+        ):
+            return fail_pending("invalid_pending_order_request")
+        is_buy = side in {"BUY", "LONG"}
+        if not (stop < entry < target if is_buy else target < entry < stop):
+            return fail_pending("pending_order_sl_tp_not_ordered")
+
+        mapped = self.symbol_map(symbol)
+        if mapped is None:
+            return fail_pending("pending_order_symbol_unavailable")
+        if idempotency_key:
+            duplicate = self.find_pending_order_by_idempotency_key(idempotency_key)
+            if duplicate is not None:
+                status = str(getattr(duplicate, "order_status", "UNKNOWN") or "UNKNOWN").upper()
+                if status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+                    return OrderResult(
+                        success=True, order_id=str(duplicate.ticket), fill_price=0.0,
+                        requested_price=entry, slippage_pips=0.0,
+                        lots=float(duplicate.volume), symbol=symbol, direction=side,
+                        sl=stop, tp=target, platform="mt5",
+                        order_status=status, order_type=kind,
+                    )
+                if status in {"UNKNOWN", "AMBIGUOUS"}:
+                    return OrderResult(
+                        success=False, order_id=str(getattr(duplicate, "ticket", "") or ""),
+                        fill_price=0.0, requested_price=entry, slippage_pips=0.0,
+                        lots=requested_lots, symbol=symbol, direction=side,
+                        sl=stop, tp=target, platform="mt5",
+                        error=f"AMBIGUOUS_PENDING_ORDER_ACK: idempotency lookup is {status.lower()}",
+                        order_status="UNKNOWN", order_type=kind,
+                    )
+                if status == "FILLED":
+                    return OrderResult(
+                        success=True, order_id=str(duplicate.ticket),
+                        fill_price=0.0, requested_price=entry,
+                        slippage_pips=0.0, lots=float(duplicate.volume),
+                        symbol=symbol, direction=side, sl=float(duplicate.sl),
+                        tp=float(duplicate.tp), platform="mt5",
+                        order_status="FILLED", order_type=kind,
+                    )
+                return OrderResult(
+                    success=False, order_id=str(getattr(duplicate, "ticket", "") or ""),
+                    fill_price=0.0, requested_price=entry, slippage_pips=0.0,
+                    lots=float(getattr(duplicate, "volume", requested_lots) or 0.0),
+                    symbol=symbol, direction=side,
+                    sl=stop, tp=target, platform="mt5",
+                    error=f"idempotency_key_already_bound_to_{status.lower()}_order",
+                    order_status=status, order_type=kind,
+                )
+
+        tick = mt5.symbol_info_tick(mapped)
+        if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
+            return fail_pending("pending_order_quote_unavailable")
+        tick_age = (datetime.now(timezone.utc) - datetime.fromtimestamp(tick.time, tz=timezone.utc)).total_seconds()
+        if tick_age < -2.0 or tick_age > self._max_tick_age_seconds:
+            return fail_pending("pending_order_quote_stale_or_future")
+        if is_buy and kind == "LIMIT" and not entry < tick.ask:
+            return fail_pending("buy_limit_must_be_below_ask")
+        if is_buy and kind == "STOP" and not entry > tick.ask:
+            return fail_pending("buy_stop_must_be_above_ask")
+        if not is_buy and kind == "LIMIT" and not entry > tick.bid:
+            return fail_pending("sell_limit_must_be_above_bid")
+        if not is_buy and kind == "STOP" and not entry < tick.bid:
+            return fail_pending("sell_stop_must_be_below_bid")
+
+        mt5.symbol_select(mapped, True)
+        info = mt5.symbol_info(mapped)
+        if info is None:
+            return fail_pending("pending_order_symbol_spec_unavailable")
+        volume_min = float(getattr(info, "volume_min", 0.0) or 0.0)
+        volume_max = float(getattr(info, "volume_max", 0.0) or 0.0)
+        volume_step = float(getattr(info, "volume_step", 0.0) or 0.0)
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        digits = int(getattr(info, "digits", 0) or 0)
+        trade_mode = getattr(info, "trade_mode", None)
+        tick_size = float(getattr(info, "trade_tick_size", point) or point)
+        allowed_trade_modes = {
+            getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4),
+            getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1),
+            getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2),
+        }
+        if (
+            not all(math.isfinite(value) and value > 0.0 for value in (volume_min, volume_max, volume_step, point, tick_size))
+            or volume_max < volume_min
+            or digits <= 0
+            or trade_mode not in allowed_trade_modes
+            or (is_buy and trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2))
+            or (not is_buy and trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1))
+        ):
+            return fail_pending("pending_order_symbol_constraints_invalid")
+        tick_aligned = all(
+            abs((round(value / tick_size) * tick_size) - value)
+            <= max(1e-9, tick_size * 1e-6)
+            for value in (entry, stop, target)
+        )
+        if not tick_aligned:
+            return fail_pending("pending_order_price_not_tick_aligned")
+        steps = round(requested_lots / volume_step)
+        normalized_lots = round(steps * volume_step, 10)
+        if (
+            normalized_lots < volume_min - 1e-10
+            or normalized_lots > volume_max + 1e-10
+            or abs(normalized_lots - requested_lots) > max(1e-9, volume_step * 1e-6)
+        ):
+            return fail_pending("pending_order_volume_not_exactly_broker_aligned")
+        min_distance = self._effective_min_stop_distance(
+            mapped, point, int(getattr(info, "trade_stops_level", 0) or 0),
+            int(getattr(info, "trade_freeze_level", 0) or 0),
+        )
+        if abs(entry - stop) < min_distance or abs(target - entry) < min_distance:
+            return fail_pending("pending_order_stops_inside_broker_minimum_distance")
+
+        mt5_order_type = (
+            mt5.ORDER_TYPE_BUY_LIMIT if is_buy and kind == "LIMIT" else
+            mt5.ORDER_TYPE_BUY_STOP if is_buy else
+            mt5.ORDER_TYPE_SELL_LIMIT if kind == "LIMIT" else
+            mt5.ORDER_TYPE_SELL_STOP
+        )
+        order_comment = (
+            build_order_comment("APND", idempotency_key)
+            if idempotency_key else str(comment or "APND")[:31]
+        )
+        if idempotency_key and extract_idempotency_key(order_comment) != idempotency_key:
+            return fail_pending("pending_order_idempotency_key_not_representable_in_broker_comment")
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": mapped,
+            "volume": normalized_lots,
+            "type": mt5_order_type,
+            "price": round(entry, digits),
+            "sl": round(stop, digits),
+            "tp": round(target, digits),
+            "deviation": self._deviation_points(symbol, point),
+            "magic": self._magic,
+            "comment": order_comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+        }
+        try:
+            result = mt5.order_send(request)
+        except Exception as exc:  # noqa: BLE001 — broker send may have reached server
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error=f"AMBIGUOUS_PENDING_ORDER_ACK: {type(exc).__name__}",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        if result is None:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error=f"AMBIGUOUS_PENDING_ORDER_ACK: {mt5.last_error()}",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        accepted = {
+            getattr(mt5, "TRADE_RETCODE_PLACED", -1),
+            getattr(mt5, "TRADE_RETCODE_DONE", -2),
+        }
+        if getattr(result, "retcode", None) not in accepted:
+            return fail_pending(str(getattr(result, "comment", "") or f"pending_order_retcode_{getattr(result, 'retcode', 'unknown')}"))
+        ticket = str(getattr(result, "order", 0) or getattr(result, "ticket", 0) or "")
+        if not ticket:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error="AMBIGUOUS_PENDING_ORDER_ACK: broker accepted without order ticket",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        try:
+            live_orders = mt5.orders_get()
+            observed = next((o for o in (live_orders or []) if str(getattr(o, "ticket", "")) == ticket), None)
+        except Exception as exc:  # noqa: BLE001 — accepted order may still be live
+            observed = None
+            logger.error("[mt5] pending order confirmation failed for {}: {}", ticket, exc)
+        if observed is None:
+            return OrderResult(
+                success=False, order_id=ticket, fill_price=0.0, requested_price=entry,
+                slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+                direction=side, sl=stop, tp=target, platform="mt5",
+                error="AMBIGUOUS_PENDING_ORDER_ACK: accepted order not yet visible in broker order book",
+                order_status="UNKNOWN", order_type=kind,
+            )
+        logger.info("[MT5] pending {} {} {} {} lots @ {} ticket={}", kind, side, symbol, normalized_lots, entry, ticket)
+        return OrderResult(
+            success=True, order_id=ticket, fill_price=0.0, requested_price=entry,
+            slippage_pips=0.0, lots=normalized_lots, symbol=symbol,
+            direction=side, sl=stop, tp=target, platform="mt5",
+            order_status="PENDING", order_type=kind,
+        )
+
     def cancel_pending_order(self, order_id: str) -> bool:
         """Delete a resting pending (limit/stop) order by its ticket.
 
@@ -1406,6 +1682,29 @@ class MT5Connector(BaseConnector):
             ticket = int(order_id)
         except (TypeError, ValueError):
             logger.error("MT5 cancel pending — invalid ticket {!r}", order_id)
+            return False
+
+        try:
+            live_orders = mt5.orders_get()
+        except Exception as exc:  # noqa: BLE001 — incomplete order book is not absence
+            logger.error("MT5 cancel pending — order book unavailable: {}", exc)
+            return False
+        live = next((item for item in (live_orders or []) if int(getattr(item, "ticket", 0) or 0) == ticket), None)
+        if live is None:
+            # Idempotent acknowledgement recovery: report success only when broker
+            # history positively confirms this exact ticket was cancelled.
+            try:
+                since = datetime.now(timezone.utc) - timedelta(days=30)
+                history = mt5.history_orders_get(since, datetime.now(timezone.utc))
+                cancelled_state = getattr(mt5, "ORDER_STATE_CANCELED", 2)
+                if any(
+                    int(getattr(item, "ticket", 0) or 0) == ticket
+                    and getattr(item, "state", None) == cancelled_state
+                    for item in (history or [])
+                ):
+                    return True
+            except Exception as exc:  # noqa: BLE001 — no proof, no success
+                logger.warning("MT5 cancel reconciliation unavailable for {}: {}", ticket, exc)
             return False
 
         request = {
@@ -1983,7 +2282,139 @@ class MT5Connector(BaseConnector):
             return positions[0]
         return None
 
-    def _find_order_by_idem_key(self, idem_key: str) -> Optional[SimpleNamespace]:
+    def find_order_by_idempotency_key(
+        self, idempotency_key: str, *, since: Optional[datetime] = None,
+    ) -> Optional[SimpleNamespace]:
+        """Public read-only lookup for an ambiguous pending-order acknowledgement."""
+        self._require_connection()
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        return self._find_order_by_idem_key(key, since=since)
+
+    def find_pending_order_by_idempotency_key(
+        self, idempotency_key: str, *, since: Optional[datetime] = None,
+    ) -> Optional[SimpleNamespace]:
+        """Find pending orders without confusing order tickets with position/deal tickets.
+
+        Live and historical order records own the order ticket. Deal-only evidence
+        proves execution but not complete fill, so it remains UNKNOWN and blocks retry.
+        """
+        self._require_connection()
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        start = since or (datetime.now(timezone.utc) - timedelta(seconds=900))
+        end = datetime.now(timezone.utc)
+
+        def unknown(ticket: str = "", symbol: str = "", position_id: str = "") -> SimpleNamespace:
+            return SimpleNamespace(
+                ticket=ticket, price=0.0, volume=0.0, volume_initial=0.0,
+                volume_current=0.0, sl=0.0, tp=0.0, symbol=symbol,
+                position_id=position_id, order_status="UNKNOWN",
+            )
+
+        try:
+            live_orders = mt5.orders_get()
+        except Exception as exc:
+            logger.warning("MT5 orders_get failed during pending idempotency lookup: {}", exc)
+            return unknown()
+        if live_orders is None:
+            logger.warning("MT5 orders_get returned no result during pending idempotency lookup")
+            return unknown()
+        live_matches = [
+            order for order in live_orders
+            if matches_idempotency_comment(key, getattr(order, "comment", "") or "")
+        ]
+        if len(live_matches) > 1:
+            return unknown()
+        if live_matches:
+            order = live_matches[0]
+            initial = float(getattr(order, "volume_initial", 0.0) or 0.0)
+            remaining = float(getattr(order, "volume_current", initial) or 0.0)
+            status = (
+                "PARTIALLY_FILLED_PENDING"
+                if initial > 0.0 and 0.0 < remaining < initial else "PENDING"
+            )
+            return SimpleNamespace(
+                ticket=order.ticket, price=getattr(order, "price_open", 0.0),
+                volume=remaining, volume_initial=initial, volume_current=remaining,
+                sl=getattr(order, "sl", 0.0), tp=getattr(order, "tp", 0.0),
+                symbol=resolve_to_internal(str(getattr(order, "symbol", "") or "")),
+                position_id=str(getattr(order, "position_id", "") or ""),
+                order_type=str(getattr(order, "type", "") or ""),
+                state=getattr(order, "state", None), order_status=status,
+            )
+
+        try:
+            history_orders = mt5.history_orders_get(start.astimezone(timezone.utc), end)
+        except Exception as exc:
+            logger.warning("MT5 history_orders_get failed during pending idempotency lookup: {}", exc)
+            return unknown()
+        if history_orders is None:
+            logger.warning("MT5 history_orders_get returned no result during pending idempotency lookup")
+            return unknown()
+        history_matches = [
+            order for order in history_orders
+            if matches_idempotency_comment(key, getattr(order, "comment", "") or "")
+        ]
+        if len(history_matches) > 1:
+            return unknown()
+        if history_matches:
+            order = history_matches[0]
+            state = getattr(order, "state", None)
+            state_map = {
+                getattr(mt5, "ORDER_STATE_FILLED", 4): "FILLED",
+                getattr(mt5, "ORDER_STATE_CANCELED", 2): "CANCELLED",
+                getattr(mt5, "ORDER_STATE_EXPIRED", 6): "EXPIRED",
+                getattr(mt5, "ORDER_STATE_REJECTED", 5): "REJECTED",
+                getattr(mt5, "ORDER_STATE_PARTIAL", 3): "PARTIALLY_FILLED_TERMINAL",
+            }
+            status = state_map.get(state, "UNKNOWN")
+            initial = float(getattr(order, "volume_initial", 0.0) or 0.0)
+            remaining = float(getattr(order, "volume_current", initial) or 0.0)
+            if (
+                status in {"CANCELLED", "EXPIRED", "REJECTED"}
+                and initial > 0.0 and 0.0 < remaining < initial
+            ):
+                status = "PARTIALLY_FILLED_TERMINAL"
+            return SimpleNamespace(
+                ticket=order.ticket, price=getattr(order, "price_open", 0.0),
+                volume=(initial if status == "FILLED" else remaining),
+                volume_initial=initial, volume_current=remaining,
+                sl=getattr(order, "sl", 0.0), tp=getattr(order, "tp", 0.0),
+                symbol=resolve_to_internal(str(getattr(order, "symbol", "") or "")),
+                position_id=str(getattr(order, "position_id", "") or ""),
+                state=state, order_status=status,
+            )
+
+        try:
+            deals = mt5.history_deals_get(start.astimezone(timezone.utc), end)
+        except Exception as exc:
+            logger.warning("MT5 history_deals_get failed during pending idempotency lookup: {}", exc)
+            return unknown()
+        if deals is None:
+            logger.warning("MT5 history_deals_get returned no result during pending idempotency lookup")
+            return unknown()
+        matching_deals = [
+            deal for deal in deals
+            if matches_idempotency_comment(key, getattr(deal, "comment", "") or "")
+        ]
+        if matching_deals:
+            order_ids = {str(getattr(deal, "order", "") or "") for deal in matching_deals}
+            position_ids = {str(getattr(deal, "position_id", "") or "") for deal in matching_deals}
+            if len(order_ids) != 1:
+                return unknown()
+            return unknown(
+                ticket=next(iter(order_ids)),
+                symbol=resolve_to_internal(str(getattr(matching_deals[0], "symbol", "") or "")),
+                position_id=next(iter(position_ids)) if len(position_ids) == 1 else "",
+            )
+        return None
+
+    def _find_order_by_idem_key(
+        self, idem_key: str, *, since: Optional[datetime] = None,
+    ) -> Optional[SimpleNamespace]:
         """Check positions, pending orders, and recent history for an existing idem key.
 
         Returns a normalised SimpleNamespace(ticket, price, volume, sl, tp)
@@ -1992,54 +2423,70 @@ class MT5Connector(BaseConnector):
         positions = mt5.positions_get()
         if positions:
             for p in positions:
-                if idem_key in (getattr(p, "comment", "") or ""):
+                if matches_idempotency_comment(idem_key, getattr(p, "comment", "") or ""):
                     return SimpleNamespace(
                         ticket=p.ticket,
                         price=p.price_open,
                         volume=p.volume,
                         sl=p.sl,
                         tp=p.tp,
+                        order_status="FILLED",
+                        symbol=resolve_to_internal(str(getattr(p, "symbol", "") or "")),
+                        position_id=str(getattr(p, "ticket", "") or ""),
                     )
         orders = mt5.orders_get()
         if orders:
             for o in orders:
-                if idem_key in (getattr(o, "comment", "") or ""):
+                if matches_idempotency_comment(idem_key, getattr(o, "comment", "") or ""):
                     return SimpleNamespace(
                         ticket=o.ticket,
                         price=getattr(o, "price_open", 0.0),
                         volume=getattr(o, "volume_current", getattr(o, "volume_initial", 0.0)),
                         sl=getattr(o, "sl", 0.0),
                         tp=getattr(o, "tp", 0.0),
+                        order_status="PENDING",
+                        order_type=str(getattr(o, "type", "") or ""),
+                        symbol=resolve_to_internal(str(getattr(o, "symbol", "") or "")),
                     )
         try:
-            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            history_start = since or (datetime.now(timezone.utc) - timedelta(seconds=900))
             now = datetime.now(timezone.utc)
-            deals = mt5.history_deals_get(since, now)
+            deals = mt5.history_deals_get(history_start.astimezone(timezone.utc), now)
             if deals:
                 for d in deals:
-                    if idem_key in (getattr(d, "comment", "") or ""):
+                    if matches_idempotency_comment(idem_key, getattr(d, "comment", "") or ""):
                         return SimpleNamespace(
-                            ticket=d.ticket,
+                            ticket=getattr(d, "order", d.ticket),
                             price=getattr(d, "price", 0.0),
                             volume=getattr(d, "volume", 0.0),
                             sl=0.0,
                             tp=0.0,
+                            order_status="FILLED",
+                            symbol=resolve_to_internal(str(getattr(d, "symbol", "") or "")),
+                            position_id=str(getattr(d, "position_id", "") or ""),
                         )
         except Exception as exc:
             logger.warning("MT5 history_deals_get failed during dedup: {}", exc)
         try:
-            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            history_start = since or (datetime.now(timezone.utc) - timedelta(seconds=900))
             now = datetime.now(timezone.utc)
-            hist_orders = mt5.history_orders_get(since, now)
+            hist_orders = mt5.history_orders_get(history_start.astimezone(timezone.utc), now)
             if hist_orders:
                 for ho in hist_orders:
-                    if idem_key in (getattr(ho, "comment", "") or ""):
+                    if matches_idempotency_comment(idem_key, getattr(ho, "comment", "") or ""):
                         return SimpleNamespace(
                             ticket=ho.ticket,
                             price=getattr(ho, "price_open", 0.0),
                             volume=getattr(ho, "volume_current", getattr(ho, "volume_initial", 0.0)),
                             sl=getattr(ho, "sl", 0.0),
                             tp=getattr(ho, "tp", 0.0),
+                            symbol=resolve_to_internal(str(getattr(ho, "symbol", "") or "")),
+                            position_id=str(getattr(ho, "position_id", "") or ""),
+                            order_status=(
+                                "FILLED"
+                                if getattr(ho, "state", None) == getattr(mt5, "ORDER_STATE_FILLED", 4)
+                                else "TERMINAL"
+                            ),
                         )
         except Exception as exc:
             logger.warning("MT5 history_orders_get failed during dedup: {}", exc)
@@ -2093,4 +2540,5 @@ class MT5Connector(BaseConnector):
             tp=tp,
             platform="mt5",
             error=error,
+            order_status="REJECTED",
         )

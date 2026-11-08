@@ -2833,9 +2833,13 @@ class CognitionLoop:
             token in error.lower()
             for token in ("market_closed", "market closed", "circuit open", "rate limit")
         ):
+            rejection_states = {"SUBMITTED", "DISPATCHED"}
+            if response_success is False and broker_response is not None:
+                # Only an explicit broker rejection can resolve an earlier ambiguous send.
+                rejection_states.add("AMBIGUOUS")
             recorded = ledger.finish_if_status(
                 action, "REJECTED",
-                expected_statuses={"SUBMITTED", "DISPATCHED"},
+                expected_statuses=rejection_states,
                 response=broker_response, error=error,
             )
             if not recorded:
@@ -2851,6 +2855,12 @@ class CognitionLoop:
                     marker = "[milestone_id="
                     if marker in reason:
                         milestone_id = reason.split(marker, 1)[1].split("]", 1)[0].strip()
+                    if not milestone_id and pending_row:
+                        milestone_id = str(pending_row.get("milestone_id", "") or "").strip()
+                    if not milestone_id and ":milestone:" in action_id:
+                        # The canonical action ID carries the exact milestone key;
+                        # use it when a legacy ledger row lacks a milestone column.
+                        milestone_id = action_id.split(":milestone:", 1)[1].strip()
                     clearer = getattr(self._memory, "clear_milestone_pending", None)
                     if milestone_id and callable(clearer):
                         try:

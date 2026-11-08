@@ -1077,15 +1077,21 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
 
 
 
-def test_action_executor_never_reinterprets_pending_entry_as_market():
+def test_action_executor_accepts_only_exact_brain_geometry_for_pending_entry():
     intent = _open_intent(
         order_type="LIMIT",
         entry_zone_low=1.05,
         entry_zone_high=1.15,
     )
 
-    assert ActionExecutor._payoff_geometry_error(intent) == (
-        "pending_order_type_not_supported_by_broker_adapter"
+    assert ActionExecutor._payoff_geometry_error(intent) is None
+
+    mismatched = _open_intent(
+        order_type="LIMIT", entry_zone_low=1.05, entry_zone_high=1.15,
+    )
+    mismatched.payoff_geometry["entry_price"] = 1.12
+    assert ActionExecutor._payoff_geometry_error(mismatched) == (
+        "pending_order_geometry_entry_price_mismatch"
     )
 
 
@@ -1163,3 +1169,62 @@ def test_executor_config_cannot_weaken_hard_margin_entry_guard():
     with pytest.raises(ValueError, match="150% hard entry guard"):
         ExecutorConfig(margin_block_entry_level_pct=149.0)
 
+
+
+def test_pending_open_geometry_is_validated_without_market_price_reinterpretation():
+    intent = _open_intent(
+        "EURUSD", order_type="LIMIT", entry_price=99.0, sl=98.0, tp=101.0,
+    )
+    assert ActionExecutor._payoff_geometry_error(intent) is None
+
+
+def test_pending_open_dispatch_uses_pending_gateway_not_market_gateway():
+    broker = FakeBroker()
+    calls = []
+    broker.execute_pending_entry = lambda **kwargs: (
+        calls.append(kwargs) or SimpleNamespace(
+            success=True, order_id="901", order_status="PENDING", order_type="LIMIT",
+        )
+    )
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = _open_intent(
+        "EURUSD", order_type="LIMIT", entry_price=99.0, sl=98.0, tp=101.0,
+    )
+    result = executor._dispatch(intent, {})
+    assert result.success is True
+    assert result.broker_response.order_status == "PENDING"
+    assert calls[0]["order_type"] == "LIMIT"
+    assert calls[0]["entry_price"] == 99.0
+    assert broker.open_calls == []
+
+
+def test_ambiguous_pending_ack_is_never_retried():
+    broker = FakeBroker()
+    calls = []
+    broker.execute_pending_entry = lambda **kwargs: (
+        calls.append(kwargs) or SimpleNamespace(
+            success=False, error="AMBIGUOUS_PENDING_ORDER_ACK: acknowledgement lost",
+            order_status="UNKNOWN",
+        )
+    )
+    executor = ActionExecutor(broker, _fast_cfg(max_retries=3))
+    intent = _open_intent(
+        "EURUSD", order_type="LIMIT", entry_price=99.0, sl=98.0, tp=101.0,
+    )
+    result = executor._execute_with_retry(intent, {})
+    assert result.success is False
+    assert result.error.startswith("AMBIGUOUS_PENDING_ORDER_ACK:")
+    assert len(calls) == 1
+
+
+def test_cancel_pending_dispatch_uses_order_ticket_and_symbol():
+    broker = FakeBroker()
+    calls = []
+    broker.cancel_pending_order = lambda ticket, *, symbol: calls.append((ticket, symbol)) or True
+    executor = ActionExecutor(broker, _fast_cfg())
+    intent = Intent.cancel_pending(
+        symbol="EURUSD", ticket="901", source="ai_brain", reason="setup invalidated",
+    )
+    result = executor._dispatch(intent, {})
+    assert result.success is True
+    assert calls == [("901", "EURUSD")]

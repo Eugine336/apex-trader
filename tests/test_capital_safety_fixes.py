@@ -68,6 +68,7 @@ def _mt5_history_order(ticket=44444, price_open=1.10500,
         ticket=ticket, price_open=price_open,
         volume_initial=volume_initial, volume_current=volume_current,
         sl=sl, tp=tp, symbol=symbol, comment=comment,
+        state=4,  # MT5 ORDER_STATE_FILLED; history rows must carry explicit state
         time_setup=1717800000, time_done=1717800050,
     )
 
@@ -80,6 +81,7 @@ def connector():
     mock_mt5.ORDER_TYPE_BUY = 0
     mock_mt5.ORDER_TYPE_SELL = 1
     mock_mt5.TRADE_ACTION_DEAL = 1
+    mock_mt5.ORDER_STATE_FILLED = 4
     mock_mt5.last_error.return_value = (0, "ok")
     with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
         c = MT5Connector.__new__(MT5Connector)
