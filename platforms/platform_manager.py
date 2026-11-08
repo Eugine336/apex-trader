@@ -852,6 +852,8 @@ class PlatformManager:
                 )
             except Exception:
                 failed_accounts.append(index)
+        if len(live_matches) + len(history_matches) > 1:
+            return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
         if len(live_matches) == 1:
             record = live_matches[0]
             try:
@@ -866,8 +868,7 @@ class PlatformManager:
             )
             return {"status": status, "order_id": ticket, "broker_confirmed": True, "record": record,
                     "initial_volume": initial, "remaining_volume": remaining}
-        if len(live_matches) > 1 or len(history_matches) > 1:
-            return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
+
         if failed_accounts:
             return {"status": "UNKNOWN", "order_id": ticket, "reason": "broker_history_or_live_book_incomplete", "failed_accounts": failed_accounts, "broker_confirmed": False}
         if len(history_matches) == 1:
@@ -894,6 +895,8 @@ class PlatformManager:
                     remaining = float(record.get("volume_current", record.get("volume", 0.0)) or 0.0)
                 except (TypeError, ValueError, OverflowError):
                     initial = remaining = 0.0
+                if initial <= 0.0 or remaining < 0.0 or remaining > initial + 1e-9:
+                    return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_volume_evidence_invalid", "broker_confirmed": False}
                 if initial > 0.0 and 0.0 < remaining < initial:
                     # The terminal order retained an unfilled remainder: broker
                     # history therefore proves a partial fill before termination.
