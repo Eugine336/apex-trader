@@ -5743,11 +5743,140 @@ class EventDrivenSystem:
                         meta["last_partial_remaining_volume"] = partial_remaining
                         meta["initial_volume"] = partial_initial
 
-                position_id = str(
-                    record.get("position_id") or record.get("position") or resolved_ticket
+                broker_position_id = str(
+                    record.get("position_id") or record.get("position") or ""
                 ).strip()
+                position_id = broker_position_id or resolved_ticket
                 position = position_by_ticket.get(position_id) or position_by_ticket.get(resolved_ticket)
                 terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
+
+                # A pending order can fill and hit its protective exit between
+                # position-book polls. Recover that round trip from source-verified
+                # entry/exit deals; never discard a filled order merely because no
+                # live position remains.
+                if position is None and terminal and broker_position_id:
+                    connector_index = record.get("connector_index")
+                    platform = (
+                        f"mt5_{int(connector_index)}"
+                        if connector_index is not None else "mt5"
+                    )
+                    deals = self._pm.get_pending_order_fill_deals(
+                        resolved_ticket, broker_position_id,
+                        symbol=str(meta.get("symbol", "") or ""),
+                        platform=platform, from_dt=submitted_at,
+                        to_dt=datetime.now(timezone.utc),
+                    )
+                    try:
+                        from platforms.mt5 import mt5_connector as mt5_adapter
+                        mt5_constants = getattr(mt5_adapter, "mt5", None)
+                    except Exception as exc:  # noqa: BLE001 — no enum guessing on failed adapter import
+                        logger.warning("[pending-orders] MT5 deal-entry constants unavailable: {}", exc)
+                        mt5_constants = None
+                    entry_kinds = {
+                        getattr(mt5_constants, "DEAL_ENTRY_IN", 0),
+                        getattr(mt5_constants, "DEAL_ENTRY_INOUT", 2),
+                    }
+                    entry_deals = []
+                    for deal in deals:
+                        try:
+                            entry_kind = int(deal.get("entry"))
+                            price = float(deal.get("price"))
+                            volume = float(deal.get("volume"))
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if (
+                            entry_kind in entry_kinds
+                            and math.isfinite(price) and price > 0.0
+                            and math.isfinite(volume) and volume > 0.0
+                        ):
+                            entry_deals.append((price, volume))
+                    if entry_deals:
+                        total_volume = sum(volume for _, volume in entry_deals)
+                        weighted_entry = sum(price * volume for price, volume in entry_deals) / total_volume
+                        close_info = self._pm.get_deal_close_info(broker_position_id, platform)
+                        close_price = float(getattr(close_info, "close_price", 0.0) or 0.0) if close_info is not None else 0.0
+                        if close_info is not None and close_price > 0.0:
+                            closed_payload = {
+                                "order_id": resolved_ticket, "tracking_key": tracking_key,
+                                "position_id": broker_position_id,
+                                "symbol": str(meta.get("symbol", "") or ""),
+                                "direction": str(meta.get("direction", "") or "").upper(),
+                                "order_type": str(meta.get("order_type", "") or "").upper(),
+                                "fill_price": weighted_entry, "lots": total_volume,
+                                "status": "FILLED", "closed_before_position_poll": True,
+                                "decision_id": str(meta.get("decision_id", "") or ""),
+                                "campaign_id": str(meta.get("campaign_id", "") or ""),
+                                "opportunity_id": str(meta.get("opportunity_id", "") or ""),
+                                "decision_feature_snapshot": meta.get("decision_feature_snapshot"),
+                                "broker_confirmed": True,
+                            }
+                            if not meta.get("fill_event_emitted"):
+                                store.emit(
+                                    event_type=DE.ORDER_FILLED, severity="INFO",
+                                    symbol=closed_payload["symbol"],
+                                    correlation_id=closed_payload["decision_id"] or None,
+                                    parent_id=tracking_key,
+                                    source_module="execution.pending_order_reconciliation",
+                                    durable=True, payload=closed_payload,
+                                )
+                                meta["fill_event_emitted"] = True
+                            self._entry_context[broker_position_id] = {
+                                "ticket": broker_position_id,
+                                "symbol": closed_payload["symbol"],
+                                "direction": closed_payload["direction"],
+                                "entry_price": weighted_entry, "lots": total_volume,
+                                "decision_id": closed_payload["decision_id"],
+                                "campaign_id": closed_payload["campaign_id"],
+                                "opportunity_id": closed_payload["opportunity_id"],
+                                "decision_feature_snapshot": closed_payload["decision_feature_snapshot"],
+                                "snapshot_id": str((closed_payload["decision_feature_snapshot"] or {}).get("snapshot_id", ""))
+                                    if isinstance(closed_payload["decision_feature_snapshot"], dict) else "",
+                                "decision_snapshot_complete": bool(
+                                    isinstance(closed_payload["decision_feature_snapshot"], dict)
+                                    and closed_payload["decision_feature_snapshot"].get("snapshot_complete") is True
+                                ),
+                            }
+                            self._known_open[broker_position_id] = {
+                                "symbol": closed_payload["symbol"],
+                                "direction": closed_payload["direction"],
+                                "platform": platform, "lots": total_volume,
+                            }
+                            close_intent = Intent.close(
+                                symbol=closed_payload["symbol"], ticket=broker_position_id,
+                                source="pending_order_lifecycle",
+                                reason="broker-confirmed pending fill closed before position polling",
+                                direction=closed_payload["direction"],
+                                decision_id=closed_payload["decision_id"],
+                                campaign_id=closed_payload["campaign_id"],
+                                opportunity_id=closed_payload["opportunity_id"],
+                            )
+                            close_result = type("PendingClosedResult", (), {
+                                "broker_response": type("PendingClosedBrokerResponse", (), {
+                                    "platform": platform,
+                                    "pnl": float(getattr(close_info, "pnl", 0.0) or 0.0),
+                                    "close_price": close_price,
+                                    "lots_closed": total_volume,
+                                })(),
+                            })()
+                            self._handle_close_result(close_intent, close_result)
+                            store.emit(
+                                event_type=DE.ORDER_RECONCILED, severity="INFO",
+                                symbol=closed_payload["symbol"],
+                                correlation_id=closed_payload["decision_id"] or None,
+                                parent_id=tracking_key,
+                                source_module="execution.pending_order_reconciliation",
+                                durable=True,
+                                payload={
+                                    "order_id": resolved_ticket, "tracking_key": tracking_key,
+                                    "status": status,
+                                    "attribution_status": "closed_before_position_poll",
+                                    "position_id": broker_position_id,
+                                    "broker_confirmed": True,
+                                },
+                            )
+                            with self._pending_orders_lock:
+                                self._pending_orders.pop(tracking_key, None)
+                            continue
                 if position is not None and not meta.get("attributed"):
                     fill_price = float(getattr(position, "open_price", 0.0) or 0.0)
                     fill_lots = float(getattr(position, "lots", 0.0) or 0.0)
