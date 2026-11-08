@@ -591,6 +591,7 @@ class TestPendingOrderLifecycle:
                 "symbol": "EURUSD", "entry": 0, "price": 99.2,
                 "volume": 0.1, "source_verified": True,
             }],
+            get_position_entry_order_ids=lambda *args, **kwargs: {"ORDER-CLOSED"},
             get_deal_close_info=lambda *args, **kwargs: SimpleNamespace(
                 pnl=12.0, close_price=101.0, commission=-1.0,
                 swap=0.0, fee=0.0, exit_reason="take_profit",
