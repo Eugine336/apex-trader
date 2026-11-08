@@ -1,7 +1,7 @@
 # WP-B6 — threshold classification and replacement audit
 
-**Audit baseline:** `main` at `9c1c95a2c6e5c76def1b8e29c4547654c1f19e97` (2026-11-07).
-**Status:** runtime replacements implemented on the WP-B6 branch; Python 3.11/3.12 full CI and focused Gold Desk tests pass. PR acceptance checks and merge remain pending.
+**Audit baseline:** merged to `main` in PR #830 (head `7b741fea442ab1d656d4ba384b54ea7594e255db`; merge commit `1bb03dfa61a2eb72f94908cf6deb80f734125243`).
+**Status:** accepted. Full APEX CI and focused Gold Desk workflows completed successfully on the PR head. Python 3.11/3.12, lint, identity and coverage checks passed.
 **Safety boundary:** remove incorrect analytical gates only after replacing their intended protection with evidence-linked, campaign-specific qualification. Do not weaken broker, owner-risk, exposure, data-integrity, or fail-closed execution controls.
 
 ## Governing rule
@@ -139,11 +139,11 @@ Risk limits currently exist in multiple structures. This is a consolidation prob
 7. **Verified on current branch commit:** Ruff lint, focused Gold Desk tests on Python 3.11/3.12, and full test suites on Python 3.11/3.12 pass.
 8. No live broker orders, credential changes, runtime database changes, or `.env` edits were performed.
 
-Remaining acceptance work: verify all required repository checks on the current head, then merge. WP-B7 owner-limits consolidation remains a separate package.
+Acceptance: completed and merged in PR #830 after full CI, identity and coverage validation. WP-B7 owner-limits consolidation is tracked separately.
 ## Acceptance
 
 WP-B6 is complete only when the old analytical gates are absent from all live call paths, their replacements are tested end-to-end, all protective/account/broker controls remain enforced, and full CI passes on both supported Python versions. A green documentation-only CI run is not WP-B6 acceptance.
 
 ## Explicit non-claims
 
-This audit does not claim WP-B6 acceptance, WP-B7 owner-limits completion, WP-B5 production benchmark acceptance, or Phase 2 completion.
+This audit does not claim WP-B7 owner-limits completion, WP-B5 production benchmark acceptance, or Phase 2 completion. PR #831 separately merged the owner-limits surface; its full live-path acceptance remains part of Phase 2 integration validation.
