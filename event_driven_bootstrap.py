@@ -5762,7 +5762,7 @@ class EventDrivenSystem:
                     )
                     with self._pending_orders_lock:
                         self._pending_orders.pop(ticket, None)
-                elif status == "FILLED":
+                elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}:
                     if meta.get("status") != status:
                         store.emit(
                             event_type=DE.ORDER_RECONCILED, severity="WARNING",
@@ -5771,7 +5771,7 @@ class EventDrivenSystem:
                             parent_id=ticket,
                             source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": ticket, "status": "FILLED",
+                            payload={"order_id": ticket, "status": status,
                                      "attribution_status": "unresolved_position_ticket",
                                      "broker_record": record, "broker_confirmed": True},
                         )
