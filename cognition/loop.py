@@ -645,6 +645,7 @@ class CognitionLoop:
         self._manage_submitted = 0
         self._manage_suppressed = 0
         self._manage_ambiguous = 0
+        self._management_unresolved_actions: set[str] = set()
         # Part XVIII Art 13 — management follows evidence, not clocks. A per-
         # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
         # from re-managing the same campaign on every micro-event, while the
@@ -2661,9 +2662,24 @@ class CognitionLoop:
                         )
                 ledger_started = False
                 action_id = str(getattr(action, "action_id", "") or "").strip()
+                if action_id and action_id in self._management_unresolved_actions:
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
+                        "previous broker outcome remains ambiguous",
+                        action.symbol, action.kind, action_id,
+                    )
+                    return False
                 if ledger is not None and action_id:
                     begin, ledger_reason = ledger.begin(action, position)
                     if begin is False:
+                        if ledger_reason == "REJECTED" and milestone_pending:
+                            clearer = getattr(self._memory, "clear_milestone_pending", None)
+                            if callable(clearer):
+                                try:
+                                    clearer(action.campaign_id, action.milestone_id)
+                                except Exception:
+                                    pass
                         self._manage_suppressed += 1
                         logger.warning(
                             "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
@@ -2754,6 +2770,8 @@ class CognitionLoop:
                     )
                     return False
                 if outcome == "AMBIGUOUS":
+                    if action_id:
+                        self._management_unresolved_actions.add(action_id)
                     self._manage_ambiguous += 1
                     logger.error(
                         "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: "
