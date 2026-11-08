@@ -5648,7 +5648,11 @@ class EventDrivenSystem:
                     submitted_at = str(payload.get("submitted_at", "") or "")
                     try:
                         parsed = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError) as exc:
+                        logger.warning(
+                            "[pending-orders] skipping durable order {} with malformed submission timestamp: {}",
+                            ticket, exc,
+                        )
                         continue
                     if parsed.tzinfo is None or parsed.utcoffset() is None:
                         continue
