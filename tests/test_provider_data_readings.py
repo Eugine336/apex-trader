@@ -67,6 +67,7 @@ class _FixtureProvider:
             _obs(
                 ObservationKind.TRADE_PRINT, "trade-buy",
                 {"price": 2000.0, "quantity": 2.0, "aggressor_side": "buy"},
+                source_epoch=CUTOFF - 100,
                 volume_basis="executed_trade_volume", aggressor_basis="exchange_classified",
             ),
             _obs(
@@ -81,6 +82,7 @@ class _FixtureProvider:
                  "quote_timestamp_epoch": CUTOFF - 20,
                  "fill_timestamp_epoch": CUTOFF - 10,
                  "commission_account_currency": 0.02, "commission_currency": "USD"},
+                source_epoch=CUTOFF - 10,
             ),
         ]
 
@@ -158,6 +160,7 @@ def test_provider_reader_does_not_infer_exchange_flow_from_quote_or_dom_records(
                 _obs(
                     ObservationKind.TRADE_PRINT, "quote-not-a-trade",
                     {"price": 2000.0, "quantity": 10.0, "aggressor_side": "buy"},
+                    source_epoch=CUTOFF - 100,
                     volume_basis="tick_volume_proxy", aggressor_basis="tick_rule_estimate",
                 ),
             ]
