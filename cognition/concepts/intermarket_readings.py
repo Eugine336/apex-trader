@@ -80,7 +80,7 @@ def _verified_rows(
 def _aligned_closes(
     target: list[dict[str, Any]], peer: list[dict[str, Any]],
     timeframe_seconds: int,
-) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
+) -> tuple[list[float], list[float], list[float], list[float], list[float], list[float]]:
     """Return common price levels and returns only across adjacent common bars."""
     target_by_time = {row["timestamp_epoch"]: row["close"] for row in target}
     peer_by_time = {row["timestamp_epoch"]: row["close"] for row in peer}
