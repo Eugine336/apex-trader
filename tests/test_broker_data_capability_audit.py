@@ -6,6 +6,7 @@ from scripts.audit_broker_data_capabilities import (
     _finite,
     _frame_quality,
     _history_summary,
+    _acceptance_summary,
 )
 
 
@@ -76,3 +77,42 @@ def test_finite_rejects_boolean_and_non_finite_values():
     assert _finite(True) is None
     assert _finite(float("nan")) is None
     assert _finite("12.5") == 12.5
+
+
+
+def test_broker_acceptance_requires_verified_account_books_and_every_requested_symbol_timeframe():
+    terminal = {"value": {"source_verified": True, "connected": True}, "error": None}
+    account = {"value": {"source_verified": True}, "error": None}
+    positions = {"value": [], "error": None}
+    orders = {"value": [], "error": None}
+    deals = {"value": [], "error": None}
+    symbols = {
+        "XAUUSD": {
+            "status": "PARTIAL", "broker_symbol": "GOLD",
+            "instrument_specification": {"specification_verified": True},
+            "timeframes": {
+                "M5": {"status": "AVAILABLE", "source_timestamp_verified": True,
+                       "source_symbol_matches": True, "timestamps_parseable": True,
+                       "timestamps_strictly_increasing": True},
+                "H1": {"status": "AVAILABLE", "source_timestamp_verified": True,
+                       "source_symbol_matches": True, "timestamps_parseable": True,
+                       "timestamps_strictly_increasing": True},
+            },
+        },
+    }
+    accepted = _acceptance_summary(
+        terminal=terminal, account=account, positions=positions, orders=orders,
+        deals=deals, symbols=symbols, configured_symbols=["XAUUSD"],
+        timeframes=["M5", "H1"],
+    )
+    assert accepted["status"] == "complete"
+    assert accepted["execution_mutations_performed"] == 0
+
+    symbols["XAUUSD"]["timeframes"]["H1"]["source_symbol_matches"] = False
+    rejected = _acceptance_summary(
+        terminal=terminal, account=account, positions=positions, orders=orders,
+        deals=deals, symbols=symbols, configured_symbols=["XAUUSD"],
+        timeframes=["M5", "H1"],
+    )
+    assert rejected["status"] == "partial"
+    assert "completed_ohlcv_complete" in rejected["missing_acceptance_checks"]
