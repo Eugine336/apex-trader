@@ -787,7 +787,7 @@ class PlatformManager:
                 if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
                     continue
                 try:
-                            finder = getattr(connector, "find_pending_order_by_idempotency_key", None)
+                    finder = getattr(connector, "find_pending_order_by_idempotency_key", None)
                     if not callable(finder):
                         finder = getattr(connector, "find_order_by_idempotency_key", None)
                     candidate = (
