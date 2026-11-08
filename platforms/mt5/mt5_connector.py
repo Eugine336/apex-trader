@@ -1419,13 +1419,12 @@ class MT5Connector(BaseConnector):
         self._require_connection()
         side = str(direction or "").strip().upper()
         kind = str(order_type or "").strip().upper()
+        entry = requested_lots = stop = target = 0.0
         def fail_pending(message: str) -> OrderResult:
             return OrderResult(
                 success=False, order_id="", fill_price=0.0,
-                requested_price=entry if "entry" in locals() else 0.0,
-                slippage_pips=0.0, lots=requested_lots if "requested_lots" in locals() else 0.0,
-                symbol=symbol, direction=side, sl=stop if "stop" in locals() else 0.0,
-                tp=target if "target" in locals() else 0.0, platform="mt5",
+                requested_price=entry, slippage_pips=0.0, lots=requested_lots,
+                symbol=symbol, direction=side, sl=stop, tp=target, platform="mt5",
                 error=message, order_status="REJECTED", order_type=kind,
             )
         try:
@@ -1443,11 +1442,11 @@ class MT5Connector(BaseConnector):
             return fail_pending("invalid_pending_order_request")
         is_buy = side in {"BUY", "LONG"}
         if not (stop < entry < target if is_buy else target < entry < stop):
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_sl_tp_not_ordered")
+            return fail_pending("pending_order_sl_tp_not_ordered")
 
         mapped = self.symbol_map(symbol)
         if mapped is None:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_unavailable")
+            return fail_pending("pending_order_symbol_unavailable")
         if idempotency_key:
             duplicate = self._find_order_by_idem_key(idempotency_key)
             if duplicate is not None:
@@ -1473,23 +1472,23 @@ class MT5Connector(BaseConnector):
 
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_quote_unavailable")
+            return fail_pending("pending_order_quote_unavailable")
         tick_age = (datetime.now(timezone.utc) - datetime.fromtimestamp(tick.time, tz=timezone.utc)).total_seconds()
         if tick_age < -2.0 or tick_age > self._max_tick_age_seconds:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_quote_stale_or_future")
+            return fail_pending("pending_order_quote_stale_or_future")
         if is_buy and kind == "LIMIT" and not entry < tick.ask:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "buy_limit_must_be_below_ask")
+            return fail_pending("buy_limit_must_be_below_ask")
         if is_buy and kind == "STOP" and not entry > tick.ask:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "buy_stop_must_be_above_ask")
+            return fail_pending("buy_stop_must_be_above_ask")
         if not is_buy and kind == "LIMIT" and not entry > tick.bid:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "sell_limit_must_be_above_bid")
+            return fail_pending("sell_limit_must_be_above_bid")
         if not is_buy and kind == "STOP" and not entry < tick.bid:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "sell_stop_must_be_below_bid")
+            return fail_pending("sell_stop_must_be_below_bid")
 
         mt5.symbol_select(mapped, True)
         info = mt5.symbol_info(mapped)
         if info is None:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_spec_unavailable")
+            return fail_pending("pending_order_symbol_spec_unavailable")
         volume_min = float(getattr(info, "volume_min", 0.0) or 0.0)
         volume_max = float(getattr(info, "volume_max", 0.0) or 0.0)
         volume_step = float(getattr(info, "volume_step", 0.0) or 0.0)
@@ -1502,7 +1501,7 @@ class MT5Connector(BaseConnector):
             or digits <= 0
             or trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", object())
         ):
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_symbol_constraints_invalid")
+            return fail_pending("pending_order_symbol_constraints_invalid")
         steps = round(requested_lots / volume_step)
         normalized_lots = round(steps * volume_step, 10)
         if (
@@ -1510,13 +1509,13 @@ class MT5Connector(BaseConnector):
             or normalized_lots > volume_max + 1e-10
             or abs(normalized_lots - requested_lots) > max(1e-9, volume_step * 1e-6)
         ):
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_volume_not_exactly_broker_aligned")
+            return fail_pending("pending_order_volume_not_exactly_broker_aligned")
         min_distance = self._effective_min_stop_distance(
             mapped, point, int(getattr(info, "trade_stops_level", 0) or 0),
             int(getattr(info, "trade_freeze_level", 0) or 0),
         )
         if abs(entry - stop) < min_distance or abs(target - entry) < min_distance:
-            return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_stops_inside_broker_minimum_distance")
+            return fail_pending("pending_order_stops_inside_broker_minimum_distance")
 
         mt5_order_type = (
             mt5.ORDER_TYPE_BUY_LIMIT if is_buy and kind == "LIMIT" else
