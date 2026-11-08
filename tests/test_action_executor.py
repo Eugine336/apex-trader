@@ -1077,15 +1077,21 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
 
 
 
-def test_action_executor_never_reinterprets_pending_entry_as_market():
+def test_action_executor_accepts_only_exact_brain_geometry_for_pending_entry():
     intent = _open_intent(
         order_type="LIMIT",
         entry_zone_low=1.05,
         entry_zone_high=1.15,
     )
 
-    assert ActionExecutor._payoff_geometry_error(intent) == (
-        "pending_order_type_not_supported_by_broker_adapter"
+    assert ActionExecutor._payoff_geometry_error(intent) is None
+
+    mismatched = _open_intent(
+        order_type="LIMIT", entry_price=1.12,
+        entry_zone_low=1.05, entry_zone_high=1.15,
+    )
+    assert ActionExecutor._payoff_geometry_error(mismatched) == (
+        "pending_order_geometry_entry_price_mismatch"
     )
 
 
