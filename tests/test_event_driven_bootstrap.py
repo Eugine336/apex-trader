@@ -804,3 +804,74 @@ class TestPendingOrderLifecycle:
         with patch("event_driven_bootstrap.get_event_store", return_value=store):
             system._restore_pending_orders()
         assert system._pending_orders["ORDER-3"]["decision_id"] == "decision-3"
+
+    def test_restart_recovery_retains_partial_fill_from_cancel_event(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending_payload = {
+            "order_id": "ORDER-RESTORE-PARTIAL", "symbol": "EURUSD",
+            "direction": "BUY", "order_type": "LIMIT", "lots": 0.1,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cancelled_payload = {
+            "order_id": "ORDER-RESTORE-PARTIAL",
+            "pre_cancel_broker_snapshot": {
+                "ticket": "ORDER-RESTORE-PARTIAL", "symbol": "EURUSD",
+                "volume_initial": 0.1, "volume_current": 0.06,
+            },
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_CANCELLED, "parent_id": "ORDER-RESTORE-PARTIAL",
+             "payload_json": json.dumps(cancelled_payload)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-RESTORE-PARTIAL",
+             "payload_json": json.dumps(pending_payload)},
+        ]
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+
+        restored = system._pending_orders["ORDER-RESTORE-PARTIAL"]
+        assert restored["status"] == "PARTIALLY_FILLED_TERMINAL"
+        assert restored["initial_volume"] == 0.1
+        assert restored["last_partial_remaining_volume"] == 0.06
+
+
+    def test_restart_recovery_removes_cancelled_order_with_no_fill_evidence(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending_payload = {
+            "order_id": "ORDER-RESTORE-CANCELLED", "symbol": "EURUSD",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cancelled_payload = {
+            "order_id": "ORDER-RESTORE-CANCELLED",
+            "pre_cancel_broker_snapshot": {
+                "ticket": "ORDER-RESTORE-CANCELLED", "symbol": "EURUSD",
+                "volume_initial": 0.1, "volume_current": 0.1,
+            },
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_CANCELLED, "parent_id": "ORDER-RESTORE-CANCELLED",
+             "payload_json": json.dumps(cancelled_payload)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-RESTORE-CANCELLED",
+             "payload_json": json.dumps(pending_payload)},
+        ]
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+
+        assert "ORDER-RESTORE-CANCELLED" not in system._pending_orders
