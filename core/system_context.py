@@ -1410,14 +1410,16 @@ class SystemContext:
                     # Broker symbol_info is an independent specification
                     # source. Do not substitute config defaults when the
                     # connected venue cannot attest its contract fields.
-                    try:
-                        symbol_spec = platform_manager.get_symbol_spec(symbol)
-                    except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
-                        logger.warning(
-                            "[cognition] broker symbol specification unavailable for %s: %s",
-                            symbol, type(exc).__name__,
-                        )
-                        symbol_spec = {}
+                    symbol_spec = _concept_market_cycle_specs.get(canonical_symbol)
+                    if not isinstance(symbol_spec, dict) or not symbol_spec:
+                        try:
+                            symbol_spec = platform_manager.get_symbol_spec(symbol)
+                        except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
+                            logger.warning(
+                                "[cognition] broker symbol specification unavailable for %s: %s",
+                                symbol, type(exc).__name__,
+                            )
+                            symbol_spec = {}
                     try:
                         depth_levels = platform_manager.get_market_depth(symbol)
                         if not isinstance(depth_levels, list):
