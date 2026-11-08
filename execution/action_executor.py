@@ -1122,6 +1122,13 @@ class ActionExecutor:
                     tp=float(intent.new_tp or 0.0),
                     comment=str(intent.comment or ""),
                     idempotency_key=str(intent.idempotency_key or ""),
+                    decision_id=str(intent.decision_id or ""),
+                    campaign_id=str(intent.campaign_id or ""),
+                    opportunity_id=str(intent.opportunity_id or ""),
+                    decision_feature_snapshot=(
+                        dict(intent.decision_feature_snapshot)
+                        if isinstance(intent.decision_feature_snapshot, dict) else None
+                    ),
                 )
             else:
                 resp = self._broker.execute_entry(
