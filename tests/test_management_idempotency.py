@@ -47,6 +47,7 @@ def _position():
         campaign_id="campaign-1",
         opportunity_id="opportunity-1",
         lots=0.2,
+        ticket="ticket-1",
     )
 
 
@@ -194,4 +195,39 @@ def test_ambiguous_management_sink_result_is_durable_and_never_replayed():
         "campaign-1", current_size=0.2, now_ms=10_000,
     )
     assert progress["pending_milestone"]["milestone_id"] == "market_structure:H1:1:1.105"
+    store.close()
+
+
+def test_verified_broker_reconciliation_resolves_ambiguous_milestone_and_memory():
+    import time
+
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    loop = _loop(store, ledger)
+    loop.set_management_sink(lambda action, position: None)
+    output, position = _output(), _position()
+
+    loop._realise_management(output, position)
+    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    assert ledger.status(action_id, "EURUSD") == "AMBIGUOUS"
+
+    evidence = {
+        "source": "mt5.position_snapshot",
+        "source_timestamp_epoch": time.time(),
+        "source_timestamp_verified": True,
+        "symbol": "EURUSD",
+        "position_ticket": "ticket-1",
+        "book_complete": True,
+        "platform_confirmed": True,
+        "position_present": True,
+        "current_lots": 0.1,
+    }
+    assert loop.reconcile_management_action(action_id, "EURUSD", evidence) is True
+    assert ledger.status(action_id, "EURUSD") == "ACKNOWLEDGED"
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.1, now_ms=10_000,
+    )
+    assert progress["pending_milestone"] is None
+    assert "market_structure:H1:1:1.105" in progress["completed_milestones"]
+    assert action_id not in loop._management_unresolved_actions
     store.close()
