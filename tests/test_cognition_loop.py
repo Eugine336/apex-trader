@@ -1339,3 +1339,22 @@ def test_unverified_concept_reading_does_not_satisfy_market_intelligence_integri
         "FULL CONCEPT READINGS UNAVAILABLE" in item.observation
         for item in market_state.evidence
     )
+
+
+def test_concept_cycle_snapshot_hooks_are_forwarded():
+    calls = []
+
+    def source(symbol):
+        return []
+
+    source.begin_cycle = lambda symbols: calls.append(("begin", symbols))
+    source.end_cycle = lambda: calls.append(("end", None))
+
+    consolidator = EvidenceConsolidator(ctx=None, concept_source=source)
+    consolidator.begin_concept_cycle(["XAUUSD", "EURUSD"])
+    consolidator.end_concept_cycle()
+
+    assert calls == [
+        ("begin", ("XAUUSD", "EURUSD")),
+        ("end", None),
+    ]
