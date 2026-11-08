@@ -215,16 +215,16 @@ class ManagementActionLedger:
             offset=0,
         ) or []
         latest: dict[str, dict] = {}
-        for row in rows:
+        for row in sorted(rows, key=lambda item: int(item.get("seq", 0) or 0)):
             payload = _payload(row)
             action_id = str(payload.get("action_id", "") or "").strip()
             if not action_id:
                 continue
-            current = latest.get(action_id)
-            if current is None or int(row.get("seq", 0) or 0) > int(current.get("_seq", 0) or 0):
-                payload["_seq"] = int(row.get("seq", 0) or 0)
-                payload["_event_type"] = str(row.get("event_type", "") or "")
-                latest[action_id] = payload
+            sequence = int(row.get("seq", 0) or 0)
+            merged = {**latest.get(action_id, {}), **payload}
+            merged["_seq"] = sequence
+            merged["_event_type"] = str(row.get("event_type", "") or "")
+            latest[action_id] = merged
         return [
             row for row in latest.values()
             if row.get("status") in {"SUBMITTED", "AMBIGUOUS"}
