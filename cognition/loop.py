@@ -2820,6 +2820,8 @@ class CognitionLoop:
                 except Exception as sink_exc:
                     if ledger_started:
                         ledger.finish(action, "AMBIGUOUS", error=f"{type(sink_exc).__name__}: {sink_exc}")
+                    if action_id:
+                        self._management_unresolved_actions.add(action_id)
                     self._manage_ambiguous += 1
                     logger.error(
                         "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: sink raised %s",
