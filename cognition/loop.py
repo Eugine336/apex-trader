@@ -2690,6 +2690,136 @@ class CognitionLoop:
                         )
         return reconciled
 
+    def record_management_execution_result(
+        self, intent: Any, result: Any, *, current_size: float | None = None,
+    ) -> bool:
+        """Resolve a queued Brain action from its actual executor/broker result.
+
+        Queue acceptance is not execution. This callback is invoked by the shared
+        FlushLoop after ActionExecutor has returned, including failed outcomes.
+        """
+        action_id = str(getattr(intent, "action_id", "") or "").strip()
+        symbol = str(getattr(intent, "symbol", "") or "").strip().upper()
+        if not action_id or not symbol:
+            return False
+        ledger = self._management_action_ledger
+        if ledger is None:
+            try:
+                from cognition.management_action_ledger import ManagementActionLedger
+                ledger = ManagementActionLedger(self._candidate_event_store)
+                self._management_action_ledger = ledger
+            except Exception as exc:  # noqa: BLE001 — unresolved action remains blocked
+                logger.error("[cognition-loop] execution-result ledger unavailable: %s", exc)
+                self._management_unresolved_actions.add(action_id)
+                return False
+        try:
+            prior_status = ledger.status(action_id, symbol)
+        except Exception as exc:  # noqa: BLE001 — never infer an absent ledger row
+            logger.error("[cognition-loop] action status lookup failed: %s", exc)
+            self._management_unresolved_actions.add(action_id)
+            return False
+        if prior_status not in {"SUBMITTED", "DISPATCHED", "AMBIGUOUS"}:
+            return prior_status == "ACKNOWLEDGED"
+
+        intent_type = getattr(getattr(intent, "intent_type", None), "name", "")
+        kind = {
+            "CLOSE": "close",
+            "PARTIAL_CLOSE": "partial_close",
+            "MODIFY_SL": "protect_sl",
+        }.get(str(intent_type).upper(), str(intent_type).lower())
+        action = type("ExecutedManagementAction", (), {
+            "action_id": action_id,
+            "symbol": symbol,
+            "decision_id": str(getattr(intent, "decision_id", "") or ""),
+            "campaign_id": str(getattr(intent, "campaign_id", "") or ""),
+            "opportunity_id": str(getattr(intent, "opportunity_id", "") or ""),
+            "kind": kind,
+        })()
+        succeeded = getattr(result, "success", False) is True
+        broker_response = getattr(result, "broker_response", None)
+        response_success = (
+            getattr(broker_response, "success", None)
+            if broker_response is not None else None
+        )
+        if isinstance(broker_response, dict):
+            response_success = broker_response.get("success")
+        explicit_rejection = (
+            getattr(result, "rejected_by_gate", False) is True
+            or response_success is False
+            or broker_response is False
+        )
+        if succeeded and response_success is not False:
+            if isinstance(broker_response, dict):
+                response = {
+                    **broker_response,
+                    "success": True,
+                    "ticket": broker_response.get("ticket")
+                        or str(getattr(intent, "position_ticket", "") or ""),
+                }
+            elif broker_response is None or isinstance(broker_response, bool):
+                response = {
+                    "success": True,
+                    "ticket": str(getattr(intent, "position_ticket", "") or ""),
+                }
+            else:
+                response = broker_response
+                if getattr(response, "success", None) is not True:
+                    response = {
+                        "success": True,
+                        "ticket": str(getattr(intent, "position_ticket", "") or ""),
+                        "deal": getattr(response, "order_id", None),
+                        "retcode": getattr(response, "retcode", None),
+                    }
+            recorded = ledger.finish(action, "ACKNOWLEDGED", response=response)
+            if recorded:
+                self._management_unresolved_actions.discard(action_id)
+                if kind == "partial_close" and self._memory is not None and current_size is not None:
+                    progress = getattr(self._memory, "get_management_progress", None)
+                    if callable(progress):
+                        try:
+                            progress(
+                                action.campaign_id,
+                                current_size=current_size,
+                                now_ms=int(time.time() * 1000),
+                            )
+                        except Exception as exc:  # noqa: BLE001 — pending milestone remains visible
+                            logger.error(
+                                "[cognition-loop] broker-confirmed partial close could not update "
+                                "milestone memory: %s", exc,
+                            )
+            return recorded
+
+        error = str(getattr(result, "error", "") or "")
+        if explicit_rejection or any(
+            token in error.lower()
+            for token in ("market_closed", "market closed", "circuit open", "rate limit")
+        ):
+            recorded = ledger.finish(action, "REJECTED", response=broker_response, error=error)
+            if recorded:
+                self._management_unresolved_actions.discard(action_id)
+                if kind == "partial_close" and self._memory is not None:
+                    milestone_id = ""
+                    reason = str(getattr(intent, "reason", "") or "")
+                    marker = "[milestone_id="
+                    if marker in reason:
+                        milestone_id = reason.split(marker, 1)[1].split("]", 1)[0].strip()
+                    clearer = getattr(self._memory, "clear_milestone_pending", None)
+                    if milestone_id and callable(clearer):
+                        try:
+                            clearer(action.campaign_id, milestone_id)
+                        except Exception as exc:  # noqa: BLE001 — keep campaign blocked on failure
+                            logger.error(
+                                "[cognition-loop] rejected broker action could not clear milestone: %s",
+                                exc,
+                            )
+            return recorded
+
+        recorded = ledger.finish(action, "AMBIGUOUS", response=broker_response, error=error)
+        if recorded:
+            self._management_unresolved_actions.add(action_id)
+            self._manage_ambiguous += 1
+        return recorded
+
     def _realise_management(self, output: Any, position: Any) -> bool:
         """Translate and realise management without replaying ambiguous partials.
 
