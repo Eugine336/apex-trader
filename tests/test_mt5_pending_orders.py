@@ -102,6 +102,7 @@ def test_buy_limit_is_submitted_as_pending_and_verified_in_broker_book(monkeypat
     assert fake.requests[0]["action"] == fake.TRADE_ACTION_PENDING
     assert fake.requests[0]["type"] == fake.ORDER_TYPE_BUY_LIMIT
     assert fake.requests[0]["type_filling"] == fake.ORDER_FILLING_RETURN
+    assert fake.requests[0]["comment"].startswith("APND-a1b2c3d4e5f6")
 
 
 @pytest.mark.parametrize(
@@ -179,3 +180,42 @@ def test_cancel_pending_order_removes_only_the_named_ticket(monkeypatch):
     assert connector.cancel_pending_order("901") is True
     assert fake.orders == []
     assert fake.requests[-1] == {"action": fake.TRADE_ACTION_REMOVE, "order": 901}
+
+
+def test_pending_order_rejects_prices_not_aligned_to_broker_tick_size(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.005, lots=0.10, sl=98.005, tp=101.005,
+    )
+    assert result.success is False
+    assert result.error == "pending_order_price_not_tick_aligned"
+    assert fake.requests == []
+
+
+def test_pending_order_respects_symbol_direction_trade_mode(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.symbol_info = lambda symbol: SimpleNamespace(
+        volume_min=0.01, volume_max=10.0, volume_step=0.01,
+        point=0.01, trade_tick_size=0.01, digits=2,
+        trade_mode=2, trade_stops_level=0, trade_freeze_level=0,
+    )
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+    )
+    assert result.success is False
+    assert result.error == "pending_order_symbol_constraints_invalid"
+    assert fake.requests == []
+
+
+def test_pending_order_rejects_unrepresentable_idempotency_key(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="not-a-valid-key-length",
+    )
+    assert result.success is False
+    assert result.error == "pending_order_idempotency_key_must_be_12_hex_characters"
+    assert fake.requests == []
