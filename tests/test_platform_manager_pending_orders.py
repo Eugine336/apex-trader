@@ -237,7 +237,9 @@ def test_ambiguous_pending_submission_is_persisted_and_sent_to_runtime_tracker(m
     manager._broker_write_lock = threading.Lock()
     callback_rows = []
     manager.pending_order_callback = lambda result, context: callback_rows.append((result, context))
-    monkeypatch.setattr(event_store_module, "get_event_store", lambda: None)
+    lifecycle_store = SimpleNamespace(is_degraded=False, emit=MagicMock(return_value="event-id"))
+    monkeypatch.setattr(event_store_module, "get_existing_event_store", lambda: lifecycle_store)
+    monkeypatch.setattr(event_store_module, "get_event_store", lambda: lifecycle_store)
 
     result = manager.execute_pending_entry(
         symbol="EURUSD", direction="BUY", order_type="LIMIT",
