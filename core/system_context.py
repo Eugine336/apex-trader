@@ -1345,16 +1345,47 @@ class SystemContext:
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
                     _concept_history_bars = 100
 
+                # One immutable multi-symbol OHLC snapshot is prepared at the
+                # beginning of each CognitionLoop cycle and shared by every
+                # selected symbol. This is the live bridge from the existing
+                # parallel broker batch API into the native concept readers.
+                _concept_market_cycle_snapshot: dict[str, Any] = {}
+
+                def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
+                    _concept_market_cycle_snapshot.clear()
+                    try:
+                        batch = platform_manager.fetch_all_market_data(
+                            symbols=list(symbols),
+                            timeframes=list(_concept_timeframes),
+                            count=_concept_history_bars + 1,
+                        )
+                        _concept_market_cycle_snapshot.update({
+                            str(key or "").strip().upper(): value
+                            for key, value in (batch or {}).items()
+                            if isinstance(value, dict)
+                        })
+                    except Exception as exc:  # noqa: BLE001 — intermarket context remains unavailable, not fabricated
+                        logger.warning(
+                            "[cognition] multi-symbol completed-bar snapshot unavailable: %s",
+                            type(exc).__name__,
+                        )
+
+                def _end_concept_market_cycle() -> None:
+                    _concept_market_cycle_snapshot.clear()
+
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
-                    frames = platform_manager.fetch_market_data(
-                        symbol,
-                        timeframes=list(_concept_timeframes),
-                        # Request one extra broker row because the final
-                        # forming candle is excluded by analyze_market_frames.
-                        count=_concept_history_bars + 1,
-                        include_forming=True,
-                    )
+                    canonical_symbol = str(symbol or "").strip().upper()
+                    frames = _concept_market_cycle_snapshot.get(canonical_symbol)
+                    if not isinstance(frames, dict) or not frames:
+                        # Preserve the existing single-symbol observation path if
+                        # batch discovery fails or the symbol is not in the batch.
+                        frames = platform_manager.fetch_market_data(
+                            symbol,
+                            timeframes=list(_concept_timeframes),
+                            count=_concept_history_bars + 1,
+                            include_forming=True,
+                        )
                     # Broker symbol_info is an independent specification
                     # source. Do not substitute config defaults when the
                     # connected venue cannot attest its contract fields.
@@ -1427,8 +1458,16 @@ class SystemContext:
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
                             "tick_history": tick_history,
+                            "multi_symbol_frames": dict(_concept_market_cycle_snapshot),
+                            "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
                         },
                     )
+
+                # EvidenceConsolidator forwards these lifecycle hooks to
+                # CognitionLoop so all symbols in one reasoning cycle share the
+                # same broker batch instead of independently fetching a new cut.
+                _concept_market_source.begin_cycle = _begin_concept_market_cycle
+                _concept_market_source.end_cycle = _end_concept_market_cycle
 
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
