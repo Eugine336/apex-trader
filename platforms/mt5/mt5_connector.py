@@ -2226,6 +2226,14 @@ class MT5Connector(BaseConnector):
             return positions[0]
         return None
 
+    def find_order_by_idempotency_key(self, idempotency_key: str) -> Optional[SimpleNamespace]:
+        """Public read-only lookup for an ambiguous pending-order acknowledgement."""
+        self._require_connection()
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        return self._find_order_by_idem_key(key)
+
     def _find_order_by_idem_key(self, idem_key: str) -> Optional[SimpleNamespace]:
         """Check positions, pending orders, and recent history for an existing idem key.
 
@@ -2243,6 +2251,8 @@ class MT5Connector(BaseConnector):
                         sl=p.sl,
                         tp=p.tp,
                         order_status="FILLED",
+                        symbol=str(getattr(p, "symbol", "") or ""),
+                        position_id=str(getattr(p, "ticket", "") or ""),
                     )
         orders = mt5.orders_get()
         if orders:
@@ -2256,6 +2266,7 @@ class MT5Connector(BaseConnector):
                         tp=getattr(o, "tp", 0.0),
                         order_status="PENDING",
                         order_type=str(getattr(o, "type", "") or ""),
+                        symbol=str(getattr(o, "symbol", "") or ""),
                     )
         try:
             since = datetime.now(timezone.utc) - timedelta(seconds=900)
@@ -2270,6 +2281,8 @@ class MT5Connector(BaseConnector):
                             volume=getattr(d, "volume", 0.0),
                             sl=0.0,
                             tp=0.0,
+                            order_status="FILLED",
+                            symbol=str(getattr(d, "symbol", "") or ""),
                         )
         except Exception as exc:
             logger.warning("MT5 history_deals_get failed during dedup: {}", exc)
@@ -2286,6 +2299,8 @@ class MT5Connector(BaseConnector):
                             volume=getattr(ho, "volume_current", getattr(ho, "volume_initial", 0.0)),
                             sl=getattr(ho, "sl", 0.0),
                             tp=getattr(ho, "tp", 0.0),
+                            symbol=str(getattr(ho, "symbol", "") or ""),
+                            position_id=str(getattr(ho, "position_id", "") or ""),
                             order_status=(
                                 "FILLED"
                                 if getattr(ho, "state", None) == getattr(mt5, "ORDER_STATE_FILLED", 4)
