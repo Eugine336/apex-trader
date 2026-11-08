@@ -864,7 +864,7 @@ class PlatformManager:
                 if initial > 0.0 and 0.0 < remaining < initial
                 else "PENDING"
             )
-            return {"status": status, "broker_confirmed": True, "record": record,
+            return {"status": status, "order_id": ticket, "broker_confirmed": True, "record": record,
                     "initial_volume": initial, "remaining_volume": remaining}
         if len(live_matches) > 1 or len(history_matches) > 1:
             return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
