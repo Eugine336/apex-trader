@@ -50,6 +50,12 @@ class InstrumentEconomicsReadings:
     key = "instrument_economics_readings"
     family = "instrument_mechanics"
     covers_methods = ("instrument_economics",)
+    data_gated_methods = {
+        "carry": (
+            "verified direction-specific broker swap/financing schedule, rollover multipliers, "
+            "and instrument/account-currency conversion"
+        ),
+    }
     covers_lenses = ()
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
