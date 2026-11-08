@@ -200,7 +200,7 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 7. **Code review checklist**: no config numbers; no symbol branches; every `None` is reported in `requires`/`unknowns`.
 
 ## 6. Brain integration work packages (single owner; these make the concepts *usable*)
-- **WP-B1 Context selection and composition — partial.** PR #819 corrected independent-evidence accounting and the
+- **WP-B1 Context selection and composition — implementation accepted.** PR #819 corrected independent-evidence accounting and the
   synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
   `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
   requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
