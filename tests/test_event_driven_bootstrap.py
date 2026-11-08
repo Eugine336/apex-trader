@@ -572,6 +572,25 @@ class TestPendingOrderLifecycle:
         assert "ORDER-2" in system._pending_orders
         store.emit.assert_not_called()
 
+    def test_ambiguous_pending_result_is_tracked_by_idempotency_key_without_ticket(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        result = SimpleNamespace(
+            order_id="", success=False,
+            timestamp=datetime.now(timezone.utc),
+        )
+        system._record_pending_order_result(result, {
+            "order_id": "", "idempotency_key": "a1b2c3d4e5f6",
+            "symbol": "EURUSD", "status": "UNKNOWN",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        })
+        assert "a1b2c3d4e5f6" in system._pending_orders
+        assert system._pending_orders["a1b2c3d4e5f6"]["order_id"] == ""
+
     def test_pending_orders_restore_from_durable_event_projection(self):
         import json
         import threading
