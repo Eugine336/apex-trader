@@ -502,6 +502,52 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
+    def test_partial_pending_fill_is_attributed_without_removing_resting_order(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-PARTIAL": {
+                "order_id": "ORDER-PARTIAL", "symbol": "EURUSD", "direction": "BUY",
+                "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
+                "sl": 98.0, "tp": 101.0,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "decision_id": "decision-partial", "campaign_id": "campaign-partial",
+                "opportunity_id": "opportunity-partial",
+                "decision_feature_snapshot": {"snapshot_complete": True, "snapshot_id": "snap-partial"},
+            },
+        }
+        system._entry_context = {}
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "PARTIALLY_FILLED_PENDING", "broker_confirmed": True,
+                "initial_volume": 0.1, "remaining_volume": 0.06,
+                "record": {"ticket": 901, "position_id": "902"},
+            },
+            get_platform_balance=lambda symbol: 5000.0,
+        )
+        system._on_order_filled = MagicMock()
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([
+                SimpleNamespace(
+                    order_id="902", symbol="EURUSD", direction="BUY",
+                    open_price=99.0, lots=0.04, sl=98.0, tp=101.0,
+                ),
+            ])
+
+        assert "ORDER-PARTIAL" in system._pending_orders
+        assert system._pending_orders["ORDER-PARTIAL"]["status"] == "PARTIALLY_FILLED_PENDING"
+        assert system._pending_orders["ORDER-PARTIAL"]["attributed"] is True
+        system._on_order_filled.assert_called_once()
+        event_types = [call.kwargs.get("event_type") for call in store.emit.call_args_list]
+        assert DE.ORDER_FILLED in event_types
+        assert DE.ORDER_RECONCILED in event_types
+
     def test_unknown_broker_absence_never_removes_pending_order(self):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
