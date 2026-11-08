@@ -1,0 +1,181 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+import platforms.mt5.mt5_connector as mt5_module
+from platforms.mt5.mt5_connector import MT5Connector
+
+
+class FakeMT5:
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TYPE_BUY_LIMIT = 2
+    ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
+    TRADE_ACTION_PENDING = 5
+    TRADE_ACTION_REMOVE = 8
+    ORDER_TIME_GTC = 0
+    ORDER_FILLING_RETURN = 2
+    TRADE_RETCODE_PLACED = 10008
+    TRADE_RETCODE_DONE = 10009
+    SYMBOL_TRADE_MODE_DISABLED = 0
+
+    def __init__(self):
+        self.orders = []
+        self.requests = []
+        self.retcode = self.TRADE_RETCODE_PLACED
+        self.omit_confirmation = False
+
+    @staticmethod
+    def symbol_select(symbol, enabled):
+        return True
+
+    @staticmethod
+    def symbol_info(symbol):
+        return SimpleNamespace(
+            volume_min=0.01, volume_max=10.0, volume_step=0.01,
+            point=0.01, digits=2, trade_mode=4,
+            trade_stops_level=0, trade_freeze_level=0,
+        )
+
+    @staticmethod
+    def symbol_info_tick(symbol):
+        return SimpleNamespace(
+            bid=100.0, ask=100.02,
+            time=int(datetime.now(timezone.utc).timestamp()),
+        )
+
+    @staticmethod
+    def positions_get(*args, **kwargs):
+        return []
+
+    def orders_get(self, *args, **kwargs):
+        return [] if self.omit_confirmation else list(self.orders)
+
+    def order_send(self, request):
+        self.requests.append(dict(request))
+        if request["action"] == self.TRADE_ACTION_REMOVE:
+            self.orders = [o for o in self.orders if o.ticket != request["order"]]
+            return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, comment="removed")
+        order = SimpleNamespace(
+            ticket=901, symbol=request["symbol"],
+            volume_current=request["volume"], volume_initial=request["volume"],
+            price_open=request["price"], sl=request["sl"], tp=request["tp"],
+            type=request["type"], comment=request["comment"], state=1,
+        )
+        self.orders.append(order)
+        return SimpleNamespace(
+            retcode=self.retcode, order=order.ticket,
+            price=request["price"], comment="placed",
+        )
+
+    @staticmethod
+    def last_error():
+        return (0, "ok")
+
+
+def _connector(monkeypatch):
+    fake = FakeMT5()
+    monkeypatch.setattr(mt5_module, "mt5", fake)
+    connector = MT5Connector(max_tick_age_seconds=10)
+    connector._connected = True
+    connector.symbol_map = lambda symbol: symbol
+    connector._deviation_points = lambda symbol, point: 10
+    return connector, fake
+
+
+def test_buy_limit_is_submitted_as_pending_and_verified_in_broker_book(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="pending-key-1",
+    )
+
+    assert result.success is True
+    assert result.order_status == "PENDING"
+    assert result.order_type == "LIMIT"
+    assert result.order_id == "901"
+    assert fake.requests[0]["action"] == fake.TRADE_ACTION_PENDING
+    assert fake.requests[0]["type"] == fake.ORDER_TYPE_BUY_LIMIT
+    assert fake.requests[0]["type_filling"] == fake.ORDER_FILLING_RETURN
+
+
+@pytest.mark.parametrize(
+    ("direction", "kind", "entry", "expected_error"),
+    [
+        ("BUY", "LIMIT", 100.03, "buy_limit_must_be_below_ask"),
+        ("BUY", "STOP", 100.01, "buy_stop_must_be_above_ask"),
+        ("SELL", "LIMIT", 99.99, "sell_limit_must_be_above_bid"),
+        ("SELL", "STOP", 100.01, "sell_stop_must_be_below_bid"),
+    ],
+)
+def test_pending_order_wrong_side_of_quote_is_rejected_without_send(
+    monkeypatch, direction, kind, entry, expected_error,
+):
+    connector, fake = _connector(monkeypatch)
+    stop, target = (entry - 1.0, entry + 1.0) if direction == "BUY" else (entry + 1.0, entry - 1.0)
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction=direction, order_type=kind,
+        entry_price=entry, lots=0.10, sl=stop, tp=target,
+    )
+
+    assert result.success is False
+    assert expected_error in result.error
+    assert fake.requests == []
+
+
+def test_pending_order_never_inflates_or_rounds_owner_sized_volume(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.105, sl=98.0, tp=101.0,
+    )
+    assert result.success is False
+    assert "volume_not_exactly_broker_aligned" in result.error
+    assert fake.requests == []
+
+
+def test_accepted_but_unobserved_pending_order_is_ambiguous_and_not_retryable(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.omit_confirmation = True
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+    )
+
+    assert result.success is False
+    assert result.order_status == "UNKNOWN"
+    assert result.error.startswith("AMBIGUOUS_PENDING_ORDER_ACK:")
+    assert len(fake.requests) == 1
+
+
+def test_pending_idempotency_retry_returns_existing_order_without_second_send(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    first = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="pending-key-2",
+    )
+    second = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="pending-key-2",
+    )
+    assert first.success and second.success
+    assert second.order_status == "PENDING"
+    assert second.order_id == first.order_id
+    assert len(fake.requests) == 1
+
+
+def test_cancel_pending_order_removes_only_the_named_ticket(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    fake.orders = [SimpleNamespace(ticket=901, symbol="EURUSD")]
+    assert connector.cancel_pending_order("901") is True
+    assert fake.orders == []
+    assert fake.requests[-1] == {"action": fake.TRADE_ACTION_REMOVE, "order": 901}
