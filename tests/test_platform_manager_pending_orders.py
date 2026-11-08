@@ -121,3 +121,59 @@ def test_live_pending_snapshot_reports_partial_fill_without_losing_remaining_ord
     assert outcome["status"] == "PARTIALLY_FILLED_PENDING"
     assert outcome["remaining_volume"] == 0.04
     assert outcome["initial_volume"] == 0.10
+
+
+class IdempotencyConnector(PendingConnector):
+    def __init__(self, candidate, live=None, history=None, fail=False):
+        super().__init__(live=live, history=history, fail=fail)
+        self.candidate = candidate
+        self.lookup_calls = []
+
+    def find_order_by_idempotency_key(self, key, *, since=None):
+        self.lookup_calls.append((key, since))
+        return self.candidate
+
+
+def test_ambiguous_ack_reconciles_by_idempotency_key_to_exact_pending_ticket():
+    candidate = SimpleNamespace(
+        ticket="901", symbol="EURUSD", order_status="PENDING",
+    )
+    connector = IdempotencyConnector(candidate, live=[_pending()])
+    manager = _manager([connector])
+    outcome = manager.reconcile_pending_order(
+        "", symbol="EURUSD", submitted_at=datetime.now(timezone.utc),
+        idempotency_key="a1b2c3d4e5f6",
+    )
+    assert outcome["status"] == "PENDING"
+    assert outcome["order_id"] == "901"
+    assert connector.lookup_calls[0][0] == "a1b2c3d4e5f6"
+
+
+def test_ambiguous_ack_idempotency_match_across_accounts_stays_ambiguous():
+    candidate = SimpleNamespace(
+        ticket="901", symbol="EURUSD", order_status="PENDING",
+    )
+    manager = _manager([
+        IdempotencyConnector(candidate, live=[_pending()]),
+        IdempotencyConnector(candidate, live=[_pending()]),
+    ])
+    outcome = manager.reconcile_pending_order(
+        "", symbol="EURUSD", submitted_at=datetime.now(timezone.utc),
+        idempotency_key="a1b2c3d4e5f6",
+    )
+    assert outcome["status"] == "AMBIGUOUS"
+    assert outcome["broker_confirmed"] is False
+
+
+def test_ambiguous_ack_filled_idempotency_match_returns_verified_position_identity():
+    candidate = SimpleNamespace(
+        ticket="902", symbol="EURUSD", order_status="FILLED", position_id="902",
+    )
+    manager = _manager([IdempotencyConnector(candidate)])
+    outcome = manager.reconcile_pending_order(
+        "", symbol="EURUSD", submitted_at=datetime.now(timezone.utc),
+        idempotency_key="a1b2c3d4e5f6",
+    )
+    assert outcome["status"] == "FILLED"
+    assert outcome["order_id"] == "902"
+    assert outcome["record"]["position_id"] == "902"
