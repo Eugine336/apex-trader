@@ -9,7 +9,7 @@ from cognition.concepts import CONCEPT_MODULES
 def test_all_remaining_methods_have_named_external_data_gates():
     expected = {
         "smt_divergence", "cross_asset", "currency_strength", "relative_value",
-        "event_driven", "macro_rates", "macro_growth", "carry", "derivatives",
+        "event_driven", "macro_rates", "macro_growth", "derivatives",
         "crypto_microstructure", "synthetic_market", "delta_cvd", "footprint",
         "absorption_exhaustion", "market_impact",
     }
