@@ -176,6 +176,135 @@ class ManagementActionLedger:
         except Exception:
             return False
 
+    def pending_actions(self, symbol: str | None = None) -> list[dict]:
+        """Return latest submitted/ambiguous actions; never infer they succeeded."""
+        store = self._event_store()
+        query = getattr(store, "query_events", None)
+        if not callable(query) or getattr(store, "is_degraded", False) is True:
+            return []
+        rows = query(
+            severity_min="DEBUG",
+            event_types=[_SUBMITTED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
+            symbol=str(symbol or "").strip().upper() or None,
+            limit=10000,
+            offset=0,
+        ) or []
+        latest: dict[str, dict] = {}
+        for row in rows:
+            payload = _payload(row)
+            action_id = str(payload.get("action_id", "") or "").strip()
+            if not action_id:
+                continue
+            current = latest.get(action_id)
+            if current is None or int(row.get("seq", 0) or 0) > int(current.get("_seq", 0) or 0):
+                payload["_seq"] = int(row.get("seq", 0) or 0)
+                payload["_event_type"] = str(row.get("event_type", "") or "")
+                latest[action_id] = payload
+        return [
+            row for row in latest.values()
+            if row.get("status") in {"SUBMITTED", "AMBIGUOUS"}
+        ]
+
+    def reconcile(self, action_id: str, symbol: str, broker_evidence: dict) -> bool:
+        """Resolve an ambiguous action only from a verified, complete broker snapshot.
+
+        The evidence schema is intentionally strict. If the broker cannot provide
+        the required position/deal state, the action remains unresolved.
+        """
+        action_id = str(action_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        if not action_id or not symbol or not isinstance(broker_evidence, dict):
+            return False
+        if (
+            broker_evidence.get("source_timestamp_verified") is not True
+            or not str(broker_evidence.get("source", "") or "").strip()
+            or str(broker_evidence.get("symbol", "") or "").strip().upper() != symbol
+            or broker_evidence.get("book_complete") is not True
+            or broker_evidence.get("platform_confirmed") is not True
+        ):
+            return False
+        observed_epoch = _finite(broker_evidence.get("source_timestamp_epoch"))
+        if observed_epoch is None or observed_epoch <= 0.0 or observed_epoch > time.time():
+            return False
+        pending = next(
+            (row for row in self.pending_actions(symbol) if row.get("action_id") == action_id),
+            None,
+        )
+        if pending is None:
+            return False
+        kind = str(pending.get("kind", "") or "").strip().lower()
+        ticket = str(pending.get("position_ticket", "") or "").strip()
+        evidence_ticket = str(
+            broker_evidence.get("position_ticket")
+            or broker_evidence.get("closed_position_ticket")
+            or ""
+        ).strip()
+        if not ticket or evidence_ticket != ticket:
+            return False
+        position_present = broker_evidence.get("position_present")
+        matched = False
+        if kind == "close":
+            matched = (
+                position_present is False
+                and broker_evidence.get("closed_deal_verified") is True
+            )
+        elif kind == "partial_close":
+            before = _finite(pending.get("position_size_before"))
+            fraction = _finite(pending.get("fraction"))
+            current = _finite(broker_evidence.get("current_lots"))
+            if before is not None and fraction is not None and current is not None:
+                target = before * (1.0 - fraction)
+                tolerance = max(1e-9, before * 1e-6)
+                matched = (
+                    position_present is True and 0.0 <= current <= target + tolerance
+                    and current < before - tolerance
+                )
+        elif kind in {"tighten_sl", "protect_sl"}:
+            requested = _finite(pending.get("stop_price"))
+            current = _finite(broker_evidence.get("current_sl"))
+            direction = str(pending.get("direction", "") or "").upper()
+            if requested is not None and current is not None:
+                matched = (
+                    position_present is True
+                    and (
+                        current >= requested if direction == "LONG"
+                        else current <= requested if direction == "SHORT"
+                        else False
+                    )
+                )
+        elif kind == "scale_in":
+            before = _finite(pending.get("position_size_before"))
+            current = _finite(broker_evidence.get("current_lots"))
+            matched = (
+                position_present is True
+                and before is not None and current is not None and current > before
+                and broker_evidence.get("opening_deal_verified") is True
+            )
+        elif kind == "reverse":
+            matched = (
+                position_present is True
+                and str(broker_evidence.get("direction", "") or "").upper()
+                    == str(pending.get("target_direction", "") or "").upper()
+                and broker_evidence.get("opening_deal_verified") is True
+            )
+        if not matched:
+            return False
+        action = type("ReconciledAction", (), {
+            "action_id": action_id,
+            "symbol": symbol,
+            "decision_id": str(pending.get("decision_id", "") or ""),
+            "campaign_id": str(pending.get("campaign_id", "") or ""),
+            "opportunity_id": str(pending.get("opportunity_id", "") or ""),
+            "kind": kind,
+        })()
+        evidence = {
+            **broker_evidence,
+            "reconciled": True,
+            "reconciled_epoch": observed_epoch,
+            "reconciliation_basis": "verified_complete_broker_state",
+        }
+        return self.finish(action, "ACKNOWLEDGED", response=evidence)
+
     def status(self, action_id: str, symbol: str) -> str | None:
         history = self._history(str(action_id or "").strip(), str(symbol or "").strip().upper())
         if history is None:
