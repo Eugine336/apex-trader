@@ -44,7 +44,10 @@ def _pearson(left: list[float], right: list[float]) -> float | None:
     return max(-1.0, min(1.0, sum(a * b for a, b in zip(lc, rc)) / denom))
 
 
-def _verified_rows(frame: Any, symbol: str, timeframe: str, cutoff: float) -> list[dict[str, Any]]:
+def _verified_rows(
+    frame: Any, symbol: str, timeframe: str, cutoff: float,
+    *, includes_forming_bar: bool,
+) -> list[dict[str, Any]]:
     """Convert provider frames using the same provenance rules as market-lens OHLC."""
     from cognition.market_lenses import _rows
 
@@ -55,7 +58,8 @@ def _verified_rows(frame: Any, symbol: str, timeframe: str, cutoff: float) -> li
     if not seconds:
         return []
     completed = []
-    for row in rows[:-1]:
+    source_rows = rows[:-1] if includes_forming_bar and rows else rows
+    for row in source_rows:
         stamp = _finite(row.get("timestamp_epoch"))
         if (
             row.get("source_timestamp_verified") is True
@@ -190,12 +194,16 @@ class IntermarketReadings:
             row["timestamp_epoch"] = _finite(row.get("timestamp_epoch", row.get("source_timestamp_epoch")))
         if len(target_rows) < 3:
             return []
+        includes_forming_bar = context.get("multi_symbol_source_includes_forming_bar") is True
         peers: dict[str, list[dict[str, Any]]] = {}
         for raw_peer, peer_frames in frames.items():
             peer_symbol = str(raw_peer or "").strip().upper()
             if not peer_symbol or peer_symbol == target_symbol or not isinstance(peer_frames, dict):
                 continue
-            peer_rows = _verified_rows(peer_frames.get(timeframe), peer_symbol, timeframe, cutoff)
+            peer_rows = _verified_rows(
+                peer_frames.get(timeframe), peer_symbol, timeframe, cutoff,
+                includes_forming_bar=includes_forming_bar,
+            )
             if peer_rows:
                 peers[peer_symbol] = peer_rows
 
