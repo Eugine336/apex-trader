@@ -106,6 +106,10 @@ class ManagementActionLedger:
         return list(rows)
 
     def begin(self, action: Any, position: Any) -> tuple[bool | None, str]:
+        with self._lock:
+            return self._begin_unlocked(action, position)
+
+    def _begin_unlocked(self, action: Any, position: Any) -> tuple[bool | None, str]:
         """Record the action before dispatch; None means durable storage unavailable.
 
         False means the action ID already exists and must not be replayed.
@@ -169,6 +173,14 @@ class ManagementActionLedger:
     def finish(
         self, action: Any, status: str, *, response: Any = None, error: str = "",
     ) -> bool:
+        with self._lock:
+            return self._finish_unlocked(
+                action, status, response=response, error=error,
+            )
+
+    def _finish_unlocked(
+        self, action: Any, status: str, *, response: Any = None, error: str = "",
+    ) -> bool:
         normalized = str(status or "").strip().upper()
         event_type = {
             "DISPATCHED": _DISPATCHED,
@@ -213,7 +225,7 @@ class ManagementActionLedger:
             return False
 
     def pending_actions(self, symbol: str | None = None) -> list[dict]:
-        """Return latest submitted/ambiguous actions; never infer they succeeded."""
+        """Return latest submitted/dispatched/ambiguous actions; never infer success."""
         store = self._event_store()
         query = getattr(store, "query_events", None)
         if not callable(query) or getattr(store, "is_degraded", False) is True:
