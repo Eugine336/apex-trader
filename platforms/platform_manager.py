@@ -642,6 +642,7 @@ class PlatformManager:
                             "entry_price": result.requested_price, "sl": result.sl,
                             "tp": result.tp, "platform": result.platform,
                             "idempotency_key": idempotency_key,
+                            "submitted_at": result.timestamp.astimezone(timezone.utc).isoformat(),
                             "decision_id": decision_id,
                             "campaign_id": campaign_id,
                             "opportunity_id": opportunity_id,
@@ -745,7 +746,19 @@ class PlatformManager:
             except Exception:
                 failed_accounts.append(index)
         if len(live_matches) == 1:
-            return {"status": "PENDING", "broker_confirmed": True, "record": live_matches[0]}
+            record = live_matches[0]
+            try:
+                initial = float(record.get("volume_initial", record.get("volume", 0.0)) or 0.0)
+                remaining = float(record.get("volume_current", record.get("volume", 0.0)) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                initial = remaining = 0.0
+            status = (
+                "PARTIALLY_FILLED"
+                if initial > 0.0 and 0.0 < remaining < initial
+                else "PENDING"
+            )
+            return {"status": status, "broker_confirmed": True, "record": record,
+                    "initial_volume": initial, "remaining_volume": remaining}
         if len(live_matches) > 1 or len(history_matches) > 1:
             return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
         if failed_accounts:
