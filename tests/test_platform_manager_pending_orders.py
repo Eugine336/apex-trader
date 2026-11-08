@@ -16,6 +16,7 @@ class PendingConnector:
         self.fail = fail
         self.deals = []
         self.deal_fail = False
+        self.history_fail = False
         self.cancelled = []
 
     def get_pending_order_snapshots(self):
@@ -24,7 +25,7 @@ class PendingConnector:
         return list(self.live)
 
     def get_order_history(self, start, end):
-        if self.fail:
+        if self.fail or self.history_fail:
             raise RuntimeError("broker history unavailable")
         return list(self.history)
 
@@ -86,6 +87,14 @@ def test_cancel_pending_routes_to_only_unique_verified_account():
     assert first.cancelled == ["901"]
     assert second.cancelled == []
 
+
+def test_cancel_pending_returns_unconfirmed_when_post_cancel_history_is_unavailable():
+    connector = PendingConnector(live=[_pending()])
+    connector.history_fail = True
+    manager = _manager([connector])
+
+    assert manager.cancel_pending_order("901", symbol="EURUSD") is False
+    assert connector.cancelled == ["901"]
 
 def test_cancel_pending_refuses_when_any_mt5_account_is_disconnected():
     first = PendingConnector(live=[_pending()])
