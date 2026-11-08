@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import threading
 from typing import Any
 
 
@@ -73,6 +74,7 @@ class ManagementActionLedger:
 
     def __init__(self, event_store: Any = None) -> None:
         self._store = event_store
+        self._lock = threading.RLock()
 
     def _event_store(self) -> Any:
         if self._store is None:
@@ -216,13 +218,21 @@ class ManagementActionLedger:
         query = getattr(store, "query_events", None)
         if not callable(query) or getattr(store, "is_degraded", False) is True:
             return []
-        rows = query(
-            severity_min="DEBUG",
-            event_types=[_SUBMITTED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
-            symbol=str(symbol or "").strip().upper() or None,
-            limit=10000,
-            offset=0,
-        ) or []
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            page = query(
+                severity_min="DEBUG",
+                event_types=[_SUBMITTED, _DISPATCHED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
+                symbol=str(symbol or "").strip().upper() or None,
+                limit=1000,
+                offset=offset,
+                raise_on_error=True,
+            ) or []
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += len(page)
         latest: dict[str, dict] = {}
         for row in sorted(rows, key=lambda item: int(item.get("seq", 0) or 0)):
             payload = _payload(row)
@@ -326,12 +336,11 @@ class ManagementActionLedger:
                 and broker_evidence.get("opening_deal_verified") is True
             )
         elif kind == "reverse":
+            # The live management sink closes the held ticket only. The opposite
+            # entry is a separate fresh Brain/portfolio decision.
             matched = (
-                position_present is True
-                and str(broker_evidence.get("direction", "") or "").upper()
-                    == str(pending.get("target_direction", "") or "").upper()
+                position_present is False
                 and broker_evidence.get("closed_deal_verified") is True
-                and broker_evidence.get("opening_deal_verified") is True
             )
         if not matched:
             return False
