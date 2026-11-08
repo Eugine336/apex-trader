@@ -106,15 +106,6 @@ def _aligned_closes(
     )
 
 
-def _returns(values: list[float]) -> list[float]:
-    result = []
-    for previous, current in zip(values, values[1:]):
-        if previous <= 0 or current <= 0:
-            return []
-        result.append(math.log(current / previous))
-    return result
-
-
 def _last_confirmed_swing(rows: list[dict[str, Any]], side: str) -> float | None:
     """Return the most recent three-bar fractal swing, confirmed by closed bars."""
     if len(rows) < 3:
