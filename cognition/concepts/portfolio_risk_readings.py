@@ -278,7 +278,7 @@ class PortfolioRiskReadings:
                     registry,
                     analysis_epoch=analysis_epoch,
                     completed_bar_epoch=last_source_epoch(
-                        clean_bars(next(iter((bars_by_tf or {}).values()), []))
+                        clean_bars((bars_by_tf or {}).get(reference_tf, []))
                     ),
                 )
         readings: list[ConceptReading] = []
