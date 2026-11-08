@@ -1495,13 +1495,28 @@ class MT5Connector(BaseConnector):
         point = float(getattr(info, "point", 0.0) or 0.0)
         digits = int(getattr(info, "digits", 0) or 0)
         trade_mode = getattr(info, "trade_mode", None)
+        tick_size = float(getattr(info, "trade_tick_size", point) or point)
+        allowed_trade_modes = {
+            getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4),
+            getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1),
+            getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2),
+        }
         if (
-            not all(math.isfinite(value) and value > 0.0 for value in (volume_min, volume_max, volume_step, point))
+            not all(math.isfinite(value) and value > 0.0 for value in (volume_min, volume_max, volume_step, point, tick_size))
             or volume_max < volume_min
             or digits <= 0
-            or trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", object())
+            or trade_mode not in allowed_trade_modes
+            or (is_buy and trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2))
+            or (not is_buy and trade_mode == getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1))
         ):
             return fail_pending("pending_order_symbol_constraints_invalid")
+        tick_aligned = all(
+            abs((round(value / tick_size) * tick_size) - value)
+            <= max(1e-9, tick_size * 1e-6)
+            for value in (entry, stop, target)
+        )
+        if not tick_aligned:
+            return fail_pending("pending_order_price_not_tick_aligned")
         steps = round(requested_lots / volume_step)
         normalized_lots = round(steps * volume_step, 10)
         if (
