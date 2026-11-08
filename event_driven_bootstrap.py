@@ -5663,7 +5663,36 @@ class EventDrivenSystem:
                         restored[ticket]["fill_event_emitted"] = True
                         restored[ticket]["position_id"] = str(payload.get("position_id", "") or "")
                 elif event_type == DE.ORDER_CANCELLED:
-                    restored.pop(ticket, None)
+                    snapshot = payload.get("pre_cancel_broker_snapshot")
+                    if ticket not in restored:
+                        continue
+                    if not isinstance(snapshot, dict):
+                        restored[ticket].update({
+                            "status": "UNKNOWN",
+                            "cancellation_event": payload,
+                        })
+                        continue
+                    try:
+                        initial = float(snapshot.get("volume_initial", 0.0) or 0.0)
+                        remaining = float(snapshot.get("volume_current", initial) or 0.0)
+                    except (TypeError, ValueError, OverflowError):
+                        initial = remaining = 0.0
+                    if initial > 0.0 and 0.0 < remaining < initial:
+                        restored[ticket].update({
+                            "status": "PARTIALLY_FILLED_TERMINAL",
+                            "initial_volume": initial,
+                            "last_partial_remaining_volume": remaining,
+                            "pre_cancel_broker_snapshot": snapshot,
+                        })
+                    elif initial > 0.0 and abs(remaining - initial) <= 1e-9:
+                        restored.pop(ticket, None)
+                    else:
+                        # Cancellation is confirmed, but missing or contradictory
+                        # volume evidence cannot prove that no partial fill occurred.
+                        restored[ticket].update({
+                            "status": "UNKNOWN",
+                            "cancellation_event": payload,
+                        })
                 elif event_type == DE.ORDER_RECONCILED:
                     status = str(payload.get("status", "UNKNOWN") or "UNKNOWN").upper()
                     attribution = str(payload.get("attribution_status", "") or "")
