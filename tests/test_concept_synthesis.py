@@ -146,3 +146,22 @@ def test_unknown_opposing_strength_does_not_become_zero_conflict_or_fake_confide
     assert long_group["confidence"] is None
     assert short_group["strength"] is None
     assert short_group["confidence"] is None
+
+
+def test_brain_hypothesis_exposes_unknown_opposing_strength_as_uncertainty():
+    readings = [
+        _reading("crt", "LONG", 0.8, "e1"),
+        _reading("order_flow", "SHORT", None, "e2"),
+    ]
+    hypotheses = BrainReasoner().generate_hypotheses(
+        EvidenceAnalysis(concept_readings=readings), "EURUSD",
+    )
+    long_group = next(
+        item for item in hypotheses
+        if item.hypothesis_kind.startswith("concept_group:")
+        and item.direction_implication == "LONG"
+    )
+    assert long_group.confidence == 0.0
+    assert long_group.confidence_components["opposing_active_strength"] is None
+    assert long_group.confidence_components["opposing_strength_unknown"] is True
+    assert "opposing activated concept strength is unknown" in long_group.unresolved_unknowns
