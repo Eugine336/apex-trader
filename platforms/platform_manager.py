@@ -745,22 +745,62 @@ class PlatformManager:
         index, connector, row = matches[0]
         with self._broker_write_lock:
             cancelled = connector.cancel_pending_order(ticket)
-        if cancelled:
-            try:
-                from persistence import domain_events as DE
-                from persistence.event_store import get_event_store
-                store = get_event_store()
-                if store is not None:
-                    store.emit(
-                        event_type=DE.ORDER_CANCELLED, severity="INFO", symbol=canonical_symbol,
-                        parent_id=ticket, source_module="platforms.platform_manager", durable=True,
-                        payload={"order_id": ticket, "symbol": canonical_symbol,
-                                 "connector_index": index, "status": "CANCELLED",
-                                 "pre_cancel_broker_snapshot": row},
-                    )
-            except Exception as exc:  # noqa: BLE001 — cancellation already happened
-                _pm_logger.critical("[orders] pending order {} cancelled but lifecycle event persistence failed: {}", ticket, exc)
-        return bool(cancelled)
+        if not cancelled:
+            return False
+        # A successful remove retcode acknowledges the request, not the final
+        # order state. Re-read broker history so a fill racing cancellation is
+        # never mistaken for an unfilled cancellation.
+        post_record = None
+        terminal_state = None
+        try:
+            now = datetime.now(timezone.utc)
+            history = connector.get_order_history(
+                datetime.fromtimestamp(now.timestamp() - 30 * 86400, tz=timezone.utc), now,
+            )
+            matches = [
+                item for item in history
+                if item.get("source_verified") is True
+                and str(item.get("ticket", "")).strip() == ticket
+                and resolve_to_internal(str(item.get("symbol", "")).strip().upper()) == canonical_symbol
+            ]
+            if len(matches) == 1:
+                post_record = matches[0]
+                from platforms.mt5 import mt5_connector as mt5_adapter
+                constants = getattr(mt5_adapter, "mt5", None)
+                if constants is not None:
+                    terminal_state = getattr(constants, "ORDER_STATE_CANCELED", None)
+        except Exception as exc:
+            _pm_logger.warning("[orders] post-cancel broker history unavailable for {}: {}", ticket, exc)
+        confirmed_cancel = bool(
+            isinstance(post_record, dict)
+            and terminal_state is not None
+            and post_record.get("state") == terminal_state
+        )
+        try:
+            from persistence import domain_events as DE
+            from persistence.event_store import get_event_store
+            store = get_event_store()
+            if store is not None:
+                store.emit(
+                    event_type=DE.ORDER_CANCELLED if confirmed_cancel else DE.ORDER_RECONCILED,
+                    severity="INFO" if confirmed_cancel else "WARNING",
+                    symbol=canonical_symbol, parent_id=ticket,
+                    source_module="platforms.platform_manager", durable=True,
+                    payload={
+                        "order_id": ticket, "symbol": canonical_symbol,
+                        "connector_index": index,
+                        "status": "CANCELLED" if confirmed_cancel else "UNKNOWN",
+                        "broker_confirmed": confirmed_cancel,
+                        "pre_cancel_broker_snapshot": row,
+                        "post_cancel_broker_record": post_record,
+                        "reason": None if confirmed_cancel else "cancel_request_acknowledged_but_terminal_history_unverified",
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — broker cancellation request already reached the terminal
+            _pm_logger.critical("[orders] pending order {} cancellation lifecycle persistence failed: {}", ticket, exc)
+        if not confirmed_cancel:
+            _pm_logger.error("[orders] cancel request for {} acknowledged but broker terminal state is unverified", ticket)
+        return confirmed_cancel
 
     def reconcile_pending_order(
         self, order_id: str = "", *, symbol: str, submitted_at: datetime,
