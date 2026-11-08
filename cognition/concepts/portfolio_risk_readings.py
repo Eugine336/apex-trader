@@ -268,6 +268,19 @@ class PortfolioRiskReadings:
         self, symbol: str, bars_by_tf: dict[str, list[dict]], context: dict[str, Any],
     ) -> list[ConceptReading]:
         reference, reference_tf = reference_price(bars_by_tf)
+        resolved_context = dict(context or {})
+        if not isinstance(resolved_context.get("portfolio_risk_snapshot"), dict):
+            registry = resolved_context.get("data_source_registry")
+            analysis_epoch = _epoch(resolved_context.get("analysis_epoch"))
+            if registry is not None and analysis_epoch is not None:
+                from data_sources.portfolio import build_portfolio_risk_snapshot
+                resolved_context["portfolio_risk_snapshot"] = build_portfolio_risk_snapshot(
+                    registry,
+                    analysis_epoch=analysis_epoch,
+                    completed_bar_epoch=last_source_epoch(
+                        clean_bars(next(iter((bars_by_tf or {}).values()), []))
+                    ),
+                )
         readings: list[ConceptReading] = []
         for timeframe, raw in (bars_by_tf or {}).items():
             if timeframe not in TIMEFRAME_SECONDS:
@@ -275,7 +288,7 @@ class PortfolioRiskReadings:
             bars = clean_bars(raw)
             if bars:
                 readings.append(_read_portfolio(
-                    symbol, timeframe, bars, context or {}, reference, reference_tf,
+                    symbol, timeframe, bars, resolved_context, reference, reference_tf,
                 ))
         return readings
 
