@@ -54,6 +54,14 @@ class FakeMT5:
     def orders_get(self, *args, **kwargs):
         return [] if self.omit_confirmation else list(self.orders)
 
+    @staticmethod
+    def history_orders_get(*args, **kwargs):
+        return []
+
+    @staticmethod
+    def history_deals_get(*args, **kwargs):
+        return []
+
     def order_send(self, request):
         self.requests.append(dict(request))
         if request["action"] == self.TRADE_ACTION_REMOVE:
@@ -92,7 +100,7 @@ def test_buy_limit_is_submitted_as_pending_and_verified_in_broker_book(monkeypat
     result = connector.place_pending_order(
         symbol="EURUSD", direction="BUY", order_type="LIMIT",
         entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
-        idempotency_key="pending-key-1",
+        idempotency_key="a1b2c3d4e5f1",
     )
 
     assert result.success is True
