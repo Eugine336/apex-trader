@@ -767,8 +767,7 @@ class PlatformManager:
                 post_record = matches[0]
                 from platforms.mt5 import mt5_connector as mt5_adapter
                 constants = getattr(mt5_adapter, "mt5", None)
-                if constants is not None:
-                    terminal_state = getattr(constants, "ORDER_STATE_CANCELED", None)
+                terminal_state = getattr(constants, "ORDER_STATE_CANCELED", 2) if constants is not None else 2
         except Exception as exc:
             _pm_logger.warning("[orders] post-cancel broker history unavailable for {}: {}", ticket, exc)
         confirmed_cancel = bool(
