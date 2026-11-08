@@ -210,6 +210,30 @@ class TestFlushLoop:
         assert not loop._running
         assert loop._flush_count > 0
 
+    def test_execution_result_callback_receives_broker_outcome(self):
+        from event_driven_bootstrap import FlushLoop
+
+        aggregator = IntentAggregator()
+        pm = _mock_platform_manager([_make_position()])
+        executor = ActionExecutor(broker=pm)
+        callbacks = []
+        intent = Intent.close(
+            symbol="EURUSD", ticket="T1", source="ai_brain",
+            reason="Brain close", action_id="action-1",
+        )
+        aggregator.submit([intent])
+        loop = FlushLoop(
+            aggregator, executor, pm, interval=0.01,
+            on_execution_result_callback=lambda submitted, result: callbacks.append(
+                (submitted.action_id, result.success),
+            ),
+        )
+        loop.start()
+        time.sleep(0.1)
+        loop.stop()
+
+        assert callbacks == [("action-1", True)]
+
     def test_executes_intents(self):
         from event_driven_bootstrap import FlushLoop
 
