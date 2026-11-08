@@ -80,20 +80,29 @@ def _verified_rows(
 def _aligned_closes(
     target: list[dict[str, Any]], peer: list[dict[str, Any]],
     timeframe_seconds: int,
-) -> tuple[list[float], list[float], list[float]]:
-    """Pair only exact common timestamps with no missing intervening bar."""
+) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
+    """Return common price levels and returns only across adjacent common bars."""
     target_by_time = {row["timestamp_epoch"]: row["close"] for row in target}
     peer_by_time = {row["timestamp_epoch"]: row["close"] for row in peer}
     common = sorted(set(target_by_time) & set(peer_by_time))
-    contiguous = [
-        stamp for index, stamp in enumerate(common)
-        if index > 0 and stamp - common[index - 1] == timeframe_seconds
-    ]
-    # A return at t is measured from the immediately preceding common completed bar.
+    return_times: list[float] = []
+    target_returns: list[float] = []
+    peer_returns: list[float] = []
+    for previous, current in zip(common, common[1:]):
+        if current - previous != timeframe_seconds:
+            continue
+        target_previous, target_current = float(target_by_time[previous]), float(target_by_time[current])
+        peer_previous, peer_current = float(peer_by_time[previous]), float(peer_by_time[current])
+        if min(target_previous, target_current, peer_previous, peer_current) <= 0:
+            continue
+        return_times.append(current)
+        target_returns.append(math.log(target_current / target_previous))
+        peer_returns.append(math.log(peer_current / peer_previous))
     return (
-        contiguous,
-        [float(target_by_time[t]) for t in contiguous],
-        [float(peer_by_time[t]) for t in contiguous],
+        common,
+        [float(target_by_time[t]) for t in common],
+        [float(peer_by_time[t]) for t in common],
+        return_times, target_returns, peer_returns,
     )
 
 
@@ -216,14 +225,14 @@ class IntermarketReadings:
 
         paired: dict[str, dict[str, Any]] = {}
         for peer_symbol, peer_rows in peers.items():
-            times, target_closes, peer_closes = _aligned_closes(target_rows, peer_rows, seconds)
-            target_returns, peer_returns = _returns(target_closes), _returns(peer_closes)
+            times, target_closes, peer_closes, return_times, target_returns, peer_returns = _aligned_closes(target_rows, peer_rows, seconds)
             correlation = _pearson(target_returns, peer_returns)
             if correlation is None:
                 continue
             paired[peer_symbol] = {
                 "times": times, "target_closes": target_closes,
-                "peer_closes": peer_closes, "target_returns": target_returns,
+                "peer_closes": peer_closes, "return_times": return_times,
+                "target_returns": target_returns,
                 "peer_returns": peer_returns, "correlation": correlation,
                 "sample_count": len(target_returns),
             }
@@ -315,41 +324,61 @@ class IntermarketReadings:
                 unknowns=("formal residual stationarity and relationship-stability validation",),
             ))
 
-        # Currency strength requires explicit verified contract metadata from the adapter.
+        # Currency strength uses only the exact intersection of return timestamps
+        # across every included instrument. No peer's missing interval is imputed.
         specs = context.get("multi_symbol_specs")
         if isinstance(specs, dict) and paired:
-            currency_values: dict[str, list[float]] = {}
-            accepted_symbols = []
-            # Include the target instrument once, then each synchronized peer.
             first_pair = next(iter(paired.values()))
-            currency_instruments = [(target_symbol, first_pair["target_returns"])]
-            currency_instruments.extend(
-                (peer_symbol, item["peer_returns"])
-                for peer_symbol, item in paired.items()
+            instrument_series: dict[str, dict[float, float]] = {}
+            target_spec = specs.get(target_symbol)
+            if (
+                isinstance(target_spec, dict)
+                and target_spec.get("source_verified") is True
+                and target_spec.get("specification_verified") is True
+            ):
+                instrument_series[target_symbol] = dict(zip(
+                    first_pair["return_times"], first_pair["target_returns"],
+                ))
+            for peer_symbol, item in paired.items():
+                spec = specs.get(peer_symbol)
+                if (
+                    isinstance(spec, dict)
+                    and spec.get("source_verified") is True
+                    and spec.get("specification_verified") is True
+                ):
+                    instrument_series[peer_symbol] = dict(zip(
+                        item["return_times"], item["peer_returns"],
+                    ))
+            common_return_times = (
+                set.intersection(*(set(values) for values in instrument_series.values()))
+                if instrument_series else set()
             )
-            for instrument_symbol, instrument_returns in currency_instruments:
-                spec = specs.get(instrument_symbol)
-                if not isinstance(spec, dict) or spec.get("source_verified") is not True or spec.get("specification_verified") is not True:
-                    continue
+            currency_values: dict[str, list[float]] = {}
+            accepted_symbols: list[str] = []
+            for instrument_symbol, series in instrument_series.items():
+                spec = specs[instrument_symbol]
                 base = str(spec.get("currency_base") or "").strip().upper()
                 quote = str(spec.get("currency_profit") or "").strip().upper()
-                if not base or not quote or base == quote or not instrument_returns:
+                if not base or not quote or base == quote or not common_return_times:
                     continue
-                currency_values.setdefault(base, []).extend(instrument_returns)
-                currency_values.setdefault(quote, []).extend(-value for value in instrument_returns)
+                for stamp in sorted(common_return_times):
+                    change = series[stamp]
+                    currency_values.setdefault(base, []).append(change)
+                    currency_values.setdefault(quote, []).append(-change)
                 accepted_symbols.append(instrument_symbol)
             scores = {
                 currency: sum(values) / len(values)
                 for currency, values in currency_values.items() if values
             }
-            if len(scores) >= 2:
+            if len(scores) >= 2 and accepted_symbols:
                 ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
                 output.append(_reading(
-                    "currency_strength", target_symbol, timeframe, latest_common_epoch,
+                    "currency_strength", target_symbol, timeframe, max(common_return_times),
                     _finite(target[-1].get("close")),
-                    f"Relative currency movement is measured across {len(accepted_symbols)} verified instrument specifications.",
+                    f"Relative currency movement is measured across {len(accepted_symbols)} verified instruments on {len(common_return_times)} common return intervals.",
                     {"currency_scores": dict(ranked), "ranked_currencies": [key for key, _ in ranked],
                      "contributing_symbols": accepted_symbols,
+                     "common_return_interval_count": len(common_return_times),
                      "metadata_basis": "broker-attested base and profit currency fields"},
                     _DATA_REQUIREMENTS["currency_strength"],
                 ))
