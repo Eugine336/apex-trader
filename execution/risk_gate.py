@@ -144,8 +144,16 @@ class RiskGate:
             return GateResult(allowed=False, reason="MODIFY_SL intent has no new_sl")
 
         pos = positions.get(intent.position_ticket, {})
-        direction = pos.get("direction", "").upper()
+        direction = str(pos.get("direction", "") or "").strip().upper()
         current_sl = pos.get("sl", 0.0)
+
+        # A stop change is only demonstrably risk-reducing when the held side is
+        # known. Unknown or malformed sides cannot use the emergency exception.
+        if direction not in {"BUY", "LONG", "SELL", "SHORT"}:
+            return GateResult(
+                allowed=False,
+                reason=f"Cannot validate stop direction for position side {direction or '<unknown>'}",
+            )
 
         if current_sl <= 0:
             return GateResult(allowed=True)
@@ -183,14 +191,14 @@ class RiskGate:
         self, intent: Intent, drawdown_pct: float,
     ) -> GateResult:
         if drawdown_pct >= self._cfg.emergency_drawdown_pct:
-            if intent.intent_type in (IntentType.CLOSE, IntentType.PARTIAL_CLOSE):
+            if intent.intent_type in _RISK_REDUCING_TYPES:
                 return GateResult(allowed=True)
             return GateResult(
                 allowed=False,
                 reason=(
                     f"Emergency drawdown ({drawdown_pct:.1f}% >= "
                     f"{self._cfg.emergency_drawdown_pct:.1f}%): "
-                    f"only CLOSE/PARTIAL_CLOSE allowed"
+                    f"only risk-reducing CLOSE/PARTIAL_CLOSE/MODIFY_SL allowed"
                 ),
             )
         return GateResult(allowed=True)
