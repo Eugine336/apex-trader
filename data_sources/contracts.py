@@ -82,8 +82,6 @@ class ObservationProvenance:
         object.__setattr__(self, "revision_timestamp_epoch", revision)
         if self.source_timestamp_verified and source_epoch is None:
             raise ValueError("verified source timestamps require a finite positive source epoch")
-        if self.source_timestamp_verified and source_epoch > received:
-            raise ValueError("verified source timestamp cannot be later than receipt time")
         if revision is not None and publication is not None and revision < publication:
             raise ValueError("revision timestamp cannot precede publication timestamp")
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
@@ -115,7 +113,7 @@ class CapabilityState:
     def __post_init__(self) -> None:
         if not str(self.provider or "").strip():
             raise ValueError("provider must be non-empty")
-        if isinstance(self.sample_count, bool) or int(self.sample_count) < 0:
+        if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
             raise ValueError("sample_count must be a non-negative integer")
         first = _optional_epoch(self.first_source_timestamp_epoch, "first_source_timestamp_epoch")
         last = _optional_epoch(self.last_source_timestamp_epoch, "last_source_timestamp_epoch")
