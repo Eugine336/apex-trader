@@ -144,8 +144,17 @@ class RiskGate:
             return GateResult(allowed=False, reason="MODIFY_SL intent has no new_sl")
 
         pos = positions.get(intent.position_ticket, {})
-        direction = pos.get("direction", "").upper()
+        direction = str(pos.get("direction", "") or "").strip().upper()
         current_sl = pos.get("sl", 0.0)
+
+        # A stop change is only demonstrably risk-reducing when the held side is
+        # known. Do not let an unknown/malformed position side use the emergency
+        # MODIFY_SL exception or silently bypass the directional check.
+        if direction not in {"BUY", "LONG", "SELL", "SHORT"}:
+            return GateResult(
+                allowed=False,
+                reason=f"Cannot validate stop direction for position side {direction or '<unknown>'}",
+            )
 
         if current_sl <= 0:
             return GateResult(allowed=True)
