@@ -100,3 +100,25 @@ def test_registry_does_not_silently_ignore_unregistered_provider():
     registry = DataSourceRegistry()
     with pytest.raises(KeyError):
         registry.fetch(ObservationKind.QUOTE, providers=["not-installed"])
+
+
+def test_registry_isolates_provider_failure_and_returns_healthy_observations():
+    class _Broken(_Adapter):
+        provider_id = "broken"
+        def fetch(self, kind, **kwargs):
+            raise ConnectionError("provider unavailable")
+
+    class _Healthy(_Adapter):
+        provider_id = "healthy"
+        def fetch(self, kind, **kwargs):
+            return [_observation(provider="healthy", kind=kind)]
+
+    registry = DataSourceRegistry()
+    registry.register(_Broken())
+    registry.register(_Healthy())
+    observations, errors = registry.fetch_with_status(ObservationKind.ECONOMIC_EVENT)
+    assert len(observations) == 1
+    assert observations[0].provenance.source.provider == "healthy"
+    assert errors == {"broken": "ConnectionError"}
+    with pytest.raises(RuntimeError):
+        registry.fetch(ObservationKind.ECONOMIC_EVENT)
