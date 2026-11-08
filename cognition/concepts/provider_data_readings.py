@@ -320,4 +320,55 @@ class ProviderDataReadings:
                 provider_epoch=max(row["source_timestamp_epoch"] for row in prints),
             ))
 
+        # Broker-confirmed fills and contemporaneous quotes: empirical market impact,
+        # never a predictive fill probability from a thin sample.
+        execution_rows = []
+        for item in fetch(ObservationKind.EXECUTION_COST, symbol):
+            values, provenance = item.values, item.provenance
+            side = str(values.get("side") or "").strip().upper()
+            size = _number(values.get("executed_size"))
+            bid, ask = _number(values.get("quote_bid")), _number(values.get("quote_ask"))
+            fill = _number(values.get("fill_price"))
+            quote_epoch = _number(values.get("quote_timestamp_epoch"))
+            fill_epoch = _number(values.get("fill_timestamp_epoch", provenance.source_timestamp_epoch))
+            commission = _number(values.get("commission_account_currency"))
+            commission_currency = str(values.get("commission_currency") or "").strip().upper()
+            if (
+                side not in {"BUY", "SELL"} or size is None or size <= 0
+                or bid is None or ask is None or bid <= 0 or ask < bid
+                or fill is None or fill <= 0
+                or quote_epoch is None or fill_epoch is None
+                or quote_epoch > fill_epoch or fill_epoch > cutoff
+            ):
+                continue
+            executable_quote = ask if side == "BUY" else bid
+            execution_rows.append({
+                "provider": provenance.source.provider, "venue": provenance.source.venue,
+                "record_id": provenance.source_record_id, "side": side,
+                "executed_size": size, "quote_bid": bid, "quote_ask": ask,
+                "fill_price": fill, "executable_quote": executable_quote,
+                "signed_price_impact": (fill - executable_quote) if side == "BUY" else (executable_quote - fill),
+                "quote_timestamp_epoch": quote_epoch, "fill_timestamp_epoch": fill_epoch,
+                "commission_account_currency": commission,
+                "commission_currency": commission_currency or None,
+            })
+        if execution_rows:
+            missing_costs = any(
+                row["commission_account_currency"] is None
+                or not row["commission_currency"]
+                for row in execution_rows
+            )
+            output.append(_make(
+                "market_impact", symbol, timeframe, bar_epoch, reference,
+                EvidenceDomain.EXECUTION_QUALITY,
+                f"{symbol}: {len(execution_rows)} broker-confirmed executions are paired with contemporaneous executable quotes.",
+                {"executions": execution_rows, "execution_count": len(execution_rows),
+                 "mean_signed_price_impact": sum(row["signed_price_impact"] for row in execution_rows) / len(execution_rows),
+                 "commission_complete": not missing_costs,
+                 "predictive_fill_probability_emitted": False},
+                ("selection-complete samples across intended order sizes, sides, volatility states and sessions",)
+                + (("complete commission amount and account-currency conversion",) if missing_costs else ()),
+                provider_epoch=max(row["fill_timestamp_epoch"] for row in execution_rows),
+            ))
+
         return output
