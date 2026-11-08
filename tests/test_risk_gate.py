@@ -155,6 +155,16 @@ class TestExposure:
         assert not result.allowed
         assert "loosening" in result.reason.lower()
 
+    def test_emergency_drawdown_blocks_stop_change_with_unknown_side(self):
+        gate = RiskGate()
+        result = gate.validate(
+            _sl_intent(new_sl=1.08100),
+            _positions(direction="", sl=1.08000),
+            account_drawdown_pct=25.0,
+        )
+        assert not result.allowed
+        assert "stop direction" in result.reason.lower()
+
     def test_emergency_drawdown_allows_close(self):
         gate = RiskGate()
         result = gate.validate(_close_intent(), _positions(), account_drawdown_pct=25.0)
