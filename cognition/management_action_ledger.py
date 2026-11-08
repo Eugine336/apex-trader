@@ -88,7 +88,12 @@ class ManagementActionLedger:
         if history:
             latest = max(history, key=lambda row: int(row.get("seq", 0) or 0))
             payload = _payload(latest)
-            return False, str(payload.get("status", latest.get("event_type", "EXISTS")))
+            latest_status = str(payload.get("status", latest.get("event_type", "EXISTS"))).upper()
+            if latest_status != "REJECTED":
+                return False, latest_status
+            # An explicit broker/gate rejection proves this action ID did not
+            # take effect. A new submission may retry it; ACKNOWLEDGED and
+            # AMBIGUOUS outcomes remain non-replayable until reconciliation.
         size = None
         for name in ("lots", "size", "volume"):
             raw = getattr(position, name, None)
