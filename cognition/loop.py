@@ -577,6 +577,7 @@ class CognitionLoop:
         candidate_event_store: Optional[Any] = None,
         calibration_provider: Optional[Any] = None,
         concept_track_record_provider: Optional[Any] = None,
+        management_action_ledger: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -646,6 +647,8 @@ class CognitionLoop:
         self._manage_intended = 0
         self._manage_submitted = 0
         self._manage_suppressed = 0
+        self._manage_ambiguous = 0
+        self._management_unresolved_actions: set[str] = set()
         # Part XVIII Art 13 — management follows evidence, not clocks. A per-
         # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
         # from re-managing the same campaign on every micro-event, while the
@@ -694,6 +697,7 @@ class CognitionLoop:
         self._candidate_label_recorded: set[tuple[str, int]] = set()
         self._calibration_provider = calibration_provider
         self._concept_track_record_provider = concept_track_record_provider
+        self._management_action_ledger = management_action_ledger
         self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
@@ -2626,6 +2630,66 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001 — learning must never break the loop
             logger.debug("[cognition-loop] pattern outcome fault: %s", exc)
 
+    def reconcile_management_action(
+        self, action_id: str, symbol: str, broker_evidence: dict,
+    ) -> bool:
+        """Resolve one ambiguous management action from a verified broker snapshot.
+
+        Callers must supply a complete, source-attested broker state matching the
+        action's position and intended effect. Missing or stale evidence leaves
+        the action pending and non-replayable.
+        """
+        ledger = self._management_action_ledger
+        if ledger is None:
+            try:
+                from cognition.management_action_ledger import ManagementActionLedger
+                ledger = ManagementActionLedger(self._candidate_event_store)
+                self._management_action_ledger = ledger
+            except Exception as exc:  # noqa: BLE001 — unresolved remains unresolved
+                logger.error("[cognition-loop] management reconciliation unavailable: %s", exc)
+                return False
+        reconcile = getattr(ledger, "reconcile", None)
+        if not callable(reconcile):
+            return False
+        action_id = str(action_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        try:
+            pending = next(
+                (
+                    item for item in (getattr(ledger, "pending_actions", lambda _symbol: [])(symbol) or [])
+                    if str(item.get("action_id", "") or "") == action_id
+                ),
+                None,
+            )
+        except Exception:  # noqa: BLE001 — ledger read fault must not resolve anything
+            pending = None
+        try:
+            reconciled = reconcile(action_id, symbol, broker_evidence)
+        except Exception as exc:  # noqa: BLE001 — never clear a pending action on a fault
+            logger.error("[cognition-loop] management reconciliation failed: %s", exc)
+            return False
+        if reconciled:
+            self._management_unresolved_actions.discard(action_id)
+            if (
+                isinstance(pending, dict)
+                and str(pending.get("kind", "") or "").lower() == "partial_close"
+                and self._memory is not None
+            ):
+                current_size = broker_evidence.get("current_lots")
+                progress = getattr(self._memory, "get_management_progress", None)
+                if callable(progress):
+                    try:
+                        progress(
+                            str(pending.get("campaign_id", "") or ""),
+                            current_size=current_size,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — milestone stays pending on fault
+                        logger.error(
+                            "[cognition-loop] reconciled partial action could not update milestone memory: %s",
+                            exc,
+                        )
+        return reconciled
+
     def _realise_management(self, output: Any, position: Any) -> bool:
         """Translate and realise management without replaying ambiguous partials.
 
@@ -2682,8 +2746,166 @@ class CognitionLoop:
                         return False
                     milestone_pending = True
 
-                sink_result = self._management_sink(action, position)
-                if sink_result is False:
+                ledger = self._management_action_ledger
+                if ledger is None and str(getattr(action, "action_id", "") or "").strip():
+                    try:
+                        from cognition.management_action_ledger import ManagementActionLedger
+                        ledger = ManagementActionLedger(self._candidate_event_store)
+                        self._management_action_ledger = ledger
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[cognition-loop] management action ledger unavailable: %s", exc,
+                        )
+                ledger_started = False
+                ledger_unavailable_tracked = False
+                action_id = str(getattr(action, "action_id", "") or "").strip()
+                if action.kind in {"scale_in", "reverse"} and (not action_id or ledger is None):
+                    self._manage_suppressed += 1
+                    logger.error(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s: risk-increasing management "
+                        "requires a canonical action ID and durable ledger",
+                        action.symbol, action.kind,
+                    )
+                    return False
+                if action_id and action_id in self._management_unresolved_actions:
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
+                        "previous broker outcome remains ambiguous",
+                        action.symbol, action.kind, action_id,
+                    )
+                    return False
+                if ledger is None and action_id:
+                    ledger_unavailable_tracked = True
+                    self._management_unresolved_actions.add(action_id)
+                if ledger is not None and action_id:
+                    begin, ledger_reason = ledger.begin(action, position)
+                    if begin is False:
+                        if ledger_reason == "REJECTED" and milestone_pending:
+                            clearer = getattr(self._memory, "clear_milestone_pending", None)
+                            if callable(clearer):
+                                try:
+                                    clearer(action.campaign_id, action.milestone_id)
+                                except Exception as clear_exc:
+                                    logger.error(
+                                        "[cognition-loop] rejected management action %s was not cleared "
+                                        "from milestone memory; campaign remains blocked: %s",
+                                        action_id, type(clear_exc).__name__,
+                                    )
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
+                            "duplicate or unresolved action already exists (%s)",
+                            action.symbol, action.kind, action_id, ledger_reason,
+                        )
+                        return False
+                    if begin is True:
+                        ledger_started = True
+                    elif begin is None:
+                        if action.kind in {"scale_in", "reverse"}:
+                            self._manage_suppressed += 1
+                            logger.error(
+                                "[cognition-loop] MANAGE-SUPPRESSED %s %s: "
+                                "risk-increasing action requires durable action ledger (%s)",
+                                action.symbol, action.kind, ledger_reason,
+                            )
+                            return False
+                        ledger_unavailable_tracked = True
+                        self._management_unresolved_actions.add(action_id)
+                    else:
+                        logger.error(
+                            "[cognition-loop] protective management proceeding without durable "
+                            "action ledger; reconciliation visibility is degraded (%s)",
+                            ledger_reason,
+                        )
+
+                try:
+                    sink_result = self._management_sink(action, position)
+                except Exception as sink_exc:
+                    if ledger_started:
+                        ledger.finish(action, "AMBIGUOUS", error=f"{type(sink_exc).__name__}: {sink_exc}")
+                    if action_id:
+                        self._management_unresolved_actions.add(action_id)
+                    self._manage_ambiguous += 1
+                    logger.error(
+                        "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: sink raised %s",
+                        action.symbol, action.kind, action_id or "legacy",
+                        type(sink_exc).__name__,
+                    )
+                    return False
+
+                broker_response = getattr(sink_result, "broker_response", None)
+                if broker_response is None and any(
+                    getattr(sink_result, field, None) is not None
+                    for field in ("order_id", "ticket", "deal", "retcode")
+                ):
+                    broker_response = sink_result
+                explicit_rejection = sink_result is False or (
+                    getattr(sink_result, "rejected_by_gate", False) is True
+                ) or (
+                    broker_response is not None
+                    and getattr(broker_response, "success", None) is False
+                )
+                broker_response_fields = (
+                    "order_id", "ticket", "deal", "retcode",
+                )
+                broker_ack_metadata = bool(
+                    broker_response is not None
+                    and (
+                        any(
+                            getattr(broker_response, field, None) is not None
+                            for field in broker_response_fields
+                        )
+                        or (
+                            isinstance(broker_response, dict)
+                            and any(broker_response.get(field) is not None for field in broker_response_fields)
+                        )
+                    )
+                )
+                broker_response_success = (
+                    getattr(broker_response, "success", None) is True
+                    or (
+                        isinstance(broker_response, dict)
+                        and broker_response.get("success") is True
+                    )
+                )
+                acknowledged = (
+                    getattr(sink_result, "success", None) is True
+                    and broker_response_success
+                    and broker_ack_metadata
+                )
+                if sink_result is None and not action_id:
+                    # Preserve the documented legacy void-callback contract only
+                    # when no canonical action ID exists to deduplicate/reconcile.
+                    acknowledged = True
+                if explicit_rejection:
+                    outcome = "REJECTED"
+                elif acknowledged:
+                    outcome = "ACKNOWLEDGED"
+                elif sink_result is True or getattr(sink_result, "success", None) is True:
+                    # The live management sink currently enqueues into the
+                    # asynchronous IntentAggregator. Queue acceptance is not a
+                    # broker acknowledgement; keep the action non-replayable
+                    # until broker-state reconciliation confirms its effect.
+                    outcome = "DISPATCHED"
+                else:
+                    outcome = "AMBIGUOUS"
+
+                if ledger_started:
+                    durable_ack = ledger.finish(
+                        action, outcome, response=broker_response or sink_result,
+                        error=str(getattr(sink_result, "error", "") or ""),
+                    )
+                    if not durable_ack:
+                        logger.error(
+                            "[cognition-loop] management action %s outcome %s could not be "
+                            "durably recorded; write-ahead record remains unresolved",
+                            action_id, outcome,
+                        )
+
+                if outcome == "REJECTED":
+                    if ledger_unavailable_tracked and action_id:
+                        self._management_unresolved_actions.discard(action_id)
                     if milestone_pending:
                         clearer = getattr(self._memory, "clear_milestone_pending", None)
                         cleared = False
@@ -2700,10 +2922,29 @@ class CognitionLoop:
                     self._manage_suppressed += 1
                     logger.warning(
                         "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
-                        "execution sink rejected the action",
+                        "execution sink explicitly rejected the action",
                         action.symbol, action.kind, action.direction,
                     )
                     return False
+                if outcome in {"AMBIGUOUS", "DISPATCHED"}:
+                    if action_id:
+                        self._management_unresolved_actions.add(action_id)
+                    if outcome == "AMBIGUOUS":
+                        self._manage_ambiguous += 1
+                        logger.error(
+                            "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: "
+                            "no dispatch or broker acknowledgement; action will not be replayed",
+                            action.symbol, action.kind, action_id or "legacy",
+                        )
+                        return False
+                    logger.info(
+                        "[cognition-loop] MANAGE-DISPATCHED %s %s action_id=%s: "
+                        "queued; awaiting broker-state reconciliation",
+                        action.symbol, action.kind, action_id or "legacy",
+                    )
+                    self._manage_submitted += 1
+                    return True
+
                 self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
@@ -2801,6 +3042,7 @@ class CognitionLoop:
             "manage_intended": self._manage_intended,
             "manage_submitted": self._manage_submitted,
             "manage_suppressed": self._manage_suppressed,
+            "manage_ambiguous": self._manage_ambiguous,
             "campaign_registry_wired": self._campaigns is not None,
             "live_campaigns": (
                 len(self._campaigns.live_campaigns())
