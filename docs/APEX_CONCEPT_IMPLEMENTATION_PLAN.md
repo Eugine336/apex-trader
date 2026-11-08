@@ -1,11 +1,12 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `dba20cd19eead2181d7788baa70c90fb81c747a5`.
-WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
+Status baseline: `main` @ `7fe9b1e4620931dca0ba6425cbf91f2bcb4a4c16` (2026-11-08).
+WP-J strategy-lens composition was merged from PR `#823`.
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
-Current register: **56/79 analytical methods FULL, 8 DATA-GATED, 9 MEASURED and 6 UNMEASURED;
-20/38 strategy lenses FULL and 18 DATA-GATED.**
+Current register: **56/79 analytical methods FULL, 22 DATA-GATED, 1 MEASURED and 0 UNMEASURED;
+20/38 strategy lenses FULL and 18 DATA-GATED.** DATA-GATED methods/lenses are not FULL implementations;
+their named feed prerequisites remain open.
 PR #823 passed **4,151 tests** on both Python 3.11 and 3.12, Ruff, coverage synchronization,
 canonical identity/safety audit, import checks, GitGuardian and both Gold desk jobs.
 WP-J acceptance gates for current-cutoff freshness, no-look-ahead, mirror symmetry, Brain assessment
@@ -199,12 +200,14 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 7. **Code review checklist**: no config numbers; no symbol branches; every `None` is reported in `requires`/`unknowns`.
 
 ## 6. Brain integration work packages (single owner; these make the concepts *usable*)
-- **WP-B1 Context selection and composition.** Today every applicable implication becomes its own hypothesis (noisy);
-  PR #811 keeps competing trend and mean-reversion hypotheses alive, which this layer must preserve.
-  Build the layer that decides which concepts apply in the current market state (regime/volatility/session from readings'
-  `applicability`), merges readings that share an `independence_group`, scores **confluence and conflict** across
-  concepts, and produces one thesis per direction with the strongest consistent invalidation/objective. Concept
-  relevance learned from outcomes (WP-B4) is *consulted*, never a gate.
+- **WP-B1 Context selection and composition — partial.** PR #819 corrected independent-evidence accounting and the
+  synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
+  `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
+  requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
+  and live Brain consumption of the full synthesis output. PR #851 fixes the case where an activated opposing
+  concept with unknown strength was treated as zero opposition; it is merged after Python 3.11/3.12, lint,
+  generated-coverage and canonical identity/safety CI passed. WP-B1 remains partial pending the broader
+  contextual-selection and live-consumption acceptance. WP-B4 relevance remains non-gating.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
   shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
@@ -212,7 +215,7 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
   Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
   bounded by the missing broker pending-order lifecycle.
-- **WP-B3 Management — core implementation merged (PRs #826 and #827); acceptance remains open for data/lifecycle gates.**
+- **WP-B3 Management — broker acknowledgement lifecycle merged (PR #847); acceptance remains open for feed-gated capabilities.**
   The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
   structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
   progress: ambiguous outcomes stay pending until broker-size reconciliation, while explicit sink rejection can clear
@@ -220,10 +223,11 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   duplicates and rejects conflicting action-ID reuse. Portfolio reallocation emits candidates only; the Brain must
   author the actual management plan and any partial fraction. The static reallocation trim fraction was removed.
   Protective-stop validation consumes an explicit concept/structural price and does not synthesize a fraction or
-  breakeven. News-window management remains DATA-GATED until a verified economic-calendar feed with source-time
-  attestation exists. A broker-side acknowledgement/reconciliation lifecycle is still required to resolve ambiguous
-  pending actions beyond observed position-size change. Full CI passed on Python 3.11 and 3.12 (4,170 tests each),
-  lint, GitGuardian and both Gold desk jobs; no broker orders were sent.
+  breakeven. PR #847 adds durable SUBMITTED/DISPATCHED/ACKNOWLEDGED/REJECTED/AMBIGUOUS states, atomic idempotent
+  transitions, strict event-store history reads, real FlushLoop executor-result callbacks, broker-confirmed milestone
+  updates, and verified snapshot reconciliation for restart recovery. Full Python 3.11/3.12, lint, and both Gold desk
+  suites passed before merge. News-window management remains DATA-GATED pending a verified economic-calendar feed
+  with source-time attestation. End-to-end owner-supplied broker lifecycle and restart acceptance remain to be demonstrated.
 - **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
   reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
   UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain
@@ -233,13 +237,13 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   market-order opportunities, explicit stop/target geometry, visible geometry evidence IDs and non-overlapping
   decision windows. Calibration seeding is opt-in and idempotent per dataset/protocol. PR #828 passed 4,184 tests on
   Python 3.11 and 3.12, Ruff/lint, GitGuardian and identity/coverage/import checks.
-  **WP-B4 is not accepted yet.** The manifest's source attestation is caller-declared, not independently authenticated;
-  OHLC labels exclude spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts.
-  The per-concept × market-state summaries are report outputs, not yet producer-registered artifacts consulted by the
-  live Brain. Remaining: connect verified quote-history events to the existing `CalibrationProducer` for System 4
-  development/holdout/walk-forward eligibility; make concept track records producer-owned and available to live Brain
-  as non-gating context; validate on owner-supplied history; and move the 0.25 calibration size floor into WP-B7.
-- **WP-B5 Performance — first implementation layer merged (PR #829).** Pure OHLC concept readings are cached
+  **WP-B4 remains open.** PR #838 added producer-owned descriptive concept track records and injected them into the
+  live Brain as non-gating historical context. They are explicitly not calibrated probabilities or trade gates.
+  The manifest's source attestation remains caller-declared, not independently authenticated; OHLC labels exclude
+  spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts. Remaining:
+  connect verified quote-history events to `CalibrationProducer` for development/holdout/walk-forward eligibility,
+  validate on owner-supplied history, and complete the independent outcome-provenance audit.
+- **WP-B5 Performance — cache/incremental layer and benchmark tooling merged (PRs #829, #836 and #840).** Pure OHLC concept readings are cached
   per module instance and symbol against a digest of the full completed-bar history; historical corrections invalidate
   the entry and contextual readers (ticks, depth, portfolio, execution costs and reading-composition modules) still
   refresh each cognition pass. Broker frames are materialized once while preserving the existing bounded raw-lens
@@ -248,19 +252,23 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   swing-pool status now uses suffix extrema in linear time. Per-module elapsed time, total per-symbol elapsed time,
   bar counts and cache hit/miss metrics are exposed in structured debug logs. PR #829 passed 4,196 tests on Python
   3.11 and 3.12, Ruff/lint, GitGuardian and both Gold desk suites.
-  **WP-B5 is not accepted yet.** No production full-universe benchmark has been run, so no latency reduction or
-  per-symbol budget is claimed. Remaining: measure the real configured instrument/timeframe universe, set an
-  evidence-based per-symbol budget, and extend incremental computation to the other costly structures/pools while
+  **WP-B5 remains open.** PRs #836 and #840 added a read-only benchmark and made completion require every configured
+  symbol/timeframe pair, with explicit missing-timeframe reporting. No production full-universe benchmark has been run,
+  so no latency reduction or per-symbol budget is claimed. Remaining: measure the real configured universe, set an
+  evidence-based per-symbol budget, and extend incremental computation to other costly structures/pools while
   preserving source-time and concept semantics.
-- **WP-B6 Remove remaining analysis constants.** `min_evidence_domains = 3`, observer wake thresholds, compliance
-  thresholds that are analysis rather than execution safety — classify each as (owner limit | definition | remove).
-- **WP-B7 Owner-limits surface.** One explicit place for the limits the account owner sets (risk per trade, daily
-  loss, max exposure, margin), which Apex may *tighten* from its analysis but never loosen. Everything else is Apex's
-  judgement.
+- **WP-B6 Remove remaining analysis constants — accepted in PR #830.** The universal three-domain gate, observer
+  ATR/spread wake thresholds, event confidence-delta wake gate, and additional fixed analysis cutoffs were removed or
+  replaced with evidence-lineage/context-specific logic. Owner/account limits, broker feasibility and statistical
+  artifact-integrity requirements were retained. Full Python 3.11/3.12 CI and both Gold desk jobs passed on PR #830.
+- **WP-B7 Owner-limits surface — initial typed contract merged (PR #831).** The canonical owner-editable surface,
+  strict validation, atomic updates, and separation from internal safety controls are implemented. Final acceptance
+  still requires tracing every live exposure-increasing route through the canonical limits and proving no legacy
+  subsystem can loosen the owner's effective limits. Do not edit `.env` or migrate deployed values without approval.
 
 ## 7. Tech debt to clear alongside
-- `tests/test_silent_swallow_observability.py`: 72 unclassified silent exception handlers; this is the sole current full-suite failure and must be classified individually without weakening the audit.
-- `tests/test_api_endpoints.py`: the earlier audit sandbox lacked `email-validator`; GitHub Actions collection now passes on Python 3.11 and 3.12.
+- `tests/test_silent_swallow_observability.py`: the old 72-handler count is historical and must not be treated as current main status. Keep the audit enabled; PR #847 also classifies its newly introduced safe fallbacks and reruns the full matrix.
+- `tests/test_api_endpoints.py`: the earlier audit-sandbox dependency issue is historical; current GitHub Actions collection passes on Python 3.11 and 3.12.
 - Stale docs: `docs/APEX_FULL_REDESIGN_ROADMAP.md` completion register for Systems 1–4 (it still describes #798 as an
   unmerged draft).
 - Rename the `gold_desk` package (cosmetic; the observer is instrument-agnostic).
