@@ -457,10 +457,12 @@ class TestDataPathHelpers:
 
 
 class TestPendingOrderLifecycle:
-    def test_broker_confirmed_pending_fill_is_attributed_to_the_open_position(self):
+    def test_broker_confirmed_pending_fill_is_attributed_to_the_open_position(self, monkeypatch):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
         from persistence import domain_events as DE
+        from platforms.mt5 import mt5_connector as mt5_adapter
+        monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
 
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
@@ -482,6 +484,10 @@ class TestPendingOrderLifecycle:
                 "record": {"ticket": 901, "position_id": 902, "state": 4},
             },
             get_platform_balance=lambda symbol: 5000.0,
+            get_pending_order_fill_deals=lambda *args, **kwargs: [{
+                "order": "901", "position_id": "902", "symbol": "EURUSD",
+                "entry": 0, "price": 99.0, "volume": 0.1, "source_verified": True,
+            }],
         )
         system._on_order_filled = MagicMock()
         store = MagicMock()
@@ -502,10 +508,12 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
-    def test_partial_pending_fill_is_attributed_without_removing_resting_order(self):
+    def test_partial_pending_fill_is_attributed_without_removing_resting_order(self, monkeypatch):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
         from persistence import domain_events as DE
+        from platforms.mt5 import mt5_connector as mt5_adapter
+        monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
 
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
@@ -528,6 +536,10 @@ class TestPendingOrderLifecycle:
                 "record": {"ticket": 901, "position_id": "902"},
             },
             get_platform_balance=lambda symbol: 5000.0,
+            get_pending_order_fill_deals=lambda *args, **kwargs: [{
+                "order": "901", "position_id": "902", "symbol": "EURUSD",
+                "entry": 0, "price": 99.0, "volume": 0.04, "source_verified": True,
+            }],
         )
         system._on_order_filled = MagicMock()
         store = MagicMock()
@@ -600,10 +612,12 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
-    def test_partial_pending_order_transitions_to_filled_and_is_removed_once(self):
+    def test_partial_pending_order_transitions_to_filled_and_is_removed_once(self, monkeypatch):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
         from persistence import domain_events as DE
+        from platforms.mt5 import mt5_connector as mt5_adapter
+        monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
 
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
@@ -616,6 +630,13 @@ class TestPendingOrderLifecycle:
             },
         }
         system._entry_context = {}
+        deals_progress = iter([
+            [{"order": "ORDER-TRANSITION", "position_id": "POSITION-TRANSITION", "symbol": "EURUSD", "entry": 0, "price": 99.0, "volume": 0.04, "source_verified": True}],
+            [
+                {"order": "ORDER-TRANSITION", "position_id": "POSITION-TRANSITION", "symbol": "EURUSD", "entry": 0, "price": 99.0, "volume": 0.04, "source_verified": True},
+                {"order": "ORDER-TRANSITION", "position_id": "POSITION-TRANSITION", "symbol": "EURUSD", "entry": 0, "price": 99.2, "volume": 0.06, "source_verified": True},
+            ],
+        ])
         outcomes = iter([
             {
                 "status": "PARTIALLY_FILLED_PENDING", "broker_confirmed": True,
@@ -631,6 +652,7 @@ class TestPendingOrderLifecycle:
         system._pm = SimpleNamespace(
             reconcile_pending_order=lambda *args, **kwargs: next(outcomes),
             get_platform_balance=lambda symbol: 5000.0,
+            get_pending_order_fill_deals=lambda *args, **kwargs: next(deals_progress),
         )
         system._on_order_filled = MagicMock()
         store = MagicMock()
