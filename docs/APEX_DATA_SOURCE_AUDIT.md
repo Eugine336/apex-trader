@@ -139,3 +139,18 @@ A provider response being syntactically valid is not timestamp verification. Rec
 ## 8. Acceptance definition
 
 A data-gated method can be promoted only when all its named fields are present from an approved source, instrument and timestamp lineage are verified, history is sufficiently complete for the reader, point-in-time replay is clean, faults degrade visibly to unknown, the reader is wired into the Brain, and tests use real provider samples or independently captured fixtures. A coverage-register edit alone is not acceptance.
+
+
+## 10. Current implementation increment — normalized provider readers
+
+The active implementation branch now contains a provider-neutral `DataSourceRegistry` and native Brain readers for normalized observations. The registry supports independent provider failure isolation through `fetch_with_status`: healthy provider observations survive an outage or malformed response from another adapter, while provider-specific exception classes are surfaced in evidence facts. Its strict `fetch` compatibility method raises if any selected provider fails.
+
+Implemented normalized observation consumers:
+- Economic calendar events preserve event time separately from publication/revision vintages. Future scheduled event times are allowed only when the record was already published by the analysis cutoff.
+- Macro series require verified instrument currency metadata, observation time and publication time; revisions after the cutoff are excluded.
+- Derivatives and crypto funding/open-interest/liquidation observations retain provider, venue, native instrument and source record identity.
+- Delta/CVD and footprint require exchange-classified aggressor side and executed-trade volume. Tick-volume proxies and inferred aggressor sides are rejected.
+- Market impact uses broker-confirmed fills paired with contemporaneous executable bid/ask and fill timestamps. It does not emit predictive fill probability.
+- Session calendar can consume normalized timezone-aware, source-timestamped session observations. Unknown DST, holiday, rollover or tradeability fields remain explicit.
+
+These are reader implementations and contract-level tests, not evidence that any real provider is connected or licensed. The registry is currently initialized without vendor adapters. Actual provider selection, credentials, entitlement checks, historical backfill, rate limits, outage handling and owner-connected validation remain a separate integration gate. Do not mark these concepts FULL solely because a reader exists.
