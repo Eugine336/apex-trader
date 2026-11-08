@@ -482,6 +482,9 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         CalibrationProducer,
         resolve_calibration_artifact,
     )
+    from platforms.quote_history import (
+        build_quote_history_manifest, quote_history_quote_digest,
+    )
 
     class Store:
         def __init__(self, events):
