@@ -519,11 +519,6 @@ class MT5Connector(BaseConnector):
         Returns ``{}`` when unavailable.
         """
         self._require_connection()
-        if idempotency_key and (
-            len(str(idempotency_key)) != 12
-            or any(character not in "0123456789abcdefABCDEF" for character in str(idempotency_key))
-        ):
-            return fail_pending("pending_order_idempotency_key_must_be_12_hex_characters")
 
         mapped = self.symbol_map(symbol)
         if mapped is None:
@@ -1435,6 +1430,11 @@ class MT5Connector(BaseConnector):
                 symbol=symbol, direction=side, sl=stop, tp=target, platform="mt5",
                 error=message, order_status="REJECTED", order_type=kind,
             )
+        if idempotency_key and (
+            len(str(idempotency_key)) != 12
+            or any(character not in "0123456789abcdefABCDEF" for character in str(idempotency_key))
+        ):
+            return fail_pending("pending_order_idempotency_key_must_be_12_hex_characters")
         try:
             entry = float(entry_price)
             requested_lots = float(lots)
