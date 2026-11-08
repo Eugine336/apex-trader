@@ -898,6 +898,59 @@ class PlatformManager:
                     # The terminal order retained an unfilled remainder: broker
                     # history therefore proves a partial fill before termination.
                     normalized = "PARTIALLY_FILLED_TERMINAL"
+                elif initial > 0.0 and remaining <= 0.0:
+                    connector_index = record.get("connector_index")
+                    if connector_index is None or not 0 <= int(connector_index) < len(self.mt5_connectors):
+                        return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_position_identity_unverified", "broker_confirmed": False}
+                    connector = self.mt5_connectors[int(connector_index)]
+                    deal_reader = getattr(connector, "get_deal_history_checked", None)
+                    if not callable(deal_reader):
+                        return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_deal_history_unavailable", "broker_confirmed": False}
+                    try:
+                        deals = deal_reader(submitted_at.astimezone(timezone.utc), now)
+                        from platforms.mt5 import mt5_connector as mt5_adapter
+                        mt5_constants = getattr(mt5_adapter, "mt5", None)
+                        if mt5_constants is None:
+                            raise RuntimeError("MT5 deal-entry constants unavailable")
+                        entry_kinds = {
+                            getattr(mt5_constants, "DEAL_ENTRY_IN"),
+                            getattr(mt5_constants, "DEAL_ENTRY_INOUT"),
+                        }
+                    except Exception as exc:
+                        _pm_logger.warning("[orders] cannot verify fill deals for terminal pending order {}: {}", ticket, exc)
+                        return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_deal_history_incomplete", "broker_confirmed": False}
+                    matching_deals = [
+                        deal for deal in deals
+                        if deal.get("source_verified") is True
+                        and str(deal.get("order", "")).strip() == ticket
+                        and str(deal.get("symbol", "")).strip().upper() == canonical_symbol
+                    ]
+                    entry_deals = []
+                    malformed_deal = False
+                    for deal in matching_deals:
+                        try:
+                            entry_kind = int(deal.get("entry"))
+                            volume = float(deal.get("volume"))
+                        except (TypeError, ValueError, OverflowError):
+                            malformed_deal = True
+                            break
+                        if entry_kind in entry_kinds:
+                            if not math.isfinite(volume) or volume <= 0.0:
+                                malformed_deal = True
+                                break
+                            entry_deals.append(deal)
+                    if malformed_deal:
+                        return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_deal_record_malformed", "broker_confirmed": False}
+                    if entry_deals:
+                        position_ids = {str(deal.get("position_id", "")).strip() for deal in entry_deals}
+                        position_ids.discard("")
+                        filled_volume = sum(float(deal["volume"]) for deal in entry_deals)
+                        if len(position_ids) != 1 or not 0.0 < filled_volume < initial:
+                            return {"status": "UNKNOWN", "order_id": ticket, "reason": "terminal_order_fill_volume_or_position_ambiguous", "broker_confirmed": False}
+                        normalized = "PARTIALLY_FILLED_TERMINAL"
+                        record["position_id"] = next(iter(position_ids))
+                        record["filled_volume"] = filled_volume
+                        record["fill_deal_tickets"] = [str(deal.get("ticket", "")) for deal in entry_deals]
             return {"status": normalized, "order_id": ticket, "broker_confirmed": normalized != "UNKNOWN", "record": record}
         return {"status": "UNKNOWN", "order_id": ticket, "reason": "not_present_in_live_or_history_book", "broker_confirmed": False}
 
