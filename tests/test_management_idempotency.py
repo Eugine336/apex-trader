@@ -391,6 +391,42 @@ def test_explicit_broker_rejection_resolves_an_ambiguous_management_action():
     assert store.get_management_progress("campaign-1", current_size=0.2, now_ms=10_000)["pending_milestone"] is None
     store.close()
 
+def test_stale_broker_reconciliation_cannot_overwrite_terminal_rejection(monkeypatch):
+    import time
+
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    loop = _loop(store, ledger)
+    loop.set_management_sink(lambda action, position: None)
+    loop._realise_management(_output(), _position())
+    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    pending = ledger.pending_actions("EURUSD")
+    assert pending and pending[0]["action_id"] == action_id
+    intent = SimpleNamespace(
+        action_id=action_id, symbol="EURUSD",
+        intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
+        position_ticket="ticket-1", decision_id="decision-1",
+        campaign_id="campaign-1", opportunity_id="opportunity-1",
+    )
+    rejected = SimpleNamespace(
+        success=False, rejected_by_gate=False, error="broker rejected request",
+        broker_response=SimpleNamespace(success=False, retcode=10016),
+    )
+    assert loop.record_management_execution_result(intent, rejected) is True
+    monkeypatch.setattr(ledger, "pending_actions", lambda symbol=None: pending)
+    evidence = {
+        "source": "mt5.position_snapshot",
+        "source_timestamp_epoch": time.time(),
+        "source_timestamp_verified": True,
+        "symbol": "EURUSD", "closed_position_ticket": "ticket-1",
+        "book_complete": True, "platform_confirmed": True,
+        "position_present": False, "closed_deal_verified": True,
+    }
+
+    assert ledger.reconcile(action_id, "EURUSD", evidence) is False
+    assert ledger.status(action_id, "EURUSD") == "REJECTED"
+    store.close()
+
 def test_fast_flush_callback_ack_cannot_be_overwritten_by_late_queue_return():
     store = _store()
     ledger = ManagementActionLedger(_EventStore())
