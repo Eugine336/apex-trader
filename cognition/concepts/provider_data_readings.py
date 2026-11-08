@@ -141,7 +141,8 @@ class ProviderDataReadings:
                 publication is None or publication > cutoff
                 or (revision is not None and revision > cutoff)
                 or event_time is None or not currency
-                or (relevant_currencies and currency not in relevant_currencies)
+                or not symbol_spec_verified or not relevant_currencies
+                or currency not in relevant_currencies
             ):
                 continue
             events.append({
