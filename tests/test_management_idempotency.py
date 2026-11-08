@@ -231,3 +231,21 @@ def test_verified_broker_reconciliation_resolves_ambiguous_milestone_and_memory(
     assert "market_structure:H1:1:1.105" in progress["completed_milestones"]
     assert action_id not in loop._management_unresolved_actions
     store.close()
+
+
+def test_async_management_sink_queue_acceptance_is_not_broker_acknowledgement():
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    calls = []
+    loop = _loop(store, ledger)
+    loop.set_management_sink(lambda action, position: calls.append(action) or True)
+    output, position = _output(), _position()
+
+    assert loop._realise_management(output, position) is True
+    action = calls[0]
+    assert ledger.status(action.action_id, "EURUSD") == "DISPATCHED"
+    assert loop.get_status()["manage_submitted"] == 1
+    assert loop.get_status()["manage_ambiguous"] == 0
+    assert loop._realise_management(output, position) is False
+    assert len(calls) == 1
+    store.close()
