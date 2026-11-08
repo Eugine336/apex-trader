@@ -575,6 +575,7 @@ class CognitionLoop:
         pattern_tracker: Optional[Any] = None,
         candidate_event_store: Optional[Any] = None,
         calibration_provider: Optional[Any] = None,
+        concept_track_record_provider: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -691,6 +692,7 @@ class CognitionLoop:
         self._candidate_label_pending: dict[str, dict] = {}
         self._candidate_label_recorded: set[tuple[str, int]] = set()
         self._calibration_provider = calibration_provider
+        self._concept_track_record_provider = concept_track_record_provider
         self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], Optional[bool]]]) -> None:
@@ -1832,25 +1834,47 @@ class CognitionLoop:
             )
 
     def _inject_calibration_evidence(self, market_state: MarketState) -> None:
-        """Supply only producer-registered calibration artifacts to the Brain."""
+        """Supply producer-owned learning context; it never authorizes a decision."""
+        symbol = str(getattr(market_state, "symbol", "") or "")
+        cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+        providers = []
         try:
             provider = self._calibration_provider
             if provider is None:
                 from cognition.calibration_artifacts import get_default_calibration_producer
                 provider = get_default_calibration_producer()
                 self._calibration_provider = provider
-            evidence_for = getattr(provider, "evidence_for", None)
-            if not callable(evidence_for):
-                return
-            symbol = str(getattr(market_state, "symbol", "") or "")
-            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
-            for evidence in evidence_for(symbol, now=cutoff) or []:
-                market_state.add(evidence)
-        except Exception as exc:  # noqa: BLE001 — missing calibration must remain missing
+            providers.append(("calibration", provider))
+        except Exception as exc:  # noqa: BLE001 — absent calibration remains absent
             logger.warning(
-                "[cognition-loop] producer calibration evidence unavailable for %s: %s",
-                getattr(market_state, "symbol", "?"), exc,
+                "[cognition-loop] calibration producer unavailable for %s: %s",
+                symbol or "?", exc,
             )
+        try:
+            provider = self._concept_track_record_provider
+            if provider is None:
+                from cognition.concept_track_records import get_default_concept_track_record_producer
+                provider = get_default_concept_track_record_producer()
+                self._concept_track_record_provider = provider
+            providers.append(("concept_track_records", provider))
+        except Exception as exc:  # noqa: BLE001 — absent concept history remains absent
+            logger.warning(
+                "[cognition-loop] concept track record producer unavailable for %s: %s",
+                symbol or "?", exc,
+            )
+
+        for label, provider in providers:
+            try:
+                evidence_for = getattr(provider, "evidence_for", None)
+                if not callable(evidence_for):
+                    continue
+                for evidence in evidence_for(symbol, now=cutoff) or []:
+                    market_state.add(evidence)
+            except Exception as exc:  # noqa: BLE001 — learning context is never an admission gate
+                logger.warning(
+                    "[cognition-loop] producer %s evidence unavailable for %s: %s",
+                    label, symbol or "?", exc,
+                )
 
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
         """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
