@@ -81,6 +81,7 @@ def verify_quote_history_manifest(manifest: dict[str, Any]) -> bool:
         not all(math.isfinite(v) for v in (start, end, through, completed))
         or start <= 0.0 or end < start or through < start
         or through > end + 1e-6 or completed <= 0.0 or tick_count < 0
+        or (manifest.get("query_complete") is True and through < end - 1e-6)
     ):
         return False
     selected_digest = manifest.get("selected_quote_digest")
