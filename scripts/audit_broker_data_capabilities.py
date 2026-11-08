@@ -229,7 +229,11 @@ def audit_connector(
                 ticks = ticks_result["value"]
                 attrs = getattr(ticks, "attrs", {}) if ticks is not None else {}
                 columns = set(getattr(ticks, "columns", [])) if ticks is not None else set()
-                aggressor = (\n                    ticks["aggressor_side"].fillna("unknown").astype(str).str.lower().tolist()\n                    if ticks is not None and "aggressor_side" in columns else []\n                )\n                row["historical_ticks"] = {
+                aggressor = (
+                    ticks["aggressor_side"].fillna("unknown").astype(str).str.lower().tolist()
+                    if ticks is not None and "aggressor_side" in columns else []
+                )
+                row["historical_ticks"] = {
                     "status": "AVAILABLE" if ticks is not None and len(ticks) else "EMPTY",
                     "row_count": len(ticks) if ticks is not None else 0,
                     "source": attrs.get("source") if isinstance(attrs, dict) else None,
@@ -240,7 +244,10 @@ def audit_connector(
                     "aggressor_side_basis": (
                         attrs.get("aggressor_side_basis") if isinstance(attrs, dict) else None
                     ),
-                    "broker_classified_buy_rows": sum(value == "buy" for value in aggressor),\n                    "broker_classified_sell_rows": sum(value == "sell" for value in aggressor),\n                    "aggressor_unknown_rows": sum(value not in {"buy", "sell"} for value in aggressor),\n                    "error": ticks_result["error"],
+                    "broker_classified_buy_rows": sum(value == "buy" for value in aggressor),
+                    "broker_classified_sell_rows": sum(value == "sell" for value in aggressor),
+                    "aggressor_unknown_rows": sum(value not in {"buy", "sell"} for value in aggressor),
+                    "error": ticks_result["error"],
                     "note": "MT5 tick flags are not assumed to be exchange trade prints or universal aggressor-side volume.",
                 }
 
