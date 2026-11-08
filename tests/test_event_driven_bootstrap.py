@@ -556,7 +556,7 @@ class TestPendingOrderLifecycle:
                 ),
             ])
 
-        assert "ORDER-PARTIAL" in system._pending_orders
+        assert "901" in system._pending_orders
         assert system._pending_orders["ORDER-PARTIAL"]["status"] == "PARTIALLY_FILLED_PENDING"
         assert system._pending_orders["ORDER-PARTIAL"]["attributed"] is True
         system._on_order_filled.assert_called_once()
