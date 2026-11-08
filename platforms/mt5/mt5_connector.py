@@ -1467,6 +1467,15 @@ class MT5Connector(BaseConnector):
                         sl=stop, tp=target, platform="mt5",
                         order_status=status, order_type=kind,
                     )
+                if status in {"UNKNOWN", "AMBIGUOUS"}:
+                    return OrderResult(
+                        success=False, order_id=str(getattr(duplicate, "ticket", "") or ""),
+                        fill_price=0.0, requested_price=entry, slippage_pips=0.0,
+                        lots=requested_lots, symbol=symbol, direction=side,
+                        sl=stop, tp=target, platform="mt5",
+                        error=f"AMBIGUOUS_PENDING_ORDER_ACK: idempotency lookup is {status.lower()}",
+                        order_status="UNKNOWN", order_type=kind,
+                    )
                 if status == "FILLED":
                     return OrderResult(
                         success=True, order_id=str(duplicate.ticket),
