@@ -1198,6 +1198,25 @@ def test_pending_open_dispatch_uses_pending_gateway_not_market_gateway():
     assert broker.open_calls == []
 
 
+def test_ambiguous_pending_ack_is_never_retried():
+    broker = FakeBroker()
+    calls = []
+    broker.execute_pending_entry = lambda **kwargs: (
+        calls.append(kwargs) or SimpleNamespace(
+            success=False, error="AMBIGUOUS_PENDING_ORDER_ACK: acknowledgement lost",
+            order_status="UNKNOWN",
+        )
+    )
+    executor = ActionExecutor(broker, _fast_cfg(max_retries=3))
+    intent = _open_intent(
+        "EURUSD", order_type="LIMIT", entry_price=99.0, sl=98.0, tp=101.0,
+    )
+    result = executor._execute_with_retry(intent, {})
+    assert result.success is False
+    assert result.error.startswith("AMBIGUOUS_PENDING_ORDER_ACK:")
+    assert len(calls) == 1
+
+
 def test_cancel_pending_dispatch_uses_order_ticket_and_symbol():
     broker = FakeBroker()
     calls = []
