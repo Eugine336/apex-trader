@@ -46,3 +46,25 @@ def test_benchmark_runs_cold_and_warm_on_one_immutable_market_snapshot():
     assert report["cold"]["completed_symbol_count"] == 2
     assert report["warm"]["completed_symbol_count"] == 2
     assert report["execution_mutations_performed"] == 0
+
+
+def test_benchmark_records_analysis_faults_without_claiming_complete_coverage():
+    manager = _Manager()
+    calls = []
+
+    def analyze(symbol, frames, *, source_includes_forming_bar):
+        calls.append(symbol)
+        if symbol == "GBPUSD":
+            raise RuntimeError("reader pipeline fault")
+        return [object()]
+
+    report = run_benchmark(
+        manager, ["EURUSD", "GBPUSD"], ["M5"], 10, analyze=analyze,
+    )
+    assert report["cold"]["completed_symbol_count"] == 1
+    assert report["cold"]["failures"] == [{
+        "symbol": "GBPUSD",
+        "exception_type": "RuntimeError",
+        "error": "reader pipeline fault",
+    }]
+    assert report["warm"]["failures"] == report["cold"]["failures"]
