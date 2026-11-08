@@ -79,14 +79,21 @@ def _verified_rows(
 
 def _aligned_closes(
     target: list[dict[str, Any]], peer: list[dict[str, Any]],
+    timeframe_seconds: int,
 ) -> tuple[list[float], list[float], list[float]]:
+    """Pair only exact common timestamps with no missing intervening bar."""
     target_by_time = {row["timestamp_epoch"]: row["close"] for row in target}
     peer_by_time = {row["timestamp_epoch"]: row["close"] for row in peer}
     common = sorted(set(target_by_time) & set(peer_by_time))
+    contiguous = [
+        stamp for index, stamp in enumerate(common)
+        if index > 0 and stamp - common[index - 1] == timeframe_seconds
+    ]
+    # A return at t is measured from the immediately preceding common completed bar.
     return (
-        common,
-        [float(target_by_time[t]) for t in common],
-        [float(peer_by_time[t]) for t in common],
+        contiguous,
+        [float(target_by_time[t]) for t in contiguous],
+        [float(peer_by_time[t]) for t in contiguous],
     )
 
 
@@ -209,7 +216,7 @@ class IntermarketReadings:
 
         paired: dict[str, dict[str, Any]] = {}
         for peer_symbol, peer_rows in peers.items():
-            times, target_closes, peer_closes = _aligned_closes(target_rows, peer_rows)
+            times, target_closes, peer_closes = _aligned_closes(target_rows, peer_rows, seconds)
             target_returns, peer_returns = _returns(target_closes), _returns(peer_closes)
             correlation = _pearson(target_returns, peer_returns)
             if correlation is None:
@@ -246,11 +253,20 @@ class IntermarketReadings:
             # then compare confirmed three-bar swing sweeps on completed bars.
             peer_symbol, peer = ordered[0]
             peer_rows = peers[peer_symbol]
-            target_swing_high = _last_confirmed_swing(target_rows, "high")
-            peer_swing_high = _last_confirmed_swing(peer_rows, "high")
-            target_swing_low = _last_confirmed_swing(target_rows, "low")
-            peer_swing_low = _last_confirmed_swing(peer_rows, "low")
-            target_last, peer_last = target_rows[-1], peer_rows[-1]
+            # Structural comparison is restricted to the same final common bar.
+            common_epoch = max(
+                set(row["timestamp_epoch"] for row in target_rows)
+                & set(row["timestamp_epoch"] for row in peer_rows),
+                default=None,
+            )
+            target_aligned = [row for row in target_rows if row["timestamp_epoch"] <= common_epoch] if common_epoch is not None else []
+            peer_aligned = [row for row in peer_rows if row["timestamp_epoch"] <= common_epoch] if common_epoch is not None else []
+            target_swing_high = _last_confirmed_swing(target_aligned, "high")
+            peer_swing_high = _last_confirmed_swing(peer_aligned, "high")
+            target_swing_low = _last_confirmed_swing(target_aligned, "low")
+            peer_swing_low = _last_confirmed_swing(peer_aligned, "low")
+            target_last = target_aligned[-1] if target_aligned else {}
+            peer_last = peer_aligned[-1] if peer_aligned else {}
             bearish_target = target_swing_high is not None and target_last["high"] > target_swing_high and target_last["close"] < target_swing_high
             bearish_peer = peer_swing_high is not None and peer_last["high"] > peer_swing_high and peer_last["close"] < peer_swing_high
             bullish_target = target_swing_low is not None and target_last["low"] < target_swing_low and target_last["close"] > target_swing_low
@@ -269,7 +285,8 @@ class IntermarketReadings:
                  "target_swing_low": target_swing_low, "peer_swing_low": peer_swing_low,
                  "target_bearish_sweep": bearish_target, "peer_bearish_sweep": bearish_peer,
                  "target_bullish_sweep": bullish_target, "peer_bullish_sweep": bullish_peer,
-                 "classification": smt, "paired_return_count": peer["sample_count"]},
+                 "classification": smt, "paired_return_count": peer["sample_count"],
+                 "comparison_epoch": common_epoch},
                 _DATA_REQUIREMENTS["smt_divergence"],
                 unknowns=() if smt != "no_confirmed_divergence" else ("confirmed asymmetric sweep event on completed bars",),
             ))
