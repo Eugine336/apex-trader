@@ -3,6 +3,8 @@ import threading
 from types import SimpleNamespace
 
 from platforms.platform_manager import PlatformManager
+from platforms.base_connector import OrderResult
+from platforms.mt5.mt5_connector import MT5Connector
 
 
 class PendingConnector:
@@ -202,3 +204,34 @@ def test_ambiguous_ack_filled_idempotency_match_returns_verified_position_identi
     assert outcome["status"] == "FILLED"
     assert outcome["order_id"] == "902"
     assert outcome["record"]["position_id"] == "902"
+
+
+def test_ambiguous_pending_submission_is_persisted_and_sent_to_runtime_tracker(monkeypatch):
+    from persistence import event_store as event_store_module
+
+    connector = object.__new__(MT5Connector)
+    connector.place_pending_order = lambda **kwargs: OrderResult(
+        success=False, order_id="", fill_price=0.0,
+        requested_price=99.0, slippage_pips=0.0, lots=0.1,
+        symbol="EURUSD", direction="BUY", sl=98.0, tp=101.0,
+        platform="mt5", error="AMBIGUOUS_PENDING_ORDER_ACK: response lost",
+        order_status="UNKNOWN", order_type="LIMIT",
+    )
+    manager = object.__new__(PlatformManager)
+    manager.get_connector = lambda symbol: connector
+    manager._broker_write_lock = threading.Lock()
+    callback_rows = []
+    manager.pending_order_callback = lambda result, context: callback_rows.append((result, context))
+    monkeypatch.setattr(event_store_module, "get_event_store", lambda: None)
+
+    result = manager.execute_pending_entry(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.1, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f6", decision_id="decision-1",
+    )
+
+    assert result.success is False
+    assert len(callback_rows) == 1
+    assert callback_rows[0][1]["status"] == "UNKNOWN"
+    assert callback_rows[0][1]["idempotency_key"] == "a1b2c3d4e5f6"
+    assert callback_rows[0][1]["reconciliation_required"] is True
