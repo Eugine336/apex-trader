@@ -30,9 +30,7 @@ class ObservationKind(str, Enum):
     ORDER = "order"
     DEAL = "deal"
     EXECUTION_COST = "execution_cost"
-    PORTFOLIO_RETURN = "portfolio_return"
-    EQUITY_HISTORY = "equity_history"
-    PAIRWISE_CORRELATION = "pairwise_correlation"
+    PORTFOLIO_SNAPSHOT = "portfolio_snapshot"
 
 
 class Completeness(str, Enum):
