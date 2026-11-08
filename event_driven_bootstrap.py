@@ -5926,6 +5926,17 @@ class EventDrivenSystem:
                             continue
                 if position is not None:
                     try:
+                        position_entry_order_ids = self._pm.get_position_entry_order_ids(
+                            position_id, symbol=str(meta.get("symbol", "") or ""),
+                            platform=platform, from_dt=submitted_at,
+                            to_dt=datetime.now(timezone.utc),
+                        )
+                        if position_entry_order_ids != {resolved_ticket}:
+                            logger.warning(
+                                "[pending-orders] open position {} has mixed or unresolved entry-order ownership; attribution withheld",
+                                position_id,
+                            )
+                            continue
                         fill_deals = self._pm.get_pending_order_fill_deals(
                             resolved_ticket, position_id,
                             symbol=str(meta.get("symbol", "") or ""),
