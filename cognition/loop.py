@@ -1640,20 +1640,32 @@ class CognitionLoop:
                     if key in recorded:
                         continue
                     due_epoch = decision_epoch + horizon
-                    if observed_epoch < due_epoch:
-                        continue
                     tolerance = max(60.0, horizon * 0.10)
-                    within_window = observed_epoch <= due_epoch + tolerance
-                    signed_return = (
-                        (observed_price / reference_price - 1.0)
-                        * (1.0 if direction == "LONG" else -1.0)
-                    )
-                    if not within_window:
-                        status = "MISSED_WINDOW"
-                        label = "UNOBSERVED"
-                        signed_return_value = None
-                        r_multiple = None
+                    history_batch = _quote_history_batch(due_epoch, tolerance) if callable(self._quote_history_provider) else None
+                    history_manifest = history_batch.get("manifest") if isinstance(history_batch, dict) else None
+                    outcome_quote = dict(history_batch.get("selected_quote") or {}) if isinstance(history_batch, dict) else dict(quote or {})
+                    if callable(self._quote_history_provider):
+                        if history_batch is None:
+                            # The observation window is still open and no quote has
+                            # arrived; do not label it from a later live snapshot.
+                            continue
+                        if outcome_quote:
+                            observed_epoch = float(outcome_quote["source_timestamp_epoch"])
+                            observed_price = float(outcome_quote["mid"])
+                            within_window = True
+                        else:
+                            observed_epoch = float(history_manifest["query_completed_at_epoch"])
+                            observed_price = None
+                            within_window = False
                     else:
+                        if quote is None or observed_epoch < due_epoch:
+                            continue
+                        within_window = observed_epoch <= due_epoch + tolerance
+                    if within_window:
+                        signed_return = (
+                            (observed_price / reference_price - 1.0)
+                            * (1.0 if direction == "LONG" else -1.0)
+                        )
                         status = "OBSERVED"
                         signed_return_value = signed_return
                         label = (
@@ -1668,6 +1680,11 @@ class CognitionLoop:
                         r_multiple = (
                             signed_move / risk_distance if risk_distance else None
                         )
+                    else:
+                        status = "MISSED_WINDOW"
+                        label = "UNOBSERVED"
+                        signed_return_value = None
+                        r_multiple = None
                     outcome_payload = {
                         "schema_version": "1.0.0",
                         "candidate_id": candidate_id,
