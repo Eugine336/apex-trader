@@ -100,6 +100,8 @@ class OrderResult:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     error: str = ""
+    order_status: str = "FILLED"
+    order_type: str = "MARKET"
 
 
 @dataclass
