@@ -47,8 +47,10 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     from cognition.brain import CognitiveBrain
     from cognition.brain_reasoning import BrainReasoner
     from cognition.concepts import read_concept_readings
+    from cognition.loop import EvidenceConsolidator
     from cognition.market_lenses import analyze_market_frames
     from cognition.strategy_knowledge import assess_strategy_lenses
+    from core.system_context import SystemContext
 
     # Keep the requested audit universe explicit: every catalogued method and
     # lens must be classified, not silently dropped from the generated register.
@@ -85,13 +87,30 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     hypothesis_source = inspect.getsource(BrainReasoner.generate_hypotheses)
     cognitive_analysis_source = inspect.getsource(CognitiveBrain._analyze_evidence)
     cognitive_hypothesis_source = inspect.getsource(CognitiveBrain._generate_hypotheses)
+    system_context_source = inspect.getsource(SystemContext.create)
+    consolidator_source = inspect.getsource(EvidenceConsolidator.build)
+    native_reasoning_source = inspect.getsource(CognitiveBrain._native_reasoning)
+    cognitive_reason_source = inspect.getsource(CognitiveBrain.reason)
     assert "for module in registered" in reader_source
     assert "contextual_reader(symbol, bars_by_tf, module_context)" in reader_source
     assert "module.read(symbol, bars_by_tf)" in reader_source
     assert "run_concepts(" in market_source
+    # Verify the live SystemContext -> EvidenceConsolidator -> MarketState route,
+    # not only the isolated reader and converter functions.
+    assert "analyze_market_frames(" in system_context_source
+    assert "concept_source=_concept_market_source" in system_context_source
+    assert "self._concept_source(ms.symbol)" in consolidator_source
+    assert "for item in concept_evidence" in consolidator_source
+    assert "ms.add(item)" in consolidator_source
     assert 'm.get("source_kind") == "concept_reading"' in analysis_source
     assert "concept_readings.append(" in analysis_source
+    assert "assess_strategy_lenses(" in analysis_source
     assert "synthesize_concept_readings(" in hypothesis_source
+    # Verify the production CognitiveBrain decision method invokes the native
+    # analysis/hypothesis chain that consumes the MarketState.
+    assert "self._native.analyze_evidence(" in native_reasoning_source
+    assert "self._native.generate_hypotheses(" in native_reasoning_source
+    assert "_native_reasoning(" in cognitive_reason_source
     assert "return self._native.analyze_evidence(" in cognitive_analysis_source
     assert "return self._native.generate_hypotheses(" in cognitive_hypothesis_source
 
