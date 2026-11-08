@@ -249,3 +249,21 @@ def test_async_management_sink_queue_acceptance_is_not_broker_acknowledgement():
     assert loop._realise_management(output, position) is False
     assert len(calls) == 1
     store.close()
+
+
+def test_broker_identifier_without_explicit_success_remains_dispatched():
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    calls = []
+    loop = _loop(store, ledger)
+    loop.set_management_sink(lambda action, position: calls.append(action) or SimpleNamespace(
+        success=True,
+        broker_response=SimpleNamespace(deal=4455),
+    ))
+    output, position = _output(), _position()
+
+    assert loop._realise_management(output, position) is True
+    action = calls[0]
+    assert ledger.status(action.action_id, "EURUSD") == "DISPATCHED"
+    assert ledger.pending_actions("EURUSD")
+    store.close()
