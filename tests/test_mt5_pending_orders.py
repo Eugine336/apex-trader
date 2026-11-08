@@ -27,6 +27,7 @@ class FakeMT5:
         self.requests = []
         self.retcode = self.TRADE_RETCODE_PLACED
         self.omit_confirmation = False
+        self.lookup_unavailable = False
 
     @staticmethod
     def symbol_select(symbol, enabled):
@@ -52,6 +53,8 @@ class FakeMT5:
         return []
 
     def orders_get(self, *args, **kwargs):
+        if self.lookup_unavailable:
+            return None
         return [] if self.omit_confirmation else list(self.orders)
 
     @staticmethod
@@ -201,6 +204,27 @@ def test_partial_pending_idempotency_retry_returns_same_order_without_resubmissi
     assert second.success is True
     assert second.order_status == "PARTIALLY_FILLED_PENDING"
     assert second.order_id == first.order_id
+    assert len(fake.requests) == 1
+
+def test_pending_retry_stays_unknown_when_broker_order_book_lookup_fails(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    first = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f3",
+    )
+    fake.lookup_unavailable = True
+
+    second = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+        idempotency_key="a1b2c3d4e5f3",
+    )
+
+    assert first.success is True
+    assert second.success is False
+    assert second.order_status == "UNKNOWN"
+    assert second.error.startswith("AMBIGUOUS_PENDING_ORDER_ACK:")
     assert len(fake.requests) == 1
 
 def test_cancel_pending_order_removes_only_the_named_ticket(monkeypatch):
