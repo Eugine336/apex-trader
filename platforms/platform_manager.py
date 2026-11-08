@@ -652,8 +652,12 @@ class PlatformManager:
                 entry_price=entry_price, lots=lots, sl=sl, tp=tp,
                 comment=comment, idempotency_key=idempotency_key,
             )
+        verified_lifecycle_states = {
+            "PENDING", "PARTIALLY_FILLED_PENDING", "FILLED",
+            "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL",
+        }
         trackable = (
-            bool(result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING", "FILLED"} and result.order_id)
+            bool(str(result.order_status or "").upper() in verified_lifecycle_states and result.order_id)
             or (
                 str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
                 and bool(idempotency_key)
@@ -680,12 +684,16 @@ class PlatformManager:
                 ),
                 "status": (
                     str(result.order_status or "UNKNOWN").upper()
-                    if result.success else "UNKNOWN"
+                    if str(result.order_status or "").upper() in verified_lifecycle_states and result.order_id else "UNKNOWN"
                 ),
                 "broker_confirmed": bool(
-                    result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING", "FILLED"}
+                    str(result.order_status or "").upper() in verified_lifecycle_states and result.order_id
                 ),
-                "reconciliation_required": not bool(result.success),
+                "reconciliation_required": bool(
+                    not result.success or str(result.order_status or "").upper() in {
+                        "FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"
+                    }
+                ),
             }
             try:
                 from persistence import domain_events as DE
