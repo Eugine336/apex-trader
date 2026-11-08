@@ -1419,19 +1419,28 @@ class MT5Connector(BaseConnector):
         self._require_connection()
         side = str(direction or "").strip().upper()
         kind = str(order_type or "").strip().upper()
+        def fail_pending(message: str) -> OrderResult:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry if "entry" in locals() else 0.0,
+                slippage_pips=0.0, lots=requested_lots if "requested_lots" in locals() else 0.0,
+                symbol=symbol, direction=side, sl=stop if "stop" in locals() else 0.0,
+                tp=target if "target" in locals() else 0.0, platform="mt5",
+                error=message, order_status="REJECTED", order_type=kind,
+            )
         try:
             entry = float(entry_price)
             requested_lots = float(lots)
             stop = float(sl)
             target = float(tp)
         except (TypeError, ValueError, OverflowError):
-            return self._fail_order(symbol, side, lots, sl, tp, "invalid_pending_order_numeric_fields")
+            return fail_pending("invalid_pending_order_numeric_fields")
         if (
             side not in {"BUY", "SELL", "LONG", "SHORT"}
             or kind not in {"LIMIT", "STOP"}
             or not all(math.isfinite(value) and value > 0.0 for value in (entry, requested_lots, stop, target))
         ):
-            return self._fail_order(symbol, side, requested_lots, stop, target, "invalid_pending_order_request")
+            return fail_pending("invalid_pending_order_request")
         is_buy = side in {"BUY", "LONG"}
         if not (stop < entry < target if is_buy else target < entry < stop):
             return self._fail_order(symbol, side, requested_lots, stop, target, "pending_order_sl_tp_not_ordered")
@@ -1460,10 +1469,7 @@ class MT5Connector(BaseConnector):
                         tp=float(duplicate.tp), platform="mt5",
                         order_status="FILLED", order_type=kind,
                     )
-                return self._fail_order(
-                    symbol, side, requested_lots, stop, target,
-                    f"idempotency_key_already_bound_to_{status.lower()}_order",
-                )
+                return fail_pending(f"idempotency_key_already_bound_to_{status.lower()}_order")
 
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
@@ -1558,10 +1564,7 @@ class MT5Connector(BaseConnector):
             getattr(mt5, "TRADE_RETCODE_DONE", -2),
         }
         if getattr(result, "retcode", None) not in accepted:
-            return self._fail_order(
-                symbol, side, normalized_lots, stop, target,
-                str(getattr(result, "comment", "") or f"pending_order_retcode_{getattr(result, 'retcode', 'unknown')}"),
-            )
+            return fail_pending(str(getattr(result, "comment", "") or f"pending_order_retcode_{getattr(result, 'retcode', 'unknown')}"))
         ticket = str(getattr(result, "order", 0) or getattr(result, "ticket", 0) or "")
         if not ticket:
             return OrderResult(
@@ -2299,4 +2302,5 @@ class MT5Connector(BaseConnector):
             tp=tp,
             platform="mt5",
             error=error,
+            order_status="REJECTED",
         )
