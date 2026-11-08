@@ -72,6 +72,12 @@ class ObservationProvenance:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.source_timestamp_verified, bool):
+            raise TypeError("source_timestamp_verified must be a bool")
+        if not isinstance(self.kind, ObservationKind):
+            raise TypeError("kind must be an ObservationKind")
+        if not isinstance(self.completeness, Completeness):
+            raise TypeError("completeness must be a Completeness value")
         received = _epoch(self.received_timestamp_epoch, "received_timestamp_epoch")
         object.__setattr__(self, "received_timestamp_epoch", received)
         source_epoch = _optional_epoch(self.source_timestamp_epoch, "source_timestamp_epoch")
@@ -113,6 +119,10 @@ class CapabilityState:
     def __post_init__(self) -> None:
         if not str(self.provider or "").strip():
             raise ValueError("provider must be non-empty")
+        if not isinstance(self.capability, ObservationKind):
+            raise TypeError("capability must be an ObservationKind")
+        if not isinstance(self.completeness, Completeness):
+            raise TypeError("completeness must be a Completeness value")
         if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
             raise ValueError("sample_count must be a non-negative integer")
         first = _optional_epoch(self.first_source_timestamp_epoch, "first_source_timestamp_epoch")
