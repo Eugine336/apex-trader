@@ -19,7 +19,7 @@ import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger as _pm_logger
 
