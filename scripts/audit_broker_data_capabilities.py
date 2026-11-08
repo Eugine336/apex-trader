@@ -199,7 +199,10 @@ def audit_connector(
                 "swap_mode": spec.get("swap_mode"),
                 "swap_mode_name": spec.get("swap_mode_name"),
                 "swap_rollover3days": spec.get("swap_rollover3days"),
-                "broker_trading_sessions": spec.get("broker_trading_sessions"),\n                "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,\n                "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,\n                "swap_schedule": spec.get("swap_schedule"),
+                "broker_trading_sessions": spec.get("broker_trading_sessions"),
+                "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,
+                "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,
+                "swap_schedule": spec.get("swap_schedule"),
                 "error": spec_result["error"],
             }
 
