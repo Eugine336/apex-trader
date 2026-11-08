@@ -56,6 +56,7 @@ def test_intermarket_reader_emits_broker_neutral_pair_measurements():
             "GBPUSD": {"M5": _frame("GBPUSD", peer_closes, base)},
         },
         "multi_symbol_snapshot_cutoff_epoch": cutoff,
+        "multi_symbol_source_includes_forming_bar": True,
         "multi_symbol_specs": {
             "EURUSD": {
                 "source_verified": True, "specification_verified": True,
@@ -93,6 +94,7 @@ def test_intermarket_reader_rejects_peer_symbol_provenance_mismatch():
             "GBPUSD": {"M5": _frame("GBPUSD", closes, base, source_symbol="EURUSD")},
         },
         "multi_symbol_snapshot_cutoff_epoch": cutoff,
+        "multi_symbol_source_includes_forming_bar": True,
     }
     readings = module.read_with_context(
         "EURUSD", {"M5": _bars("EURUSD", closes, base, cutoff)}, context,
@@ -110,6 +112,7 @@ def test_intermarket_reader_does_not_use_forming_or_future_peer_bar():
             "GBPUSD": {"M5": _frame("GBPUSD", closes, base)},
         },
         "multi_symbol_snapshot_cutoff_epoch": cutoff,
+        "multi_symbol_source_includes_forming_bar": True,
     }
     readings = module.read_with_context(
         "EURUSD", {"M5": _bars("EURUSD", closes, base, cutoff)}, context,
