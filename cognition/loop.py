@@ -2780,7 +2780,11 @@ class CognitionLoop:
                         "deal": getattr(response, "order_id", None),
                         "retcode": getattr(response, "retcode", None),
                     }
-            recorded = ledger.finish(action, "ACKNOWLEDGED", response=response)
+            recorded = ledger.finish_if_status(
+                action, "ACKNOWLEDGED",
+                expected_statuses={"SUBMITTED", "DISPATCHED", "AMBIGUOUS"},
+                response=response,
+            )
             if recorded:
                 self._management_unresolved_actions.discard(action_id)
                 if kind == "partial_close" and current_size is None:
@@ -2821,7 +2825,11 @@ class CognitionLoop:
             token in error.lower()
             for token in ("market_closed", "market closed", "circuit open", "rate limit")
         ):
-            recorded = ledger.finish(action, "REJECTED", response=broker_response, error=error)
+            recorded = ledger.finish_if_status(
+                action, "REJECTED",
+                expected_statuses={"SUBMITTED", "DISPATCHED"},
+                response=broker_response, error=error,
+            )
             if recorded:
                 self._management_unresolved_actions.discard(action_id)
                 if kind == "partial_close" and self._memory is not None:
@@ -2841,7 +2849,11 @@ class CognitionLoop:
                             )
             return recorded
 
-        recorded = ledger.finish(action, "AMBIGUOUS", response=broker_response, error=error)
+        recorded = ledger.finish_if_status(
+            action, "AMBIGUOUS",
+            expected_statuses={"SUBMITTED", "DISPATCHED"},
+            response=broker_response, error=error,
+        )
         if recorded:
             self._management_unresolved_actions.add(action_id)
             self._manage_ambiguous += 1
@@ -2980,7 +2992,11 @@ class CognitionLoop:
                     sink_result = self._management_sink(action, position)
                 except Exception as sink_exc:
                     if ledger_started:
-                        ledger.finish(action, "AMBIGUOUS", error=f"{type(sink_exc).__name__}: {sink_exc}")
+                        ledger.finish_if_status(
+                            action, "AMBIGUOUS",
+                            expected_statuses={"SUBMITTED", "DISPATCHED"},
+                            error=f"{type(sink_exc).__name__}: {sink_exc}",
+                        )
                     if action_id:
                         self._management_unresolved_actions.add(action_id)
                     self._manage_ambiguous += 1
@@ -3049,8 +3065,10 @@ class CognitionLoop:
                     outcome = "AMBIGUOUS"
 
                 if ledger_started:
-                    durable_ack = ledger.finish(
-                        action, outcome, response=broker_response or sink_result,
+                    durable_ack = ledger.finish_if_status(
+                        action, outcome,
+                        expected_statuses={"SUBMITTED", "DISPATCHED"},
+                        response=broker_response or sink_result,
                         error=str(getattr(sink_result, "error", "") or ""),
                     )
                     if not durable_ack:
