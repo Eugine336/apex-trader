@@ -48,6 +48,8 @@ def _action():
             "decision_id": "decision-1",
             "campaign_id": "campaign-1",
             "opportunity_id": "opportunity-1",
+            "direction": "LONG",
+            "fraction": 0.5,
         },
     )
 
