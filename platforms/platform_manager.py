@@ -805,13 +805,14 @@ class PlatformManager:
                 return {"status": "AMBIGUOUS", "reason": "idempotency_key_matches_multiple_mt5_accounts", "broker_confirmed": False}
             if not discoveries:
                 return {"status": "UNKNOWN", "reason": "idempotency_key_not_found_in_broker_history_or_live_book", "broker_confirmed": False}
-            _, candidate = discoveries[0]
+            candidate_index, candidate = discoveries[0]
             ticket = str(getattr(candidate, "ticket", "") or "").strip()
             candidate_status = str(getattr(candidate, "order_status", "UNKNOWN") or "UNKNOWN").upper()
             if candidate_status == "FILLED":
                 candidate_record = {
                     "ticket": ticket, "position_id": str(getattr(candidate, "position_id", "") or ticket),
                     "symbol": canonical_symbol, "state": getattr(candidate, "state", 4),
+                    "connector_index": candidate_index,
                     "source": "mt5.idempotency_lookup", "source_verified": True,
                 }
                 return {"status": "FILLED", "order_id": ticket, "broker_confirmed": True, "record": candidate_record}
@@ -1057,6 +1058,29 @@ class PlatformManager:
     def get_deal_close_info(self, order_id: str, platform: str) -> Optional[DealCloseInfo]:
         connector = self._connector_by_platform_str(platform)
         return connector.get_deal_close_info(order_id)
+
+    def get_pending_order_fill_deals(
+        self, order_id: str, position_id: str, *, symbol: str,
+        platform: str, from_dt: datetime, to_dt: datetime,
+    ) -> list[dict]:
+        """Return source-verified entry/exit deals for one pending-order position."""
+        connector = self._connector_by_platform_str(platform)
+        fetch = getattr(connector, "get_deal_history", None)
+        if not callable(fetch):
+            return []
+        canonical_symbol = str(symbol or "").strip().upper()
+        ticket = str(order_id or "").strip()
+        position_ticket = str(position_id or "").strip()
+        rows = fetch(from_dt, to_dt)
+        return [
+            row for row in (rows or [])
+            if isinstance(row, dict)
+            and row.get("source_verified") is True
+            and str(row.get("symbol", "")).strip().upper() == canonical_symbol
+            and str(row.get("position_id", "")).strip() == position_ticket
+            and (not ticket or str(row.get("order", "")).strip() == ticket
+                 or str(row.get("position_id", "")).strip() == position_ticket)
+        ]
 
     def get_symbol_spec(self, symbol: str) -> dict:
         """Return broker symbol spec for *symbol*, or ``{}`` when unavailable."""
