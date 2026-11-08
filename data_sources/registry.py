@@ -61,11 +61,14 @@ class DataSourceRegistry:
         if start_epoch is not None and end_epoch is not None and start_epoch > end_epoch:
             raise ValueError("start_epoch cannot exceed end_epoch")
         with self._lock:
-            selected = (
-                tuple(self._adapters[name.strip().lower()] for name in providers if name.strip().lower() in self._adapters)
-                if providers is not None
-                else tuple(self._adapters.values())
-            )
+            if providers is None:
+                selected = tuple(self._adapters.values())
+            else:
+                requested = tuple(dict.fromkeys(str(name or "").strip().lower() for name in providers))
+                unknown = sorted(name for name in requested if name not in self._adapters)
+                if unknown:
+                    raise KeyError("unregistered data provider(s): " + ", ".join(unknown))
+                selected = tuple(self._adapters[name] for name in requested)
         output: list[DataObservation] = []
         for adapter in selected:
             observations = adapter.fetch(
