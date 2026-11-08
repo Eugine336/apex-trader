@@ -2720,6 +2720,16 @@ class CognitionLoop:
             return False
         if prior_status not in {"SUBMITTED", "DISPATCHED", "AMBIGUOUS"}:
             return prior_status == "ACKNOWLEDGED"
+        try:
+            pending_row = next(
+                (
+                    item for item in ledger.pending_actions(symbol)
+                    if str(item.get("action_id", "") or "") == action_id
+                ),
+                None,
+            )
+        except Exception:  # noqa: BLE001 — execution acknowledgement remains independent
+            pending_row = None
 
         intent_type = getattr(getattr(intent, "intent_type", None), "name", "")
         kind = {
@@ -2775,13 +2785,6 @@ class CognitionLoop:
                 self._management_unresolved_actions.discard(action_id)
                 if kind == "partial_close" and current_size is None:
                     try:
-                        pending_row = next(
-                            (
-                                item for item in ledger.pending_actions(symbol)
-                                if str(item.get("action_id", "") or "") == action_id
-                            ),
-                            None,
-                        )
                         before = float(pending_row.get("position_size_before")) if pending_row else None
                         closed_raw = (
                             broker_response.get("lots_closed")
