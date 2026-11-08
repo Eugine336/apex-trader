@@ -305,14 +305,28 @@ class TestGateRejection:
         assert result.rejected_by_gate
         assert broker.call_count == 0
 
-    def test_emergency_drawdown_blocks_modify(self):
+    def test_emergency_drawdown_allows_tightening_stop(self):
         broker = FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
         result = executor.execute(
-            _sl_intent(), _positions(), account_drawdown_pct=25.0,
+            _sl_intent(new_sl=1.08100),
+            _positions(direction="BUY", sl=1.08000),
+            account_drawdown_pct=25.0,
+        )
+        assert result.success
+        assert broker.call_count == 1
+
+    def test_emergency_drawdown_rejects_unknown_position_side(self):
+        broker = FakeBroker()
+        executor = ActionExecutor(broker, _fast_cfg())
+        result = executor.execute(
+            _sl_intent(new_sl=1.08100),
+            _positions(direction="", sl=1.08000),
+            account_drawdown_pct=25.0,
         )
         assert not result.success
         assert result.rejected_by_gate
+        assert broker.call_count == 0
 
     def test_emergency_drawdown_allows_close(self):
         broker = FakeBroker()
