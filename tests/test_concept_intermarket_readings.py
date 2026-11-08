@@ -46,7 +46,7 @@ def _bars(symbol, closes, base_epoch, cutoff):
 
 def test_intermarket_reader_emits_broker_neutral_pair_measurements():
     base = 1_800_000_000
-    cutoff = base + 10 * 300 + 100
+    cutoff = base + 11 * 300 + 100
     target_closes = [100 + index * 0.5 for index in range(12)]
     peer_closes = [50 + index * 0.25 for index in range(12)]
     module = IntermarketReadings()
@@ -85,7 +85,7 @@ def test_intermarket_reader_emits_broker_neutral_pair_measurements():
 
 def test_intermarket_reader_rejects_peer_symbol_provenance_mismatch():
     base = 1_800_000_000
-    cutoff = base + 10 * 300 + 100
+    cutoff = base + 11 * 300 + 100
     closes = [100 + index for index in range(12)]
     module = IntermarketReadings()
     context = {
@@ -102,7 +102,7 @@ def test_intermarket_reader_rejects_peer_symbol_provenance_mismatch():
 
 def test_intermarket_reader_does_not_use_forming_or_future_peer_bar():
     base = 1_800_000_000
-    cutoff = base + 10 * 300 + 100
+    cutoff = base + 11 * 300 + 100
     closes = [100 + index * 0.5 for index in range(12)]
     module = IntermarketReadings()
     context = {
