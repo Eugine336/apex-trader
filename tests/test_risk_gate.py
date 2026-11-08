@@ -136,11 +136,24 @@ class TestExposure:
         result = gate.validate(_sl_intent(), _positions(), account_drawdown_pct=5.0)
         assert result.allowed
 
-    def test_emergency_drawdown_blocks_modify(self):
+    def test_emergency_drawdown_allows_tightening_stop(self):
         gate = RiskGate()
-        result = gate.validate(_sl_intent(), _positions(), account_drawdown_pct=25.0)
+        result = gate.validate(
+            _sl_intent(new_sl=1.08100),
+            _positions(direction="BUY", sl=1.08000),
+            account_drawdown_pct=25.0,
+        )
+        assert result.allowed
+
+    def test_emergency_drawdown_still_blocks_stop_loosening(self):
+        gate = RiskGate()
+        result = gate.validate(
+            _sl_intent(new_sl=1.07900),
+            _positions(direction="BUY", sl=1.08000),
+            account_drawdown_pct=25.0,
+        )
         assert not result.allowed
-        assert "emergency" in result.reason.lower()
+        assert "loosening" in result.reason.lower()
 
     def test_emergency_drawdown_allows_close(self):
         gate = RiskGate()
@@ -154,10 +167,15 @@ class TestExposure:
         )
         assert result.allowed
 
-    def test_custom_threshold(self):
+    def test_custom_threshold_blocks_new_exposure(self):
         gate = RiskGate(GateConfig(emergency_drawdown_pct=10.0))
-        result = gate.validate(_sl_intent(), _positions(), account_drawdown_pct=12.0)
+        intent = Intent.open(
+            symbol="EURUSD", direction="BUY", lots=0.1, entry_price=1.085,
+            sl=1.080, tp=1.095, source="test", reason="test",
+        )
+        result = gate.validate(intent, _positions(), account_drawdown_pct=12.0)
         assert not result.allowed
+        assert "emergency" in result.reason.lower()
 
 
 # ── Rate limit ───────────────────────────────────────────────────────
