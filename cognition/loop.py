@@ -644,6 +644,7 @@ class CognitionLoop:
         self._manage_intended = 0
         self._manage_submitted = 0
         self._manage_suppressed = 0
+        self._manage_ambiguous = 0
         # Part XVIII Art 13 — management follows evidence, not clocks. A per-
         # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
         # from re-managing the same campaign on every micro-event, while the
@@ -2648,8 +2649,90 @@ class CognitionLoop:
                         return False
                     milestone_pending = True
 
-                sink_result = self._management_sink(action, position)
-                if sink_result is False:
+                ledger = self._management_action_ledger
+                if ledger is None and str(getattr(action, "action_id", "") or "").strip():
+                    try:
+                        from cognition.management_action_ledger import ManagementActionLedger
+                        ledger = ManagementActionLedger(self._candidate_event_store)
+                        self._management_action_ledger = ledger
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[cognition-loop] management action ledger unavailable: %s", exc,
+                        )
+                ledger_started = False
+                action_id = str(getattr(action, "action_id", "") or "").strip()
+                if ledger is not None and action_id:
+                    begin, ledger_reason = ledger.begin(action, position)
+                    if begin is False:
+                        self._manage_suppressed += 1
+                        logger.warning(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
+                            "duplicate or unresolved action already exists (%s)",
+                            action.symbol, action.kind, action_id, ledger_reason,
+                        )
+                        return False
+                    if begin is True:
+                        ledger_started = True
+                    elif action.kind in {"scale_in", "reverse"}:
+                        self._manage_suppressed += 1
+                        logger.error(
+                            "[cognition-loop] MANAGE-SUPPRESSED %s %s: "
+                            "risk-increasing action requires durable action ledger (%s)",
+                            action.symbol, action.kind, ledger_reason,
+                        )
+                        return False
+                    else:
+                        logger.error(
+                            "[cognition-loop] protective management proceeding without durable "
+                            "action ledger; reconciliation visibility is degraded (%s)",
+                            ledger_reason,
+                        )
+
+                try:
+                    sink_result = self._management_sink(action, position)
+                except Exception as sink_exc:
+                    if ledger_started:
+                        ledger.finish(action, "AMBIGUOUS", error=f"{type(sink_exc).__name__}: {sink_exc}")
+                    self._manage_ambiguous += 1
+                    logger.error(
+                        "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: sink raised %s",
+                        action.symbol, action.kind, action_id or "legacy",
+                        type(sink_exc).__name__,
+                    )
+                    return False
+
+                broker_response = getattr(sink_result, "broker_response", None)
+                explicit_rejection = sink_result is False or (
+                    getattr(sink_result, "rejected_by_gate", False) is True
+                ) or (
+                    broker_response is not None
+                    and getattr(broker_response, "success", None) is False
+                )
+                acknowledged = sink_result is True or getattr(sink_result, "success", None) is True
+                if sink_result is None and not action_id:
+                    # Preserve the documented legacy void-callback contract only
+                    # when no canonical action ID exists to deduplicate/reconcile.
+                    acknowledged = True
+                if explicit_rejection:
+                    outcome = "REJECTED"
+                elif acknowledged:
+                    outcome = "ACKNOWLEDGED"
+                else:
+                    outcome = "AMBIGUOUS"
+
+                if ledger_started:
+                    durable_ack = ledger.finish(
+                        action, outcome, response=broker_response or sink_result,
+                        error=str(getattr(sink_result, "error", "") or ""),
+                    )
+                    if not durable_ack:
+                        logger.error(
+                            "[cognition-loop] management action %s outcome %s could not be "
+                            "durably recorded; write-ahead record remains unresolved",
+                            action_id, outcome,
+                        )
+
+                if outcome == "REJECTED":
                     if milestone_pending:
                         clearer = getattr(self._memory, "clear_milestone_pending", None)
                         cleared = False
@@ -2666,10 +2749,19 @@ class CognitionLoop:
                     self._manage_suppressed += 1
                     logger.warning(
                         "[cognition-loop] MANAGE-SUPPRESSED %s %s (dir=%s): "
-                        "execution sink rejected the action",
+                        "execution sink explicitly rejected the action",
                         action.symbol, action.kind, action.direction,
                     )
                     return False
+                if outcome == "AMBIGUOUS":
+                    self._manage_ambiguous += 1
+                    logger.error(
+                        "[cognition-loop] MANAGE-AMBIGUOUS %s %s action_id=%s: "
+                        "no broker acknowledgement; action will not be replayed",
+                        action.symbol, action.kind, action_id or "legacy",
+                    )
+                    return False
+
                 self._manage_submitted += 1
                 logger.info(
                     "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
@@ -2767,6 +2859,7 @@ class CognitionLoop:
             "manage_intended": self._manage_intended,
             "manage_submitted": self._manage_submitted,
             "manage_suppressed": self._manage_suppressed,
+            "manage_ambiguous": self._manage_ambiguous,
             "campaign_registry_wired": self._campaigns is not None,
             "live_campaigns": (
                 len(self._campaigns.live_campaigns())
