@@ -173,6 +173,14 @@ The audit now reports a separate acceptance decision. A connected terminal alone
 
 The report is an aggregate capability artifact; do not commit it if it contains owner account or broker operational information. Keep it on the owner host and share only the sanitized acceptance summary. This check does not prove strategy profitability, calibration validity, external-provider licensing or production lifecycle acceptance.
 
+Run the separate read-only full-universe concept benchmark on the same host:
+
+```powershell
+python scripts/benchmark_concept_pipeline.py --count 500 --timeframes M5 M15 H1 H4
+```
+
+The benchmark must report `status=complete` for both cold and warm passes. It requires every configured symbol and timeframe exactly once, the requested bar depth, and zero reader failures. Preserve the generated report locally; share the sanitized summary with per-symbol median/p95 and missing-symbol/timeframe details. The benchmark performs no broker mutations. The production B3/B7 lifecycle trace remains a distinct acceptance artifact: it must show broker-confirmed management outcomes and canonical owner-limit evaluation from the connected account; a synthetic test or this data audit is not a substitute.
+
 
 ### Atomic portfolio snapshot contract
 
