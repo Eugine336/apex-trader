@@ -295,6 +295,7 @@ class ActionExecutor:
         intent_target = finite_positive(intent.new_tp)
         if None in (entry, stop, target, risk, reward, reward_r, live_entry, intent_stop, intent_target):
             return "market_payoff_geometry_contains_invalid_price_or_distance"
+        tolerance = max(1e-9, abs(entry) * 1e-8)
         if order_type in {"LIMIT", "STOP"}:
             if abs(live_entry - entry) > tolerance:
                 return "pending_order_geometry_entry_price_mismatch"
