@@ -183,14 +183,18 @@ class RiskGate:
         self, intent: Intent, drawdown_pct: float,
     ) -> GateResult:
         if drawdown_pct >= self._cfg.emergency_drawdown_pct:
-            if intent.intent_type in (IntentType.CLOSE, IntentType.PARTIAL_CLOSE):
+            # MODIFY_SL has already passed _check_sl_direction() in validate(),
+            # so only a verified tightening (or adding a missing stop) reaches
+            # this point. Permit it alongside closes: emergency protection must
+            # not prevent reducing the risk of an already-open position.
+            if intent.intent_type in _RISK_REDUCING_TYPES:
                 return GateResult(allowed=True)
             return GateResult(
                 allowed=False,
                 reason=(
                     f"Emergency drawdown ({drawdown_pct:.1f}% >= "
                     f"{self._cfg.emergency_drawdown_pct:.1f}%): "
-                    f"only CLOSE/PARTIAL_CLOSE allowed"
+                    f"only risk-reducing CLOSE/PARTIAL_CLOSE/MODIFY_SL allowed"
                 ),
             )
         return GateResult(allowed=True)
