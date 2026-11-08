@@ -152,7 +152,7 @@ def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_s
     assert ledger.pending_actions("EURUSD") == []
 
 
-def test_reverse_reconciliation_requires_closed_original_and_verified_opposite_open():
+def test_reverse_reconciliation_confirms_close_only_before_fresh_opposite_entry():
     store = _Store()
     ledger = ManagementActionLedger(store)
     action = _action()
@@ -178,13 +178,10 @@ def test_reverse_reconciliation_requires_closed_original_and_verified_opposite_o
         "source_timestamp_verified": True,
         "symbol": "EURUSD",
         "closed_position_ticket": "ticket-1",
-        "position_ticket": "ticket-2",
         "book_complete": True,
         "platform_confirmed": True,
-        "position_present": True,
-        "direction": "SHORT",
+        "position_present": False,
         "closed_deal_verified": True,
-        "opening_deal_verified": True,
         "deal": 9988,
     }
     assert ledger.reconcile(action.action_id, "EURUSD", evidence) is True
