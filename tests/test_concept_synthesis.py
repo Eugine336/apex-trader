@@ -9,6 +9,7 @@ def _reading(concept, direction, strength, evidence_id, *, activated=True, timef
         "timeframe": timeframe,
         "source_bar_epoch": epoch,
         "source_timestamp_epoch": epoch,
+        "relevance_horizon_seconds": 300.0,
         "source_timestamp_verified": True,
         "symbol": "EURUSD",
         "data_basis": "completed_ohlc",
@@ -253,3 +254,12 @@ def test_evidence_projection_preserves_symbol_and_one_decision_time_cutoff():
     groups = [item for item in hypotheses if item.hypothesis_kind.startswith("concept_group:")]
     assert len(groups) == 1
     assert groups[0].supporting_evidence_ids == ["valid"]
+
+
+def test_stale_source_bar_cannot_qualify_when_recently_reingested():
+    stale = _reading("crt", "LONG", 0.9, "stale", epoch=700.0)
+    stale["relevance_horizon_seconds"] = 300.0
+
+    assert synthesize_concept_readings(
+        [stale], symbol="EURUSD", decision_cutoff_epoch=1100.0,
+    ) == []
