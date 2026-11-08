@@ -637,7 +637,9 @@ class PlatformManager:
         )
         if trackable:
             lifecycle_context = {
-                "order_id": str(result.order_id or ""), "order_type": str(order_type or "").upper(),
+                "order_id": str(result.order_id or ""),
+                "tracking_key": str(result.order_id or idempotency_key),
+                "order_type": str(order_type or "").upper(),
                 "direction": str(direction or "").upper(), "lots": float(result.lots or lots),
                 "entry_price": float(result.requested_price or entry_price),
                 "sl": float(result.sl or sl), "tp": float(result.tp or tp),
