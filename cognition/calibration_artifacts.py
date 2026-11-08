@@ -31,6 +31,7 @@ _LOG = logging.getLogger(__name__)
 _CANDIDATE_EVENT = "COGNITIVE_CANDIDATE_SNAPSHOT"
 _OUTCOME_EVENT = "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
 _DISPOSITION_EVENT = "COGNITIVE_CANDIDATE_DISPOSITION"
+_QUOTE_HISTORY_EVENT = "COGNITIVE_QUOTE_HISTORY_BATCH"
 
 _GEOMETRY_TIMEFRAME_SECONDS = {
     "M1": 60.0,
@@ -314,7 +315,8 @@ class CalibrationProducer:
             snapshots, snapshots_complete = self._query_all(_CANDIDATE_EVENT, sym)
             outcomes, outcomes_complete = self._query_all(_OUTCOME_EVENT, sym)
             dispositions, dispositions_complete = self._query_all(_DISPOSITION_EVENT, sym)
-            if not (snapshots_complete and outcomes_complete and dispositions_complete):
+            quote_batches, quote_batches_complete = self._query_all(_QUOTE_HISTORY_EVENT, sym)
+            if not (snapshots_complete and outcomes_complete and dispositions_complete and quote_batches_complete):
                 return []
             candidate_map: dict[str, dict] = {}
             duplicate_candidate_ids: set[str] = set()
@@ -328,6 +330,29 @@ class CalibrationProducer:
                 else:
                     candidate_map[candidate_id] = payload
 
+            from platforms.quote_history import (
+                quote_history_quote_digest, verify_quote_history_manifest,
+            )
+            quote_history_map: dict[str, dict] = {}
+            duplicate_quote_batch_ids: set[str] = set()
+            invalid_quote_manifests = 0
+            for row in quote_batches:
+                payload = self._payload(row)
+                batch_id = str(payload.get("batch_id", "") or "")
+                if not batch_id:
+                    invalid_quote_manifests += 1
+                    continue
+                if (
+                    row.get("source_module") != "platform_manager.quote_history"
+                    or not verify_quote_history_manifest(payload)
+                    or str(payload.get("symbol", "") or "").strip().upper() != sym
+                ):
+                    invalid_quote_manifests += 1
+                    continue
+                if batch_id in quote_history_map:
+                    duplicate_quote_batch_ids.add(batch_id)
+                else:
+                    quote_history_map[batch_id] = payload
             outcome_map: dict[tuple[str, int], dict] = {}
             duplicate_outcome_keys: set[tuple[str, int]] = set()
             for row in outcomes:
@@ -361,10 +386,14 @@ class CalibrationProducer:
             # Duplicate candidate or outcome records make the dataset ambiguous.
             # Fail the entire refresh closed rather than issuing artifacts for
             # unaffected cohorts while the shared ledger is known to be corrupt.
-            if duplicate_candidate_ids or duplicate_outcome_keys:
+            if (
+                duplicate_candidate_ids or duplicate_outcome_keys
+                or duplicate_quote_batch_ids or invalid_quote_manifests
+            ):
                 _LOG.error(
-                    "Calibration refresh rejected for %s: duplicate candidate IDs=%d, duplicate outcome keys=%d",
+                    "Calibration refresh rejected for %s: duplicate candidate IDs=%d, duplicate outcome keys=%d, duplicate quote batches=%d, invalid quote manifests=%d",
                     sym, len(duplicate_candidate_ids), len(duplicate_outcome_keys),
+                    len(duplicate_quote_batch_ids), invalid_quote_manifests,
                 )
                 return []
 
