@@ -124,6 +124,8 @@ class ManagementActionLedger:
             if raw is not None:
                 try:
                     candidate = float(raw)
+                # SAFE-FALLBACK: malformed optional position-size metadata is omitted;
+                # it never authorizes execution or changes the broker position.
                 except (TypeError, ValueError, OverflowError):
                     continue
                 if math.isfinite(candidate) and candidate >= 0.0:
