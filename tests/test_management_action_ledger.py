@@ -150,3 +150,42 @@ def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_s
     assert ledger.reconcile(action.action_id, "EURUSD", valid) is True
     assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
     assert ledger.pending_actions("EURUSD") == []
+
+
+def test_reverse_reconciliation_requires_closed_original_and_verified_opposite_open():
+    store = _Store()
+    ledger = ManagementActionLedger(store)
+    action = _action()
+    action.kind = "reverse"
+    action.target_direction = "SHORT"
+    action.to_dict = lambda: {
+        "action_id": action.action_id,
+        "symbol": action.symbol,
+        "kind": action.kind,
+        "decision_id": action.decision_id,
+        "campaign_id": action.campaign_id,
+        "opportunity_id": action.opportunity_id,
+        "direction": "LONG",
+        "target_direction": "SHORT",
+    }
+    position = SimpleNamespace(ticket="ticket-1", lots=0.2)
+    assert ledger.begin(action, position)[0] is True
+    assert ledger.finish(action, "AMBIGUOUS", error="response lost") is True
+
+    evidence = {
+        "source": "mt5.positions_and_deals",
+        "source_timestamp_epoch": time.time(),
+        "source_timestamp_verified": True,
+        "symbol": "EURUSD",
+        "closed_position_ticket": "ticket-1",
+        "position_ticket": "ticket-2",
+        "book_complete": True,
+        "platform_confirmed": True,
+        "position_present": True,
+        "direction": "SHORT",
+        "closed_deal_verified": True,
+        "opening_deal_verified": True,
+        "deal": 9988,
+    }
+    assert ledger.reconcile(action.action_id, "EURUSD", evidence) is True
+    assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
