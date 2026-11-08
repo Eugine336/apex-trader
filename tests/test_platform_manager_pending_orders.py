@@ -72,6 +72,31 @@ def test_cancel_pending_routes_to_only_unique_verified_account():
     assert second.cancelled == []
 
 
+def test_cancel_pending_refuses_when_any_mt5_account_is_disconnected():
+    first = PendingConnector(live=[_pending()])
+    second = PendingConnector(live=[])
+    manager = _manager([first, second])
+    manager._mt5_connected_flags = [True, False]
+
+    assert manager.cancel_pending_order("901", symbol="EURUSD") is False
+    assert first.cancelled == []
+    assert second.cancelled == []
+
+
+def test_pending_reconciliation_stays_unknown_when_account_set_is_incomplete():
+    manager = _manager([
+        PendingConnector(live=[_pending()]),
+        PendingConnector(live=[], history=[]),
+    ])
+    manager._mt5_connected_flags = [True, False]
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "UNKNOWN"
+    assert outcome["reason"] == "mt5_account_set_incomplete"
+    assert outcome["broker_confirmed"] is False
+
 def test_pending_reconciliation_never_infers_cancelled_from_live_book_absence():
     manager = _manager([PendingConnector(live=[], history=[])])
     outcome = manager.reconcile_pending_order(
