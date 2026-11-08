@@ -229,8 +229,7 @@ def audit_connector(
                 ticks = ticks_result["value"]
                 attrs = getattr(ticks, "attrs", {}) if ticks is not None else {}
                 columns = set(getattr(ticks, "columns", [])) if ticks is not None else set()
-                flags = ticks["flags"].tolist() if ticks is not None and "flags" in columns else []
-                row["historical_ticks"] = {
+                aggressor = (\n                    ticks["aggressor_side"].fillna("unknown").astype(str).str.lower().tolist()\n                    if ticks is not None and "aggressor_side" in columns else []\n                )\n                row["historical_ticks"] = {
                     "status": "AVAILABLE" if ticks is not None and len(ticks) else "EMPTY",
                     "row_count": len(ticks) if ticks is not None else 0,
                     "source": attrs.get("source") if isinstance(attrs, dict) else None,
@@ -241,9 +240,7 @@ def audit_connector(
                     "aggressor_side_basis": (
                         attrs.get("aggressor_side_basis") if isinstance(attrs, dict) else None
                     ),
-                    "buy_flag_rows": sum(bool(int(value or 0) & 16) for value in flags),
-                    "sell_flag_rows": sum(bool(int(value or 0) & 32) for value in flags),
-                    "error": ticks_result["error"],
+                    "broker_classified_buy_rows": sum(value == "buy" for value in aggressor),\n                    "broker_classified_sell_rows": sum(value == "sell" for value in aggressor),\n                    "aggressor_unknown_rows": sum(value not in {"buy", "sell"} for value in aggressor),\n                    "error": ticks_result["error"],
                     "note": "MT5 tick flags are not assumed to be exchange trade prints or universal aggressor-side volume.",
                 }
 
