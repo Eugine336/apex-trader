@@ -743,11 +743,17 @@ class PlatformManager:
             record = history_matches[0]
             state = getattr(record.get("state"), "value", record.get("state"))
             state_name = str(state).upper()
+            try:
+                from platforms.mt5 import mt5_connector as mt5_adapter
+                mt5_constants = getattr(mt5_adapter, "mt5", None)
+            except Exception:
+                mt5_constants = None
             state_map = {
-                str(getattr(connector_mt5, "ORDER_STATE_FILLED", object())): "FILLED",
-                str(getattr(connector_mt5, "ORDER_STATE_CANCELED", object())): "CANCELLED",
-                str(getattr(connector_mt5, "ORDER_STATE_EXPIRED", object())): "EXPIRED",
-                str(getattr(connector_mt5, "ORDER_STATE_REJECTED", object())): "REJECTED",
+                str(getattr(mt5_constants, "ORDER_STATE_FILLED", 4)): "FILLED",
+                str(getattr(mt5_constants, "ORDER_STATE_CANCELED", 2)): "CANCELLED",
+                str(getattr(mt5_constants, "ORDER_STATE_EXPIRED", 6)): "EXPIRED",
+                str(getattr(mt5_constants, "ORDER_STATE_REJECTED", 5)): "REJECTED",
+                str(getattr(mt5_constants, "ORDER_STATE_PARTIAL", 3)): "PARTIALLY_FILLED",
             }
             # MT5 history state is a numeric enum; preserve unknown values rather than guessing.
             normalized = state_map.get(state_name, "UNKNOWN")
