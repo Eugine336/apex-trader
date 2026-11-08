@@ -108,7 +108,12 @@ def test_milestone_is_persisted_before_sink_and_duplicate_submission_is_blocked(
     store = _store()
     calls = []
     loop = _loop(store)
-    loop.set_management_sink(lambda action, position: calls.append(action) or True)
+    loop.set_management_sink(lambda action, position: (
+        calls.append(action) or SimpleNamespace(
+            success=True,
+            broker_response=SimpleNamespace(success=True, deal=1234),
+        )
+    ))
     output, position = _output(), _position()
 
     loop._realise_management(output, position)
@@ -158,4 +163,35 @@ def test_explicit_sink_rejection_clears_write_ahead_marker_for_retry():
     )
     assert len(calls) == 2
     assert accepted["pending_milestone"]["milestone_id"] == "market_structure:H1:1:1.105"
+    store.close()
+
+
+def test_ambiguous_management_sink_result_is_durable_and_never_replayed():
+    store = _store()
+    event_store = _EventStore()
+    ledger = ManagementActionLedger(event_store)
+    calls = []
+    loop = _loop(store, ledger)
+
+    def sink(action, position):
+        calls.append(action)
+        return SimpleNamespace(
+            success=False,
+            rejected_by_gate=False,
+            error="broker response timed out",
+            broker_response=None,
+        )
+
+    loop.set_management_sink(sink)
+    output, position = _output(), _position()
+    loop._realise_management(output, position)
+    loop._realise_management(output, position)
+
+    assert len(calls) == 1
+    assert loop.get_status()["manage_ambiguous"] == 1
+    assert ledger.status(calls[0].action_id, "EURUSD") == "AMBIGUOUS"
+    progress = store.get_management_progress(
+        "campaign-1", current_size=0.2, now_ms=10_000,
+    )
+    assert progress["pending_milestone"]["milestone_id"] == "market_structure:H1:1:1.105"
     store.close()
