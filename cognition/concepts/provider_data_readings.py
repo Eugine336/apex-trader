@@ -241,7 +241,12 @@ class ProviderDataReadings:
                 EvidenceDomain.OTHER,
                 f"{symbol}: {len(derivative_rows)} venue-specific derivatives observations are available.",
                 {"contracts": derivative_rows, "contract_count": len(derivative_rows)},
-                ("contract expiry and roll conventions verified for the underlying instrument",),
+                ("contract expiry and roll conventions verified for the underlying instrument",)
+                + tuple(
+                    f"derivatives observation missing {field}"
+                    for field in ("expiry_epoch", "implied_volatility", "skew", "open_interest")
+                    if not any(row[field] is not None for row in derivative_rows)
+                ),
                 provider_epoch=max(row["source_timestamp_epoch"] for row in derivative_rows),
             ))
 
@@ -263,7 +268,12 @@ class ProviderDataReadings:
                 EvidenceDomain.ORDER_FLOW,
                 f"{symbol}: {len(crypto_rows)} venue-specific crypto derivatives observations are available.",
                 {"observations": crypto_rows, "observation_count": len(crypto_rows)},
-                ("venue-specific instrument and contract semantics validated",),
+                ("venue-specific instrument and contract semantics validated",)
+                + tuple(
+                    f"venue feed has no {kind.value} observations"
+                    for kind in (ObservationKind.FUNDING, ObservationKind.OPEN_INTEREST, ObservationKind.LIQUIDATION)
+                    if not any(row["kind"] == kind.value for row in crypto_rows)
+                ),
                 provider_epoch=max(row["source_timestamp_epoch"] for row in crypto_rows),
             ))
 
@@ -339,6 +349,7 @@ class ProviderDataReadings:
                 or fill is None or fill <= 0
                 or quote_epoch is None or fill_epoch is None
                 or quote_epoch > fill_epoch or fill_epoch > cutoff
+                or not math.isclose(fill_epoch, provenance.source_timestamp_epoch, rel_tol=0.0, abs_tol=1e-6)
             ):
                 continue
             executable_quote = ask if side == "BUY" else bid
