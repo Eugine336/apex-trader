@@ -2617,13 +2617,16 @@ class CognitionLoop:
             return False
         action_id = str(action_id or "").strip()
         symbol = str(symbol or "").strip().upper()
-        pending = next(
-            (
-                item for item in (getattr(ledger, "pending_actions", lambda _symbol: [])(symbol) or [])
-                if str(item.get("action_id", "") or "") == action_id
-            ),
-            None,
-        )
+        try:
+            pending = next(
+                (
+                    item for item in (getattr(ledger, "pending_actions", lambda _symbol: [])(symbol) or [])
+                    if str(item.get("action_id", "") or "") == action_id
+                ),
+                None,
+            )
+        except Exception:  # noqa: BLE001 — ledger read fault must not resolve anything
+            pending = None
         try:
             reconciled = reconcile(action_id, symbol, broker_evidence)
         except Exception as exc:  # noqa: BLE001 — never clear a pending action on a fault
