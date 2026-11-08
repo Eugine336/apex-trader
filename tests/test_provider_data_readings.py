@@ -106,6 +106,7 @@ def test_provider_readers_consume_normalized_observations_and_preserve_vintages(
         "data_source_registry": registry,
         "analysis_epoch": CUTOFF,
         "symbol_spec": {
+            "source_verified": True, "specification_verified": True,
             "currency_base": "XAU", "currency_profit": "USD",
         },
     }
@@ -136,7 +137,8 @@ def test_external_gate_is_suppressed_only_for_provider_concepts_actually_read():
     }]}
     context = {
         "data_source_registry": registry, "analysis_epoch": CUTOFF,
-        "symbol_spec": {"currency_base": "XAU", "currency_profit": "USD"},
+        "symbol_spec": {"source_verified": True, "specification_verified": True,
+                        "currency_base": "XAU", "currency_profit": "USD"},
     }
     provider_readings = ProviderDataReadings().read_with_context("XAUUSD", bars, context)
     gated = ExternalDataGatedReadings().read_with_context(
