@@ -17,6 +17,16 @@ _ACKNOWLEDGED = "MANAGEMENT_ACTION_ACKNOWLEDGED"
 _REJECTED = "MANAGEMENT_ACTION_REJECTED"
 _AMBIGUOUS = "MANAGEMENT_ACTION_AMBIGUOUS"
 
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _payload(row: dict) -> dict:
     try:
         parsed = json.loads(row.get("payload_json") or "{}")
