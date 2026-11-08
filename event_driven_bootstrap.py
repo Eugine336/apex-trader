@@ -5726,10 +5726,15 @@ class EventDrivenSystem:
                     elif attribution in {"unresolved_position_ticket", "unresolved_closed_fill"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
-                    elif status in {"PENDING", "PARTIALLY_FILLED_PENDING", "PARTIALLY_FILLED_TERMINAL"}:
+                    elif status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+                        if ticket in restored:
+                            restored[ticket].update(payload)
+                    elif status == "PARTIALLY_FILLED_TERMINAL" and attribution not in {"attributed", "closed_before_position_poll"}:
                         if ticket in restored:
                             restored[ticket].update(payload)
                     else:
+                        # A terminal fill already attributed to its broker position
+                        # or closed trade is complete; never resurrect it on restart.
                         restored.pop(ticket, None)
             with self._pending_orders_lock:
                 self._pending_orders = restored
