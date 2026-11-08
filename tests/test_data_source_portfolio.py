@@ -109,3 +109,24 @@ def test_portfolio_snapshot_provider_failure_is_visible_and_incomplete():
     assert result["complete"] is False
     assert result["provider_errors"] == {"broken": "ConnectionError"}
     assert result["unknowns"]
+
+
+
+def test_portfolio_risk_reader_consumes_registered_broker_snapshot():
+    from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
+
+    registry = DataSourceRegistry()
+    registry.register(_PortfolioProvider())
+    bars = {"M5": [{
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+        "timestamp_epoch": 1_799_999_900,
+        "source_timestamp_verified": True,
+    }]}
+    (reading,) = PortfolioRiskReadings().read_with_context(
+        "XAUUSD", bars,
+        {"data_source_registry": registry, "analysis_epoch": 1_800_000_100},
+    )
+    assert reading.applicable is True
+    assert reading.facts["portfolio_snapshot_verified"] is True
+    assert reading.facts["account_equity"] == 10_000.0
+    assert reading.facts["open_risk_account_ccy"] == 100.0
