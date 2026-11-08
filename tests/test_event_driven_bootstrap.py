@@ -600,6 +600,41 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
+    def test_filled_order_without_position_identity_is_not_attributed_by_order_ticket(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-IDENTITY": {
+                "order_id": "ORDER-IDENTITY", "symbol": "EURUSD", "direction": "BUY",
+                "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
+                "sl": 98.0, "tp": 101.0,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        system._entry_context = {}
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "FILLED", "broker_confirmed": True,
+                "record": {"ticket": "ORDER-IDENTITY", "position_id": ""},
+            },
+        )
+        system._on_order_filled = MagicMock()
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([
+                SimpleNamespace(
+                    order_id="ORDER-IDENTITY", symbol="EURUSD", direction="BUY",
+                    open_price=99.0, lots=0.1, sl=98.0, tp=101.0,
+                ),
+            ])
+
+        assert "ORDER-IDENTITY" in system._pending_orders
+        system._on_order_filled.assert_not_called()
+
     def test_unknown_broker_absence_never_removes_pending_order(self):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
