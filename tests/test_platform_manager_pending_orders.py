@@ -14,6 +14,8 @@ class PendingConnector:
         self.history = list(history or [])
         self.cancel_result = cancel_result
         self.fail = fail
+        self.deals = []
+        self.deal_fail = False
         self.cancelled = []
 
     def get_pending_order_snapshots(self):
@@ -25,6 +27,11 @@ class PendingConnector:
         if self.fail:
             raise RuntimeError("broker history unavailable")
         return list(self.history)
+
+    def get_deal_history_checked(self, start, end):
+        if self.deal_fail:
+            raise RuntimeError("broker deal history unavailable")
+        return list(self.deals)
 
     def cancel_pending_order(self, ticket):
         self.cancelled.append(str(ticket))
@@ -112,6 +119,47 @@ def test_pending_reconciliation_duplicate_ticket_across_accounts_is_ambiguous():
     assert outcome["status"] == "AMBIGUOUS"
     assert outcome["broker_confirmed"] is False
 
+
+def test_cancelled_order_with_zero_remainder_uses_deals_to_preserve_partial_fill(monkeypatch):
+    from platforms.mt5 import mt5_connector as mt5_adapter
+
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 2,
+        "volume_initial": 0.10, "volume_current": 0.0,
+        "source_verified": True,
+    }
+    connector = PendingConnector(history=[record])
+    connector.deals = [{
+        "ticket": "8001", "order": "901", "position_id": "902",
+        "symbol": "EURUSD", "entry": 0, "volume": 0.04,
+        "source_verified": True,
+    }]
+    manager = _manager([connector])
+    monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "PARTIALLY_FILLED_TERMINAL"
+    assert outcome["record"]["position_id"] == "902"
+    assert outcome["record"]["filled_volume"] == 0.04
+
+
+def test_cancelled_order_with_incomplete_deal_history_remains_unknown():
+    record = {
+        "ticket": "901", "symbol": "EURUSD", "state": 2,
+        "volume_initial": 0.10, "volume_current": 0.0,
+        "source_verified": True,
+    }
+    connector = PendingConnector(history=[record])
+    connector.deal_fail = True
+    manager = _manager([connector])
+    outcome = manager.reconcile_pending_order(
+        "901", symbol="EURUSD",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    assert outcome["status"] == "UNKNOWN"
+    assert outcome["reason"] == "terminal_order_deal_history_incomplete"
 
 def test_pending_reconciliation_maps_verified_cancelled_history_state():
     record = {
