@@ -369,3 +369,56 @@ def test_future_source_bar_cannot_define_geometry():
     for item in state.evidence:
         item.measurements["source_bar_epoch"] = time.time() + 30
     assert derive_opportunity_geometry(state, "LONG") is None
+
+
+def test_conflicting_active_concept_geometry_cannot_fall_back_to_generic_structure():
+    state = _state()
+    stamp = time.time()
+
+    def concept_reading(evidence_id, entry):
+        return Evidence(
+            source_module=f"concept.crt.{evidence_id}",
+            domain=EvidenceDomain.STRUCTURE,
+            symbol="SYNTHETIC",
+            observation="active concept geometry with a distinct entry instruction",
+            confidence=0.8,
+            uncertainty=0.2,
+            measurements={
+                "source_kind": "concept_reading",
+                "source_timestamp_known": True,
+                "data_basis": "completed_ohlc",
+                "provisional": False,
+                "applicable": True,
+                "source_bar_epoch": stamp,
+                "reference_close": 1.100,
+                "concept": "crt",
+                "timeframe": "M5",
+                "reference_timeframe": "M5",
+                "independence_group": "ohlc:SYNTHETIC:M5",
+                "implications": [{
+                    "direction": "LONG",
+                    "activated": True,
+                    "strength": 0.8,
+                    "entry_price": entry,
+                    "order_type": "MARKET",
+                    "invalidation_price": 1.095,
+                    "objective_price": 1.105,
+                    "activation_reason": "completed-bar setup",
+                    "invalidation_reason": "structural invalidation",
+                }],
+            },
+            timestamp_epoch=stamp,
+            relevance_horizon_seconds=900.0,
+            source_timestamp_epoch=stamp,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            provisional=False,
+        )
+
+    state.add(concept_reading("concept-entry-a", 1.100))
+    state.add(concept_reading("concept-entry-b", 1.101))
+
+    # The generic structure-only resolver could form a valid setup from the
+    # market-lens evidence in _state(). It must not override the conflicting
+    # activated concept instructions.
+    assert derive_opportunity_geometry(state, "LONG") is None
