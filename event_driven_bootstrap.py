@@ -5622,30 +5622,7 @@ class EventDrivenSystem:
             merged = dict(prior) if isinstance(prior, dict) else {}
             merged.update(meta)
             self._pending_orders[tracking_key] = merged
-        # The in-memory projection is not restart-safe. Persist every accepted
-        # pending acknowledgement/status transition as a durable lifecycle event.
-        try:
-            from persistence import domain_events as DE
-            store = get_event_store()
-            if store is None:
-                logger.critical("[pending-orders] event store unavailable; pending order {} is memory-only", tracking_key)
-                return
-            store.emit(
-                event_type=DE.ORDER_PENDING, severity="INFO",
-                symbol=str(meta.get("symbol", "") or ""),
-                correlation_id=str(meta.get("decision_id", "") or "") or None,
-                parent_id=tracking_key,
-                source_module="execution.pending_order_submission",
-                durable=True,
-                payload={
-                    **meta,
-                    "tracking_key": tracking_key,
-                    "broker_confirmed": bool(getattr(result, "success", False)),
-                    "projection_status": str(meta.get("status", "UNKNOWN") or "UNKNOWN"),
-                },
-            )
-        except Exception as exc:
-            logger.critical("[pending-orders] durable lifecycle event failed for {}: {}", tracking_key, exc)
+
 
     def _restore_pending_orders(self) -> None:
         """Rebuild the pending-order projection from durable lifecycle events."""
