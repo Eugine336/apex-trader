@@ -25,6 +25,28 @@ _LEGACY_PREFIXES = ("APEX", "APEX_PEND")
 def _sanitize(value: str) -> str:
     """Strip non-alphanumeric chars (except . - _) to produce MT5-safe text."""
     return _SAFE_RE.sub("", value)
+def idempotency_comment_token(idem_key: str) -> str:
+    """Return a stable 12-character token that fits the MT5 comment field.
+
+    Existing native 12-character keys remain unchanged. Longer caller-supplied
+    keys are represented by a deterministic digest, never by a lossy prefix.
+    """
+    raw = str(idem_key or "")
+    sanitized = _sanitize(raw)
+    if len(sanitized) == 12:
+        return sanitized
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def matches_idempotency_comment(idem_key: str, comment: str) -> bool:
+    """Match both legacy raw-key comments and the bounded canonical token."""
+    key = str(idem_key or "").strip()
+    raw_comment = str(comment or "")
+    if not key:
+        return False
+    if key in raw_comment:
+        return True
+    return extract_idempotency_key(raw_comment) == idempotency_comment_token(key)
 
 
 def generate_idempotency_key(
@@ -91,7 +113,7 @@ def build_order_comment(
         APND  — pending limit / stop orders
     """
     pfx = _sanitize(prefix)[:4] or "APEX"
-    key = _sanitize(idem_key)[:12]
+    key = idempotency_comment_token(idem_key)
 
     fixed = f"{pfx}{_DELIM}{key}"
     budget = _MT5_COMMENT_MAX - len(fixed)
