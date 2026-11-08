@@ -818,7 +818,7 @@ class PlatformManager:
             candidate_status = str(getattr(candidate, "order_status", "UNKNOWN") or "UNKNOWN").upper()
             if candidate_status == "FILLED":
                 candidate_record = {
-                    "ticket": ticket, "position_id": str(getattr(candidate, "position_id", "") or ticket),
+                    "ticket": ticket, "position_id": str(getattr(candidate, "position_id", "") or ""),
                     "symbol": canonical_symbol, "state": getattr(candidate, "state", 4),
                     "connector_index": candidate_index,
                     "source": "mt5.idempotency_lookup", "source_verified": True,
