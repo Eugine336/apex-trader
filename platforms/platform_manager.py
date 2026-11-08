@@ -1146,6 +1146,46 @@ class PlatformManager:
             and (not ticket or str(row.get("order", "")).strip() == ticket)
         ]
 
+    def get_position_entry_order_ids(
+        self, position_id: str, *, symbol: str, platform: str,
+        from_dt: datetime, to_dt: datetime,
+    ) -> set[str]:
+        """Return exact source-verified entry order IDs contributing to a position."""
+        connector = self._connector_by_platform_str(platform)
+        fetch = getattr(connector, "get_deal_history_checked", None)
+        if not callable(fetch):
+            raise RuntimeError("source-verified position deal history is unavailable")
+        rows = fetch(from_dt, to_dt)
+        from platforms.mt5 import mt5_connector as mt5_adapter
+        mt5_constants = getattr(mt5_adapter, "mt5", None)
+        if mt5_constants is None:
+            raise RuntimeError("MT5 deal-entry constants unavailable")
+        entry_kinds = {
+            getattr(mt5_constants, "DEAL_ENTRY_IN"),
+            getattr(mt5_constants, "DEAL_ENTRY_INOUT"),
+        }
+        canonical_symbol = str(symbol or "").strip().upper()
+        position_ticket = str(position_id or "").strip()
+        order_ids: set[str] = set()
+        for row in rows:
+            if (
+                row.get("source_verified") is not True
+                or str(row.get("position_id", "")).strip() != position_ticket
+                or str(row.get("symbol", "")).strip().upper() != canonical_symbol
+            ):
+                continue
+            try:
+                entry_kind = int(row.get("entry"))
+            except (TypeError, ValueError, OverflowError) as exc:
+                _pm_logger.warning("[orders] malformed position deal entry for {}: {}", position_ticket, exc)
+                raise RuntimeError("position deal history contains malformed entry evidence") from exc
+            if entry_kind in entry_kinds:
+                order_id = str(row.get("order", "")).strip()
+                if not order_id:
+                    raise RuntimeError("position entry deal has no order ticket")
+                order_ids.add(order_id)
+        return order_ids
+
     def get_symbol_spec(self, symbol: str) -> dict:
         """Return broker symbol spec for *symbol*, or ``{}`` when unavailable."""
         try:
