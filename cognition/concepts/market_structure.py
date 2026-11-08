@@ -26,6 +26,9 @@ Nothing is invented: where history supplies no objective, the reading says so.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
+from functools import lru_cache
 from typing import Optional
 
 from cognition.contracts import EvidenceDomain
@@ -45,45 +48,160 @@ def _clean(bars: list[dict]) -> list[dict]:
     return out
 
 
-def fractal_swings(bars: list[dict]) -> list[tuple[int, str, float]]:
-    """Confirmed three-bar fractal swings as (index, 'H'|'L', price), alternating.
+def _swings_at(
+    values: tuple[tuple[float, float], ...], i: int, last_kind: str | None,
+) -> list[tuple[int, str, float]]:
+    """Swings confirmed at bar ``i`` (needs bar i+1). A bar that is both a swing high
+    and a swing low (an outside bar) is ordered so it alternates with the previous swing;
+    with no previous swing, the side that extended less beyond the previous bar comes
+    first. Neither rule looks at the letter H/L, so a mirrored chart gives the mirrored
+    swings."""
+    previous_high, previous_low = values[i - 1]
+    high, low = values[i]
+    following_high, following_low = values[i + 1]
+    found: list[tuple[int, str, float]] = []
+    if high > previous_high and high >= following_high:
+        found.append((i, "H", high))
+    if low < previous_low and low <= following_low:
+        found.append((i, "L", low))
+    if len(found) == 2:
+        if last_kind is not None:
+            first = "L" if last_kind == "H" else "H"
+        else:
+            first = "H" if (high - previous_high) < (previous_low - low) else "L"
+        found.sort(key=lambda swing: swing[1] != first)
+    return found
 
-    A swing at bar i is confirmed only once bar i+1 has completed (no look-ahead).
-    Consecutive swings of the same kind keep only the more extreme one. A bar that is
-    both a swing high and a swing low (an outside bar) is ordered so that it
-    alternates with the previous swing, or, with no previous swing, by its own
-    direction — never by the letter, so the result is identical on a mirrored chart.
-    """
+
+def _push_swing(out: list[tuple[int, str, float]], swing: tuple[int, str, float]) -> None:
+    if out and out[-1][1] == swing[1]:
+        more_extreme = swing[2] > out[-1][2] if swing[1] == "H" else swing[2] < out[-1][2]
+        if more_extreme:
+            out[-1] = swing
+        return
+    out.append(swing)
+
+
+@lru_cache(maxsize=512)
+def _fractal_swings_cached(
+    values: tuple[tuple[float, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
+    """Shared immutable swing result keyed by the exact high/low history."""
     out: list[tuple[int, str, float]] = []
+    for i in range(1, len(values) - 1):
+        for swing in _swings_at(values, i, out[-1][1] if out else None):
+            _push_swing(out, swing)
+    return tuple(out)
 
-    def push(sw: tuple[int, str, float]) -> None:
-        if out and out[-1][1] == sw[1]:
-            keep_new = sw[2] > out[-1][2] if sw[1] == "H" else sw[2] < out[-1][2]
-            if keep_new:
-                out[-1] = sw
-            return
-        out.append(sw)
 
-    for i in range(1, len(bars) - 1):
-        found = []
-        if bars[i]["high"] > bars[i - 1]["high"] and bars[i]["high"] >= bars[i + 1]["high"]:
-            found.append((i, "H", bars[i]["high"]))
-        if bars[i]["low"] < bars[i - 1]["low"] and bars[i]["low"] <= bars[i + 1]["low"]:
-            found.append((i, "L", bars[i]["low"]))
-        if len(found) == 2:
-            if out:
-                first = "L" if out[-1][1] == "H" else "H"
+_ROLLING_SWING_CACHE: OrderedDict[
+    str, tuple[tuple[tuple[float, float], ...], tuple[tuple[int, str, float], ...]]
+] = OrderedDict()
+_ROLLING_SWING_CACHE_LOCK = threading.RLock()
+_ROLLING_SWING_CACHE_MAX_ENTRIES = 1024
+_ROLLING_SWING_STATS = {
+    "exact_hits": 0, "prefix_hits": 0, "incremental_updates": 0, "full_rebuilds": 0,
+}
+
+
+def _append_confirmed_pivot(
+    values: tuple[tuple[float, float], ...],
+    pivots: tuple[tuple[int, str, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
+    if len(values) < 3:
+        return ()
+    index = len(values) - 2
+    out = list(pivots)
+    for swing in _swings_at(values, index, out[-1][1] if out else None):
+        _push_swing(out, swing)
+    return tuple(out)
+
+
+def fractal_swing_cache_status() -> dict[str, int]:
+    with _ROLLING_SWING_CACHE_LOCK:
+        return {**_ROLLING_SWING_STATS, "entries": len(_ROLLING_SWING_CACHE)}
+
+
+def clear_fractal_swing_cache() -> None:
+    with _ROLLING_SWING_CACHE_LOCK:
+        _ROLLING_SWING_CACHE.clear()
+        for key in _ROLLING_SWING_STATS:
+            _ROLLING_SWING_STATS[key] = 0
+    _fractal_swings_cached.cache_clear()
+
+
+def fractal_swings(
+    bars: list[dict], *, cache_key: str = "",
+) -> list[tuple[int, str, float]]:
+    """Confirmed fractal swings with append/rolling-window incremental updates.
+
+    The optional cache key scopes a series to one symbol/timeframe. If a new
+    completed bar is appended or a fixed-size history advances by one bar, only
+    the newly confirmable right-edge pivot is evaluated. Any gap or historical
+    correction triggers a full rebuild. Callers without a stable scope use the
+    bounded exact-history cache.
+    """
+    values = tuple(
+        (float(bar["high"]), float(bar["low"]))
+        for bar in bars
+    )
+    if not cache_key:
+        return list(_fractal_swings_cached(values))
+
+    key = str(cache_key)
+    with _ROLLING_SWING_CACHE_LOCK:
+        previous = _ROLLING_SWING_CACHE.get(key)
+        if previous is not None:
+            previous_values, previous_pivots = previous
+            if values == previous_values:
+                _ROLLING_SWING_CACHE.move_to_end(key)
+                _ROLLING_SWING_STATS["exact_hits"] += 1
+                return list(previous_pivots)
+            if (
+                len(values) + 1 == len(previous_values)
+                and values == previous_values[:-1]
+            ):
+                # A downstream concept may need the same history without the
+                # latest bar (pool-before-sweep semantics). Return that prefix
+                # view without replacing the full-series state used next cycle.
+                prefix_pivots = tuple(
+                    swing for swing in previous_pivots
+                    if swing[0] < len(values) - 1
+                )
+                _ROLLING_SWING_CACHE.move_to_end(key)
+                _ROLLING_SWING_STATS["prefix_hits"] += 1
+                return list(prefix_pivots)
+            if len(values) == len(previous_values) + 1 and values[:-1] == previous_values:
+                pivots = _append_confirmed_pivot(values, previous_pivots)
+                _ROLLING_SWING_STATS["incremental_updates"] += 1
+            elif len(values) == len(previous_values) and previous_values[1:] == values[:-1]:
+                # The source returns a fixed rolling window. Drop pivots whose
+                # left-hand confirmation bar has left the window, shift indices,
+                # then evaluate the newly confirmable right-edge pivot.
+                shifted = tuple(
+                    (index - 1, kind, price)
+                    for index, kind, price in previous_pivots
+                    if index > 1
+                )
+                pivots = _append_confirmed_pivot(values, shifted)
+                _ROLLING_SWING_STATS["incremental_updates"] += 1
             else:
-                first = "L" if bars[i]["close"] >= bars[i]["open"] else "H"
-            found.sort(key=lambda sw: sw[1] != first)
-        for sw in found:
-            push(sw)
-    return out
+                pivots = _fractal_swings_cached(values)
+                _ROLLING_SWING_STATS["full_rebuilds"] += 1
+        else:
+            pivots = _fractal_swings_cached(values)
+            _ROLLING_SWING_STATS["full_rebuilds"] += 1
+        _ROLLING_SWING_CACHE[key] = (values, pivots)
+        _ROLLING_SWING_CACHE.move_to_end(key)
+        while len(_ROLLING_SWING_CACHE) > _ROLLING_SWING_CACHE_MAX_ENTRIES:
+            _ROLLING_SWING_CACHE.popitem(last=False)
+        return list(pivots)
 
 
-def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, str, float]]:
-    """Swings of swings: an internal high above both neighbouring internal highs
-    (a low below both neighbouring lows) is external."""
+@lru_cache(maxsize=512)
+def _external_swings_cached(
+    internal: tuple[tuple[int, str, float], ...],
+) -> tuple[tuple[int, str, float], ...]:
     highs = [s for s in internal if s[1] == "H"]
     lows = [s for s in internal if s[1] == "L"]
     out = []
@@ -92,8 +210,13 @@ def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, s
             a, b, c = seq[j - 1][2], seq[j][2], seq[j + 1][2]
             if (kind == "H" and b > a and b >= c) or (kind == "L" and b < a and b <= c):
                 out.append(seq[j])
-    out.sort(key=lambda s: s[0])
-    return out
+    out.sort(key=lambda item: item[0])
+    return tuple(out)
+
+
+def external_swings(internal: list[tuple[int, str, float]]) -> list[tuple[int, str, float]]:
+    """Cached swings-of-swings calculation over immutable confirmed pivots."""
+    return list(_external_swings_cached(tuple(internal)))
 
 
 def trend_state(ext: list[tuple[int, str, float]]) -> tuple[str, dict]:
@@ -142,7 +265,7 @@ class MarketStructure:
             bars = _clean(raw)
             if len(bars) < 8:
                 continue
-            internal = fractal_swings(bars)
+            internal = fractal_swings(bars, cache_key=f"market-swings:{symbol}:{tf}")
             ext = external_swings(internal)
             state, levels = trend_state(ext)
             order = "external"

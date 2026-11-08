@@ -673,21 +673,21 @@ def test_self_criticism_lowers_confidence_on_contradiction():
     assert "contradict" in lead.criticism
 
 
-def test_self_criticism_reinforces_clean_hypothesis():
+def test_absence_of_criticism_does_not_inflate_hypothesis_confidence():
     br = BrainReasoner()
     analysis = EvidenceAnalysis(
         domain_coverage={"structure": 0.9, "volume": 0.9},
         detected_patterns=[
             "displacement_confirmed: structural displacement backed by volume"],
         regime_indicators={"structure": LONG, "order_flow": "buying"},
-        agreement_score=0.85, evidence_uncertainty=0.15,
+        agreement_score=0.99, evidence_uncertainty=0.01,
     )
     hyps = br.generate_hypotheses(analysis, "EURUSD")
     lead = br.leading(hyps)
     before = lead.confidence
     br.self_criticize(hyps, analysis)
-    assert lead.confidence >= before
-    assert "survived criticism" in lead.criticism
+    assert lead.confidence == before
+    assert "confidence unchanged" in lead.criticism
 
 
 # ── the FULL native reasoning chain is recorded ───────────────────────────────
@@ -714,3 +714,30 @@ def test_compare_opportunities_ranks_against_book():
     # A stronger new opportunity beats a weaker existing position ⇒ superior.
     weak = [{"symbol": "USDJPY", "direction": "LONG", "confidence": 0.4}]
     assert br.compare_opportunities(opp, "EURUSD", weak) == "superior"
+
+
+def test_advisor_confidence_attenuation_is_continuous_and_never_promotes():
+    brain = CognitiveBrain(reasoner=None)
+
+    def adjusted(mean, uncertainty, advisor=0.85, effective=0.85):
+        value, _ = brain._synthesize_from_evidence(
+            {
+                "evidence_fresh": 4,
+                "market_mean_confidence": mean,
+                "aggregate_uncertainty": uncertainty,
+            },
+            advisor,
+            effective,
+        )
+        return value
+
+    # Crossing the old 0.15 gap boundary must not create a discontinuity.
+    below = adjusted(mean=0.70, uncertainty=0.10, advisor=0.849)
+    above = adjusted(mean=0.70, uncertainty=0.10, advisor=0.851)
+    assert abs(above - below) < 0.01
+
+    # More uncertainty continuously reduces the evidence-supported confidence.
+    lower_uncertainty = adjusted(mean=0.70, uncertainty=0.49)
+    higher_uncertainty = adjusted(mean=0.70, uncertainty=0.50)
+    assert higher_uncertainty < lower_uncertainty
+    assert higher_uncertainty <= 0.85

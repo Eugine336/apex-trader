@@ -21,6 +21,7 @@ touch a broker (Execution).
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional, Sequence
 
 from loguru import logger
@@ -38,11 +39,10 @@ from portfolio.verdict import (
     PortfolioVerdict,
 )
 
-# Sizing bounds — match the historical inline behaviour exactly.
-_SIZE_FLOOR = 0.15      # combined multiplier can de-risk to 15% of base, no lower
-_SIZE_CEILING = 1.0     # never inflate above the sizer's per-trade ceiling
-_MIN_LOT = 0.01
-_MIN_STAKE = 0.35
+# Portfolio scaling may reduce risk to zero but may never increase the
+# PositionSizer's approved per-trade risk. Broker minimums are read from the
+# injected sizer; they are not used as permission to inflate a reduced size.
+_SIZE_CEILING = 1.0
 
 
 class PortfolioDivision:
@@ -53,7 +53,6 @@ class PortfolioDivision:
         position_sizer: Any,
         *,
         correlation_engine: Any = None,
-        size_floor: float = _SIZE_FLOOR,
         size_ceiling: float = _SIZE_CEILING,
         max_pair_concentration: int = 0,
         max_broker_positions: int = 0,
@@ -62,8 +61,9 @@ class PortfolioDivision:
         # constructed per-trade — so its per-trade risk ceiling is authoritative.
         self._sizer = position_sizer
         self._corr = correlation_engine
-        self._size_floor = float(size_floor)
         self._size_ceiling = float(size_ceiling)
+        if not math.isfinite(self._size_ceiling) or not 0.0 < self._size_ceiling <= 1.0:
+            raise ValueError("size_ceiling must be finite and in (0, 1]")
         # Optional soft budgets. 0 == disabled (no-op) so behaviour is unchanged
         # unless an operator tightens them.
         self._max_pair_concentration = int(max_pair_concentration)
@@ -102,8 +102,13 @@ class PortfolioDivision:
             )
 
         # ── 2. Transparent multiplier fold (de-risking only) ────────────
-        raw_mult = factors.product()
-        combined_mult = max(self._size_floor, min(self._size_ceiling, raw_mult))
+        raw_mult = float(factors.product())
+        if not math.isfinite(raw_mult) or raw_mult <= 0.0:
+            return PortfolioVerdict.rejected(
+                "combined sizing factors are non-finite or non-positive",
+                rationale=rationale,
+            )
+        combined_mult = min(self._size_ceiling, raw_mult)
         factor_str = " ".join(
             f"{name}×{val:.2f}" for name, val in factors.as_ordered()
         )
@@ -112,18 +117,42 @@ class PortfolioDivision:
             f"raw×{raw_mult:.2f} → clamped×{combined_mult:.2f}"
         )
 
-        lots = float(getattr(size_result, "lots", 0.0) or 0.0)
-        stake = float(getattr(size_result, "stake_usd", 0.0) or 0.0)
-        if abs(combined_mult - 1.0) > 1e-6:
-            if lots > 0:
-                lots = round(max(_MIN_LOT, lots * combined_mult), 2)
-            if stake > 0:
-                stake = round(max(_MIN_STAKE, stake * combined_mult), 2)
+        base_lots = float(getattr(size_result, "lots", 0.0) or 0.0)
+        base_stake = float(getattr(size_result, "stake_usd", 0.0) or 0.0)
+        lots = round(base_lots * combined_mult, 2) if base_lots > 0 else 0.0
+        stake = round(base_stake * combined_mult, 2) if base_stake > 0 else 0.0
 
-        # ── 3. Daily-loss budget enforcement (the assess() protection) ──
+        # A broker minimum is a feasibility boundary, not a sizing floor. If
+        # the requested reduction falls below the executable minimum, reject
+        # rather than silently restoring risk.
+        minimum_lot = float(getattr(self._sizer, "MIN_LOT", 0.01) or 0.01)
+        minimum_stake = float(getattr(self._sizer, "deriv_min_stake_usd", 0.35) or 0.35)
+        if (base_lots > 0 and (lots <= 0.0 or lots + 1e-12 < minimum_lot)) or (
+            base_stake > 0 and (stake <= 0.0 or stake + 1e-12 < minimum_stake)
+        ):
+            return PortfolioVerdict.rejected(
+                "requested risk reduction is below the broker's executable minimum",
+                rationale=rationale,
+            )
+
+        base_max_loss = self._effective_max_loss(
+            size_result, base_lots, base_stake, uses_stake,
+        )
         eff_max_loss = self._effective_max_loss(
             size_result, lots, stake, uses_stake,
         )
+        requested_max_loss = base_max_loss * combined_mult
+        if (
+            not math.isfinite(base_max_loss) or base_max_loss <= 0.0
+            or not math.isfinite(eff_max_loss) or eff_max_loss <= 0.0
+            or eff_max_loss > requested_max_loss + 1e-6
+        ):
+            return PortfolioVerdict.rejected(
+                "minimum executable size would exceed the requested risk budget",
+                rationale=rationale,
+            )
+
+        # ── 3. Daily-loss budget enforcement (the assess() protection) ──
         budget_verdict = self._enforce_daily_budget(
             candidate, account, factors, combined_mult, uses_stake,
             lots, stake, eff_max_loss, rationale,
@@ -265,15 +294,24 @@ class PortfolioDivision:
             )
         r_lots = float(getattr(resized, "lots", 0.0) or 0.0)
         r_stake = float(getattr(resized, "stake_usd", 0.0) or 0.0)
-        if abs(combined_mult - 1.0) > 1e-6:
-            if r_lots > 0:
-                r_lots = round(max(_MIN_LOT, r_lots * combined_mult), 2)
-            if r_stake > 0:
-                r_stake = round(max(_MIN_STAKE, r_stake * combined_mult), 2)
+        r_lots = round(r_lots * combined_mult, 2) if r_lots > 0 else 0.0
+        r_stake = round(r_stake * combined_mult, 2) if r_stake > 0 else 0.0
+        minimum_lot = float(getattr(self._sizer, "MIN_LOT", 0.01) or 0.01)
+        minimum_stake = float(getattr(self._sizer, "deriv_min_stake_usd", 0.35) or 0.35)
+        if (not uses_stake and (r_lots <= 0.0 or r_lots + 1e-12 < minimum_lot)) or (
+            uses_stake and (r_stake <= 0.0 or r_stake + 1e-12 < minimum_stake)
+        ):
+            rationale.append("requested size is below the broker's executable minimum")
+            return PortfolioVerdict.rejected(
+                "cannot satisfy the reduced risk budget at the broker minimum",
+                rationale=rationale,
+            )
         r_max_loss = self._effective_max_loss(resized, r_lots, r_stake, uses_stake)
 
-        # The broker minimum lot can floor max_loss back above the budget.
-        if r_max_loss > remaining + 1e-9:
+        # Minimum executable size must not restore risk above the combined
+        # factor budget or the remaining daily-loss room.
+        reduced_risk_budget = remaining * combined_mult
+        if r_max_loss > reduced_risk_budget + 1e-9:
             rationale.append(
                 f"min-lot max_loss ${r_max_loss:.2f} exceeds remaining daily "
                 f"budget ${remaining:.2f} — rejected"
