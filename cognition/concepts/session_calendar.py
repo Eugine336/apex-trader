@@ -50,10 +50,19 @@ class SessionCalendar:
         except (TypeError, ValueError, OverflowError):
             cutoff = None
         provider_sessions: list[dict] = []
+        provider_calendar_errors: dict[str, str] = {}
         if registry is not None and cutoff is not None:
             try:
                 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-                for item in registry.fetch(ObservationKind.SESSION, canonical_instrument=str(symbol or "").upper()):
+                if callable(getattr(registry, "fetch_with_status", None)):
+                    session_rows, provider_calendar_errors = registry.fetch_with_status(
+                        ObservationKind.SESSION, canonical_instrument=str(symbol or "").upper(),
+                    )
+                else:
+                    session_rows = registry.fetch(
+                        ObservationKind.SESSION, canonical_instrument=str(symbol or "").upper(),
+                    )
+                for item in session_rows:
                     if not isinstance(item, DataObservation):
                         continue
                     provenance, values = item.provenance, item.values
@@ -152,6 +161,7 @@ class SessionCalendar:
                 "broker_session_schedule_source": spec.get("source") if broker_schedule_verified else None,
                 "provider_session_calendar": provider_session,
                 "provider_session_calendar_verified": provider_session is not None,
+                "provider_session_calendar_errors": dict(provider_calendar_errors),
             }
             if provider_session is not None:
                 facts.update({
