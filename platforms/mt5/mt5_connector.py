@@ -1479,7 +1479,7 @@ class MT5Connector(BaseConnector):
                 if status == "FILLED":
                     return OrderResult(
                         success=True, order_id=str(duplicate.ticket),
-                        fill_price=float(duplicate.price), requested_price=entry,
+                        fill_price=0.0, requested_price=entry,
                         slippage_pips=0.0, lots=float(duplicate.volume),
                         symbol=symbol, direction=side, sl=float(duplicate.sl),
                         tp=float(duplicate.tp), platform="mt5",
@@ -2344,7 +2344,8 @@ class MT5Connector(BaseConnector):
                 status = "PARTIALLY_FILLED_TERMINAL"
             return SimpleNamespace(
                 ticket=order.ticket, price=getattr(order, "price_open", 0.0),
-                volume=remaining, volume_initial=initial, volume_current=remaining,
+                volume=(initial if status == "FILLED" else remaining),
+                volume_initial=initial, volume_current=remaining,
                 sl=getattr(order, "sl", 0.0), tp=getattr(order, "tp", 0.0),
                 symbol=resolve_to_internal(str(getattr(order, "symbol", "") or "")),
                 position_id=str(getattr(order, "position_id", "") or ""),
