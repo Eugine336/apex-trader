@@ -261,7 +261,9 @@ def audit_connector(
 
             symbols[canonical] = row
 
-        positions = _safe_call(connector.get_open_positions)
+        # Use the strict snapshot API: get_open_positions() converts MT5 None/errors to [],
+        # which would incorrectly report a failed query as a verified empty book.
+        positions = _safe_call(connector.get_position_snapshots)
         orders = _safe_call(connector.get_order_history, history_start, now)
         deals = _safe_call(connector.get_deal_history_checked, history_start, now)
         return {
