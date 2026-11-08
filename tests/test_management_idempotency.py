@@ -340,3 +340,43 @@ def test_explicit_executor_gate_rejection_resolves_dispatched_milestone_for_retr
     )
     assert progress["pending_milestone"] is None
     store.close()
+
+
+def test_fast_flush_callback_ack_cannot_be_overwritten_by_late_queue_return():
+    store = _store()
+    ledger = ManagementActionLedger(_EventStore())
+    loop = _loop(store, ledger)
+    calls = []
+
+    def sink(action, position):
+        calls.append(action)
+        intent = SimpleNamespace(
+            action_id=action.action_id,
+            symbol=action.symbol,
+            intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
+            position_ticket="ticket-1",
+            decision_id=action.decision_id,
+            campaign_id=action.campaign_id,
+            opportunity_id=action.opportunity_id,
+            reason=f"milestone [milestone_id={action.milestone_id}]",
+        )
+        result = SimpleNamespace(
+            success=True,
+            rejected_by_gate=False,
+            error="",
+            broker_response=SimpleNamespace(
+                success=True, order_id="deal-fast", lots_closed=0.1,
+            ),
+        )
+        assert loop.record_management_execution_result(intent, result) is True
+        return True
+
+    loop.set_management_sink(sink)
+    output, position = _output(), _position()
+    assert loop._realise_management(output, position) is True
+    action = calls[0]
+    assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
+    assert action.action_id not in loop._management_unresolved_actions
+    assert loop._realise_management(output, position) is False
+    assert len(calls) == 1
+    store.close()
