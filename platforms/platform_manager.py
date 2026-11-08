@@ -663,7 +663,9 @@ class PlatformManager:
                 "order_id": str(result.order_id or ""),
                 "tracking_key": str(result.order_id or idempotency_key),
                 "order_type": str(order_type or "").upper(),
-                "direction": str(direction or "").upper(), "lots": float(result.lots or lots),
+                "direction": str(direction or "").upper(),
+                "lots": float(lots),
+                "remaining_lots": float(result.lots or lots),
                 "entry_price": float(result.requested_price or entry_price),
                 "sl": float(result.sl or sl), "tp": float(result.tp or tp),
                 "platform": str(result.platform or "mt5"),
@@ -675,8 +677,13 @@ class PlatformManager:
                     dict(decision_feature_snapshot)
                     if isinstance(decision_feature_snapshot, dict) else None
                 ),
-                "status": "PENDING" if result.success else "UNKNOWN",
-                "broker_confirmed": bool(result.success and result.order_status == "PENDING"),
+                "status": (
+                    str(result.order_status or "UNKNOWN").upper()
+                    if result.success else "UNKNOWN"
+                ),
+                "broker_confirmed": bool(
+                    result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING"}
+                ),
                 "reconciliation_required": not bool(result.success),
             }
             try:
