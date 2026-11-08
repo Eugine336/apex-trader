@@ -30,6 +30,7 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 def summarize(
     samples: list[dict[str, Any]],
     requested_symbols: list[str],
+    requested_timeframes: list[str],
     failures: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     durations = [float(row["elapsed_ms"]) for row in samples]
@@ -38,7 +39,21 @@ def summarize(
         "sample_count": len(samples),
         "requested_symbol_count": len(requested_symbols),
         "completed_symbol_count": len(completed),
+        "requested_timeframe_count": len(requested_timeframes),
+        "expected_symbol_timeframe_pairs": len(requested_symbols) * len(requested_timeframes),
+        "completed_symbol_timeframe_pairs": sum(
+            len(set(map(str.upper, row.get("timeframes", {}).keys())) & set(map(str.upper, requested_timeframes)))
+            for row in samples
+        ),
         "missing_symbols": sorted(set(map(str.upper, requested_symbols)) - completed),
+        "incomplete_timeframes": [
+            {
+                "symbol": str(row["symbol"]),
+                "missing": sorted(set(map(str.upper, requested_timeframes)) - set(map(str.upper, row.get("timeframes", {}).keys()))),
+            }
+            for row in samples
+            if set(map(str.upper, row.get("timeframes", {}).keys())) != set(map(str.upper, requested_timeframes))
+        ],
         "failures": list(failures or []),
         "total_elapsed_ms": round(sum(durations), 3),
         "per_symbol_ms": {
@@ -100,8 +115,8 @@ def run_benchmark(
         "timeframes": list(timeframes),
         "bars_requested_per_timeframe": count,
         "market_data_symbol_count": len(market_data),
-        "cold": summarize(passes["cold"], symbols, failures["cold"]),
-        "warm": summarize(passes["warm"], symbols, failures["warm"]),
+        "cold": summarize(passes["cold"], symbols, timeframes, failures["cold"]),
+        "warm": summarize(passes["warm"], symbols, timeframes, failures["warm"]),
         "cache_comparison": {
             "cold_total_ms": round(sum(row["elapsed_ms"] for row in passes["cold"]), 3),
             "warm_total_ms": round(sum(row["elapsed_ms"] for row in passes["warm"]), 3),
@@ -154,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
         report["status"] = (
             "complete"
             if report["cold"]["completed_symbol_count"] == len(requested)
+            and report["cold"]["completed_symbol_timeframe_pairs"]
+                == len(requested) * len(args.timeframes)
+            and not report["cold"]["incomplete_timeframes"]
             and not report["cold"]["failures"]
             and not report["warm"]["failures"]
             else "partial"
