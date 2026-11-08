@@ -753,7 +753,7 @@ class PlatformManager:
             except (TypeError, ValueError, OverflowError):
                 initial = remaining = 0.0
             status = (
-                "PARTIALLY_FILLED"
+                "PARTIALLY_FILLED_PENDING"
                 if initial > 0.0 and 0.0 < remaining < initial
                 else "PENDING"
             )
@@ -777,7 +777,7 @@ class PlatformManager:
                 str(getattr(mt5_constants, "ORDER_STATE_CANCELED", 2)): "CANCELLED",
                 str(getattr(mt5_constants, "ORDER_STATE_EXPIRED", 6)): "EXPIRED",
                 str(getattr(mt5_constants, "ORDER_STATE_REJECTED", 5)): "REJECTED",
-                str(getattr(mt5_constants, "ORDER_STATE_PARTIAL", 3)): "PARTIALLY_FILLED",
+                str(getattr(mt5_constants, "ORDER_STATE_PARTIAL", 3)): "PARTIALLY_FILLED_TERMINAL",
             }
             # MT5 history state is a numeric enum; preserve unknown values rather than guessing.
             normalized = state_map.get(state_name, "UNKNOWN")
