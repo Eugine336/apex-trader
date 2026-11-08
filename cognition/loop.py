@@ -2594,6 +2594,36 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001 — learning must never break the loop
             logger.debug("[cognition-loop] pattern outcome fault: %s", exc)
 
+    def reconcile_management_action(
+        self, action_id: str, symbol: str, broker_evidence: dict,
+    ) -> bool:
+        """Resolve one ambiguous management action from a verified broker snapshot.
+
+        Callers must supply a complete, source-attested broker state matching the
+        action's position and intended effect. Missing or stale evidence leaves
+        the action pending and non-replayable.
+        """
+        ledger = self._management_action_ledger
+        if ledger is None:
+            try:
+                from cognition.management_action_ledger import ManagementActionLedger
+                ledger = ManagementActionLedger(self._candidate_event_store)
+                self._management_action_ledger = ledger
+            except Exception as exc:  # noqa: BLE001 — unresolved remains unresolved
+                logger.error("[cognition-loop] management reconciliation unavailable: %s", exc)
+                return False
+        reconcile = getattr(ledger, "reconcile", None)
+        if not callable(reconcile):
+            return False
+        try:
+            reconciled = reconcile(action_id, symbol, broker_evidence)
+        except Exception as exc:  # noqa: BLE001 — never clear a pending action on a fault
+            logger.error("[cognition-loop] management reconciliation failed: %s", exc)
+            return False
+        if reconciled:
+            self._management_unresolved_actions.discard(str(action_id or "").strip())
+        return reconciled
+
     def _realise_management(self, output: Any, position: Any) -> bool:
         """Translate and realise management without replaying ambiguous partials.
 
