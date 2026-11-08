@@ -174,3 +174,59 @@ def test_provider_reader_does_not_infer_exchange_flow_from_quote_or_dom_records(
         "XAUUSD", bars, {"data_source_registry": registry, "analysis_epoch": CUTOFF},
     )
     assert not any(item.concept in {"delta_cvd", "footprint"} for item in readings)
+
+
+def test_macro_series_revisions_after_analysis_cutoff_are_excluded():
+    class _RevisedProvider(_FixtureProvider):
+        def __init__(self):
+            super().__init__()
+            self.rows = [
+                row for row in self.rows
+                if row.provenance.kind is not ObservationKind.MACRO_SERIES
+            ] + [
+                DataObservation(
+                    provenance=ObservationProvenance(
+                        source=SourceIdentity("fixture", "venue-a", "XAUUSD", "GOLD"),
+                        kind=ObservationKind.MACRO_SERIES,
+                        source_timestamp_epoch=CUTOFF - 100,
+                        received_timestamp_epoch=CUTOFF,
+                        source_timestamp_verified=True,
+                        completeness=Completeness.COMPLETE,
+                        source_record_id="revised-after-cutoff",
+                        publication_timestamp_epoch=CUTOFF - 200,
+                        revision_timestamp_epoch=CUTOFF + 1,
+                    ),
+                    values={"series_id": "policy-rate", "series_family": "policy_rate",
+                            "currency": "USD", "observation_epoch": CUTOFF - 86400,
+                            "value": 99.0, "unit": "percent"},
+                ),
+            ]
+
+    registry = DataSourceRegistry()
+    registry.register(_RevisedProvider())
+    bars = {"M5": [{
+        "open": 1999.0, "high": 2001.0, "low": 1998.0, "close": 2000.0,
+        "timestamp_epoch": CUTOFF - 300, "source_timestamp_verified": True,
+    }]}
+    readings = ProviderDataReadings().read_with_context(
+        "XAUUSD", bars,
+        {"data_source_registry": registry, "analysis_epoch": CUTOFF,
+         "symbol_spec": {"source_verified": True, "specification_verified": True,
+                         "currency_base": "XAU", "currency_profit": "USD"}},
+    )
+    assert not any(item.concept == "macro_rates" for item in readings)
+
+
+def test_macro_readings_require_verified_instrument_currency_metadata():
+    registry = DataSourceRegistry()
+    registry.register(_FixtureProvider())
+    bars = {"M5": [{
+        "open": 1999.0, "high": 2001.0, "low": 1998.0, "close": 2000.0,
+        "timestamp_epoch": CUTOFF - 300, "source_timestamp_verified": True,
+    }]}
+    readings = ProviderDataReadings().read_with_context(
+        "XAUUSD", bars,
+        {"data_source_registry": registry, "analysis_epoch": CUTOFF,
+         "symbol_spec": {"currency_base": "XAU", "currency_profit": "USD"}},
+    )
+    assert not any(item.concept in {"event_driven", "macro_growth", "macro_rates"} for item in readings)
