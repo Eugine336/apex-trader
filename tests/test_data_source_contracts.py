@@ -94,3 +94,9 @@ def test_capability_sample_count_must_be_integer():
             provider="demo", capability=ObservationKind.QUOTE,
             completeness=Completeness.UNKNOWN, sample_count=1.5,
         )
+
+
+def test_registry_does_not_silently_ignore_unregistered_provider():
+    registry = DataSourceRegistry()
+    with pytest.raises(KeyError):
+        registry.fetch(ObservationKind.QUOTE, providers=["not-installed"])
