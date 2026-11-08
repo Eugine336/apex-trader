@@ -81,6 +81,7 @@ def connector():
     mock_mt5.ORDER_TYPE_BUY = 0
     mock_mt5.ORDER_TYPE_SELL = 1
     mock_mt5.TRADE_ACTION_DEAL = 1
+    mock_mt5.ORDER_STATE_FILLED = 4
     mock_mt5.last_error.return_value = (0, "ok")
     with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
         c = MT5Connector.__new__(MT5Connector)
