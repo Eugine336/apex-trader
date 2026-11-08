@@ -120,4 +120,32 @@ def test_intermarket_reader_does_not_use_forming_or_future_peer_bar():
     cross_asset = next(item for item in readings if item.concept == "cross_asset")
     assert cross_asset.facts["snapshot_cutoff_epoch"] == cutoff
     assert cross_asset.source_timestamp_epoch <= cutoff
-    assert cross_asset.facts["peer_relationships"][0]["common_bar_count"] == 11
+    assert cross_asset.facts["peer_relationships"][0]["common_bar_count"] == 12
+    assert cross_asset.facts["peer_relationships"][0]["paired_return_count"] == 11
+
+
+def test_intermarket_returns_do_not_bridge_missing_common_bar_intervals():
+    base = 1_800_000_000
+    cutoff = base + 11 * 300 + 100
+    target_closes = [100 + index * 0.5 for index in range(12)]
+    peer_closes = [50 + index * 0.25 for index in range(12)]
+    peer = _frame("GBPUSD", peer_closes, base).drop(index=5).reset_index(drop=True)
+    peer.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "GBPUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-provider",
+    })
+    context = {
+        "multi_symbol_frames": {"GBPUSD": {"M5": peer}},
+        "multi_symbol_snapshot_cutoff_epoch": cutoff,
+        "multi_symbol_source_includes_forming_bar": False,
+    }
+    readings = IntermarketReadings().read_with_context(
+        "EURUSD", {"M5": _bars("EURUSD", target_closes, base, cutoff)}, context,
+    )
+    cross_asset = next(item for item in readings if item.concept == "cross_asset")
+    relation = cross_asset.facts["peer_relationships"][0]
+    assert relation["common_bar_count"] == 11
+    assert relation["paired_return_count"] == 9
