@@ -110,6 +110,8 @@ A new read-only runner is available at `scripts/audit_broker_data_capabilities.p
 
 ## 6. Mandatory normalized observation contract
 
+The current branch adds `data_sources/contracts.py` and `data_sources/registry.py` as vendor-neutral, read-only interfaces. They define provider/venue and canonical/native instrument identity, observation kind, source/receipt/publication/revision timestamps, verification state, completeness, units, volume/aggressor basis and capability reports. `DataSourceRegistry` validates provider identity, observation kind and requested instrument/time window. It has no vendor SDK, credentials, network client or execution methods; concrete provider adapters are a later integration workstream.
+
 Every provider observation must retain:
 - provider and venue;
 - canonical instrument identity and provider-native symbol;
