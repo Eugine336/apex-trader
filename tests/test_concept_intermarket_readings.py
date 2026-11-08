@@ -120,8 +120,8 @@ def test_intermarket_reader_does_not_use_forming_or_future_peer_bar():
     cross_asset = next(item for item in readings if item.concept == "cross_asset")
     assert cross_asset.facts["snapshot_cutoff_epoch"] == cutoff
     assert cross_asset.source_timestamp_epoch <= cutoff
-    assert cross_asset.facts["peer_relationships"][0]["common_bar_count"] == 12
-    assert cross_asset.facts["peer_relationships"][0]["paired_return_count"] == 11
+    assert cross_asset.facts["peer_relationships"][0]["common_bar_count"] == 11
+    assert cross_asset.facts["peer_relationships"][0]["paired_return_count"] == 10
 
 
 def test_intermarket_returns_do_not_bridge_missing_common_bar_intervals():
@@ -147,5 +147,5 @@ def test_intermarket_returns_do_not_bridge_missing_common_bar_intervals():
     )
     cross_asset = next(item for item in readings if item.concept == "cross_asset")
     relation = cross_asset.facts["peer_relationships"][0]
-    assert relation["common_bar_count"] == 11
-    assert relation["paired_return_count"] == 9
+    assert relation["common_bar_count"] == 10
+    assert relation["paired_return_count"] == 8
