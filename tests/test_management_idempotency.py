@@ -379,6 +379,7 @@ def test_explicit_broker_rejection_resolves_an_ambiguous_management_action():
         intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
         position_ticket="ticket-1", decision_id="decision-1",
         campaign_id="campaign-1", opportunity_id="opportunity-1",
+        reason="[milestone_id=market_structure:H1:1:1.105]",
     )
     result = SimpleNamespace(
         success=False, rejected_by_gate=False, error="broker rejected request",
