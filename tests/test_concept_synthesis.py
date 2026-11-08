@@ -1,5 +1,6 @@
 from cognition.brain_reasoning import BrainReasoner, EvidenceAnalysis
 from cognition.concept_synthesis import synthesize_concept_readings
+from cognition.contracts import Evidence, EvidenceDomain, MarketState
 
 
 def _reading(concept, direction, strength, evidence_id, *, activated=True, timeframe="M5", epoch=1000.0, independence_group=None):
@@ -7,7 +8,10 @@ def _reading(concept, direction, strength, evidence_id, *, activated=True, timef
         "concept": concept,
         "timeframe": timeframe,
         "source_bar_epoch": epoch,
+        "source_timestamp_epoch": epoch,
+        "relevance_horizon_seconds": 300.0,
         "source_timestamp_verified": True,
+        "symbol": "EURUSD",
         "data_basis": "completed_ohlc",
         "provisional": False,
         "independence_group": f"ohlc:{timeframe}" if independence_group is None else independence_group,
@@ -78,7 +82,7 @@ def test_brain_emits_one_hypothesis_per_synthesized_concept_group():
         _reading("liquidity", "SHORT", 0.7, "e3"),
     ]
     reasoner = BrainReasoner()
-    analysis = EvidenceAnalysis(concept_readings=readings)
+    analysis = EvidenceAnalysis(concept_readings=readings, decision_timestamp_epoch=1100.0)
 
     hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
     concept_groups = [
@@ -154,7 +158,7 @@ def test_brain_hypothesis_exposes_unknown_opposing_strength_as_uncertainty():
         _reading("order_flow", "SHORT", None, "e2"),
     ]
     hypotheses = BrainReasoner().generate_hypotheses(
-        EvidenceAnalysis(concept_readings=readings), "EURUSD",
+        EvidenceAnalysis(concept_readings=readings, decision_timestamp_epoch=1100.0), "EURUSD",
     )
     long_group = next(
         item for item in hypotheses
@@ -165,3 +169,108 @@ def test_brain_hypothesis_exposes_unknown_opposing_strength_as_uncertainty():
     assert long_group.confidence_components["opposing_active_strength"] is None
     assert long_group.confidence_components["opposing_strength_unknown"] is True
     assert "opposing activated concept strength is unknown" in long_group.unresolved_unknowns
+
+
+def test_wrong_symbol_and_future_dated_readings_cannot_qualify():
+    wrong_symbol = _reading("crt", "LONG", 0.9, "wrong-symbol")
+    wrong_symbol["symbol"] = "USDJPY"
+    future_bar = _reading("market_structure", "LONG", 0.9, "future-bar", epoch=1200.0)
+    future_source = _reading("liquidity", "LONG", 0.9, "future-source", epoch=900.0)
+    future_source["source_timestamp_epoch"] = 1200.0
+
+    assert synthesize_concept_readings(
+        [wrong_symbol, future_bar, future_source],
+        symbol="EURUSD",
+        decision_cutoff_epoch=1100.0,
+    ) == []
+
+
+def test_duplicate_evidence_identity_is_excluded_instead_of_counted_twice():
+    first = _reading("crt", "LONG", 0.8, "duplicate-id")
+    second = _reading("order_book", "LONG", 0.9, "duplicate-id")
+
+    assert synthesize_concept_readings([first, second]) == []
+
+
+def test_brain_passes_symbol_and_decision_cutoff_to_concept_synthesis():
+    wrong_symbol = _reading("crt", "LONG", 0.9, "wrong-symbol")
+    wrong_symbol["symbol"] = "USDJPY"
+    future_bar = _reading("market_structure", "LONG", 0.9, "future-bar", epoch=1200.0)
+    analysis = EvidenceAnalysis(
+        concept_readings=[wrong_symbol, future_bar],
+        decision_timestamp_epoch=1100.0,
+    )
+
+    hypotheses = BrainReasoner().generate_hypotheses(analysis, "EURUSD")
+    assert not any(item.hypothesis_kind.startswith("concept_group:") for item in hypotheses)
+
+
+def test_evidence_projection_preserves_symbol_and_one_decision_time_cutoff():
+    def evidence(symbol, concept, source_epoch, evidence_id):
+        return Evidence(
+            source_module=f"concept.{concept}.m5",
+            domain=EvidenceDomain.STRUCTURE,
+            symbol=symbol,
+            observation=f"{concept} reading",
+            measurements={
+                "source_kind": "concept_reading",
+                "concept": concept,
+                "timeframe": "M5",
+                "source_bar_epoch": source_epoch,
+                "applicable": True,
+                "implications": [{
+                    "direction": "LONG",
+                    "strength": 0.8,
+                    "activated": True,
+                    "statement": f"{concept} supports LONG",
+                    "invalidation_price": 99.0,
+                    "objective_price": 105.0,
+                }],
+                "facts": {},
+                "unknowns": [],
+            },
+            evidence_id=evidence_id,
+            timestamp_epoch=1100.0,
+            relevance_horizon_seconds=300.0,
+            source_timestamp_epoch=source_epoch,
+            source_timestamp_verified=True,
+            data_basis="completed_ohlc",
+            provisional=False,
+        )
+
+    state = MarketState(symbol="EURUSD")
+    state.add(evidence("EURUSD", "crt", 1000.0, "valid"))
+    state.add(evidence("USDJPY", "market_structure", 1000.0, "wrong-symbol"))
+    state.add(evidence("EURUSD", "liquidity", 1200.0, "future"))
+
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, now=1100.0)
+    assert analysis.decision_timestamp_epoch == 1100.0
+    # The Evidence freshness boundary already excludes the future-dated
+    # source before projection; wrong-symbol evidence remains visible here
+    # for the symbol-specific Brain synthesis gate to reject.
+    assert {row["evidence_id"] for row in analysis.concept_readings} == {
+        "valid", "wrong-symbol",
+    }
+
+    hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
+    groups = [item for item in hypotheses if item.hypothesis_kind.startswith("concept_group:")]
+    assert len(groups) == 1
+    assert groups[0].supporting_evidence_ids == ["valid"]
+
+
+def test_stale_source_bar_cannot_qualify_when_recently_reingested():
+    stale = _reading("crt", "LONG", 0.9, "stale", epoch=700.0)
+    stale["relevance_horizon_seconds"] = 300.0
+
+    assert synthesize_concept_readings(
+        [stale], symbol="EURUSD", decision_cutoff_epoch=1100.0,
+    ) == []
+
+
+def test_brain_fails_closed_when_concept_decision_cutoff_is_missing():
+    hypotheses = BrainReasoner().generate_hypotheses(
+        EvidenceAnalysis(concept_readings=[_reading("crt", "LONG", 0.8, "e1")]),
+        "EURUSD",
+    )
+    assert not any(item.hypothesis_kind.startswith("concept_group:") for item in hypotheses)

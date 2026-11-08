@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 from hashlib import sha256
+import time
 from typing import Any, Optional
 
 from cognition.contracts import Evidence, EvidenceDomain, MarketState
@@ -114,6 +115,9 @@ class EvidenceAnalysis:
     # Full concept readings (invalidation, objective, milestones, requirements,
     # management meaning) from the concept modules, with their evidence ids.
     concept_readings: list[dict] = field(default_factory=list)
+    # One immutable cutoff governs evidence freshness and source-time checks
+    # throughout this reasoning pass.
+    decision_timestamp_epoch: Optional[float] = None
     pattern_evidence_ids: dict = field(default_factory=dict)
     observed_facts: list[dict] = field(default_factory=list)
     inferences: list[str] = field(default_factory=list)
@@ -159,6 +163,7 @@ class EvidenceAnalysis:
             "market_context": dict(self.market_context),
             "evidence_index": [dict(item) for item in self.evidence_index],
             "concept_readings": [dict(item) for item in self.concept_readings],
+            "decision_timestamp_epoch": self.decision_timestamp_epoch,
             "pattern_evidence_ids": {
                 str(key): list(value) for key, value in self.pattern_evidence_ids.items()
             },
@@ -313,8 +318,11 @@ class BrainReasoner:
         *, now: Optional[float] = None,
     ) -> EvidenceAnalysis:
         """Read the evidence fresh at the caller's decision-time cutoff. Never raises."""
+        decision_cutoff_epoch = _num(now)
+        if decision_cutoff_epoch is None or decision_cutoff_epoch <= 0.0:
+            decision_cutoff_epoch = time.time()
         try:
-            fresh = list(market_state.fresh_evidence(now))
+            fresh = list(market_state.fresh_evidence(decision_cutoff_epoch))
         except Exception:  # noqa: BLE001 — analysis must never break reasoning
             fresh = []
         consolidation = consolidation or {}
@@ -510,9 +518,12 @@ class BrainReasoner:
             if isinstance(m, dict) and m.get("source_kind") == "concept_reading":
                 concept_readings.append({
                     "evidence_id": str(getattr(e, "evidence_id", "") or ""),
+                    "symbol": str(getattr(e, "symbol", "") or ""),
                     "concept": str(m.get("concept", "") or ""),
                     "timeframe": str(m.get("timeframe", "") or ""),
                     "source_bar_epoch": m.get("source_bar_epoch"),
+                    "source_timestamp_epoch": getattr(e, "source_timestamp_epoch", None),
+                    "relevance_horizon_seconds": getattr(e, "relevance_horizon_seconds", None),
                     "source_timestamp_verified": getattr(e, "source_timestamp_verified", False) is True,
                     "data_basis": str(getattr(e, "data_basis", "") or ""),
                     "provisional": getattr(e, "provisional", True) is True,
@@ -541,6 +552,7 @@ class BrainReasoner:
             market_context=market_context,
             evidence_index=evidence_index,
             concept_readings=concept_readings,
+            decision_timestamp_epoch=decision_cutoff_epoch,
             pattern_evidence_ids=pattern_evidence_ids,
             observed_facts=observed_facts,
             inferences=(
@@ -1583,7 +1595,11 @@ class BrainReasoner:
             # hypotheses. Shared OHLC provenance is not independent confluence:
             # same-context readings are grouped, the strongest member anchors
             # strength, and active opposing groups reduce it.
-            concept_groups = synthesize_concept_readings(analysis.concept_readings)
+            concept_groups = synthesize_concept_readings(
+                analysis.concept_readings,
+                symbol=symbol,
+                decision_cutoff_epoch=analysis.decision_timestamp_epoch,
+            )
             for group in concept_groups:
                 concepts = list(group.get("concepts", []) or [])
                 direction = str(group.get("direction", "") or "").upper()

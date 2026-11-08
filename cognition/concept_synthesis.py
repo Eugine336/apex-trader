@@ -28,7 +28,12 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
+def synthesize_concept_readings(
+    readings: Iterable[dict],
+    *,
+    symbol: str | None = None,
+    decision_cutoff_epoch: float | None = None,
+) -> list[dict]:
     """Select verified applicable readings and group them by shared context.
 
     Group identity is timeframe + source completed bar + direction + activation
@@ -36,21 +41,67 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
     are explicitly cross-referenced. Confidence is the strongest member's
     uncalibrated strength, reduced by opposing active strength; it is not summed.
     """
+    expected_symbol = str(symbol or "").strip().upper() if symbol is not None else None
+    cutoff = _finite(decision_cutoff_epoch)
+    # Production Brain synthesis always has a symbol and decision cutoff.
+    # Missing cutoff cannot establish freshness, so fail closed for that path.
+    if expected_symbol is not None and (not expected_symbol or cutoff is None or cutoff <= 0.0):
+        return []
+    reading_rows = list(readings or ())
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for row in reading_rows:
+        if not isinstance(row, dict):
+            continue
+        row_id = str(row.get("evidence_id", "") or "").strip()
+        if not row_id:
+            continue
+        if row_id in seen_ids:
+            duplicate_ids.add(row_id)
+        else:
+            seen_ids.add(row_id)
+
     buckets: dict[tuple, list[dict]] = defaultdict(list)
-    for reading in readings or ():
+    for reading in reading_rows:
         if not isinstance(reading, dict) or reading.get("applicable") is not True:
             continue
+        evidence_id = str(reading.get("evidence_id", "") or "").strip()
+        # Reused evidence identities are ambiguous. Exclude every duplicate
+        # instance rather than allowing repeated records to inflate support.
+        if not evidence_id or evidence_id in duplicate_ids:
+            continue
+        if expected_symbol is not None:
+            reading_symbol = str(reading.get("symbol", "") or "").strip().upper()
+            if not expected_symbol or reading_symbol != expected_symbol:
+                continue
         if reading.get("source_timestamp_verified") is not True:
             continue
         if reading.get("data_basis") != "completed_ohlc" or reading.get("provisional") is not False:
             continue
         epoch = _finite(reading.get("source_bar_epoch"))
+        source_epoch = _finite(reading.get("source_timestamp_epoch"))
         if epoch is None or epoch <= 0:
             continue
+        if cutoff is not None:
+            relevance_horizon = _finite(reading.get("relevance_horizon_seconds"))
+            if (
+                epoch > cutoff
+                or source_epoch is None
+                or source_epoch <= 0
+                or source_epoch > cutoff
+                or relevance_horizon is None
+                or (
+                    relevance_horizon > 0.0
+                    and (
+                        cutoff - epoch > relevance_horizon
+                        or cutoff - source_epoch > relevance_horizon
+                    )
+                )
+            ):
+                continue
         concept = str(reading.get("concept", "") or "").strip()
         timeframe = str(reading.get("timeframe", "") or "").strip().upper()
-        evidence_id = str(reading.get("evidence_id", "") or "").strip()
-        if not concept or not timeframe or not evidence_id:
+        if not concept or not timeframe:
             continue
         for implication in reading.get("implications", []) or []:
             if not isinstance(implication, dict):
