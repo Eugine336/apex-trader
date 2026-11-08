@@ -425,8 +425,9 @@ class EventStore:
         since_ms: Optional[int] = None,
         limit: int = 200,
         offset: int = 0,
+        raise_on_error: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Dashboard-oriented read with optional exact parent/ticket filtering."""
+        """Dashboard read; critical callers may request database faults to propagate."""
         min_rank = self._SEVERITY_RANK.get(severity_min.upper(), 1)
         allowed = [s for s, r in self._SEVERITY_RANK.items() if r >= min_rank]
 
@@ -468,6 +469,8 @@ class EventStore:
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             print(f"[event_store] query_events failed: {exc}", file=sys.stderr)
+            if raise_on_error:
+                raise
             return []
 
     def replay(
