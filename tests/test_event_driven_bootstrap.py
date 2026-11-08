@@ -469,8 +469,8 @@ class TestPendingOrderLifecycle:
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
         system._pending_orders = {
-            "901": {
-                "order_id": "ORDER-1", "symbol": "EURUSD", "direction": "BUY",
+            "ORDER-1": {
+                "order_id": "901", "symbol": "EURUSD", "direction": "BUY",
                 "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
                 "sl": 98.0, "tp": 101.0,
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
@@ -521,8 +521,8 @@ class TestPendingOrderLifecycle:
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
         system._pending_orders = {
-            "901": {
-                "order_id": "ORDER-PARTIAL", "symbol": "EURUSD", "direction": "BUY",
+            "ORDER-PARTIAL": {
+                "order_id": "901", "symbol": "EURUSD", "direction": "BUY",
                 "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
                 "sl": 98.0, "tp": 101.0,
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
