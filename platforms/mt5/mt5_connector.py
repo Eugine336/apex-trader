@@ -1613,6 +1613,29 @@ class MT5Connector(BaseConnector):
             logger.error("MT5 cancel pending — invalid ticket {!r}", order_id)
             return False
 
+        try:
+            live_orders = mt5.orders_get()
+        except Exception as exc:  # noqa: BLE001 — incomplete order book is not absence
+            logger.error("MT5 cancel pending — order book unavailable: {}", exc)
+            return False
+        live = next((item for item in (live_orders or []) if int(getattr(item, "ticket", 0) or 0) == ticket), None)
+        if live is None:
+            # Idempotent acknowledgement recovery: report success only when broker
+            # history positively confirms this exact ticket was cancelled.
+            try:
+                since = datetime.now(timezone.utc) - timedelta(days=30)
+                history = mt5.history_orders_get(since, datetime.now(timezone.utc))
+                cancelled_state = getattr(mt5, "ORDER_STATE_CANCELED", 2)
+                if any(
+                    int(getattr(item, "ticket", 0) or 0) == ticket
+                    and getattr(item, "state", None) == cancelled_state
+                    for item in (history or [])
+                ):
+                    return True
+            except Exception as exc:  # noqa: BLE001 — no proof, no success
+                logger.warning("MT5 cancel reconciliation unavailable for {}: {}", ticket, exc)
+            return False
+
         request = {
             "action": mt5.TRADE_ACTION_REMOVE,
             "order": ticket,
@@ -2248,6 +2271,11 @@ class MT5Connector(BaseConnector):
                             volume=getattr(ho, "volume_current", getattr(ho, "volume_initial", 0.0)),
                             sl=getattr(ho, "sl", 0.0),
                             tp=getattr(ho, "tp", 0.0),
+                            order_status=(
+                                "FILLED"
+                                if getattr(ho, "state", None) == getattr(mt5, "ORDER_STATE_FILLED", 4)
+                                else "TERMINAL"
+                            ),
                         )
         except Exception as exc:
             logger.warning("MT5 history_orders_get failed during dedup: {}", exc)
