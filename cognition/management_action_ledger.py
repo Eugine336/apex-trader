@@ -282,19 +282,18 @@ class ManagementActionLedger:
             before = _finite(pending.get("position_size_before"))
             fraction = _finite(pending.get("fraction"))
             current = _finite(broker_evidence.get("current_lots"))
-            if before is not None and fraction is not None and current is not None:
+            if (
+                position_present is False
+                and broker_evidence.get("closed_deal_verified") is True
+            ):
+                matched = True
+            elif before is not None and fraction is not None and current is not None:
                 target = before * (1.0 - fraction)
                 tolerance = max(1e-9, before * 1e-6)
                 matched = (
-                    (
-                        position_present is True
-                        and 0.0 <= current <= target + tolerance
-                        and current < before - tolerance
-                    )
-                    or (
-                        position_present is False
-                        and broker_evidence.get("closed_deal_verified") is True
-                    )
+                    position_present is True
+                    and 0.0 <= current <= target + tolerance
+                    and current < before - tolerance
                 )
         elif kind in {"tighten_sl", "protect_sl"}:
             requested = _finite(pending.get("stop_price"))
