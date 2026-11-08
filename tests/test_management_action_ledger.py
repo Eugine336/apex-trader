@@ -111,6 +111,16 @@ def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_s
     action = _action()
     action.kind = "partial_close"
     action.fraction = 0.5
+    action.to_dict = lambda: {
+        "action_id": action.action_id,
+        "symbol": action.symbol,
+        "kind": action.kind,
+        "decision_id": action.decision_id,
+        "campaign_id": action.campaign_id,
+        "opportunity_id": action.opportunity_id,
+        "direction": "LONG",
+        "fraction": action.fraction,
+    }
     position = SimpleNamespace(ticket="ticket-1", lots=0.2)
 
     assert ledger.begin(action, position)[0] is True
