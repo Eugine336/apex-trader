@@ -204,3 +204,15 @@ def test_ledger_fails_closed_when_event_history_query_raises():
         None, "management_action_ledger_unavailable",
     )
     store.query_events = original_query
+
+
+def test_aggregator_acceptance_is_dispatched_not_broker_acknowledged():
+    store = _Store()
+    ledger = ManagementActionLedger(store)
+    action = _action()
+    position = SimpleNamespace(ticket="ticket-1", lots=0.2)
+    assert ledger.begin(action, position)[0] is True
+    assert ledger.finish(action, "DISPATCHED", response=True) is True
+    assert ledger.status(action.action_id, action.symbol) == "DISPATCHED"
+    assert ledger.pending_actions("EURUSD")
+    assert ledger.begin(action, position) == (False, "DISPATCHED")
