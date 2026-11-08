@@ -854,6 +854,16 @@ class PlatformManager:
             }
             # MT5 history state is a numeric enum; preserve unknown values rather than guessing.
             normalized = state_map.get(state_name, "UNKNOWN")
+            if normalized in {"CANCELLED", "EXPIRED", "REJECTED"}:
+                try:
+                    initial = float(record.get("volume_initial", record.get("volume", 0.0)) or 0.0)
+                    remaining = float(record.get("volume_current", record.get("volume", 0.0)) or 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    initial = remaining = 0.0
+                if initial > 0.0 and 0.0 < remaining < initial:
+                    # The terminal order retained an unfilled remainder: broker
+                    # history therefore proves a partial fill before termination.
+                    normalized = "PARTIALLY_FILLED_TERMINAL"
             return {"status": normalized, "order_id": ticket, "broker_confirmed": normalized != "UNKNOWN", "record": record}
         return {"status": "UNKNOWN", "order_id": ticket, "reason": "not_present_in_live_or_history_book", "broker_confirmed": False}
 
