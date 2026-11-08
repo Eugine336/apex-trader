@@ -592,6 +592,168 @@ class PlatformManager:
         """Attach the shared execution telemetry sink; never changes admission."""
         self.execution_monitor = monitor
 
+    def execute_pending_entry(
+        self,
+        symbol: str,
+        direction: str,
+        order_type: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        idempotency_key: str = "",
+    ) -> OrderResult:
+        """Submit a Brain-authorized pending entry through the MT5 gateway only."""
+        connector = self.get_connector(symbol)
+        if not isinstance(connector, MT5Connector):
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=float(entry_price or 0.0), slippage_pips=0.0,
+                lots=float(lots or 0.0), symbol=symbol,
+                direction=str(direction or "").upper(), sl=float(sl or 0.0),
+                tp=float(tp or 0.0), platform="unsupported",
+                error="pending_orders_unsupported_on_selected_platform",
+                order_status="REJECTED", order_type=str(order_type or "").upper(),
+            )
+        with self._broker_write_lock:
+            result = connector.place_pending_order(
+                symbol=symbol, direction=direction, order_type=order_type,
+                entry_price=entry_price, lots=lots, sl=sl, tp=tp,
+                comment=comment, idempotency_key=idempotency_key,
+            )
+        if result.success and result.order_status == "PENDING":
+            try:
+                from persistence import domain_events as DE
+                from persistence.event_store import get_event_store
+                store = get_event_store()
+                if store is not None:
+                    store.emit(
+                        event_type=DE.ORDER_PENDING, severity="INFO", symbol=symbol,
+                        correlation_id=idempotency_key or None, parent_id=result.order_id,
+                        source_module="platforms.platform_manager", durable=True,
+                        payload={
+                            "order_id": result.order_id, "order_type": result.order_type,
+                            "direction": result.direction, "lots": result.lots,
+                            "entry_price": result.requested_price, "sl": result.sl,
+                            "tp": result.tp, "platform": result.platform,
+                            "idempotency_key": idempotency_key,
+                            "status": "PENDING", "broker_confirmed": True,
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 — report persistence fault, do not resubmit
+                _pm_logger.critical("[orders] pending order {} accepted but lifecycle event persistence failed: {}", result.order_id, exc)
+        return result
+
+    def cancel_pending_order(self, order_id: str, *, symbol: str = "") -> bool:
+        """Cancel only a uniquely broker-confirmed pending order across MT5 accounts."""
+        ticket = str(order_id or "").strip()
+        canonical_symbol = str(symbol or "").strip().upper()
+        if not ticket or not canonical_symbol:
+            return False
+        matches: list[tuple[int, MT5Connector, dict]] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                snapshots = connector.get_pending_order_snapshots()
+            except Exception as exc:
+                _pm_logger.error("[orders] cannot prove pending order book for MT5 account {}: {}", index, exc)
+                return False
+            for row in snapshots:
+                if (
+                    str(row.get("ticket", "")) == ticket
+                    and str(row.get("symbol", "")).strip().upper() == canonical_symbol
+                    and row.get("source_verified") is True
+                ):
+                    matches.append((index, connector, row))
+        if len(matches) != 1:
+            _pm_logger.error("[orders] pending cancel refused: ticket {} symbol {} matched {} verified accounts", ticket, canonical_symbol, len(matches))
+            return False
+        index, connector, row = matches[0]
+        with self._broker_write_lock:
+            cancelled = connector.cancel_pending_order(ticket)
+        if cancelled:
+            try:
+                from persistence import domain_events as DE
+                from persistence.event_store import get_event_store
+                store = get_event_store()
+                if store is not None:
+                    store.emit(
+                        event_type=DE.ORDER_CANCELLED, severity="INFO", symbol=canonical_symbol,
+                        parent_id=ticket, source_module="platforms.platform_manager", durable=True,
+                        payload={"order_id": ticket, "symbol": canonical_symbol,
+                                 "connector_index": index, "status": "CANCELLED",
+                                 "pre_cancel_broker_snapshot": row},
+                    )
+            except Exception as exc:  # noqa: BLE001 — cancellation already happened
+                _pm_logger.critical("[orders] pending order {} cancelled but lifecycle event persistence failed: {}", ticket, exc)
+        return bool(cancelled)
+
+    def reconcile_pending_order(
+        self, order_id: str, *, symbol: str, submitted_at: datetime,
+    ) -> dict:
+        """Resolve a pending order only from a source-verified live or historical broker record.
+
+        Absence from the live order book is never interpreted as cancellation or fill.
+        """
+        ticket = str(order_id or "").strip()
+        canonical_symbol = str(symbol or "").strip().upper()
+        if (
+            not ticket or not canonical_symbol
+            or not isinstance(submitted_at, datetime)
+            or submitted_at.tzinfo is None or submitted_at.utcoffset() is None
+        ):
+            return {"status": "UNKNOWN", "reason": "invalid_reconciliation_identity_or_time", "broker_confirmed": False}
+        now = datetime.now(timezone.utc)
+        if submitted_at.astimezone(timezone.utc) > now:
+            return {"status": "UNKNOWN", "reason": "submission_time_in_future", "broker_confirmed": False}
+        live_matches: list[dict] = []
+        history_matches: list[dict] = []
+        failed_accounts: list[int] = []
+        for index, connector in enumerate(self.mt5_connectors):
+            if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
+                continue
+            try:
+                live = connector.get_pending_order_snapshots()
+                live_matches.extend(
+                    {**row, "connector_index": index}
+                    for row in live
+                    if str(row.get("ticket", "")) == ticket
+                    and str(row.get("symbol", "")).strip().upper() == canonical_symbol
+                    and row.get("source_verified") is True
+                )
+                history = connector.get_order_history(submitted_at.astimezone(timezone.utc), now)
+                history_matches.extend(
+                    {**row, "connector_index": index}
+                    for row in history
+                    if str(row.get("ticket", "")) == ticket
+                    and str(row.get("symbol", "")).strip().upper() == canonical_symbol
+                    and row.get("source_verified") is True
+                )
+            except Exception:
+                failed_accounts.append(index)
+        if len(live_matches) == 1:
+            return {"status": "PENDING", "broker_confirmed": True, "record": live_matches[0]}
+        if len(live_matches) > 1 or len(history_matches) > 1:
+            return {"status": "AMBIGUOUS", "reason": "ticket_matches_multiple_broker_accounts_or_history_rows", "broker_confirmed": False}
+        if failed_accounts:
+            return {"status": "UNKNOWN", "reason": "broker_history_or_live_book_incomplete", "failed_accounts": failed_accounts, "broker_confirmed": False}
+        if len(history_matches) == 1:
+            record = history_matches[0]
+            state = getattr(record.get("state"), "value", record.get("state"))
+            state_name = str(state).upper()
+            state_map = {
+                str(getattr(connector_mt5, "ORDER_STATE_FILLED", object())): "FILLED",
+                str(getattr(connector_mt5, "ORDER_STATE_CANCELED", object())): "CANCELLED",
+                str(getattr(connector_mt5, "ORDER_STATE_EXPIRED", object())): "EXPIRED",
+                str(getattr(connector_mt5, "ORDER_STATE_REJECTED", object())): "REJECTED",
+            }
+            # MT5 history state is a numeric enum; preserve unknown values rather than guessing.
+            normalized = state_map.get(state_name, "UNKNOWN")
+            return {"status": normalized, "broker_confirmed": normalized != "UNKNOWN", "record": record}
+        return {"status": "UNKNOWN", "reason": "not_present_in_live_or_history_book", "broker_confirmed": False}
+
     def execute_entry(
         self,
         symbol: str,
