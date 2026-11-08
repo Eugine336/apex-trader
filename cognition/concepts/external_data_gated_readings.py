@@ -94,59 +94,60 @@ class ExternalDataGatedReadings:
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         reference, reference_tf = reference_price(bars_by_tf)
+        timeframe = reference_tf or ""
+        bars = clean_bars((bars_by_tf or {}).get(timeframe, []))
+        if not timeframe or not bars:
+            return []
+        epoch = last_source_epoch(bars)
+        source_verified = bool(
+            epoch is not None and bars[-1].get("source_timestamp_verified") is True
+        )
         readings: list[ConceptReading] = []
-        for timeframe, raw in (bars_by_tf or {}).items():
-            bars = clean_bars(raw)
-            if not bars:
-                continue
-            epoch = last_source_epoch(bars)
-            source_verified = bool(
-                epoch is not None and bars[-1].get("source_timestamp_verified") is True
-            )
-            for concept, (domain, requirement) in _DATA_GATES.items():
-                readings.append(ConceptReading(
-                    concept=concept,
-                    timeframe=str(timeframe).upper(),
-                    domain=domain,
-                    applicable=True,
-                    applicability_reason=(
-                        f"{concept} is relevant knowledge, but its required external data channel "
-                        "is not supplied to this reader."
+        for concept, (domain, requirement) in _DATA_GATES.items():
+            readings.append(ConceptReading(
+                concept=concept,
+                timeframe=timeframe,
+                domain=domain,
+                applicable=True,
+                applicability_reason=(
+                    f"{concept} is relevant knowledge, but its required external data channel "
+                    "is not supplied to this reader."
+                ),
+                observation=(
+                    f"{symbol} {timeframe}: {concept} remains data-gated; "
+                    "no external value or directional conclusion was inferred from OHLC."
+                ),
+                implications=(Implication(
+                    direction=FLAT,
+                    statement=(
+                        f"{concept} cannot be interpreted until its required source data is available."
                     ),
-                    observation=(
-                        f"{symbol} {str(timeframe).upper()}: {concept} remains data-gated; "
-                        "no external value or directional conclusion was inferred from OHLC."
+                    strength=None,
+                    activated=False,
+                    activation_reason="Required external feed is unavailable or not integrated.",
+                    requires=(requirement,),
+                    conflicts_with=(
+                        "Do not infer the missing external feed from price-only observations.",
                     ),
-                    implications=(Implication(
-                        direction=FLAT,
-                        statement=(
-                            f"{concept} cannot be interpreted until its required source data is available."
-                        ),
-                        strength=None,
-                        activated=False,
-                        activation_reason="Required external feed is unavailable or not integrated.",
-                        requires=(requirement,),
-                        conflicts_with=(
-                            "Do not infer the missing external feed from price-only observations.",
-                        ),
-                        management={
-                            "meaning": "Context only; no direction, entry, sizing, exit or execution authority.",
-                        },
-                    ),),
-                    facts={
-                        "data_gated": True,
-                        "data_gated_reason": requirement,
-                        "external_feed_observed": False,
-                        "directional_decision_emitted": False,
-                        "entry_authorization_emitted": False,
+                    management={
+                        "meaning": "Context only; no direction, entry, sizing, exit or execution authority.",
                     },
-                    source_bar_epoch=epoch,
-                    reference_close=reference,
-                    reference_timeframe=reference_tf,
-                    unknowns=(requirement,),
-                    data_basis="completed_ohlc",
-                    independence_group=f"ohlc:{str(symbol or '').upper()}:{str(timeframe).upper()}",
-                    source_timestamp_epoch=epoch if source_verified else None,
-                    source_timestamp_verified=source_verified,
-                ))
+                ),),
+                facts={
+                    "data_gated": True,
+                    "data_gated_reason": requirement,
+                    "external_feed_observed": False,
+                    "directional_decision_emitted": False,
+                    "entry_authorization_emitted": False,
+                },
+                source_bar_epoch=epoch,
+                reference_close=reference,
+                reference_timeframe=reference_tf,
+                unknowns=(requirement,),
+                data_basis="completed_ohlc",
+                independence_group=f"ohlc:{str(symbol or '').upper()}:{timeframe}",
+                source_timestamp_epoch=epoch if source_verified else None,
+                source_timestamp_verified=source_verified,
+            ))
+
         return readings
