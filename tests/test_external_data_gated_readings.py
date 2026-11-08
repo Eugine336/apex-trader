@@ -46,3 +46,20 @@ def test_missing_external_feeds_produce_unknown_non_directional_readings():
 
 def test_missing_completed_bars_do_not_fabricate_external_feed_readings():
     assert ExternalDataGatedReadings().read("EURUSD", {"H1": []}) == []
+
+
+def test_external_feed_gates_emit_one_context_reading_per_symbol_not_per_timeframe():
+    bar = {
+        "open": 1.08,
+        "high": 1.09,
+        "low": 1.07,
+        "close": 1.085,
+        "timestamp_epoch": 1_800_000_000,
+        "source_timestamp_verified": True,
+    }
+    readings = ExternalDataGatedReadings().read("EURUSD", {
+        "M5": [{**bar, "timestamp_epoch": 1_800_000_300}],
+        "H1": [bar],
+    })
+    assert len(readings) == len(DATA_GATED_METHODS)
+    assert {reading.timeframe for reading in readings} == {"M5"}
