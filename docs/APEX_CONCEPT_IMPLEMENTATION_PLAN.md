@@ -200,28 +200,8 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 7. **Code review checklist**: no config numbers; no symbol branches; every `None` is reported in `requires`/`unknowns`.
 
 ## 6. Brain integration work packages (single owner; these make the concepts *usable*)
-- **WP-B1 Context selection and composition — implementation accepted.** PR #819 corrected independent-evidence accounting and the
-  synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
-  `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
-  requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
-  and live Brain consumption of the full synthesis output. PR #851 preserves unknown opposing strength as unknown;
-  PR #852 enforces target-symbol identity, one immutable decision-time cutoff, source-bar/source-timestamp future and
-  staleness checks, and duplicate evidence-ID exclusion. PR #854 preserves relevant/watch lens states as non-directional
-  Brain hypotheses and prevents conflicting active concept geometry from falling back to generic structure. PR #857
-  audits the 79-method/38-lens registry against reader registration, market-lens Evidence conversion, BrainReasoner
-  projection/synthesis and CognitiveBrain delegation. PR #860 strengthens the audit through the live SystemContext →
-  broker-backed concept source → EvidenceConsolidator → MarketState → BrainReasoner → CognitiveBrain path, and verifies
-  the sole live origination route passes ComplianceDivision, PortfolioDivision, canonical OwnerLimits, FlushLoop,
-  ActionExecutor and RiskGate before the broker gateway. PR #860 passed 4,311 tests on Python 3.11 and 3.12, lint,
-  generated coverage and canonical identity checks. WP-B1 implementation acceptance is complete; unavailable
-  regime/session/depth inputs remain explicitly data-gated and are not promoted into active hypotheses.
-- **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
-  zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
-  shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
-  reconciliation, cancellation and lifecycle remain deliberately unsupported until adapters implement them; LIMIT/STOP
-  are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
-  Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
-  bounded by the missing broker pending-order lifecycle.
+- **WP-B1 Context selection and composition — implementation and static/live call-path acceptance complete.** PRs #819, #851, #852, #854, #857 and #860 establish independent-evidence accounting, preserved opposing hypotheses and unknown strength, target-symbol/source-time/cutoff integrity, non-directional watch-state hypotheses, fail-closed conflict handling, and the audited native SystemContext → broker-backed concept source → EvidenceConsolidator → MarketState → BrainReasoner → CognitiveBrain path. PR #860 also verifies that live origination crosses ComplianceDivision, PortfolioDivision, canonical OwnerLimits, FlushLoop, ActionExecutor and RiskGate before the broker gateway. Static catalogue mapping and live-path wiring are accepted; production operation still depends on availability and verification of the explicitly data-gated feeds. No missing feed is promoted to FULL or treated as active evidence.
+- **WP-B2 Geometry and pending-order lifecycle — implementation merged in PR #862.** Concept-supplied entry price, zone bounds and MARKET/LIMIT/STOP order type flow through geometry, opportunity, campaign translation and the shared execution-intent contract. Conflicting or incomplete geometry fails closed; no fixed payoff-geometry fallback is permitted. PR #862 adds MT5 LIMIT/STOP placement through ActionExecutor → PlatformManager → connector, exact broker-confirmed pending-ticket observation, first-class cancellation, live-before-history pending-specific idempotency, comment-truncation-resistant identity, partial-fill attribution, exact order-ticket deal filtering, history-based terminal reconciliation, account/ticket collision protection, unknown-state preservation and restart recovery. Deriv pending placement remains explicitly unsupported. The merged PR passed full CI and focused Gold desk CI on its final PR head; the post-merge main workflow is a separate verification run. No live broker orders were sent.
 - **WP-B3 Management — broker acknowledgement lifecycle merged (PR #847); acceptance remains open for feed-gated capabilities.**
   The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
   structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
