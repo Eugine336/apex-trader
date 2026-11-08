@@ -43,10 +43,6 @@ _DATA_GATES: dict[str, tuple[EvidenceDomain, str]] = {
         EvidenceDomain.MACRO,
         "trusted GDP, CPI, PCE, employment and PMI event records with actual/forecast/previous values and source timestamps",
     ),
-    "carry": (
-        EvidenceDomain.EXECUTION_QUALITY,
-        "verified direction-specific broker swap or funding rates, contract units, rollover schedule and financing-day rules for the exact instrument",
-    ),
     "derivatives": (
         EvidenceDomain.OTHER,
         "verified instrument expiry/roll specifications and provider-sourced options implied volatility, skew and open-interest data where applicable",
