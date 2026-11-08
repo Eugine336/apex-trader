@@ -159,6 +159,7 @@ class ManagementActionLedger:
             "acknowledged_epoch": time.time(),
             "broker_acknowledgement_present": bool(
                 set(_response_summary(response)) & {"order_id", "ticket", "deal", "retcode"}
+                or (isinstance(response, dict) and response.get("reconciled") is True)
             ),
         }
         try:
