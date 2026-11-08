@@ -5801,7 +5801,7 @@ class EventDrivenSystem:
                         event_type=DE.ORDER_RECONCILED, severity="INFO",
                         symbol=str(meta.get("symbol", "") or ""),
                         correlation_id=str(meta.get("decision_id", "") or "") or None,
-                        parent_id=ticket,
+                        parent_id=tracking_key,
                         source_module="execution.pending_order_reconciliation",
                         durable=True,
                         payload={
@@ -5823,7 +5823,7 @@ class EventDrivenSystem:
                             parent_id=ticket,
                             source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": ticket, "status": status,
+                            payload={"order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
                                      "attribution_status": "unresolved_position_ticket",
                                      "broker_record": record, "broker_confirmed": True},
                         )
