@@ -286,8 +286,15 @@ class ManagementActionLedger:
                 target = before * (1.0 - fraction)
                 tolerance = max(1e-9, before * 1e-6)
                 matched = (
-                    position_present is True and 0.0 <= current <= target + tolerance
-                    and current < before - tolerance
+                    (
+                        position_present is True
+                        and 0.0 <= current <= target + tolerance
+                        and current < before - tolerance
+                    )
+                    or (
+                        position_present is False
+                        and broker_evidence.get("closed_deal_verified") is True
+                    )
                 )
         elif kind in {"tighten_sl", "protect_sl"}:
             requested = _finite(pending.get("stop_price"))
