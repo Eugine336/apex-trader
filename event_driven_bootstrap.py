@@ -5749,8 +5749,8 @@ class EventDrivenSystem:
                 broker_position_id = str(
                     record.get("position_id") or record.get("position") or ""
                 ).strip()
-                position_id = broker_position_id or resolved_ticket
-                position = position_by_ticket.get(position_id) or position_by_ticket.get(resolved_ticket)
+                position_id = broker_position_id
+                position = position_by_ticket.get(position_id) if position_id else None
                 terminal = status in {"FILLED", "CANCELLED", "EXPIRED", "REJECTED", "PARTIALLY_FILLED_TERMINAL"}
 
                 # A pending order can fill and hit its protective exit between
