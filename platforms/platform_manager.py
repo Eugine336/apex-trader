@@ -611,6 +611,29 @@ class PlatformManager:
         decision_feature_snapshot: Optional[dict] = None,
     ) -> OrderResult:
         """Submit a Brain-authorized pending entry through the MT5 gateway only."""
+        try:
+            from persistence.event_store import get_existing_event_store
+            lifecycle_store = get_existing_event_store()
+        except Exception as exc:  # noqa: BLE001 — pending order must be durably tracked before broker mutation
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=float(entry_price or 0.0), slippage_pips=0.0,
+                lots=float(lots or 0.0), symbol=symbol,
+                direction=str(direction or "").upper(), sl=float(sl or 0.0),
+                tp=float(tp or 0.0), platform="mt5",
+                error=f"pending_order_lifecycle_store_unavailable: {type(exc).__name__}",
+                order_status="REJECTED", order_type=str(order_type or "").upper(),
+            )
+        if lifecycle_store is None or bool(getattr(lifecycle_store, "is_degraded", False)):
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=float(entry_price or 0.0), slippage_pips=0.0,
+                lots=float(lots or 0.0), symbol=symbol,
+                direction=str(direction or "").upper(), sl=float(sl or 0.0),
+                tp=float(tp or 0.0), platform="mt5",
+                error="pending_order_lifecycle_store_unavailable_or_degraded",
+                order_status="REJECTED", order_type=str(order_type or "").upper(),
+            )
         connector = self.get_connector(symbol)
         if not isinstance(connector, MT5Connector):
             return OrderResult(
