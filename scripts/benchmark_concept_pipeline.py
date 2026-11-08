@@ -34,9 +34,6 @@ def summarize(
 ) -> dict[str, Any]:
     durations = [float(row["elapsed_ms"]) for row in samples]
     completed = {str(row["symbol"]).upper() for row in samples}
-    failed_symbols = {
-        str(row.get("symbol", "")).upper() for row in (failures or [])
-    }
     return {
         "sample_count": len(samples),
         "requested_symbol_count": len(requested_symbols),
