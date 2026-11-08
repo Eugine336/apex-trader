@@ -603,6 +603,10 @@ class PlatformManager:
         tp: float,
         comment: str = "",
         idempotency_key: str = "",
+        decision_id: str = "",
+        campaign_id: str = "",
+        opportunity_id: str = "",
+        decision_feature_snapshot: Optional[dict] = None,
     ) -> OrderResult:
         """Submit a Brain-authorized pending entry through the MT5 gateway only."""
         connector = self.get_connector(symbol)
@@ -638,6 +642,13 @@ class PlatformManager:
                             "entry_price": result.requested_price, "sl": result.sl,
                             "tp": result.tp, "platform": result.platform,
                             "idempotency_key": idempotency_key,
+                            "decision_id": decision_id,
+                            "campaign_id": campaign_id,
+                            "opportunity_id": opportunity_id,
+                            "decision_feature_snapshot": (
+                                dict(decision_feature_snapshot)
+                                if isinstance(decision_feature_snapshot, dict) else None
+                            ),
                             "status": "PENDING", "broker_confirmed": True,
                         },
                     )
