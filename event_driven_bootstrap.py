@@ -1481,8 +1481,16 @@ class EventDrivenSystem:
 
         # ── Execution plane ──────────────────────────────────────────
         self._aggregator = IntentAggregator(AggregatorConfig())
+        owner_limits = getattr(config, "owner_limits", None)
+        margin_block_level = max(
+            150.0,
+            float(getattr(owner_limits, "margin_block_entry_level_pct", 150.0)),
+        )
         self._executor = ActionExecutor(
             broker=self._pm,  # PlatformManager satisfies BrokerPort
+            config=ExecutorConfig(
+                margin_block_entry_level_pct=margin_block_level,
+            ),
         )
         # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
@@ -2044,9 +2052,11 @@ class EventDrivenSystem:
             if (
                 bool(account_risk.daily_loss_halted(account_key))
                 or bool(account_risk.flatten_breached(account_key))
+                or bool(account_risk.margin_entry_blocked(account_key))
             ):
                 logger.warning(
-                    "[origination-sink] {} skipped — account {} is daily-loss halted/breached",
+                    "[origination-sink] {} skipped — account {} is loss-halted, "
+                    "margin-entry-blocked, or under a protective flatten threshold",
                     symbol, account_key,
                 )
                 return None
@@ -4842,18 +4852,80 @@ class EventDrivenSystem:
         if margin_warned is None:
             margin_warned = {}
             self._margin_warned = margin_warned
+        margin_block_warned = getattr(self, "_margin_block_warned", None)
+        if margin_block_warned is None:
+            margin_block_warned = {}
+            self._margin_block_warned = margin_block_warned
         try:
-            for acct, ainfo in self._pm.get_account_summary().items():
+            owner_limits = getattr(getattr(self, "_config", None), "owner_limits", None)
+            margin_block_level = float(
+                getattr(owner_limits, "margin_block_entry_level_pct", 150.0)
+            )
+            margin_warn_level = float(
+                getattr(owner_limits, "margin_warn_level_pct", 200.0)
+            )
+            account_summary = self._pm.get_account_summary()
+            for acct, ainfo in account_summary.items():
                 ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
-                if 0.0 < ml < 150.0:
-                    if not margin_warned.get(acct, False):
+                margin_used_raw = getattr(ainfo, "margin", None)
+                try:
+                    margin_used = float(margin_used_raw) if margin_used_raw is not None else None
+                except (TypeError, ValueError, OverflowError):
+                    margin_used = None
+                if ctx.account_risk is not None and (0.0 < ml or margin_used == 0.0):
+                    # get_account_summary() is keyed by connector slot (mt5,
+                    # mt5_0, deriv), while AccountRiskManager is keyed by the
+                    # stable broker:account-id silo. Translate explicitly; using
+                    # the summary key directly silently bypasses the entry guard.
+                    enabled_symbols = getattr(self._config, "enabled_pairs", [])
+                    mt5_connectors = list(getattr(self._pm, "mt5_connectors", []) or [])
+                    for symbol in enabled_symbols:
+                        try:
+                            connector = self._pm.get_connector(symbol)
+                            mt5_index = next(
+                                (i for i, item in enumerate(mt5_connectors) if item is connector),
+                                None,
+                            )
+                            # Deriv has no MT5-style margin-level percentage;
+                            # its stake/contract checks remain authoritative.
+                            if mt5_index is None:
+                                continue
+                            summary_key = (
+                                f"mt5_{mt5_index}" if len(mt5_connectors) > 1
+                                else "mt5"
+                            )
+                            if summary_key == str(acct):
+                                risk_key = ctx.account_key(symbol, self._pm)
+                                if margin_used == 0.0:
+                                    ctx.account_risk.clear_margin_level(risk_key)
+                                elif 0.0 < ml:
+                                    ctx.account_risk.update_margin_level(risk_key, ml)
+                        except Exception as mapping_exc:
+                            logger.warning(
+                                "[risk-state] margin account mapping failed for {}: {}",
+                                symbol, mapping_exc,
+                            )
+                if 0.0 < ml < margin_block_level:
+                    if not margin_block_warned.get(acct, False):
                         logger.critical(
                             "[risk-state] account {} margin level {:.0f}% — "
-                            "approaching broker stop-out", acct, ml,
+                            "below owner entry-block threshold {:.0f}%",
+                            acct, ml, margin_block_level,
+                        )
+                        margin_block_warned[acct] = True
+                    margin_warned[acct] = True
+                elif margin_block_level <= ml < margin_warn_level:
+                    if not margin_warned.get(acct, False):
+                        logger.warning(
+                            "[risk-state] account {} margin level {:.0f}% — "
+                            "below owner warning threshold {:.0f}%",
+                            acct, ml, margin_warn_level,
                         )
                         margin_warned[acct] = True
-                elif ml >= 200.0:
+                    margin_block_warned[acct] = False
+                elif ml >= margin_warn_level:
                     margin_warned[acct] = False
+                    margin_block_warned[acct] = False
         except Exception as exc:
             logger.debug("[risk-state] margin-level check failed: {}", exc)
 
@@ -4976,7 +5048,11 @@ class EventDrivenSystem:
                             symbol=sym,
                             ticket=ticket,
                             source="account_risk",
-                            reason="account_flatten_cap_breached",
+                            reason=(
+                                "broker_margin_level_below_flatten_guard"
+                                if ctx.account_risk.margin_flatten_breached(acct)
+                                else "account_flatten_cap_breached"
+                            ),
                         )])
                         submitted += 1
                     if submitted:

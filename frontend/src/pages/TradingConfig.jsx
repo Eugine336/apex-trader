@@ -11,9 +11,7 @@ export default function TradingConfig() {
     universe_mode: "all",
     enabled_categories: [],
     enabled_symbols_override: "",
-    risk_per_trade_pct: "",
-    max_daily_drawdown_pct: "",
-    max_open_trades: "",
+    owner_limits_json: "{}",
     data_path_fixes_enabled: false,
     log_level: "INFO",
   });
@@ -35,9 +33,7 @@ export default function TradingConfig() {
         universe_mode: cfg.universe_mode || (cfg.enabled_symbols_override?.length ? "selected" : "all"),
         enabled_categories: cfg.enabled_categories || [],
         enabled_symbols_override: (cfg.enabled_symbols_override || []).join(", "),
-        risk_per_trade_pct: cfg.risk_per_trade_pct ?? "",
-        max_daily_drawdown_pct: cfg.max_daily_drawdown_pct ?? "",
-        max_open_trades: cfg.max_open_trades ?? "",
+        owner_limits_json: JSON.stringify(cfg.owner_limits || {}, null, 2),
         data_path_fixes_enabled: !!cfg.data_path_fixes_enabled,
         log_level: cfg.log_level || "INFO",
       });
@@ -84,6 +80,18 @@ export default function TradingConfig() {
     e.preventDefault();
     setError("");
     setNotice("");
+
+    let ownerLimits = {};
+    try {
+      ownerLimits = JSON.parse(form.owner_limits_json || "{}");
+      if (!ownerLimits || typeof ownerLimits !== "object" || Array.isArray(ownerLimits)) {
+        throw new Error("Owner limits must be a JSON object.");
+      }
+    } catch (err) {
+      setError(`Invalid owner-limits JSON: ${err.message}`);
+      return;
+    }
+
     setSaving(true);
 
     // Build a payload of only the fields the API accepts. Empty numeric
@@ -100,14 +108,7 @@ export default function TradingConfig() {
         : null,
       enabled_symbols_override:
         form.universe_mode === "all" ? null : symbols.length ? symbols : null,
-      risk_per_trade_pct:
-        form.risk_per_trade_pct === "" ? null : Number(form.risk_per_trade_pct),
-      max_daily_drawdown_pct:
-        form.max_daily_drawdown_pct === ""
-          ? null
-          : Number(form.max_daily_drawdown_pct),
-      max_open_trades:
-        form.max_open_trades === "" ? null : Number(form.max_open_trades),
+      owner_limits: ownerLimits,
       data_path_fixes_enabled: form.data_path_fixes_enabled,
       log_level: form.log_level,
     };
@@ -276,58 +277,35 @@ export default function TradingConfig() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-300">
-              Risk per Trade (%)
-            </label>
-            <input
-              type="number"
-              step="0.1"
-              min="0"
-              max="10"
-              value={form.risk_per_trade_pct}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, risk_per_trade_pct: e.target.value }))
-              }
-              placeholder="0.75"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-300">
-              Max Daily Drawdown (%)
-            </label>
-            <input
-              type="number"
-              step="0.5"
-              min="0"
-              max="100"
-              value={form.max_daily_drawdown_pct}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, max_daily_drawdown_pct: e.target.value }))
-              }
-              placeholder="3"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-300">
-              Max Open Trades
-            </label>
-            <input
-              type="number"
-              step="1"
-              min="1"
-              max="100"
-              value={form.max_open_trades}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, max_open_trades: e.target.value }))
-              }
-              placeholder="5"
-              className={inputClass}
-            />
-          </div>
+        <p className="text-xs text-gray-500">
+          All capital, drawdown, position-count, concentration, campaign, hedge,
+          and margin limits are controlled through the single canonical owner-limits
+          object below. Legacy duplicate risk fields are intentionally not exposed.
+        </p>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-300">
+            Advanced Owner Risk Limits (JSON)
+          </label>
+          <textarea
+            rows={12}
+            spellCheck={false}
+            value={form.owner_limits_json}
+            onChange={(e) =>
+              setForm((s) => ({ ...s, owner_limits_json: e.target.value }))
+            }
+            placeholder={'{\n  "risk_per_trade_pct": 0.5,\n  "max_risk_pct_per_trade": 1.5,\n  "max_total_risk_pct": 4.0,\n  "max_open_positions": 4\n}'}
+            className={inputClass + " font-mono"}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            Full nested override object. Omit fields to inherit defaults; retain every
+            override you want to keep. Supported keys include per-trade and portfolio
+            risk budgets, daily/weekly drawdown, position and correlation caps,
+            campaign exposure, hedge limits, and margin thresholds. Internal safety
+            switches and analytical tuning are not owner-editable. Unknown keys,
+            invalid combinations, and attempts to weaken hard safety guards are rejected.
+            Changes to a running instance require a restart.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

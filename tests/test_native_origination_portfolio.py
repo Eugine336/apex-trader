@@ -36,9 +36,10 @@ class _FakePortfolioDivision:
 class _FakeAccountRisk:
     daily_loss_cap_pct = 3.0
 
-    def __init__(self, *, halted=False, flatten=False, daily_pnl=-25.0):
+    def __init__(self, *, halted=False, flatten=False, margin_blocked=False, daily_pnl=-25.0):
         self.halted = halted
         self.flatten = flatten
+        self.margin_blocked = margin_blocked
         self.pnl = daily_pnl
 
     def daily_loss_halted(self, account_key):
@@ -46,6 +47,9 @@ class _FakeAccountRisk:
 
     def flatten_breached(self, account_key):
         return self.flatten
+
+    def margin_entry_blocked(self, account_key):
+        return self.margin_blocked
 
     def combined_pnl(self, account_key):
         return self.pnl
@@ -81,7 +85,7 @@ class _FakeAggregator:
 
 
 def _system(monkeypatch, *, approved=True, approved_size=0.03,
-            sizing_mode="lots", halted=False, flatten=False,
+            sizing_mode="lots", halted=False, flatten=False, margin_blocked=False,
             book=None, book_error=None, compliance_approved=True):
     symbol = "EURUSD"
     internal = edb.resolve_to_internal(symbol)
@@ -97,7 +101,7 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
     portfolio = _FakePortfolioDivision(
         approved=approved, approved_size=approved_size, sizing_mode=sizing_mode,
     )
-    risk = _FakeAccountRisk(halted=halted, flatten=flatten)
+    risk = _FakeAccountRisk(halted=halted, flatten=flatten, margin_blocked=margin_blocked)
     pm = _FakePlatformManager(book=book, book_error=book_error)
     compliance = SimpleNamespace(
         permit=lambda *_a: SimpleNamespace(approved=compliance_approved),
@@ -237,6 +241,17 @@ def test_daily_loss_halt_blocks_portfolio_sizing(monkeypatch):
 
 def test_flatten_breach_blocks_portfolio_sizing(monkeypatch):
     system, portfolio, _risk, _pm = _system(monkeypatch, flatten=True)
+
+    sized = system._size_brain_origination_with_portfolio(
+        _origination(), "EURUSD", "LONG", 1.0990,
+    )
+
+    assert sized is None
+    assert portfolio.calls == []
+
+
+def test_margin_entry_block_blocks_portfolio_sizing(monkeypatch):
+    system, portfolio, _risk, _pm = _system(monkeypatch, margin_blocked=True)
 
     sized = system._size_brain_origination_with_portfolio(
         _origination(), "EURUSD", "LONG", 1.0990,

@@ -168,6 +168,16 @@ def test_broker_credentials_masked_roundtrip(client):
     assert client.delete("/api/broker/mt5", headers=h).status_code == 404
 
 
+def test_config_exposes_effective_owner_limit_provenance(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    response = client.get("/api/config", headers=h)
+    assert response.status_code == 200
+    audit = response.json()["owner_limits_audit"]
+    assert audit["validation_status"] == "valid"
+    assert audit["source_by_field"]["risk_per_trade_pct"] == "runtime_default_or_internal_config"
+
+
 def test_config_get_update(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)
@@ -180,6 +190,116 @@ def test_config_get_update(client):
     assert upd.json()["config"]["risk_per_trade_pct"] == 1.0
     got = client.get("/api/config", headers=h).json()
     assert got["max_open_trades"] == 4
+    assert got["owner_limits"]["risk_per_trade_pct"] == 1.0
+    assert got["owner_limits"]["max_open_positions"] == 4
+
+
+def test_config_accepts_canonical_owner_limits_and_persists_partial_patch(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    limits = {
+        "risk_per_trade_pct": 0.5,
+        "max_risk_pct_per_trade": 1.5,
+        "max_total_risk_pct": 4.0,
+        "max_open_positions": 4,
+        "max_positions_per_symbol": 1,
+        "max_correlated_positions": 1,
+        "daily_loss_limit_pct": 2.0,
+        "daily_loss_flatten_pct": 4.0,
+    }
+    response = client.put("/api/config", headers=h, json={"owner_limits": limits})
+    assert response.status_code == 200
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["risk_per_trade_pct"] == 0.5
+    assert saved["owner_limits"]["max_open_positions"] == 4
+
+
+def test_owner_limit_settings_are_isolated_between_api_users(client):
+    first_token = _register(client, "first@example.com").json()["access_token"]
+    second_token = _register(client, "second@example.com").json()["access_token"]
+    first_headers = _auth_header(first_token)
+    second_headers = _auth_header(second_token)
+
+    saved = client.put(
+        "/api/config",
+        headers=first_headers,
+        json={"owner_limits": {"risk_per_trade_pct": 0.4}},
+    )
+    assert saved.status_code == 200
+
+    first = client.get("/api/config", headers=first_headers).json()
+    second = client.get("/api/config", headers=second_headers).json()
+    assert first["owner_limits"]["risk_per_trade_pct"] == 0.4
+    assert second["owner_limits"]["risk_per_trade_pct"] == 0.75
+
+
+def test_config_rejects_invalid_owner_limits_without_persisting(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    rejected = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"hard_stop_drawdown_pct": 16.0}},
+    )
+    assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert "hard_stop_drawdown_pct" not in saved["owner_limits"]
+    assert "weekly_drawdown_limit_pct" not in saved["owner_limits"]
+
+
+def test_config_empty_owner_object_resets_nested_overrides_to_defaults(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    first = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"risk_per_trade_pct": 0.5}},
+    )
+    assert first.status_code == 200
+    reset = client.put("/api/config", headers=h, json={"owner_limits": {}})
+    assert reset.status_code == 200
+    effective = client.get("/api/config", headers=h).json()
+    assert effective["owner_limits"]["risk_per_trade_pct"] == 0.75
+
+
+def test_config_rejects_owner_attempt_to_change_internal_or_unenforced_controls(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    for limits in (
+        {"margin_guardian_enabled": False},
+        {"weekly_drawdown_limit_pct": 3.0},
+        {"hard_stop_drawdown_pct": 10.0},
+    ):
+        rejected = client.put(
+            "/api/config",
+            headers=h,
+            json={"owner_limits": limits},
+        )
+        assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["margin_block_entry_level_pct"] == 150.0
+    assert "weekly_drawdown_limit_pct" not in saved["owner_limits"]
+    assert "hard_stop_drawdown_pct" not in saved["owner_limits"]
+
+
+def test_config_rejects_patch_conflicting_with_existing_owner_limits(client):
+    token = _register(client).json()["access_token"]
+    h = _auth_header(token)
+    first = client.put(
+        "/api/config",
+        headers=h,
+        json={"owner_limits": {"max_risk_pct_per_trade": 1.0}},
+    )
+    assert first.status_code == 200
+    rejected = client.put(
+        "/api/config",
+        headers=h,
+        json={"risk_per_trade_pct": 1.5},
+    )
+    assert rejected.status_code == 422
+    saved = client.get("/api/config", headers=h).json()
+    assert saved["owner_limits"]["max_risk_pct_per_trade"] == 1.0
+    assert saved["risk_per_trade_pct"] == 0.75
 
 
 def test_trading_start_requires_credentials(client):

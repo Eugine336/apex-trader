@@ -6,6 +6,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
+from risk.owner_limits import OwnerLimits
+
 
 # ── auth ───────────────────────────────────────────────────────────────────
 class RegisterRequest(BaseModel):
@@ -94,9 +96,24 @@ class TradingConfig(BaseModel):
         if self.universe_mode == "single" and len(set(symbols)) != 1:
             raise ValueError("Single mode requires exactly one symbol")
         return self
+    # Backward-compatible owner-limit keys remain accepted. New settings use
+    # the canonical nested contract so the backend can reject unknown fields
+    # and validate the complete merged configuration before persistence.
     risk_per_trade_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     max_daily_drawdown_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     max_open_trades: Optional[int] = Field(default=None, ge=1, le=100)
+    owner_limits: Optional[dict[str, Any]] = None
+    owner_limits_audit: Optional[dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def validate_owner_limit_patch(self) -> "TradingConfig":
+        if self.owner_limits is not None:
+            try:
+                OwnerLimits().apply_updates(self.owner_limits)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"owner_limits: {exc}") from exc
+        return self
+
     data_path_fixes_enabled: Optional[bool] = None
     log_level: Optional[str] = None
 

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from api.instance_config import (
     apply_user_overrides,
     build_instance_environment,
@@ -37,11 +39,13 @@ def test_apply_user_overrides_mutates_config():
     assert cfg.data_backup.clean_start_on_first_boot is False
 
 
-def test_apply_overrides_keeps_weekly_dd_consistent():
+def test_apply_overrides_rejects_daily_limit_above_hard_stop():
     cfg = AppConfig()
-    # Setting daily above the default weekly cap should bump weekly to match.
-    apply_user_overrides(cfg, {"max_daily_drawdown_pct": 50.0})
-    assert cfg.risk.max_weekly_drawdown_pct >= 50.0
+    before = cfg.owner_limits.to_dict()
+    with pytest.raises(ValueError, match="cannot exceed hard stop"):
+        apply_user_overrides(cfg, {"max_daily_drawdown_pct": 50.0})
+    assert cfg.owner_limits.to_dict() == before
+    assert cfg.risk.max_daily_drawdown_pct == before["daily_loss_limit_pct"]
 
 
 def test_apply_empty_overrides_is_noop():
@@ -53,12 +57,25 @@ def test_apply_empty_overrides_is_noop():
 
 def test_write_and_load_user_config(tmp_path, monkeypatch):
     cfg_path = tmp_path / "user_config.json"
-    write_user_config(cfg_path, {"risk_per_trade_pct": 2.0, "bogus": 1})
+    write_user_config(
+        cfg_path,
+        {
+            "risk_per_trade_pct": 2.0,
+            "owner_limits": {"max_open_positions": 4, "max_positions_per_symbol": 1},
+            "bogus": 1,
+        },
+    )
     data = json.loads(cfg_path.read_text())
-    assert data == {"risk_per_trade_pct": 2.0}  # bogus filtered out
+    assert data == {
+        "risk_per_trade_pct": 2.0,
+        "owner_limits": {"max_open_positions": 4, "max_positions_per_symbol": 1},
+    }  # unknown top-level keys filtered out
 
     monkeypatch.setenv("APEX_USER_CONFIG", str(cfg_path))
-    assert load_user_overrides_from_env() == {"risk_per_trade_pct": 2.0}
+    assert load_user_overrides_from_env() == {
+        "risk_per_trade_pct": 2.0,
+        "owner_limits": {"max_open_positions": 4, "max_positions_per_symbol": 1},
+    }
 
 
 def test_load_overrides_missing_env_returns_empty(monkeypatch):
@@ -143,3 +160,43 @@ def test_build_environment_strips_whitespace_credentials(tmp_path):
     assert env["DERIV_APP_ID"] == "1089"
     assert env["DERIV_ACCOUNT_TYPE"] == "demo"
     assert env["DERIV_CLIENT_ID"] == "cid"
+
+def test_apply_user_overrides_updates_canonical_owner_limits_and_all_legacy_views():
+    cfg = AppConfig()
+    apply_user_overrides(
+        cfg,
+        {
+            "owner_limits": {
+                "risk_per_trade_pct": 0.5,
+                "max_risk_pct_per_trade": 1.5,
+                "max_total_risk_pct": 4.0,
+                "max_open_positions": 4,
+                "max_positions_per_symbol": 1,
+                "daily_loss_limit_pct": 2.0,
+            }
+        },
+    )
+    assert cfg.owner_limits.risk_per_trade_pct == 0.5
+    assert cfg.risk.risk_per_trade_pct == 0.5
+    assert cfg.cognition.origination_risk_fraction == 0.005
+    assert cfg.risk.max_open_trades == 4
+    assert cfg.governor.max_open_positions == 4
+    assert cfg.risk_management.max_simultaneous_positions == 4
+    assert cfg.risk.max_pair_concentration == 1
+    assert cfg.governor.max_positions_per_symbol == 1
+    assert cfg.risk_management.max_per_pair_positions == 1
+    assert cfg.governor.daily_loss_cap_pct == 2.0
+    assert cfg.risk.max_daily_drawdown_pct == 2.0
+    assert cfg.owner_limits.weekly_drawdown_limit_pct == 8.0
+    assert cfg.owner_limits.hard_stop_drawdown_pct == 15.0
+
+
+def test_invalid_owner_limit_update_is_atomic():
+    cfg = AppConfig()
+    before = cfg.owner_limits.to_dict()
+    with pytest.raises(ValueError):
+        apply_user_overrides(cfg, {"owner_limits": {"risk_per_trade_pct": 9.0}})
+    assert cfg.owner_limits.to_dict() == before
+    assert cfg.risk.risk_per_trade_pct == before["risk_per_trade_pct"]
+
+

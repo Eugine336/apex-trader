@@ -5,6 +5,9 @@ from __future__ import annotations
 import time
 import threading
 from dataclasses import dataclass
+from types import SimpleNamespace
+
+import pytest
 from typing import Any, Optional
 
 
@@ -1049,6 +1052,9 @@ def test_deriv_contract_constraints_do_not_authorize_shared_open():
     connector._mapper = SimpleNamespace(to_broker=lambda symbol: symbol)
     connector._discovered_multipliers = {"R_75": [100, 200, 300]}
     connector._discovered_multipliers_at = {"R_75": time.time()}
+    # This connector is explicitly Deriv; the production PlatformManager
+    # exposes the same platform identity through its broker interface.
+    connector.get_platform_name = lambda _symbol: "deriv"
     result = ActionExecutor(connector, _fast_cfg()).execute(
         _open_intent("R_75"), {}
     )
@@ -1078,3 +1084,68 @@ def test_action_executor_rejects_entry_outside_attached_zone():
     assert ActionExecutor._payoff_geometry_error(intent) == (
         "market_payoff_geometry_entry_outside_zone"
     )
+
+def _mt5_margin_broker(*, margin, equity, margin_level):
+    broker = FakeBroker()
+    broker.get_platform_name = lambda _symbol: "mt5"
+    broker.get_connector = lambda _symbol: SimpleNamespace(
+        get_account_info=lambda: SimpleNamespace(
+            margin=margin,
+            equity=equity,
+            margin_level=margin_level,
+        )
+    )
+    return broker
+
+
+def test_mt5_margin_guard_blocks_entry_below_owner_threshold():
+    broker = _mt5_margin_broker(margin=1000.0, equity=1400.0, margin_level=140.0)
+    executor = ActionExecutor(
+        broker,
+        _fast_cfg(margin_block_entry_level_pct=175.0),
+    )
+    result = executor.execute(_open_intent("XAUUSD"), open_positions={})
+    assert result.success is False
+    assert result.rejected_by_gate is True
+    assert "margin_level_below_entry_block" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_mt5_margin_guard_uses_equity_over_used_margin_when_level_missing():
+    broker = _mt5_margin_broker(margin=1000.0, equity=1600.0, margin_level=0.0)
+    executor = ActionExecutor(
+        broker,
+        _fast_cfg(margin_block_entry_level_pct=175.0),
+    )
+    error = executor._margin_entry_constraints_error(_open_intent("XAUUSD"))
+    assert error is not None
+    assert "160.00%" in error
+
+
+def test_mt5_margin_guard_fails_closed_when_account_margin_is_unknown():
+    broker = _mt5_margin_broker(margin=None, equity=1600.0, margin_level=0.0)
+    executor = ActionExecutor(broker, _fast_cfg())
+    assert executor._margin_entry_constraints_error(_open_intent("XAUUSD")) == (
+        "margin_guard_used_margin_unknown"
+    )
+
+
+def test_mt5_margin_guard_allows_entries_above_effective_threshold():
+    broker = _mt5_margin_broker(margin=1000.0, equity=2000.0, margin_level=200.0)
+    executor = ActionExecutor(
+        broker,
+        _fast_cfg(margin_block_entry_level_pct=175.0),
+    )
+    assert executor._margin_entry_constraints_error(_open_intent("XAUUSD")) is None
+
+
+def test_margin_guard_skips_mt5_percentage_for_deriv():
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+    assert executor._margin_entry_constraints_error(_open_intent("V50_1S")) is None
+
+
+def test_executor_config_cannot_weaken_hard_margin_entry_guard():
+    with pytest.raises(ValueError, match="150% hard entry guard"):
+        ExecutorConfig(margin_block_entry_level_pct=149.0)
+

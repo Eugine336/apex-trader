@@ -55,12 +55,19 @@ class AccountRiskManager:
         daily_loss_recovery_pct: float = 1.5,
         heat_block_pct: float = 2.0,
         daily_loss_flatten_pct: float = 5.0,
+        margin_guardian_enabled: bool = True,
+        margin_block_entry_pct: float = 150.0,
+        margin_flatten_pct: float = 100.0,
     ) -> None:
         self._lock = threading.RLock()
         self.daily_loss_cap_pct = daily_loss_cap_pct
         self.daily_loss_recovery_pct = daily_loss_recovery_pct
         self.heat_block_pct = heat_block_pct
         self.daily_loss_flatten_pct = daily_loss_flatten_pct
+        self.margin_guardian_enabled = bool(margin_guardian_enabled)
+        self.margin_block_entry_pct = float(margin_block_entry_pct)
+        self.margin_flatten_pct = float(margin_flatten_pct)
+        self._margin_level: dict[str, float] = {}
         self._balance: dict[str, float] = {}
         self._daily_pnl: dict[str, float] = {}
         self._unrealized: dict[str, float] = {}
@@ -86,6 +93,40 @@ class AccountRiskManager:
         single account happened to trade last.
         """
         return float(sum(self._balance.values()))
+
+    # ── Broker margin level (broker-reported equity / used margin × 100) ─
+
+    def update_margin_level(self, account: str, margin_level_pct: float) -> None:
+        """Store a finite positive broker margin-level observation for an account."""
+        if not account:
+            return
+        try:
+            value = float(margin_level_pct)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if value > 0.0 and value == value and value != float("inf"):
+            self._margin_level[account] = value
+
+    def margin_level(self, account: str) -> float | None:
+        return self._margin_level.get(account)
+
+    def clear_margin_level(self, account: str) -> None:
+        """Clear a prior margin ratio only after the broker confirms zero used margin."""
+        self._margin_level.pop(account, None)
+
+    def margin_entry_blocked(self, account: str) -> bool:
+        """Block new exposure when broker-confirmed margin level is below its guard."""
+        if not self.margin_guardian_enabled:
+            return False
+        level = self._margin_level.get(account)
+        return level is not None and level < self.margin_block_entry_pct
+
+    def margin_flatten_breached(self, account: str) -> bool:
+        """Request protective flattening before the broker stop-out threshold."""
+        if not self.margin_guardian_enabled:
+            return False
+        level = self._margin_level.get(account)
+        return level is not None and level < self.margin_flatten_pct
 
     # ── Heat (live capital-at-risk %, computed per account each cycle) ────
 
@@ -185,6 +226,8 @@ class AccountRiskManager:
     def flatten_breached(self, account: str) -> bool:
         """True if combined (realized + unrealized) loss has breached the harder
         flatten cap — the account should be derisked/flattened immediately."""
+        if self.margin_flatten_breached(account):
+            return True
         bal = self._balance.get(account, 0.0)
         if bal <= 0:
             return False
@@ -213,6 +256,9 @@ class AccountRiskManager:
                 "heat_pct": round(self._heat.get(a, 0.0), 2),
                 "halted": bool(self._halted.get(a, False)),
                 "flatten_breached": self.flatten_breached(a),
+                "margin_level_pct": self._margin_level.get(a),
+                "margin_entry_blocked": self.margin_entry_blocked(a),
+                "margin_flatten_breached": self.margin_flatten_breached(a),
             }
         return out
 

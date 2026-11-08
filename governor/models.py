@@ -41,9 +41,6 @@ class GovernorConfig:
     # Default True reflects the live orchestrator-on mode (main_loop re-affirms
     # it from the orchestrator config).
     graded_exposure: bool = True
-    # Lower bound on the graded risk multiplier — a graded "at every limit" is
-    # still a small trade, never zero.
-    risk_multiplier_floor: float = 0.15
     # When the governor's own code raises, fail CLOSED (block the trade) instead
     # of allowing it. A portfolio-risk veto that silently no-ops on a bug is a
     # safety gate you can't trust, so the default is fail-closed — consistent
@@ -86,7 +83,7 @@ class GovernorVerdict:
     reason: str
     blocked_by: Optional[str] = None  # which check blocked, None when allowed
     # #24 — accumulated-risk fields (graded mode). ``risk_multiplier`` is a
-    # bounded [floor, 1.0] size dimmer the orchestrator folds into sizing when an
+    # bounded [0.0, 1.0] size dimmer the orchestrator folds into sizing when an
     # analytical concentration limit is near/over but the trade is still allowed;
     # 1.0 = clear of all analytical limits. ``near_breaches`` names the analytical
     # dimensions at/over their limit and ``risk_score`` (0..1) is the closeness of

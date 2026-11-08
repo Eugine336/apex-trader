@@ -67,6 +67,8 @@ class SystemContext:
     """
 
     # ── Risk layer ───────────────────────────────────────────────────
+    # Shared canonical owner limits; legacy config views are synchronized from it.
+    owner_limits: Optional[Any] = None
     risk_engine: Optional[RiskEngine] = None
     drawdown_guard: Optional[DrawdownGuard] = None
     correlation_engine: Optional[CorrelationEngine] = None
@@ -257,7 +259,7 @@ class SystemContext:
         from risk.risk_reporter import RiskReporter
 
         risk_cfg = config.risk
-        ctx = cls()
+        ctx = cls(owner_limits=getattr(config, "owner_limits", None))
 
         # ── DrawdownGuard ────────────────────────────────────────────
         try:
@@ -343,11 +345,15 @@ class SystemContext:
         # ── AccountRiskManager ───────────────────────────────────────
         try:
             gcfg = getattr(config, "governor", None)
+            owner_limits = getattr(config, "owner_limits", None)
             ctx.account_risk = AccountRiskManager(
-                daily_loss_cap_pct=getattr(gcfg, "daily_loss_cap_pct", 3.0) if gcfg else 3.0,
-                daily_loss_recovery_pct=getattr(gcfg, "daily_loss_recovery_pct", 1.5) if gcfg else 1.5,
-                heat_block_pct=getattr(risk_cfg, "portfolio_heat_block_pct", 2.0),
-                daily_loss_flatten_pct=getattr(risk_cfg, "daily_loss_flatten_pct", 5.0),
+                daily_loss_cap_pct=getattr(owner_limits, "daily_loss_limit_pct", getattr(gcfg, "daily_loss_cap_pct", 3.0)) if owner_limits is not None or gcfg else 3.0,
+                daily_loss_recovery_pct=getattr(owner_limits, "daily_loss_recovery_pct", getattr(gcfg, "daily_loss_recovery_pct", 1.5)) if owner_limits is not None or gcfg else 1.5,
+                heat_block_pct=getattr(owner_limits, "portfolio_heat_block_pct", getattr(risk_cfg, "portfolio_heat_block_pct", 2.0)),
+                daily_loss_flatten_pct=getattr(owner_limits, "daily_loss_flatten_pct", getattr(risk_cfg, "daily_loss_flatten_pct", 5.0)),
+                margin_guardian_enabled=getattr(owner_limits, "margin_guardian_enabled", True),
+                margin_block_entry_pct=getattr(owner_limits, "margin_block_entry_level_pct", 150.0),
+                margin_flatten_pct=getattr(owner_limits, "margin_flatten_level_pct", 100.0),
             )
         except Exception as exc:
             logger.critical("[SystemContext] AccountRiskManager init failed — SAFETY DEGRADED: {}", exc)
@@ -1045,8 +1051,15 @@ class SystemContext:
                     getattr(cog_cfg, "influence_weighting_enabled", True)
                     if cog_cfg is not None else True
                 )
+                owner_limits = getattr(config, "owner_limits", None)
                 ctx.cognitive_brain = _CognitiveBrain(
                     reasoner=ctx.llm_reasoner,
+                    max_correlated_positions=int(
+                        getattr(owner_limits, "max_correlated_positions", 3)
+                    ),
+                    max_total_exposure=float(
+                        getattr(owner_limits, "max_campaign_exposure_units", 3.0)
+                    ),
                     min_confidence_to_act=float(
                         getattr(cog_cfg, "min_confidence_to_act", 0.55)
                         if cog_cfg is not None else 0.55

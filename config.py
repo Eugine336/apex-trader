@@ -1228,6 +1228,7 @@ from planning.trade_planner import PlannerConfig  # noqa: E402  (leaf import, no
 # ---------------------------------------------------------------------------
 
 from governor.models import GovernorConfig  # noqa: E402  (leaf import, no cycle)
+from risk.owner_limits import OwnerLimits  # noqa: E402  (dependency-free canonical limits)
 
 
 @dataclass
@@ -1328,9 +1329,6 @@ class OrchestratorConfig:
     # (position limits, daily-loss halt, broker margin). Only honoured when the
     # orchestrator is enabled (the caller gates it).
     accumulate_risk: bool = True
-    # Lower bound on the accumulated risk multiplier — a graded "near every
-    # limit" is still a small trade, never zero.
-    risk_multiplier_floor: float = 0.15
     # Lower bound on any single softened gate's quality multiplier — a graded
     # "barely passed" is still a tiny trade, never zero.
     gate_quality_floor: float = 0.15
@@ -1389,7 +1387,6 @@ class OrchestratorConfig:
             ("scale_down_close_pct", self.scale_down_close_pct),
             ("exit_partial_close_pct", self.exit_partial_close_pct),
             ("de_gate_quality_floor", self.de_gate_quality_floor),
-            ("risk_multiplier_floor", self.risk_multiplier_floor),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(
@@ -4271,6 +4268,7 @@ class AppConfig:
     broker_enabled_symbols: list[str] = field(default_factory=list, init=False)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    owner_limits: OwnerLimits | None = None
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
@@ -4351,6 +4349,82 @@ class AppConfig:
             "gold" if mode == "single" and self.enabled_symbols_override == ["XAUUSD"]
             else "full"
         )
+        if self.owner_limits is None:
+            self.owner_limits = OwnerLimits.from_legacy(
+                risk=self.risk,
+                governor=self.governor,
+                cognition=self.cognition,
+                risk_management=self.risk_management,
+            )
+        elif not isinstance(self.owner_limits, OwnerLimits):
+            raise TypeError("owner_limits must be an OwnerLimits instance")
+        self.sync_owner_limit_views()
+
+    def apply_owner_limit_updates(self, updates: dict[str, object]) -> None:
+        """Validate and atomically apply owner limits, then refresh legacy views."""
+        if self.owner_limits is None:
+            raise RuntimeError("owner_limits was not initialized")
+        self.owner_limits.apply_updates(updates)
+        self.sync_owner_limit_views()
+
+    def sync_owner_limit_views(self) -> None:
+        """Keep legacy subsystem config objects as synchronized read-through views.
+
+        Active risk consumers are being migrated to OwnerLimits. Until every
+        legacy adapter is retired, all old config surfaces receive the same
+        validated values so no subsystem can retain a looser duplicate.
+        """
+        limits = self.owner_limits
+        if limits is None:
+            raise RuntimeError("owner_limits was not initialized")
+
+        risk = self.risk
+        risk.risk_per_trade_pct = limits.risk_per_trade_pct
+        risk.max_risk_pct_per_trade = limits.max_risk_pct_per_trade
+        risk.max_daily_drawdown_pct = limits.daily_loss_limit_pct
+        risk.max_weekly_drawdown_pct = limits.weekly_drawdown_limit_pct
+        risk.max_open_trades = limits.max_open_positions
+        risk.max_correlated_trades = limits.max_correlated_positions
+        risk.max_cluster_same_direction = limits.max_cluster_same_direction
+        risk.max_pair_concentration = limits.max_positions_per_symbol
+        risk.max_broker_positions = limits.max_broker_positions
+        risk.allow_intentional_hedge = limits.allow_intentional_hedge
+        risk.allow_min_lot_over_risk = False
+        risk.daily_loss_flatten_enabled = limits.daily_loss_flatten_enabled
+        risk.daily_loss_flatten_pct = limits.daily_loss_flatten_pct
+        risk.portfolio_heat_block_pct = limits.portfolio_heat_block_pct
+        risk.margin_guardian_enabled = limits.margin_guardian_enabled
+        risk.margin_warn_pct = limits.margin_warn_level_pct
+        risk.margin_block_entry_pct = limits.margin_block_entry_level_pct
+        risk.margin_flatten_pct = limits.margin_flatten_level_pct
+
+        governor = self.governor
+        governor.max_open_positions = limits.max_open_positions
+        governor.max_total_positions = limits.max_open_positions
+        governor.max_positions_per_symbol = limits.max_positions_per_symbol
+        governor.max_correlated_positions = limits.max_correlated_positions
+        governor.daily_loss_cap_pct = limits.daily_loss_limit_pct
+        governor.daily_loss_recovery_pct = limits.daily_loss_recovery_pct
+        governor.max_currency_exposure = limits.max_currency_exposure
+        governor.max_sector_exposure = limits.max_sector_exposure
+        governor.max_positions_per_tf_class = limits.max_positions_per_timeframe_class
+        governor.max_total_risk_pct = limits.max_total_risk_pct
+        governor.per_trade_max_risk = limits.max_risk_pct_per_trade
+        governor.hedge_ratio_cap = limits.hedge_ratio_cap
+        governor.graded_exposure = limits.graded_exposure_enabled
+
+        risk_management = self.risk_management
+        risk_management.daily_drawdown_limit_pct = limits.daily_loss_limit_pct
+        risk_management.rolling_drawdown_limit_pct = limits.weekly_drawdown_limit_pct
+        risk_management.hard_stop_drawdown_pct = limits.hard_stop_drawdown_pct
+        risk_management.max_simultaneous_positions = limits.max_open_positions
+        risk_management.max_per_pair_positions = limits.max_positions_per_symbol
+        # Directional/regime analysis, correlation thresholds and cooldown tuning
+        # remain internal RiskManagementConfig settings, not owner capital limits.
+
+        cognition = self.cognition
+        cognition.origination_risk_fraction = limits.risk_per_trade_pct / 100.0
+        cognition.origination_max_exposure = limits.max_campaign_exposure_fraction
 
     @property
     def enabled_pairs(self) -> list[str]:
