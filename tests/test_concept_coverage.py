@@ -51,6 +51,11 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     from cognition.market_lenses import analyze_market_frames
     from cognition.strategy_knowledge import assess_strategy_lenses
     from core.system_context import SystemContext
+    from event_driven_bootstrap import EventDrivenSystem
+    from execution.action_executor import ActionExecutor
+    from execution.lifecycle_loops import FlushLoop
+    from execution.risk_gate import RiskGate
+    from config import AppConfig
 
     # Keep the requested audit universe explicit: every catalogued method and
     # lens must be classified, not silently dropped from the generated register.
@@ -91,6 +96,16 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     consolidator_source = inspect.getsource(EvidenceConsolidator.build)
     native_reasoning_source = inspect.getsource(CognitiveBrain._native_reasoning)
     cognitive_reason_source = inspect.getsource(CognitiveBrain.reason)
+    origination_sink_source = inspect.getsource(EventDrivenSystem._make_origination_sink)
+    portfolio_sizing_source = inspect.getsource(
+        EventDrivenSystem._size_brain_origination_with_portfolio
+    )
+    flush_source = inspect.getsource(FlushLoop._loop)
+    executor_execute_source = inspect.getsource(ActionExecutor.execute)
+    executor_dispatch_source = inspect.getsource(ActionExecutor._dispatch)
+    risk_gate_source = inspect.getsource(RiskGate.validate)
+    system_context_create_source = inspect.getsource(SystemContext.create)
+    owner_sync_source = inspect.getsource(AppConfig.sync_owner_limit_views)
     assert "for module in registered" in reader_source
     assert "contextual_reader(symbol, bars_by_tf, module_context)" in reader_source
     assert "module.read(symbol, bars_by_tf)" in reader_source
@@ -123,3 +138,28 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     assert 'assessment.get("status") not in {"relevant", "watch"}' in hypothesis_source
     assessments = assess_strategy_lenses([], [], {})
     assert {item["key"] for item in assessments} == lens_keys
+
+    # WP-B7: prove the one live Brain origination path passes compliance and
+    # canonical portfolio sizing before the shared executor and broker gateway.
+    assert "_compliance_permits(" in origination_sink_source
+    assert "_size_brain_origination_with_portfolio(" in origination_sink_source
+    assert "self._aggregator.submit([Intent.open(" in origination_sink_source
+    assert "division.evaluate(" in portfolio_sizing_source
+    assert "account_risk.daily_loss_halted(" in portfolio_sizing_source
+    assert "account_risk.margin_entry_blocked(" in portfolio_sizing_source
+    assert "get_all_open_positions()" in portfolio_sizing_source
+    assert "owner_limits = getattr(config, \"owner_limits\", None)" in system_context_create_source
+    assert "AccountRiskManager(" in system_context_create_source
+    assert "sizer = getattr(ctx.risk_engine, \"position_sizer\", None)" in system_context_create_source
+    assert "PortfolioDivision(" in system_context_create_source
+    assert "position_sizer=sizer" in system_context_create_source
+    assert "self._executor.execute_batch(" in flush_source
+    assert "self._gate.validate(" in executor_execute_source
+    assert "self._broker.execute_entry(" in executor_dispatch_source
+    assert "return self._validate_open(intent, account_drawdown_pct)" in risk_gate_source
+    # OwnerLimits are the canonical source and every legacy consumer is updated
+    # from the same validated object; no independently looser duplicate remains.
+    assert "limits = self.owner_limits" in owner_sync_source
+    assert "risk.max_risk_pct_per_trade = limits.max_risk_pct_per_trade" in owner_sync_source
+    assert "governor.max_total_risk_pct = limits.max_total_risk_pct" in owner_sync_source
+    assert "risk_management.daily_drawdown_limit_pct = limits.daily_loss_limit_pct" in owner_sync_source
