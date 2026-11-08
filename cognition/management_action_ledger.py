@@ -247,6 +247,9 @@ class ManagementActionLedger:
         )
         if pending is None:
             return False
+        submitted_epoch = _finite(pending.get("submitted_epoch"))
+        if submitted_epoch is None or observed_epoch < submitted_epoch:
+            return False
         kind = str(pending.get("kind", "") or "").strip().lower()
         ticket = str(pending.get("position_ticket", "") or "").strip()
         evidence_ticket = str(
