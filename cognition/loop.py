@@ -1372,6 +1372,10 @@ class CognitionLoop:
             from persistence.domain_events import (
                 COGNITIVE_CANDIDATE_SNAPSHOT,
                 COGNITIVE_CANDIDATE_HORIZON_OUTCOME,
+                COGNITIVE_QUOTE_HISTORY_BATCH,
+            )
+            from platforms.quote_history import (
+                quote_history_quote_digest, verify_quote_history_manifest,
             )
 
             symbol = str(getattr(market_state, "symbol", "") or "").strip().upper()
@@ -1432,11 +1436,59 @@ class CognitionLoop:
                         })
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: skip malformed candidate evidence row
                     continue
-            if not quote_rows:
+            if not quote_rows and not callable(self._quote_history_provider):
                 return
-            quote = max(quote_rows, key=lambda item: item["source_timestamp_epoch"])
-            observed_price = float(quote["mid"])
-            observed_epoch = float(quote["source_timestamp_epoch"])
+            quote = max(quote_rows, key=lambda item: item["source_timestamp_epoch"]) if quote_rows else None
+            observed_price = float(quote["mid"]) if quote is not None else None
+            observed_epoch = float(quote["source_timestamp_epoch"]) if quote is not None else cutoff
+
+            quote_history_cache: dict[tuple[float, float], Optional[dict]] = {}
+            emitted_quote_history_batches: set[str] = set()
+
+            def _quote_history_batch(due_epoch: float, tolerance: float) -> Optional[dict]:
+                provider = self._quote_history_provider
+                if not callable(provider):
+                    return None
+                window_end = due_epoch + tolerance
+                cache_key = (round(due_epoch, 6), round(window_end, 6))
+                if cache_key in quote_history_cache:
+                    return quote_history_cache[cache_key]
+                batch = provider(symbol, due_epoch, window_end)
+                if not isinstance(batch, dict):
+                    raise RuntimeError("quote-history provider returned a non-mapping batch")
+                manifest = batch.get("manifest")
+                if (
+                    not isinstance(manifest, dict)
+                    or not verify_quote_history_manifest(manifest)
+                    or str(manifest.get("symbol", "") or "").strip().upper() != symbol
+                    or abs(float(manifest.get("query_window_start_epoch")) - due_epoch) > 1e-6
+                    or abs(float(manifest.get("query_window_end_epoch")) - window_end) > 1e-6
+                ):
+                    raise RuntimeError("quote-history provider returned an invalid or mismatched source manifest")
+                selected = batch.get("selected_quote")
+                if selected is None and manifest.get("query_complete") is not True:
+                    quote_history_cache[cache_key] = None
+                    return None
+                if selected is not None:
+                    if (
+                        not isinstance(selected, dict)
+                        or quote_history_quote_digest(selected) != manifest.get("selected_quote_digest")
+                        or selected.get("source_timestamp_verified") is not True
+                        or str(selected.get("symbol", "") or "").strip().upper() != symbol
+                        or not due_epoch <= float(selected.get("source_timestamp_epoch")) <= window_end
+                    ):
+                        raise RuntimeError("quote-history selected quote failed manifest verification")
+                batch_id = str(manifest.get("batch_id", "") or "")
+                if batch_id not in emitted_quote_history_batches:
+                    store.emit(
+                        COGNITIVE_QUOTE_HISTORY_BATCH, "DEBUG", symbol=symbol,
+                        parent_id=batch_id,
+                        source_module="platform_manager.quote_history",
+                        payload=manifest, durable=True,
+                    )
+                    emitted_quote_history_batches.add(batch_id)
+                quote_history_cache[cache_key] = batch
+                return batch
 
             store = self._candidate_event_store
             if store is None:
