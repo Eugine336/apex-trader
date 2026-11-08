@@ -78,6 +78,11 @@ _DATA_GATES: dict[str, tuple[EvidenceDomain, str]] = {
 }
 
 
+DATA_GATED_METHODS = {
+    key: requirement for key, (_domain, requirement) in _DATA_GATES.items()
+}
+
+
 class ExternalDataGatedReadings:
     """Emit explicit non-directional readings for unavailable external feeds."""
 
@@ -85,9 +90,7 @@ class ExternalDataGatedReadings:
     family = "external_data_prerequisites"
     covers_methods: tuple[str, ...] = ()
     covers_lenses: tuple[str, ...] = ()
-    data_gated_methods = {
-        key: requirement for key, (_domain, requirement) in _DATA_GATES.items()
-    }
+    data_gated_methods = DATA_GATED_METHODS
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
         reference, reference_tf = reference_price(bars_by_tf)
