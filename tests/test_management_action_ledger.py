@@ -226,3 +226,55 @@ def test_concurrent_begin_dispatches_one_action_id_once():
     assert results.count(True) == 1
     assert results.count(False) == 31
     assert len(store.events) == 1
+
+
+def test_restart_recovers_ambiguous_action_and_reconciles_only_verified_broker_state():
+    store = _Store()
+    original = ManagementActionLedger(store)
+    action = _action()
+    action.kind = "partial_close"
+    action.fraction = 0.5
+    action.to_dict = lambda: {
+        "action_id": action.action_id,
+        "symbol": action.symbol,
+        "kind": action.kind,
+        "decision_id": action.decision_id,
+        "campaign_id": action.campaign_id,
+        "opportunity_id": action.opportunity_id,
+        "direction": "LONG",
+        "fraction": action.fraction,
+    }
+    position = SimpleNamespace(ticket="ticket-1", lots=0.2)
+
+    assert original.begin(action, position) == (True, "SUBMITTED")
+    assert original.finish(action, "AMBIGUOUS", error="process stopped after broker send") is True
+
+    # A fresh process/ledger instance must reconstruct state from durable events;
+    # in-memory state is not an acceptable source of truth after restart.
+    restarted = ManagementActionLedger(store)
+    assert restarted.status(action.action_id, action.symbol) == "AMBIGUOUS"
+    assert len(restarted.pending_actions("EURUSD")) == 1
+    assert restarted.begin(action, position) == (False, "AMBIGUOUS")
+
+    unverified = {
+        "source": "mt5.positions_and_deals",
+        "source_timestamp_epoch": time.time(),
+        "source_timestamp_verified": False,
+        "symbol": "EURUSD",
+        "position_ticket": "ticket-1",
+        "book_complete": True,
+        "platform_confirmed": True,
+        "position_present": True,
+        "current_lots": 0.1,
+    }
+    assert restarted.reconcile(action.action_id, "EURUSD", unverified) is False
+    assert restarted.status(action.action_id, action.symbol) == "AMBIGUOUS"
+
+    verified = {
+        **unverified,
+        "source_timestamp_verified": True,
+        "source_timestamp_epoch": time.time(),
+    }
+    assert restarted.reconcile(action.action_id, "EURUSD", verified) is True
+    assert restarted.status(action.action_id, action.symbol) == "ACKNOWLEDGED"
+    assert restarted.pending_actions("EURUSD") == []
