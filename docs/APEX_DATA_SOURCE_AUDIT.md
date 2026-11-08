@@ -5,7 +5,7 @@
 
 ## 1. Executive result
 
-Apex already has meaningful broker-native data paths. The largest immediate gaps are not a lack of all market data; they are (a) multi-symbol synchronized bars are not passed into one concept-analysis call, (b) several existing broker observations are not yet fully attributed/replayed into the Brain, and (c) external calendar, macro, exchange-trade and derivatives feeds are not implemented as verified provider channels.
+Apex already has meaningful broker-native data paths. The shared multi-symbol completed-bar snapshot is now wired into the live cognition cycle, and normalized provider/portfolio contracts are consumed by native Brain readers. The largest remaining gaps are (a) no real external vendor adapters are registered, (b) live broker portfolio snapshots do not yet satisfy the complete normalized portfolio contract, (c) intermarket stationarity/relationship stability is not yet validated, and (d) owner-connected calibration, full-universe performance and B3/B7 lifecycle acceptance have not been run.
 
 Do not buy external feeds before checking the connected broker's actual entitlements and the enabled instrument universe. Do not promote a gate merely because an API endpoint exists.
 
