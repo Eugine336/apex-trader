@@ -13,6 +13,7 @@ from typing import Any
 
 
 _SUBMITTED = "MANAGEMENT_ACTION_SUBMITTED"
+_DISPATCHED = "MANAGEMENT_ACTION_DISPATCHED"
 _ACKNOWLEDGED = "MANAGEMENT_ACTION_ACKNOWLEDGED"
 _REJECTED = "MANAGEMENT_ACTION_REJECTED"
 _AMBIGUOUS = "MANAGEMENT_ACTION_AMBIGUOUS"
@@ -87,7 +88,7 @@ class ManagementActionLedger:
         try:
             rows = query(
                 severity_min="DEBUG",
-                event_types=[_SUBMITTED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
+                event_types=[_SUBMITTED, _DISPATCHED, _ACKNOWLEDGED, _REJECTED, _AMBIGUOUS],
                 symbol=symbol,
                 correlation_id=action_id,
                 limit=1000,
@@ -168,6 +169,7 @@ class ManagementActionLedger:
     ) -> bool:
         normalized = str(status or "").strip().upper()
         event_type = {
+            "DISPATCHED": _DISPATCHED,
             "ACKNOWLEDGED": _ACKNOWLEDGED,
             "REJECTED": _REJECTED,
             "AMBIGUOUS": _AMBIGUOUS,
@@ -234,7 +236,7 @@ class ManagementActionLedger:
             latest[action_id] = merged
         return [
             row for row in latest.values()
-            if row.get("status") in {"SUBMITTED", "AMBIGUOUS"}
+            if row.get("status") in {"SUBMITTED", "DISPATCHED", "AMBIGUOUS"}
         ]
 
     def reconcile(self, action_id: str, symbol: str, broker_evidence: dict) -> bool:
