@@ -21,20 +21,20 @@ FULL 56 · DATA-GATED 23 · MEASURED 0 · UNMEASURED 0
 | institutional_price_action | Order blocks and mitigation | `order_blocks` | FULL |
 | institutional_price_action | Power of Three hypothesis | `power_of_three` | FULL |
 | instrument_mechanics | Contract, tick, margin and trading constraints | `instrument_economics` | FULL |
-| instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | UNMEASURED || DATA-GATED — source-verified exchange funding, open interest, liquidation and basis observations with exact venue, instrument and timestamps |
-| instrument_mechanics | Futures and options context | `derivatives` | MEASURED || DATA-GATED — verified instrument expiry/roll specifications and provider-sourced options implied volatility, skew and open-interest data where applicable |
-| instrument_mechanics | Synthetic instrument mechanics | `synthetic_market` | UNMEASURED || DATA-GATED — provider-verified synthetic contract specification and source-timestamped instrument history sufficient to measure provider-specific behaviour |
-| intermarket | Cross-asset relationships | `cross_asset` | MEASURED || DATA-GATED — source-verified multi-symbol completed bars aligned to one decision cutoff, with stable instrument identity and sufficient paired history |
-| intermarket | Currency and commodity relative strength | `currency_strength` | MEASURED || DATA-GATED — source-verified synchronized bars for the enabled currency universe and verified base/quote currency metadata |
-| intermarket | SMT divergence | `smt_divergence` | UNMEASURED || DATA-GATED — synchronized completed bars for a measured correlated-instrument pair, including verified common-cutoff source timestamps and confirmed swing/sweep events |
+| instrument_mechanics | Crypto funding and liquidation context | `crypto_microstructure` | DATA-GATED — source-verified exchange funding, open interest, liquidation and basis observations with exact venue, instrument and timestamps |
+| instrument_mechanics | Futures and options context | `derivatives` | DATA-GATED — verified instrument expiry/roll specifications and provider-sourced options implied volatility, skew and open-interest data where applicable |
+| instrument_mechanics | Synthetic instrument mechanics | `synthetic_market` | DATA-GATED — provider-verified synthetic contract specification and source-timestamped instrument history sufficient to measure provider-specific behaviour |
+| intermarket | Cross-asset relationships | `cross_asset` | DATA-GATED — source-verified multi-symbol completed bars aligned to one decision cutoff, with stable instrument identity and sufficient paired history |
+| intermarket | Currency and commodity relative strength | `currency_strength` | DATA-GATED — source-verified synchronized bars for the enabled currency universe and verified base/quote currency metadata |
+| intermarket | SMT divergence | `smt_divergence` | DATA-GATED — synchronized completed bars for a measured correlated-instrument pair, including verified common-cutoff source timestamps and confirmed swing/sweep events |
 | liquidity | Buy-side and sell-side liquidity | `liquidity_pools` | FULL |
 | liquidity | Inducement and stop-run hypotheses | `inducement` | FULL |
 | liquidity | Liquidity sweep / raid | `liquidity_sweep` | FULL |
-| macro | Growth and employment releases | `macro_growth` | UNMEASURED || DATA-GATED — trusted GDP, CPI, PCE, employment and PMI event records with actual/forecast/previous values and source timestamps |
-| macro | Rates, inflation and central-bank policy | `macro_rates` | UNMEASURED || DATA-GATED — source-verified policy-rate paths, real yields, yield curves and inflation series with observation and publication timestamps |
+| macro | Growth and employment releases | `macro_growth` | DATA-GATED — trusted GDP, CPI, PCE, employment and PMI event records with actual/forecast/previous values and source timestamps |
+| macro | Rates, inflation and central-bank policy | `macro_rates` | DATA-GATED — source-verified policy-rate paths, real yields, yield curves and inflation series with observation and publication timestamps |
 | market_cycle | Wyckoff effort versus result | `wyckoff_effort_result` | FULL |
 | market_cycle | Wyckoff phases and events | `wyckoff` | FULL |
-| microstructure | Market impact and adverse selection | `market_impact` | MEASURED || DATA-GATED — attributable broker fill history keyed by instrument, side and executed size, with contemporaneous quote, fill, commission and slippage timestamps |
+| microstructure | Market impact and adverse selection | `market_impact` | DATA-GATED — attributable broker fill history keyed by instrument, side and executed size, with contemporaneous quote, fill, commission and slippage timestamps |
 | microstructure | Order-book depth and imbalance | `order_book` | FULL |
 | microstructure | Tick velocity and quote dynamics | `tick_microstructure` | FULL |
 | momentum_indicators | CCI and Williams %R | `cci_williams` | FULL |
@@ -43,9 +43,9 @@ FULL 56 · DATA-GATED 23 · MEASURED 0 · UNMEASURED 0
 | momentum_indicators | ROC and momentum | `roc_momentum` | FULL |
 | momentum_indicators | RSI and RSI variants | `rsi` | FULL |
 | momentum_indicators | Stochastic and Stochastic RSI | `stochastic` | FULL |
-| order_flow | Absorption and exhaustion | `absorption_exhaustion` | MEASURED || DATA-GATED — source-verified executed volume and aggressor-side flow at price levels, plus replenishment/depletion or a clearly labelled broker depth proxy |
-| order_flow | Bid/ask delta and CVD | `delta_cvd` | MEASURED || DATA-GATED — executed trade volume with verified aggressor-side classification and source timestamps; quote-tick inference must be labelled as an estimate |
-| order_flow | Footprint and imbalance | `footprint` | UNMEASURED || DATA-GATED — trade-level executed volume-at-price with verified aggressor-side volume and provider/source timestamps |
+| order_flow | Absorption and exhaustion | `absorption_exhaustion` | DATA-GATED — source-verified executed volume and aggressor-side flow at price levels, plus replenishment/depletion or a clearly labelled broker depth proxy |
+| order_flow | Bid/ask delta and CVD | `delta_cvd` | DATA-GATED — executed trade volume with verified aggressor-side classification and source timestamps; quote-tick inference must be labelled as an estimate |
+| order_flow | Footprint and imbalance | `footprint` | DATA-GATED — trade-level executed volume-at-price with verified aggressor-side volume and provider/source timestamps |
 | portfolio | Portfolio concentration and risk of ruin | `portfolio_risk` | DATA-GATED — source-verified complete whole-book broker positions with per-position risk and notional, account equity, synchronized portfolio returns, equity history and pairwise correlation history |
 | price_action | Candle anatomy and sequences | `candle_microstructure` | FULL |
 | price_action | Candlestick patterns | `candlestick_patterns` | FULL |
@@ -60,11 +60,11 @@ FULL 56 · DATA-GATED 23 · MEASURED 0 · UNMEASURED 0
 | session | Session, DST and holiday context | `session_calendar` | DATA-GATED — authoritative venue calendar with timezone, DST, holiday, session open/close and rollover metadata |
 | session structure | Opening-range analysis | `opening_range` | DATA-GATED — authoritative venue session calendar with per-bar session id, timezone and open/close timestamps |
 | statistical_indicators | Rolling Z-score and mean displacement | `zscore_mean` | FULL |
-| strategy | Carry, funding and financing | `carry` | MEASURED || DATA-GATED — verified direction-specific broker swap or funding rates, contract units, rollover schedule and financing-day rules for the exact instrument |
-| strategy | Event-driven repricing | `event_driven` | MEASURED || DATA-GATED — trusted timestamped economic-event calendar with actual, forecast and previous values, currency/instrument relevance and release-time provenance |
+| strategy | Carry, funding and financing | `carry` | DATA-GATED — verified direction-specific broker swap or funding rates, contract units, rollover schedule and financing-day rules for the exact instrument |
+| strategy | Event-driven repricing | `event_driven` | DATA-GATED — trusted timestamped economic-event calendar with actual, forecast and previous values, currency/instrument relevance and release-time provenance |
 | strategy | Mean reversion and statistical reversion | `mean_reversion` | FULL |
 | strategy | Momentum and volatility breakout | `momentum_breakout` | FULL |
-| strategy | Pairs, cointegration and relative value | `relative_value` | MEASURED || DATA-GATED — source-verified synchronized histories for the candidate pair plus independently tested spread stationarity and relationship stability |
+| strategy | Pairs, cointegration and relative value | `relative_value` | DATA-GATED — source-verified synchronized histories for the candidate pair plus independently tested spread stationarity and relationship stability |
 | strategy | Range rotation and auction balance | `range_rotation` | FULL |
 | strategy | Seasonality and calendar effects | `seasonality` | FULL |
 | strategy | Trend following and pullback continuation | `trend_following` | FULL |
