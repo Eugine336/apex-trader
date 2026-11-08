@@ -2661,7 +2661,16 @@ class CognitionLoop:
                             "[cognition-loop] management action ledger unavailable: %s", exc,
                         )
                 ledger_started = False
+                ledger_unavailable_tracked = False
                 action_id = str(getattr(action, "action_id", "") or "").strip()
+                if action.kind in {"scale_in", "reverse"} and (not action_id or ledger is None):
+                    self._manage_suppressed += 1
+                    logger.error(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s: risk-increasing management "
+                        "requires a canonical action ID and durable ledger",
+                        action.symbol, action.kind,
+                    )
+                    return False
                 if action_id and action_id in self._management_unresolved_actions:
                     self._manage_suppressed += 1
                     logger.warning(
@@ -2689,6 +2698,9 @@ class CognitionLoop:
                         return False
                     if begin is True:
                         ledger_started = True
+                    elif begin is None:
+                        ledger_unavailable_tracked = True
+                        self._management_unresolved_actions.add(action_id)
                     elif action.kind in {"scale_in", "reverse"}:
                         self._manage_suppressed += 1
                         logger.error(
@@ -2749,6 +2761,8 @@ class CognitionLoop:
                         )
 
                 if outcome == "REJECTED":
+                    if ledger_unavailable_tracked and action_id:
+                        self._management_unresolved_actions.discard(action_id)
                     if milestone_pending:
                         clearer = getattr(self._memory, "clear_milestone_pending", None)
                         cleared = False
