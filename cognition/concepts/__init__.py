@@ -74,8 +74,8 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     QuantitativeStateReadings(),
     QuantitativeOutcomeReadings(),
     PortfolioRiskReadings(),
-    StrategyLensReadings(),
     IntermarketReadings(),
+    StrategyLensReadings(),
     ExternalDataGatedReadings(),
 )
 
