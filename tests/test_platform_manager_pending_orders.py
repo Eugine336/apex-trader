@@ -257,6 +257,23 @@ def test_pending_reconciliation_rejects_invalid_terminal_volume_evidence():
     assert outcome["status"] == "UNKNOWN"
     assert outcome["reason"] == "terminal_order_volume_evidence_invalid"
 
+def test_position_entry_order_ids_expose_mixed_order_ownership(monkeypatch):
+    from platforms.mt5 import mt5_connector as mt5_adapter
+    monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
+    rows = [
+        {"order": "901", "position_id": "902", "symbol": "EURUSD", "entry": 0, "source_verified": True},
+        {"order": "903", "position_id": "902", "symbol": "EURUSD", "entry": 0, "source_verified": True},
+    ]
+    connector = SimpleNamespace(get_deal_history_checked=lambda *args: rows)
+    manager = object.__new__(PlatformManager)
+    manager.mt5_connectors = [connector]
+
+    order_ids = manager.get_position_entry_order_ids(
+        "902", symbol="EURUSD", platform="mt5_0",
+        from_dt=datetime.now(timezone.utc), to_dt=datetime.now(timezone.utc),
+    )
+    assert order_ids == {"901", "903"}
+
 def test_pending_reconciliation_never_infers_cancelled_from_live_book_absence():
     manager = _manager([PendingConnector(live=[], history=[])])
     outcome = manager.reconcile_pending_order(
