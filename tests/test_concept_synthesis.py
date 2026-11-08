@@ -246,8 +246,11 @@ def test_evidence_projection_preserves_symbol_and_one_decision_time_cutoff():
     reasoner = BrainReasoner()
     analysis = reasoner.analyze_evidence(state, now=1100.0)
     assert analysis.decision_timestamp_epoch == 1100.0
+    # The Evidence freshness boundary already excludes the future-dated
+    # source before projection; wrong-symbol evidence remains visible here
+    # for the symbol-specific Brain synthesis gate to reject.
     assert {row["evidence_id"] for row in analysis.concept_readings} == {
-        "valid", "wrong-symbol", "future",
+        "valid", "wrong-symbol",
     }
 
     hypotheses = reasoner.generate_hypotheses(analysis, "EURUSD")
