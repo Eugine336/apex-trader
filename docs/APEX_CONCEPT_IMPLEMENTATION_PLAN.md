@@ -209,8 +209,11 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   staleness checks, and duplicate evidence-ID exclusion. PR #854 preserves relevant/watch lens states as non-directional
   Brain hypotheses and prevents conflicting active concept geometry from falling back to generic structure. PR #857
   audits the 79-method/38-lens registry against reader registration, market-lens Evidence conversion, BrainReasoner
-  projection/synthesis and CognitiveBrain delegation. The call-path audit passed 4,310 tests on Python 3.11 and 3.12,
-  lint, generated coverage and canonical identity checks. WP-B1 implementation acceptance is complete; unavailable
+  projection/synthesis and CognitiveBrain delegation. PR #860 strengthens the audit through the live SystemContext →
+  broker-backed concept source → EvidenceConsolidator → MarketState → BrainReasoner → CognitiveBrain path, and verifies
+  the sole live origination route passes ComplianceDivision, PortfolioDivision, canonical OwnerLimits, FlushLoop,
+  ActionExecutor and RiskGate before the broker gateway. PR #860 passed 4,311 tests on Python 3.11 and 3.12, lint,
+  generated coverage and canonical identity checks. WP-B1 implementation acceptance is complete; unavailable
   regime/session/depth inputs remain explicitly data-gated and are not promoted into active hypotheses.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
@@ -250,7 +253,9 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   and `CalibrationProducer` consumes the snapshot/outcome events for development, holdout and walk-forward eligibility.
   The producer validates symbol/evidence lineage, source timestamps and non-overlapping decision windows; OHLC hindcast
   labels remain separate and cannot fabricate spread/slippage/financing/latency. These artifacts are not calibrated
-  probabilities or trade gates. Remaining: independently authenticate source manifests/outcome provenance and validate
+  probabilities or trade gates. PR #858 corrects the 79-method register: carry is DATA-GATED, not merely MEASURED,
+  because the broker swap reader exists but position-specific cash cost, account conversion and non-MT5 funding/borrow
+  components remain incomplete. Remaining: independently authenticate source manifests/outcome provenance and validate
   the complete pipeline on owner-supplied broker history.
 - **WP-B5 Performance — cache/incremental layer and benchmark tooling merged (PRs #829, #836 and #840).** Pure OHLC concept readings are cached
   per module instance and symbol against a digest of the full completed-bar history; historical corrections invalidate
@@ -271,12 +276,18 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   ATR/spread wake thresholds, event confidence-delta wake gate, and additional fixed analysis cutoffs were removed or
   replaced with evidence-lineage/context-specific logic. Owner/account limits, broker feasibility and statistical
   artifact-integrity requirements were retained. Full Python 3.11/3.12 CI and both Gold desk jobs passed on PR #830.
-- **WP-B7 Owner-limits surface — typed contract and static route audit.** PR #831 provides the canonical owner-editable
-  surface, strict validation, atomic updates and separation from internal safety controls. The repository-wide broker
-  mutation route audit and owner-limit synchronization/strictest-legacy tests pass in full CI. The static audit confirms
-  broker mutation call sites remain within the approved executor/connector boundary; configuration tests confirm legacy
-  views cannot loosen the canonical limits. Final production acceptance still requires an owner-connected account trace
-  from Brain/Portfolio admission through the executor and broker response. Do not edit `.env` or migrate deployed values.
+- **WP-B7 Owner-limits surface — typed contract and live-path static audit.** PR #831 provides the canonical owner-editable
+  surface, strict validation, atomic updates and separation from internal safety controls. PR #860 verifies the production
+  origination route calls ComplianceDivision and PortfolioDivision, uses the canonical risk-engine position sizer, submits
+  only through the shared IntentAggregator/FlushLoop/ActionExecutor/RiskGate path, and reaches the approved PlatformManager/
+  connector boundary. It also verifies AppConfig synchronizes one validated OwnerLimits object into risk, governor and
+  risk-management legacy views. The repository-wide broker mutation route audit passes. Final production acceptance still
+  requires an owner-connected account trace. Do not edit `.env` or migrate deployed values.
+
+  Current generated coverage: 79 analytical methods = 56 FULL, 23 DATA-GATED, 0 MEASURED, 0 UNMEASURED; 38 strategy
+  lenses = 20 FULL, 18 DATA-GATED, 0 MEASURED, 0 UNMEASURED. All 79/38 are classified and their registered Brain
+  call paths are statically audited. DATA-GATED means a reader/assessment exists but its named feed or contract
+  component is not verified; it is not equivalent to full production data availability.
 
 ## 7. Tech debt to clear alongside
 - `tests/test_silent_swallow_observability.py`: the old 72-handler count is historical and must not be treated as current main status. Keep the audit enabled; PR #847 also classifies its newly introduced safe fallbacks and reruns the full matrix.
