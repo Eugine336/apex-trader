@@ -35,6 +35,11 @@ class PendingConnector:
 
     def cancel_pending_order(self, ticket):
         self.cancelled.append(str(ticket))
+        if self.cancel_result:
+            live = next((row for row in self.live if str(row.get("ticket")) == str(ticket)), None)
+            if live is not None:
+                self.history.append({**live, "state": 2, "source_verified": True})
+                self.live = [row for row in self.live if str(row.get("ticket")) != str(ticket)]
         return self.cancel_result
 
 
