@@ -463,6 +463,8 @@ class TestPendingOrderLifecycle:
         from persistence import domain_events as DE
         from platforms.mt5 import mt5_connector as mt5_adapter
         monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
+        from platforms.mt5 import mt5_connector as mt5_adapter
+        monkeypatch.setattr(mt5_adapter, "mt5", SimpleNamespace(DEAL_ENTRY_IN=0, DEAL_ENTRY_INOUT=2))
 
         system = object.__new__(EventDrivenSystem)
         system._pending_orders_lock = threading.Lock()
@@ -480,7 +482,7 @@ class TestPendingOrderLifecycle:
         system._entry_context = {}
         system._pm = SimpleNamespace(
             reconcile_pending_order=lambda *args, **kwargs: {
-                "status": "FILLED", "broker_confirmed": True,
+                "status": "FILLED", "order_id": "901", "broker_confirmed": True,
                 "record": {"ticket": 901, "position_id": 902, "state": 4},
             },
             get_platform_balance=lambda symbol: 5000.0,
@@ -532,11 +534,12 @@ class TestPendingOrderLifecycle:
         system._entry_context = {}
         system._pm = SimpleNamespace(
             reconcile_pending_order=lambda *args, **kwargs: {
-                "status": "PARTIALLY_FILLED_PENDING", "broker_confirmed": True,
+                "status": "PARTIALLY_FILLED_PENDING", "order_id": "901", "broker_confirmed": True,
                 "initial_volume": 0.1, "remaining_volume": 0.06,
                 "record": {"ticket": 901, "position_id": "902"},
             },
             get_platform_balance=lambda symbol: 5000.0,
+            get_position_entry_order_ids=lambda *args, **kwargs: {"901"},
             get_pending_order_fill_deals=lambda *args, **kwargs: [{
                 "order": "901", "position_id": "902", "symbol": "EURUSD",
                 "entry": 0, "price": 99.0, "volume": 0.04, "source_verified": True,
