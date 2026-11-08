@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from cognition.management_action_ledger import ManagementActionLedger
@@ -213,3 +214,15 @@ def test_aggregator_acceptance_is_dispatched_not_broker_acknowledged():
     assert ledger.status(action.action_id, action.symbol) == "DISPATCHED"
     assert ledger.pending_actions("EURUSD")
     assert ledger.begin(action, position) == (False, "DISPATCHED")
+
+
+def test_concurrent_begin_dispatches_one_action_id_once():
+    store = _Store()
+    ledger = ManagementActionLedger(store)
+    action = _action()
+    position = SimpleNamespace(ticket="ticket-1", lots=0.2)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: ledger.begin(action, position)[0], range(32)))
+    assert results.count(True) == 1
+    assert results.count(False) == 31
+    assert len(store.events) == 1
