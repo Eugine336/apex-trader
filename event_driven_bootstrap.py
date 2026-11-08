@@ -5740,7 +5740,7 @@ class EventDrivenSystem:
                     self._on_order_filled(
                         payload["symbol"], payload["direction"], fill_result,
                         balance, expected_price=float(meta.get("entry_price", 0.0) or 0.0),
-                        order_ts=submitted_at.timestamp(),
+                        order_ts=0.0, record_execution_metrics=False,
                     )
                     meta["attributed"] = True
 
@@ -7000,8 +7000,13 @@ class EventDrivenSystem:
         balance: float,
         expected_price: float = 0.0,
         order_ts: float = 0.0,
+        record_execution_metrics: bool = True,
     ) -> None:
-        """Post-fill bookkeeping: risk balance + execution quality + learning attribution."""
+        """Post-fill bookkeeping: risk balance + execution quality + learning attribution.
+
+        Pending-order fills pass record_execution_metrics=False because the
+        elapsed resting duration is not broker execution latency.
+        """
         ctx = self._ctx
         if ctx is None:
             return
@@ -7064,7 +7069,7 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[post-fill] account risk update failed: {}", exc)
 
-        if ctx.execution_monitor is not None and expected_price > 0:
+        if record_execution_metrics and ctx.execution_monitor is not None and expected_price > 0:
             try:
                 fill_price = getattr(result, "fill_price", getattr(result, "entry_price", 0.0)) or 0.0
                 if fill_price <= 0:
