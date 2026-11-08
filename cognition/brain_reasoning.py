@@ -1647,7 +1647,12 @@ class BrainReasoner:
                         "Concept strengths are uncalibrated reasoning measures, not probabilities.",
                         "Readings from the same OHLC stream are correlated; confluence does not add independent confidence.",
                     ],
-                    unresolved_unknowns=list(dict.fromkeys(requirements + conflicts)),
+                    unresolved_unknowns=list(dict.fromkeys(
+                        requirements + conflicts + (
+                            ["opposing activated concept strength is unknown"]
+                            if group.get("opposing_strength_unknown") else []
+                        )
+                    )),
                     distinguishing_evidence=(
                         [f"supporting concept: {item}" for item in concepts]
                         + [f"opposing concept: {item}" for item in opposing_concepts]
@@ -1658,7 +1663,8 @@ class BrainReasoner:
                     horizon=f"{group.get('timeframe')} structure",
                     confidence_components={
                         "raw_strongest_reading": group.get("strength", 0.0),
-                        "opposing_active_strength": group.get("opposing_strength", 0.0),
+                        "opposing_active_strength": group.get("opposing_strength"),
+                        "opposing_strength_unknown": group.get("opposing_strength_unknown", False),
                         "confluence_count": group.get("confluence_count", 0),
                         "concept_count": group.get("concept_count", 0),
                         "independence_groups": list(group.get("independence_groups", []) or []),
