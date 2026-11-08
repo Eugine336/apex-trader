@@ -4,6 +4,7 @@ from __future__ import annotations
 from cognition.concepts.auction_utils import clean_bars, last_source_epoch, session_info
 from cognition.concepts.base import FLAT, ConceptReading, Implication, reference_price
 from cognition.contracts import EvidenceDomain
+from data_sources import DataObservation, ObservationKind
 
 
 class SessionCalendar:
@@ -38,6 +39,62 @@ class SessionCalendar:
             )
         )
         readings = []
+        registry = context.get("data_source_registry") if isinstance(context, dict) else None
+        cutoff = context.get("analysis_epoch", context.get("multi_symbol_snapshot_cutoff_epoch")) if isinstance(context, dict) else None
+        try:
+            cutoff = float(cutoff)
+            if not __import__("math").isfinite(cutoff) or cutoff <= 0:
+                cutoff = None
+        except (TypeError, ValueError, OverflowError):
+            cutoff = None
+        provider_sessions: list[dict] = []
+        if registry is not None and cutoff is not None:
+            try:
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+                for item in registry.fetch(ObservationKind.SESSION, canonical_instrument=str(symbol or "").upper()):
+                    if not isinstance(item, DataObservation):
+                        continue
+                    provenance, values = item.provenance, item.values
+                    stamp = provenance.source_timestamp_epoch
+                    if (
+                        provenance.source_timestamp_verified is not True
+                        or stamp is None or stamp > cutoff
+                        or not provenance.source_record_id
+                    ):
+                        continue
+                    timezone_name = str(values.get("timezone") or "").strip()
+                    try:
+                        ZoneInfo(timezone_name)
+                    except (ZoneInfoNotFoundError, ValueError):
+                        continue
+                    try:
+                        opened = float(values.get("session_open_epoch"))
+                        closed = float(values.get("session_close_epoch"))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not all(__import__("math").isfinite(v) for v in (opened, closed)) or opened >= closed:
+                        continue
+                    provider_sessions.append({
+                        "provider": provenance.source.provider,
+                        "venue": provenance.source.venue,
+                        "record_id": provenance.source_record_id,
+                        "source_timestamp_epoch": stamp,
+                        "timezone": timezone_name,
+                        "session_open_epoch": opened,
+                        "session_close_epoch": closed,
+                        "dst_status": values.get("dst_status") if isinstance(values.get("dst_status"), bool) else None,
+                        "holiday_status": values.get("holiday_status") if isinstance(values.get("holiday_status"), bool) else None,
+                        "rollover_start_epoch": values.get("rollover_start_epoch"),
+                        "rollover_end_epoch": values.get("rollover_end_epoch"),
+                        "liquidity": values.get("liquidity"),
+                        "is_tradeable": values.get("is_tradeable") if isinstance(values.get("is_tradeable"), bool) else None,
+                    })
+            except Exception as exc:  # noqa: BLE001 — unavailable provider calendar remains unknown
+                import logging
+                logging.getLogger("apex.cognition.session").warning(
+                    "provider session calendar unavailable: %s", type(exc).__name__,
+                )
+        provider_session = max(provider_sessions, key=lambda row: row["source_timestamp_epoch"]) if provider_sessions else None
         for timeframe, raw in bars_by_tf.items():
             bars = clean_bars(raw)
             if not bars:
@@ -92,7 +149,26 @@ class SessionCalendar:
                 "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,
                 "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,
                 "broker_session_schedule_source": spec.get("source") if broker_schedule_verified else None,
+                "provider_session_calendar": provider_session,
+                "provider_session_calendar_verified": provider_session is not None,
             }
+            if provider_session is not None:
+                provider_epoch = provider_session["source_timestamp_epoch"]
+                facts.update({
+                    "provider_session_timezone": provider_session["timezone"],
+                    "provider_session_open_epoch": provider_session["session_open_epoch"],
+                    "provider_session_close_epoch": provider_session["session_close_epoch"],
+                    "provider_dst_status": provider_session["dst_status"],
+                    "provider_holiday_status": provider_session["holiday_status"],
+                    "provider_rollover_start_epoch": provider_session["rollover_start_epoch"],
+                    "provider_rollover_end_epoch": provider_session["rollover_end_epoch"],
+                    "provider_liquidity": provider_session["liquidity"],
+                    "provider_is_tradeable": provider_session["is_tradeable"],
+                })
+                if provider_session["dst_status"] is None:
+                    unknowns.append("provider session DST status")
+                if provider_session["holiday_status"] is None:
+                    unknowns.append("provider holiday/special-session status")
             if broker_schedule_verified:
                 unknowns.extend((
                     "broker-server timezone mapping and DST transition rules for weekly session schedule",
