@@ -312,3 +312,26 @@ def test_range_rotation_flows_from_candles_to_hypothesis_and_geometry(monkeypatc
     assert geometry is not None and geometry.concept == "range_rotation"
     assert geometry.stop_price == pytest.approx(95)
     assert geometry.target_price > geometry.entry_price
+
+
+def test_session_calendar_surfaces_broker_weekly_schedule_without_timezone_inference():
+    module = SessionCalendar()
+    readings = module.read_with_context(
+        "XAUUSD", {"M5": _range_bars()},
+        {"symbol_spec": {
+            "source": "mt5.symbol_info",
+            "source_verified": True,
+            "specification_verified": True,
+            "broker_trading_sessions": [{
+                "day": "monday", "start_seconds_server_time": 3600,
+                "end_seconds_server_time": 82800,
+            }],
+            "broker_session_timezone_verified": False,
+            "broker_holiday_calendar_verified": False,
+        }},
+    )
+    reading = readings[0]
+    assert reading.facts["broker_weekly_schedule_available"] is True
+    assert reading.facts["calendar_verified"] is False
+    assert reading.facts["broker_session_timezone_verified"] is False
+    assert any("timezone mapping and DST" in item for item in reading.unknowns)
