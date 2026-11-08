@@ -548,6 +548,58 @@ class TestPendingOrderLifecycle:
         assert DE.ORDER_FILLED in event_types
         assert DE.ORDER_RECONCILED in event_types
 
+    def test_pending_fill_closed_before_position_poll_is_recovered_from_broker_deals(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-CLOSED": {
+                "order_id": "ORDER-CLOSED", "symbol": "EURUSD", "direction": "BUY",
+                "order_type": "LIMIT", "entry_price": 99.0,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "decision_id": "decision-closed", "campaign_id": "campaign-closed",
+                "opportunity_id": "opportunity-closed",
+                "decision_feature_snapshot": {"snapshot_complete": True},
+            },
+        }
+        system._entry_context = {}
+        system._known_open = {}
+        system._handle_close_result = MagicMock()
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "FILLED", "order_id": "ORDER-CLOSED",
+                "broker_confirmed": True,
+                "record": {"ticket": "ORDER-CLOSED", "position_id": "POSITION-CLOSED", "connector_index": 0},
+            },
+            get_pending_order_fill_deals=lambda *args, **kwargs: [{
+                "order": "ORDER-CLOSED", "position_id": "POSITION-CLOSED",
+                "symbol": "EURUSD", "entry": 0, "price": 99.2,
+                "volume": 0.1, "source_verified": True,
+            }],
+            get_deal_close_info=lambda *args, **kwargs: SimpleNamespace(
+                pnl=12.0, close_price=101.0, commission=-1.0,
+                swap=0.0, fee=0.0, exit_reason="take_profit",
+            ),
+        )
+        store = MagicMock()
+        store.emit.return_value = "event-id"
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        system._handle_close_result.assert_called_once()
+        close_intent = system._handle_close_result.call_args.args[0]
+        assert close_intent.position_ticket == "POSITION-CLOSED"
+        assert system._entry_context == {}
+        assert system._known_open == {}
+        assert "ORDER-CLOSED" not in system._pending_orders
+        event_types = [call.kwargs.get("event_type") for call in store.emit.call_args_list]
+        assert DE.ORDER_FILLED in event_types
+        assert DE.ORDER_RECONCILED in event_types
+
     def test_unknown_broker_absence_never_removes_pending_order(self):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
