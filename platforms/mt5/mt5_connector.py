@@ -1496,7 +1496,14 @@ class MT5Connector(BaseConnector):
                         tp=float(duplicate.tp), platform="mt5",
                         order_status="FILLED", order_type=kind,
                     )
-                return fail_pending(f"idempotency_key_already_bound_to_{status.lower()}_order")
+                return OrderResult(
+                    success=False, order_id=str(getattr(duplicate, "ticket", "") or ""),
+                    fill_price=0.0, requested_price=entry, slippage_pips=0.0,
+                    lots=requested_lots, symbol=symbol, direction=side,
+                    sl=stop, tp=target, platform="mt5",
+                    error=f"idempotency_key_already_bound_to_{status.lower()}_order",
+                    order_status=status, order_type=kind,
+                )
 
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
