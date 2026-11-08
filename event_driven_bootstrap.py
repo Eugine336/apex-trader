@@ -5715,20 +5715,33 @@ class EventDrivenSystem:
                 if status in {"UNKNOWN", "AMBIGUOUS", "PENDING"}:
                     continue
                 if status == "PARTIALLY_FILLED_PENDING":
-                    if meta.get("status") != status:
+                    partial_remaining = outcome.get("remaining_volume")
+                    partial_initial = outcome.get("initial_volume")
+                    partial_progress_changed = (
+                        meta.get("status") != status
+                        or meta.get("last_partial_remaining_volume") != partial_remaining
+                    )
+                    if partial_progress_changed:
                         store.emit(
                             event_type=DE.ORDER_RECONCILED, severity="INFO",
                             symbol=str(meta.get("symbol", "") or ""),
                             correlation_id=str(meta.get("decision_id", "") or "") or None,
                             parent_id=tracking_key, source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
-                                     "remaining_volume": outcome.get("remaining_volume"),
-                                     "initial_volume": outcome.get("initial_volume"),
-                                     "broker_confirmed": True},
+                            payload={
+                                "order_id": resolved_ticket, "tracking_key": tracking_key,
+                                "status": status, "remaining_volume": partial_remaining,
+                                "initial_volume": partial_initial,
+                                "filled_volume": (
+                                    max(float(partial_initial) - float(partial_remaining), 0.0)
+                                    if partial_initial is not None and partial_remaining is not None else None
+                                ),
+                                "broker_confirmed": True,
+                            },
                         )
                         meta["status"] = status
-                    continue
+                        meta["last_partial_remaining_volume"] = partial_remaining
+                        meta["initial_volume"] = partial_initial
 
                 position_id = str(
                     record.get("position_id") or record.get("position") or resolved_ticket
