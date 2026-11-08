@@ -398,7 +398,11 @@ class ManagementActionLedger:
             "reconciled_epoch": observed_epoch,
             "reconciliation_basis": "verified_complete_broker_state",
         }
-        return self.finish(action, "ACKNOWLEDGED", response=evidence)
+        return self.finish_if_status(
+            action, "ACKNOWLEDGED",
+            expected_statuses={"SUBMITTED", "DISPATCHED", "AMBIGUOUS"},
+            response=evidence,
+        )
 
     def status(self, action_id: str, symbol: str) -> str | None:
         history = self._history(str(action_id or "").strip(), str(symbol or "").strip().upper())
