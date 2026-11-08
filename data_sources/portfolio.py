@@ -59,14 +59,19 @@ def build_portfolio_risk_snapshot(
     item = valid[0]
     values = dict(item.values)
     stamp = float(item.provenance.source_timestamp_epoch)
+    portfolio_id = str(values.get("portfolio_id") or "").strip()
+    if not portfolio_id or portfolio_id != item.provenance.source.native_instrument:
+        result["unknowns"].append(
+            "portfolio identity in snapshot values must match the provider-attested native account identity"
+        )
     result.update(values)
     result.update({
-        "portfolio_id": str(values.get("portfolio_id") or item.provenance.source.native_instrument),
+        "portfolio_id": portfolio_id,
         "source_timestamp_epoch": stamp,
         "source_timestamp_verified": True,
         "source_provider": item.provenance.source.provider,
         "source_venue": item.provenance.source.venue,
-        "complete": bool(values.get("complete") is True and not errors),
+        "complete": bool(values.get("complete") is True and not errors and portfolio_id == item.provenance.source.native_instrument),
         "provider_errors": dict(errors),
     })
     if completed_bar_epoch is not None and stamp < completed_bar_epoch:
