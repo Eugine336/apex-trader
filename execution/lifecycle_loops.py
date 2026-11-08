@@ -125,6 +125,11 @@ class FlushLoop:
                                         self._on_open(intent, r)
                                     except Exception as exc:
                                         logger.warning("[flush-loop] open callback error: {}", exc)
+                            elif intent is not None and intent.intent_type == IntentType.CANCEL_PENDING:
+                                logger.info(
+                                    "[flush-loop] pending order cancellation acknowledged | {} {}",
+                                    intent.symbol, intent.position_ticket,
+                                )
                             elif intent is not None:
                                 # SL/TP modify or partial close — commit the
                                 # optimistic management state (callback) and
@@ -146,6 +151,7 @@ class FlushLoop:
                                 intent is not None
                                 and intent.intent_type != IntentType.OPEN
                                 and intent.intent_type != IntentType.CLOSE
+                                and intent.intent_type != IntentType.CANCEL_PENDING
                                 and self._on_manage is not None
                             ):
                                 try:
