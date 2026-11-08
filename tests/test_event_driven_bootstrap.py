@@ -727,6 +727,45 @@ class TestPendingOrderLifecycle:
         assert "ORDER-EXPIRED" not in system._pending_orders
         assert any(call.kwargs.get("event_type") == DE.ORDER_RECONCILED for call in store.emit.call_args_list)
 
+    def test_pending_fill_does_not_overwrite_mixed_netting_position_context(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-MIXED": {
+                "order_id": "ORDER-MIXED", "symbol": "EURUSD", "direction": "BUY",
+                "order_type": "LIMIT", "lots": 0.1, "entry_price": 99.0,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        system._entry_context = {"POSITION-MIXED": {"lots": 0.2, "entry_price": 98.0}}
+        deal_reader = MagicMock(return_value=[])
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "FILLED", "broker_confirmed": True,
+                "record": {"ticket": "ORDER-MIXED", "position_id": "POSITION-MIXED", "connector_index": 0},
+            },
+            get_position_entry_order_ids=lambda *args, **kwargs: {"ORDER-MIXED", "OTHER-ORDER"},
+            get_pending_order_fill_deals=deal_reader,
+        )
+        system._on_order_filled = MagicMock()
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([
+                SimpleNamespace(
+                    order_id="POSITION-MIXED", symbol="EURUSD", direction="BUY",
+                    open_price=98.5, lots=0.2, sl=97.0, tp=101.0,
+                ),
+            ])
+
+        assert "ORDER-MIXED" in system._pending_orders
+        assert system._entry_context["POSITION-MIXED"] == {"lots": 0.2, "entry_price": 98.0}
+        deal_reader.assert_not_called()
+        system._on_order_filled.assert_not_called()
+
     def test_filled_order_without_position_identity_is_not_attributed_by_order_ticket(self):
         import threading
         from event_driven_bootstrap import EventDrivenSystem
