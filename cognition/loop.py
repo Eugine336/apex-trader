@@ -2835,6 +2835,11 @@ class CognitionLoop:
                     return False
 
                 broker_response = getattr(sink_result, "broker_response", None)
+                if broker_response is None and any(
+                    getattr(sink_result, field, None) is not None
+                    for field in ("order_id", "ticket", "deal", "retcode")
+                ):
+                    broker_response = sink_result
                 explicit_rejection = sink_result is False or (
                     getattr(sink_result, "rejected_by_gate", False) is True
                 ) or (
@@ -2857,8 +2862,16 @@ class CognitionLoop:
                         )
                     )
                 )
+                broker_response_success = (
+                    getattr(broker_response, "success", None) is True
+                    or (
+                        isinstance(broker_response, dict)
+                        and broker_response.get("success") is True
+                    )
+                )
                 acknowledged = (
                     getattr(sink_result, "success", None) is True
+                    and broker_response_success
                     and broker_ack_metadata
                 )
                 if sink_result is None and not action_id:
