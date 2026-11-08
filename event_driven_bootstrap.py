@@ -2797,7 +2797,7 @@ class EventDrivenSystem:
                             decision_id=str(getattr(action, "decision_id", "") or ""),
                             campaign_id=str(getattr(action, "campaign_id", "") or ""),
                             opportunity_id=str(getattr(action, "opportunity_id", "") or ""),
-                        action_id=str(getattr(action, "action_id", "") or ""),
+                            action_id=f"{str(getattr(action, 'action_id', '') or '')}:protective-stop",
                             identity_version=str(getattr(action, "identity_version", "") or ""),
                             identity=str(getattr(action, "identity", "") or ""),
                         ))
@@ -5843,6 +5843,29 @@ class EventDrivenSystem:
                     self._inflight_manage.pop(key, None)
         except Exception as exc:
             logger.warning("[management] failed to clear rollback snapshots for {}: {}", ticket, exc)
+
+    def _handle_execution_result(self, intent: Intent, result: Any) -> None:
+        """Feed every actual executor outcome back to the Brain action ledger."""
+        action_id = str(getattr(intent, "action_id", "") or "").strip()
+        if not action_id:
+            return
+        brain_loop = getattr(self._ctx, "cognition_loop", None) if self._ctx is not None else None
+        if brain_loop is None:
+            brain_loop = getattr(self, "_cognition_loop_instance", None)
+        recorder = getattr(brain_loop, "record_management_execution_result", None)
+        if not callable(recorder):
+            logger.error(
+                "[management] executor returned for action %s but no Brain ledger callback is wired",
+                action_id,
+            )
+            return
+        try:
+            recorder(intent, result)
+        except Exception as exc:  # noqa: BLE001 — ledger state must remain unresolved on callback failure
+            logger.error(
+                "[management] executor-result reconciliation failed for action %s: %s",
+                action_id, exc,
+            )
 
     def _handle_manage_result(self, intent: Intent, result: Any) -> None:
         """Commit or roll back an optimistic management mutation.
