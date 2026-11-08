@@ -158,7 +158,16 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
             and candidate["activated"]
         ]
         opposing_strengths = [item["strength"] for item in opposing if item["strength"] is not None]
-        opposing_strength = max(opposing_strengths) if opposing_strengths else 0.0
+        opposing_strength_unknown = any(item["strength"] is None for item in opposing)
+        if not opposing:
+            opposing_strength = 0.0
+        elif opposing_strength_unknown or not opposing_strengths:
+            # An activated opposing reading with unknown strength is not zero
+            # opposition. Preserve uncertainty instead of manufacturing confidence.
+            opposing_strength = None
+        else:
+            opposing_strength = max(opposing_strengths)
+        group["opposing_strength_unknown"] = opposing_strength_unknown
         group["opposing_concepts"] = sorted({
             concept for item in opposing for concept in item["concepts"]
         })
@@ -171,7 +180,8 @@ def synthesize_concept_readings(readings: Iterable[dict]) -> list[dict]:
         # reduce the strongest member's strength; no additive boost is allowed.
         group["confidence"] = (
             group["strength"] * (1.0 - 0.5 * opposing_strength)
-            if group["strength"] is not None else None
+            if group["strength"] is not None and opposing_strength is not None
+            else None
         )
 
     return groups
