@@ -177,14 +177,21 @@ class IntermarketReadings:
         if target_epoch is None:
             return []
         # The current symbol's own bars are already normalized by market_lenses.
+        seconds = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}.get(timeframe)
+        if not seconds:
+            return []
         target_rows = [
             row for row in target
             if row.get("source_timestamp_verified") is True
             and _finite(row.get("timestamp_epoch", row.get("source_timestamp_epoch"))) is not None
+            and _finite(row.get("timestamp_epoch", row.get("source_timestamp_epoch"))) + seconds <= cutoff
+            and row.get("source_broker")
         ]
         # Normalize the target timestamp field to the same representation as peers.
         for row in target_rows:
             row["timestamp_epoch"] = _finite(row.get("timestamp_epoch", row.get("source_timestamp_epoch")))
+        if len(target_rows) < 3:
+            return []
         peers: dict[str, list[dict[str, Any]]] = {}
         for raw_peer, peer_frames in frames.items():
             peer_symbol = str(raw_peer or "").strip().upper()
@@ -290,22 +297,24 @@ class IntermarketReadings:
         if isinstance(specs, dict) and paired:
             currency_values: dict[str, list[float]] = {}
             accepted_symbols = []
-            for peer_symbol, item in paired.items():
-                spec = specs.get(peer_symbol)
+            # Include the target instrument once, then each synchronized peer.
+            first_pair = next(iter(paired.values()))
+            currency_instruments = [(target_symbol, first_pair["target_returns"])]
+            currency_instruments.extend(
+                (peer_symbol, item["peer_returns"])
+                for peer_symbol, item in paired.items()
+            )
+            for instrument_symbol, instrument_returns in currency_instruments:
+                spec = specs.get(instrument_symbol)
                 if not isinstance(spec, dict) or spec.get("source_verified") is not True or spec.get("specification_verified") is not True:
                     continue
                 base = str(spec.get("currency_base") or "").strip().upper()
                 quote = str(spec.get("currency_profit") or "").strip().upper()
-                if not base or not quote or base == quote:
+                if not base or not quote or base == quote or not instrument_returns:
                     continue
-                returns = item["target_returns"]
-                # A peer's own returns are required; calculate them from aligned closes.
-                peer_returns = item["peer_returns"]
-                if not peer_returns:
-                    continue
-                currency_values.setdefault(base, []).extend(peer_returns)
-                currency_values.setdefault(quote, []).extend(-value for value in peer_returns)
-                accepted_symbols.append(peer_symbol)
+                currency_values.setdefault(base, []).extend(instrument_returns)
+                currency_values.setdefault(quote, []).extend(-value for value in instrument_returns)
+                accepted_symbols.append(instrument_symbol)
             scores = {
                 currency: sum(values) / len(values)
                 for currency, values in currency_values.items() if values
