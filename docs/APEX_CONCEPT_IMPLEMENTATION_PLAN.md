@@ -1,6 +1,6 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `54d5ea63f32df24219d423293dbdb1634aea51e6` (2026-11-08).
+Status baseline: `main` @ `7fe9b1e4620931dca0ba6425cbf91f2bcb4a4c16` (2026-11-08).
 WP-J strategy-lens composition was merged from PR `#823`.
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
@@ -204,7 +204,8 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
   `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
   requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
-  and live Brain consumption of the full synthesis output. WP-B4 relevance remains non-gating.
+  and live Brain consumption of the full synthesis output. PR #849 also fixes the case where unknown opposing
+  strength was treated as zero opposition; full CI is pending. WP-B4 relevance remains non-gating.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
   shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
@@ -212,7 +213,7 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
   Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
   bounded by the missing broker pending-order lifecycle.
-- **WP-B3 Management — core implementation merged (PRs #826 and #827); broker acknowledgement lifecycle in progress (PR #847).**
+- **WP-B3 Management — broker acknowledgement lifecycle merged (PR #847); acceptance remains open for feed-gated capabilities.**
   The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
   structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
   progress: ambiguous outcomes stay pending until broker-size reconciliation, while explicit sink rejection can clear
