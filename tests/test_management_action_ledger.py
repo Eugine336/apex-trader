@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 from cognition.management_action_ledger import ManagementActionLedger
@@ -129,7 +130,7 @@ def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_s
 
     invalid = {
         "source": "mt5.position_snapshot",
-        "source_timestamp_epoch": 1400.0,
+        "source_timestamp_epoch": time.time(),
         "source_timestamp_verified": False,
         "symbol": "EURUSD",
         "position_ticket": "ticket-1",
@@ -141,7 +142,11 @@ def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_s
     assert ledger.reconcile(action.action_id, "EURUSD", invalid) is False
     assert ledger.pending_actions("EURUSD")
 
-    valid = {**invalid, "source_timestamp_verified": True}
+    valid = {
+        **invalid,
+        "source_timestamp_verified": True,
+        "source_timestamp_epoch": time.time(),
+    }
     assert ledger.reconcile(action.action_id, "EURUSD", valid) is True
     assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
     assert ledger.pending_actions("EURUSD") == []
