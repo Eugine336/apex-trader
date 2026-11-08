@@ -604,3 +604,15 @@ class TestEdgeCases:
         ])
         result = agg.flush()
         assert len(result) == 1
+
+
+def test_pending_cancel_is_prioritized_as_its_own_order_ticket_action():
+    agg = IntentAggregator()
+    cancel = Intent.cancel_pending(
+        symbol="EURUSD", ticket="PENDING-1", source="brain", reason="invalidation",
+    )
+    agg.submit([cancel])
+    result = agg.flush()
+    assert len(result) == 1
+    assert result[0].intent_type == IntentType.CANCEL_PENDING
+    assert result[0].position_ticket == "PENDING-1"
