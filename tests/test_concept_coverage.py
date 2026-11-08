@@ -118,6 +118,8 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     assert "concept_source=_concept_market_source" in system_context_source
     assert "fetch_all_market_data(" in system_context_source
     assert '"multi_symbol_frames": dict(_concept_market_cycle_snapshot)' in system_context_source
+    assert '"data_source_registry": ctx.data_source_registry' in system_context_source
+    assert "DataSourceRegistry()" in system_context_source
     assert "_concept_market_source.begin_cycle = _begin_concept_market_cycle" in system_context_source
     assert "begin_concept_cycle(symbols)" in loop_cycle_source
     assert "end_concept_cycle()" in loop_cycle_source
