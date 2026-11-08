@@ -2786,8 +2786,12 @@ class CognitionLoop:
                             if callable(clearer):
                                 try:
                                     clearer(action.campaign_id, action.milestone_id)
-                                except Exception:
-                                    pass
+                                except Exception as clear_exc:
+                                    logger.error(
+                                        "[cognition-loop] rejected management action %s was not cleared "
+                                        "from milestone memory; campaign remains blocked: %s",
+                                        action_id, type(clear_exc).__name__,
+                                    )
                         self._manage_suppressed += 1
                         logger.warning(
                             "[cognition-loop] MANAGE-SUPPRESSED %s %s action_id=%s: "
