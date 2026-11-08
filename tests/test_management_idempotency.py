@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+import json
 
 from cognition.contracts import DecisionType
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from cognition.loop import CognitionLoop
+from cognition.management_action_ledger import ManagementActionLedger
 from cognition.memory import CampaignMemoryStore
 
 
@@ -48,6 +50,37 @@ def _position():
     )
 
 
+
+class _EventStore:
+    def __init__(self):
+        self.events = []
+        self.seq = 0
+        self.is_degraded = False
+
+    def query_events(self, *, event_types=None, symbol=None, correlation_id=None, **kwargs):
+        return [
+            row for row in self.events
+            if (not event_types or row["event_type"] in event_types)
+            and (symbol is None or row["symbol"] == symbol)
+            and (correlation_id is None or row["correlation_id"] == correlation_id)
+        ]
+
+    def emit(
+        self, event_type, severity, *, symbol=None, correlation_id=None,
+        parent_id=None, source_module=None, payload=None, durable=False,
+    ):
+        self.seq += 1
+        self.events.append({
+            "event_type": event_type,
+            "severity": severity,
+            "symbol": symbol,
+            "correlation_id": correlation_id,
+            "seq": self.seq,
+            "payload_json": json.dumps(payload or {}),
+        })
+        return f"event-{self.seq}"
+
+
 def _store():
     store = CampaignMemoryStore(db_path=":memory:")
     store.record_open(
@@ -61,10 +94,11 @@ def _store():
     return store
 
 
-def _loop(store=None):
+def _loop(store=None, ledger=None):
     loop = CognitionLoop(
         _UnusedBrain(), _UnusedConsolidator(), lambda: [],
         management_mode="live",
+        management_action_ledger=ledger or ManagementActionLedger(_EventStore()),
     )
     loop._memory = store
     return loop
@@ -74,7 +108,7 @@ def test_milestone_is_persisted_before_sink_and_duplicate_submission_is_blocked(
     store = _store()
     calls = []
     loop = _loop(store)
-    loop.set_management_sink(lambda action, position: calls.append(action))
+    loop.set_management_sink(lambda action, position: calls.append(action) or True)
     output, position = _output(), _position()
 
     loop._realise_management(output, position)
