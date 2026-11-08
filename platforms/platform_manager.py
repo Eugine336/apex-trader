@@ -749,7 +749,10 @@ class PlatformManager:
                     continue
                 try:
                     finder = getattr(connector, "find_order_by_idempotency_key", None)
-                    candidate = finder(idem_key) if callable(finder) else None
+                    candidate = (
+                        finder(idem_key, since=submitted_at.astimezone(timezone.utc))
+                        if callable(finder) else None
+                    )
                     candidate_symbol = str(getattr(candidate, "symbol", "") or "").strip().upper()
                     if candidate is not None and candidate_symbol == canonical_symbol:
                         discoveries.append((index, candidate))
