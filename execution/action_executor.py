@@ -295,10 +295,11 @@ class ActionExecutor:
         intent_target = finite_positive(intent.new_tp)
         if None in (entry, stop, target, risk, reward, reward_r, live_entry, intent_stop, intent_target):
             return "market_payoff_geometry_contains_invalid_price_or_distance"
-        if order_type != "MARKET":
-            # The current shared broker adapter only supports market submission.
-            # Never silently reinterpret a Brain-authored pending order as market.
-            return "pending_order_type_not_supported_by_broker_adapter"
+        if order_type in {"LIMIT", "STOP"}:
+            if abs(live_entry - entry) > tolerance:
+                return "pending_order_geometry_entry_price_mismatch"
+        elif order_type != "MARKET":
+            return "market_payoff_geometry_order_type_mismatch"
         if zone_low_raw is not None:
             try:
                 zone_low = float(zone_low_raw)
@@ -318,12 +319,20 @@ class ActionExecutor:
             or abs(intent_target - target) > tolerance
         ):
             return "market_payoff_geometry_levels_changed_after_brain_decision"
-        if side == "LONG":
-            if not (stop < entry < target and intent_stop < live_entry < intent_target):
-                return "market_payoff_geometry_not_ordered_around_live_entry"
+        if order_type == "MARKET":
+            ordered = (
+                stop < entry < target and intent_stop < live_entry < intent_target
+                if side == "LONG"
+                else target < entry < stop and intent_target < live_entry < intent_stop
+            )
         else:
-            if not (target < entry < stop and intent_target < live_entry < intent_stop):
-                return "market_payoff_geometry_not_ordered_around_live_entry"
+            ordered = (
+                stop < entry < target
+                if side == "LONG"
+                else target < entry < stop
+            )
+        if not ordered:
+            return "market_payoff_geometry_not_ordered_around_live_entry"
 
         actual_risk = abs(entry - stop)
         actual_reward = abs(target - entry)
@@ -453,7 +462,7 @@ class ActionExecutor:
                 (open_positions.get(intent.position_ticket, {}) or {}).get("symbol", "")
                 or ""
             )
-        op = "close" if intent.intent_type == IntentType.CLOSE else "modify"
+        op = "close" if intent.intent_type in {IntentType.CLOSE, IntentType.CANCEL_PENDING} else "modify"
         return self._manage_breaker(f"{symbol}:{op}" if symbol else op)
 
     def _margin_entry_constraints_error(self, intent: Intent) -> str | None:
@@ -974,6 +983,16 @@ class ActionExecutor:
                     result.retried = retried
                     return result
 
+                # An ambiguous broker acknowledgement is not a retryable rejection.
+                # The order may already exist; retrying could duplicate exposure.
+                if str(result.error or "").upper().startswith("AMBIGUOUS_"):
+                    self._add_latency(elapsed_ms)
+                    logger.error(
+                        "EXECUTOR AMBIGUOUS — broker reconciliation required | {} {} | {}",
+                        intent.intent_type.name, intent.position_ticket, result.error,
+                    )
+                    return result
+
                 # Market-closed is expected, not a fault: do NOT record a
                 # breaker failure (would otherwise open the manage breaker and
                 # block legitimate closes/modifies on 24/7 instruments) and do
@@ -1068,21 +1087,57 @@ class ActionExecutor:
         pos = open_positions.get(intent.position_ticket, {})
         platform = pos.get("platform", "")
 
-        if intent.intent_type == IntentType.OPEN:
-            resp = self._broker.execute_entry(
-                symbol=intent.symbol,
-                direction=str(intent.direction or ""),
-                lots=float(intent.lots or 0.0),
-                sl=float(intent.new_sl or 0.0),
-                tp=float(intent.new_tp or 0.0),
-                comment=str(intent.comment or ""),
-                stake_usd=(
-                    float(intent.stake_usd)
-                    if intent.stake_usd is not None
-                    else None
-                ),
-                idempotency_key=str(intent.idempotency_key or ""),
+        if intent.intent_type == IntentType.CANCEL_PENDING:
+            cancel = getattr(self._broker, "cancel_pending_order", None)
+            if not callable(cancel):
+                return ExecutionResult(
+                    intent=intent, success=False,
+                    error="pending_order_cancel_unsupported_by_broker_adapter",
+                )
+            try:
+                success = bool(cancel(intent.position_ticket, symbol=intent.symbol))
+            except TypeError:
+                success = bool(cancel(intent.position_ticket))
+            return ExecutionResult(
+                intent=intent, success=success,
+                error=None if success else "pending_order_cancel_unconfirmed",
             )
+
+        if intent.intent_type == IntentType.OPEN:
+            order_type = str(getattr(intent, "order_type", "MARKET") or "MARKET").upper()
+            if order_type != "MARKET":
+                pending = getattr(self._broker, "execute_pending_entry", None)
+                if not callable(pending):
+                    return ExecutionResult(
+                        intent=intent, success=False,
+                        error="pending_order_type_not_supported_by_broker_adapter",
+                    )
+                resp = pending(
+                    symbol=intent.symbol,
+                    direction=str(intent.direction or ""),
+                    order_type=order_type,
+                    entry_price=float(intent.entry_price or 0.0),
+                    lots=float(intent.lots or 0.0),
+                    sl=float(intent.new_sl or 0.0),
+                    tp=float(intent.new_tp or 0.0),
+                    comment=str(intent.comment or ""),
+                    idempotency_key=str(intent.idempotency_key or ""),
+                )
+            else:
+                resp = self._broker.execute_entry(
+                    symbol=intent.symbol,
+                    direction=str(intent.direction or ""),
+                    lots=float(intent.lots or 0.0),
+                    sl=float(intent.new_sl or 0.0),
+                    tp=float(intent.new_tp or 0.0),
+                    comment=str(intent.comment or ""),
+                    stake_usd=(
+                        float(intent.stake_usd)
+                        if intent.stake_usd is not None
+                        else None
+                    ),
+                    idempotency_key=str(intent.idempotency_key or ""),
+                )
             success = getattr(resp, "success", bool(resp))
             error = getattr(resp, "error", None) or (None if success else "open failed")
             return ExecutionResult(
