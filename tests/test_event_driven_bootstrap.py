@@ -889,6 +889,11 @@ class TestPendingOrderLifecycle:
                 "ticket": "ORDER-RESTORE-PARTIAL", "symbol": "EURUSD",
                 "volume_initial": 0.1, "volume_current": 0.06,
             },
+            "post_cancel_broker_record": {
+                "ticket": "ORDER-RESTORE-PARTIAL", "symbol": "EURUSD",
+                "state": 2, "volume_initial": 0.1, "volume_current": 0.06,
+                "source_verified": True,
+            },
         }
         store = MagicMock()
         store.query_events.return_value = [
@@ -925,6 +930,11 @@ class TestPendingOrderLifecycle:
             "pre_cancel_broker_snapshot": {
                 "ticket": "ORDER-RESTORE-CANCELLED", "symbol": "EURUSD",
                 "volume_initial": 0.1, "volume_current": 0.1,
+            },
+            "post_cancel_broker_record": {
+                "ticket": "ORDER-RESTORE-CANCELLED", "symbol": "EURUSD",
+                "state": 2, "volume_initial": 0.1, "volume_current": 0.1,
+                "source_verified": True,
             },
         }
         store = MagicMock()
@@ -1029,4 +1039,69 @@ class TestPendingOrderLifecycle:
         with patch("event_driven_bootstrap.get_event_store", return_value=store):
             system._restore_pending_orders()
         assert system._pending_orders["ORDER-TERMINAL-UNRESOLVED"]["attribution_status"] == "unresolved_closed_fill"
+
+
+    def test_restart_recovery_keeps_cancel_request_unknown_without_post_cancel_history(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending = {
+            "order_id": "ORDER-CANCEL-UNKNOWN",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cancelled = {
+            "order_id": "ORDER-CANCEL-UNKNOWN", "status": "UNKNOWN",
+            "pre_cancel_broker_snapshot": {
+                "volume_initial": 0.1, "volume_current": 0.1,
+                "source_verified": True,
+            },
+            "post_cancel_broker_record": None,
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_CANCELLED, "parent_id": "ORDER-CANCEL-UNKNOWN",
+             "payload_json": json.dumps(cancelled)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-CANCEL-UNKNOWN",
+             "payload_json": json.dumps(pending)},
+        ]
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+        assert system._pending_orders["ORDER-CANCEL-UNKNOWN"]["status"] == "UNKNOWN"
+
+
+    def test_restart_recovery_keeps_zero_remainder_cancelled_order_for_deal_attribution(self):
+        import json
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        pending = {
+            "order_id": "ORDER-CANCEL-ZERO-REMAINDER",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cancelled = {
+            "order_id": "ORDER-CANCEL-ZERO-REMAINDER",
+            "post_cancel_broker_record": {
+                "state": 2, "volume_initial": 0.1, "volume_current": 0.0,
+                "source_verified": True,
+            },
+        }
+        store = MagicMock()
+        store.query_events.return_value = [
+            {"event_type": DE.ORDER_CANCELLED, "parent_id": "ORDER-CANCEL-ZERO-REMAINDER",
+             "payload_json": json.dumps(cancelled)},
+            {"event_type": DE.ORDER_PENDING, "parent_id": "ORDER-CANCEL-ZERO-REMAINDER",
+             "payload_json": json.dumps(pending)},
+        ]
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._restore_pending_orders()
+        assert system._pending_orders["ORDER-CANCEL-ZERO-REMAINDER"]["status"] == "UNKNOWN"
 
