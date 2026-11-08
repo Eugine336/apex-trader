@@ -1465,7 +1465,7 @@ class MT5Connector(BaseConnector):
                         requested_price=entry, slippage_pips=0.0,
                         lots=float(duplicate.volume), symbol=symbol, direction=side,
                         sl=stop, tp=target, platform="mt5",
-                        order_status="PENDING", order_type=kind,
+                        order_status=status, order_type=kind,
                     )
                 if status == "FILLED":
                     return OrderResult(
