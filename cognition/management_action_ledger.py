@@ -157,7 +157,9 @@ class ManagementActionLedger:
             "response": _response_summary(response),
             "error": str(error or "")[:500],
             "acknowledged_epoch": time.time(),
-            "broker_acknowledgement_present": bool(response is not None),
+            "broker_acknowledgement_present": bool(
+                set(_response_summary(response)) & {"order_id", "ticket", "deal", "retcode"}
+            ),
         }
         try:
             self._event_store().emit(
