@@ -652,7 +652,7 @@ class PlatformManager:
                 comment=comment, idempotency_key=idempotency_key,
             )
         trackable = (
-            bool(result.success and result.order_status == "PENDING" and result.order_id)
+            bool(result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING"} and result.order_id)
             or (
                 str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
                 and bool(idempotency_key)
@@ -787,7 +787,9 @@ class PlatformManager:
                 if index >= len(self._mt5_connected_flags) or not self._mt5_connected_flags[index]:
                     continue
                 try:
-                    finder = getattr(connector, "find_order_by_idempotency_key", None)
+                            finder = getattr(connector, "find_pending_order_by_idempotency_key", None)
+                    if not callable(finder):
+                        finder = getattr(connector, "find_order_by_idempotency_key", None)
                     candidate = (
                         finder(idem_key, since=submitted_at.astimezone(timezone.utc))
                         if callable(finder) else None
