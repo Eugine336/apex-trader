@@ -101,3 +101,35 @@ def test_ledger_fails_closed_when_durable_event_store_is_degraded():
     assert ledger.begin(_action(), SimpleNamespace(ticket="ticket-1", lots=0.2)) == (
         None, "management_action_ledger_unavailable",
     )
+
+
+def test_ambiguous_partial_close_reconciles_only_from_verified_complete_broker_state():
+    store = _Store()
+    ledger = ManagementActionLedger(store)
+    action = _action()
+    action.kind = "partial_close"
+    action.fraction = 0.5
+    position = SimpleNamespace(ticket="ticket-1", lots=0.2)
+
+    assert ledger.begin(action, position)[0] is True
+    assert ledger.finish(action, "AMBIGUOUS", error="lost broker acknowledgement") is True
+    assert ledger.pending_actions("EURUSD")
+
+    invalid = {
+        "source": "mt5.position_snapshot",
+        "source_timestamp_epoch": 1400.0,
+        "source_timestamp_verified": False,
+        "symbol": "EURUSD",
+        "position_ticket": "ticket-1",
+        "book_complete": True,
+        "platform_confirmed": True,
+        "position_present": True,
+        "current_lots": 0.1,
+    }
+    assert ledger.reconcile(action.action_id, "EURUSD", invalid) is False
+    assert ledger.pending_actions("EURUSD")
+
+    valid = {**invalid, "source_timestamp_verified": True}
+    assert ledger.reconcile(action.action_id, "EURUSD", valid) is True
+    assert ledger.status(action.action_id, "EURUSD") == "ACKNOWLEDGED"
+    assert ledger.pending_actions("EURUSD") == []
