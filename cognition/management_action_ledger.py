@@ -170,6 +170,34 @@ class ManagementActionLedger:
         except Exception as exc:  # noqa: BLE001 — caller decides risk-aware fallback
             return None, f"management_action_ledger_write_failed:{type(exc).__name__}"
 
+    def finish_if_status(
+        self,
+        action: Any,
+        status: str,
+        *,
+        expected_statuses: set[str],
+        response: Any = None,
+        error: str = "",
+    ) -> bool:
+        """Atomically apply a result only if the durable action is still in an expected state."""
+        action_id = str(getattr(action, "action_id", "") or "").strip()
+        symbol = str(getattr(action, "symbol", "") or "").strip().upper()
+        target = str(status or "").strip().upper()
+        with self._lock:
+            history = self._history(action_id, symbol)
+            if history is None or not history:
+                return False
+            latest = max(history, key=lambda row: int(row.get("seq", 0) or 0))
+            payload = _payload(latest)
+            current = str(payload.get("status") or latest.get("event_type") or "").upper()
+            if current == target:
+                return True
+            if current not in {str(value).upper() for value in expected_statuses}:
+                return False
+            return self._finish_unlocked(
+                action, target, response=response, error=error,
+            )
+
     def finish(
         self, action: Any, status: str, *, response: Any = None, error: str = "",
     ) -> bool:
