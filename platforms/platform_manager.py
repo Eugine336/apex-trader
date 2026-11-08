@@ -653,7 +653,7 @@ class PlatformManager:
                 comment=comment, idempotency_key=idempotency_key,
             )
         trackable = (
-            bool(result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING"} and result.order_id)
+            bool(result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING", "FILLED"} and result.order_id)
             or (
                 str(result.error or "").upper().startswith("AMBIGUOUS_PENDING_ORDER_ACK")
                 and bool(idempotency_key)
@@ -666,7 +666,7 @@ class PlatformManager:
                 "order_type": str(order_type or "").upper(),
                 "direction": str(direction or "").upper(),
                 "lots": float(lots),
-                "remaining_lots": float(result.lots or lots),
+                "remaining_lots": (0.0 if result.order_status == "FILLED" else float(result.lots or lots)),
                 "entry_price": float(result.requested_price or entry_price),
                 "sl": float(result.sl or sl), "tp": float(result.tp or tp),
                 "platform": str(result.platform or "mt5"),
@@ -683,7 +683,7 @@ class PlatformManager:
                     if result.success else "UNKNOWN"
                 ),
                 "broker_confirmed": bool(
-                    result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING"}
+                    result.success and result.order_status in {"PENDING", "PARTIALLY_FILLED_PENDING", "FILLED"}
                 ),
                 "reconciliation_required": not bool(result.success),
             }
