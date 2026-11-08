@@ -204,8 +204,10 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
   `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
   requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
-  and live Brain consumption of the full synthesis output. PR #849 also fixes the case where unknown opposing
-  strength was treated as zero opposition; full CI is pending. WP-B4 relevance remains non-gating.
+  and live Brain consumption of the full synthesis output. PR #851 fixes the case where an activated opposing
+  concept with unknown strength was treated as zero opposition; it is merged after Python 3.11/3.12, lint,
+  generated-coverage and canonical identity/safety CI passed. WP-B1 remains partial pending the broader
+  contextual-selection and live-consumption acceptance. WP-B4 relevance remains non-gating.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
   shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
