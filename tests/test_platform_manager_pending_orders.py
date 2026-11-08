@@ -278,7 +278,7 @@ def test_position_entry_order_ids_expose_mixed_order_ownership(monkeypatch):
         {"order": "901", "position_id": "902", "symbol": "EURUSD", "entry": 0, "source_verified": True},
         {"order": "903", "position_id": "902", "symbol": "EURUSD", "entry": 0, "source_verified": True},
     ]
-    connector = SimpleNamespace(get_deal_history_checked=lambda *args: rows)
+    connector = SimpleNamespace(get_position_deal_history_checked=lambda *args: rows)
     manager = object.__new__(PlatformManager)
     manager.mt5_connectors = [connector]
 
