@@ -2785,6 +2785,11 @@ class CognitionLoop:
                 expected_statuses={"SUBMITTED", "DISPATCHED", "AMBIGUOUS"},
                 response=response,
             )
+            if not recorded:
+                latest_status = ledger.status(action_id, symbol)
+                if latest_status in {"ACKNOWLEDGED", "REJECTED"}:
+                    self._management_unresolved_actions.discard(action_id)
+                    return latest_status == "ACKNOWLEDGED"
             if recorded:
                 self._management_unresolved_actions.discard(action_id)
                 if kind == "partial_close" and current_size is None:
@@ -2830,6 +2835,11 @@ class CognitionLoop:
                 expected_statuses={"SUBMITTED", "DISPATCHED"},
                 response=broker_response, error=error,
             )
+            if not recorded:
+                latest_status = ledger.status(action_id, symbol)
+                if latest_status in {"ACKNOWLEDGED", "REJECTED"}:
+                    self._management_unresolved_actions.discard(action_id)
+                    return latest_status == "ACKNOWLEDGED"
             if recorded:
                 self._management_unresolved_actions.discard(action_id)
                 if kind == "partial_close" and self._memory is not None:
@@ -2854,6 +2864,11 @@ class CognitionLoop:
             expected_statuses={"SUBMITTED", "DISPATCHED"},
             response=broker_response, error=error,
         )
+        if not recorded:
+            latest_status = ledger.status(action_id, symbol)
+            if latest_status in {"ACKNOWLEDGED", "REJECTED"}:
+                self._management_unresolved_actions.discard(action_id)
+                return latest_status == "ACKNOWLEDGED"
         if recorded:
             self._management_unresolved_actions.add(action_id)
             self._manage_ambiguous += 1
@@ -3072,11 +3087,17 @@ class CognitionLoop:
                         error=str(getattr(sink_result, "error", "") or ""),
                     )
                     if not durable_ack:
-                        logger.error(
-                            "[cognition-loop] management action %s outcome %s could not be "
-                            "durably recorded; write-ahead record remains unresolved",
-                            action_id, outcome,
-                        )
+                        latest_status = ledger.status(action_id, action.symbol)
+                        if latest_status in {"ACKNOWLEDGED", "REJECTED"}:
+                            # The asynchronous FlushLoop callback won the race;
+                            # never overwrite its broker result with queue status.
+                            outcome = latest_status
+                        else:
+                            logger.error(
+                                "[cognition-loop] management action %s outcome %s could not be "
+                                "durably recorded; write-ahead record remains unresolved",
+                                action_id, outcome,
+                            )
 
                 if outcome == "REJECTED":
                     if ledger_unavailable_tracked and action_id:
