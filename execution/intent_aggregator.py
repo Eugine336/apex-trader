@@ -157,15 +157,15 @@ class IntentAggregator:
         intents: list[Intent],
         info: Optional[_PositionInfo],
     ) -> list[Intent]:
+        closes = [i for i in intents if i.intent_type == IntentType.CLOSE]
+        if closes:
+            return [min(closes, key=lambda i: i.timestamp)]
+
         cancels = [i for i in intents if i.intent_type == IntentType.CANCEL_PENDING]
         if cancels:
             # Cancellation is the only valid action for a pending-order ticket;
             # it must not be coalesced with position-management instructions.
             return [min(cancels, key=lambda i: i.timestamp)]
-
-        closes = [i for i in intents if i.intent_type == IntentType.CLOSE]
-        if closes:
-            return [min(closes, key=lambda i: i.timestamp)]
 
         resolved: list[Intent] = []
 
