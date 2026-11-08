@@ -1,11 +1,12 @@
 # Apex — Remaining Implementation Plan (full concept knowledge, native Brain)
 
-Status baseline: `main` @ `dba20cd19eead2181d7788baa70c90fb81c747a5`.
-WP-J strategy-lens composition was merged from PR `#823` (`phase2/wp-j-strategy-lens-composition`).
+Status baseline: `main` @ `54d5ea63f32df24219d423293dbdb1634aea51e6` (2026-11-08).
+WP-J strategy-lens composition was merged from PR `#823`.
 Source of truth for current coverage: `docs/APEX_CONCEPT_COVERAGE.md` (generated; run
 `python scripts/concept_coverage.py`).
-Current register: **56/79 analytical methods FULL, 8 DATA-GATED, 9 MEASURED and 6 UNMEASURED;
-20/38 strategy lenses FULL and 18 DATA-GATED.**
+Current register: **56/79 analytical methods FULL, 22 DATA-GATED, 1 MEASURED and 0 UNMEASURED;
+20/38 strategy lenses FULL and 18 DATA-GATED.** DATA-GATED methods/lenses are not FULL implementations;
+their named feed prerequisites remain open.
 PR #823 passed **4,151 tests** on both Python 3.11 and 3.12, Ruff, coverage synchronization,
 canonical identity/safety audit, import checks, GitGuardian and both Gold desk jobs.
 WP-J acceptance gates for current-cutoff freshness, no-look-ahead, mirror symmetry, Brain assessment
@@ -199,12 +200,11 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 7. **Code review checklist**: no config numbers; no symbol branches; every `None` is reported in `requires`/`unknowns`.
 
 ## 6. Brain integration work packages (single owner; these make the concepts *usable*)
-- **WP-B1 Context selection and composition.** Today every applicable implication becomes its own hypothesis (noisy);
-  PR #811 keeps competing trend and mean-reversion hypotheses alive, which this layer must preserve.
-  Build the layer that decides which concepts apply in the current market state (regime/volatility/session from readings'
-  `applicability`), merges readings that share an `independence_group`, scores **confluence and conflict** across
-  concepts, and produces one thesis per direction with the strongest consistent invalidation/objective. Concept
-  relevance learned from outcomes (WP-B4) is *consulted*, never a gate.
+- **WP-B1 Context selection and composition — partial.** PR #819 corrected independent-evidence accounting and the
+  synthesis layer groups applicable, source-verified completed-bar readings without additive confidence voting. Shared
+  `independence_group` provenance is deduplicated and opposing activated hypotheses remain explicit. Acceptance still
+  requires verifying regime/volatility/session applicability selection, strongest consistent cross-concept geometry,
+  and live Brain consumption of the full synthesis output. WP-B4 relevance remains non-gating.
 - **WP-B2 Geometry — typed entry instruction propagation merged (PR #825).** Concept-supplied entry price,
   zone bounds and MARKET/LIMIT/STOP order type now travel through geometry, opportunity, campaign translation and the
   shared execution-intent contract. Conflicting or incomplete instructions fail closed. Broker pending-order placement,
@@ -212,7 +212,7 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   are rejected rather than converted to market. The older fixed payoff-geometry settings were removed in PR #824.
   Multi-concept structural stops/targets and ordered milestones remain evidence-derived; WP-B2 acceptance is still
   bounded by the missing broker pending-order lifecycle.
-- **WP-B3 Management — core implementation merged (PRs #826 and #827); acceptance remains open for data/lifecycle gates.**
+- **WP-B3 Management — core implementation merged (PRs #826 and #827); broker acknowledgement lifecycle in progress (PR #847).**
   The native manager now handles concept milestone partials, completed-close invalidation exits, objective exits,
   structural trailing anchors and holding-horizon reassessment. Milestone actions use durable write-ahead campaign
   progress: ambiguous outcomes stay pending until broker-size reconciliation, while explicit sink rejection can clear
@@ -252,15 +252,17 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   per-symbol budget is claimed. Remaining: measure the real configured instrument/timeframe universe, set an
   evidence-based per-symbol budget, and extend incremental computation to the other costly structures/pools while
   preserving source-time and concept semantics.
-- **WP-B6 Remove remaining analysis constants.** `min_evidence_domains = 3`, observer wake thresholds, compliance
-  thresholds that are analysis rather than execution safety — classify each as (owner limit | definition | remove).
+- **WP-B6 Remove remaining analysis constants — accepted in PR #830.** The universal three-domain gate, observer
+  ATR/spread wake thresholds, event confidence-delta wake gate, and additional fixed analysis cutoffs were removed or
+  replaced with evidence-lineage/context-specific logic. Owner/account limits, broker feasibility and statistical
+  artifact-integrity requirements were retained. Full Python 3.11/3.12 CI and both Gold desk jobs passed on PR #830.
 - **WP-B7 Owner-limits surface.** One explicit place for the limits the account owner sets (risk per trade, daily
   loss, max exposure, margin), which Apex may *tighten* from its analysis but never loosen. Everything else is Apex's
   judgement.
 
 ## 7. Tech debt to clear alongside
-- `tests/test_silent_swallow_observability.py`: 72 unclassified silent exception handlers; this is the sole current full-suite failure and must be classified individually without weakening the audit.
-- `tests/test_api_endpoints.py`: the earlier audit sandbox lacked `email-validator`; GitHub Actions collection now passes on Python 3.11 and 3.12.
+- `tests/test_silent_swallow_observability.py`: the old 72-handler count is historical and must not be treated as current main status. Keep the audit enabled; PR #847 also classifies its newly introduced safe fallbacks and reruns the full matrix.
+- `tests/test_api_endpoints.py`: the earlier audit-sandbox dependency issue is historical; current GitHub Actions collection passes on Python 3.11 and 3.12.
 - Stale docs: `docs/APEX_FULL_REDESIGN_ROADMAP.md` completion register for Systems 1–4 (it still describes #798 as an
   unmerged draft).
 - Rename the `gold_desk` package (cosmetic; the observer is instrument-agnostic).
