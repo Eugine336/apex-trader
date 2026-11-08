@@ -66,8 +66,8 @@ class CalibrationArtifact:
     expires_at_epoch: float
     walk_forward_folds: int
     selection_coverage: float
-    producer_version: str = "candidate-calibration-v1"
-    protocol: str = "chronological_family_conditional_fixed_horizon_v1"
+    producer_version: str = "candidate-calibration-v2"
+    protocol: str = "chronological_family_conditional_quote_history_fixed_horizon_v2"
     producer_attested: bool = True
 
     def to_measurements(self) -> dict[str, Any]:
@@ -778,6 +778,10 @@ class CalibrationProducer:
                                 "label": 1 if median_return > 0.0 else 0,
                                 "return_r": median_return,
                                 "candidate_ids": sorted(item["candidate_id"] for item in members),
+                                "quote_history_manifest_digests": sorted({
+                                    str(item.get("quote_history_manifest_digest", "") or "")
+                                    for item in member_outcomes
+                                }),
                             })
                         coverage = (
                             (observed_groups + missed_groups) / total_matured
@@ -870,6 +874,7 @@ class CalibrationProducer:
                                 item["label"],
                                 item["return_r"],
                                 item["candidate_ids"],
+                                item["quote_history_manifest_digests"],
                             )
                             for item in eligible_groups
                         ]
