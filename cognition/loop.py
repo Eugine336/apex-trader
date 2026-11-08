@@ -2758,7 +2758,7 @@ class CognitionLoop:
             or response_success is False
             or broker_response is False
         )
-        if succeeded and response_success is not False:
+        if succeeded and not explicit_rejection:
             if isinstance(broker_response, dict):
                 response = {
                     **broker_response,
@@ -2943,7 +2943,7 @@ class CognitionLoop:
                 ledger_started = False
                 ledger_unavailable_tracked = False
                 action_id = str(getattr(action, "action_id", "") or "").strip()
-                if action.kind in {"scale_in", "reverse"} and (not action_id or ledger is None):
+                if action.kind in {"scale_in", "reverse", "partial_close"} and (not action_id or ledger is None):
                     self._manage_suppressed += 1
                     logger.error(
                         "[cognition-loop] MANAGE-SUPPRESSED %s %s: risk-increasing management "
