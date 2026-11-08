@@ -189,7 +189,7 @@ class ManagementActionLedger:
             "AMBIGUOUS": _AMBIGUOUS,
         }.get(normalized)
         if event_type is None:
-            raise ValueError("management action status must be ACKNOWLEDGED, REJECTED or AMBIGUOUS")
+            raise ValueError("management action status must be DISPATCHED, ACKNOWLEDGED, REJECTED or AMBIGUOUS")
         action_id = str(getattr(action, "action_id", "") or "").strip()
         symbol = str(getattr(action, "symbol", "") or "").strip().upper()
         if not action_id or not symbol:
