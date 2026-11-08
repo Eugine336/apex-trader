@@ -233,13 +233,13 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   market-order opportunities, explicit stop/target geometry, visible geometry evidence IDs and non-overlapping
   decision windows. Calibration seeding is opt-in and idempotent per dataset/protocol. PR #828 passed 4,184 tests on
   Python 3.11 and 3.12, Ruff/lint, GitGuardian and identity/coverage/import checks.
-  **WP-B4 is not accepted yet.** The manifest's source attestation is caller-declared, not independently authenticated;
-  OHLC labels exclude spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts.
-  The per-concept × market-state summaries are report outputs, not yet producer-registered artifacts consulted by the
-  live Brain. Remaining: connect verified quote-history events to the existing `CalibrationProducer` for System 4
-  development/holdout/walk-forward eligibility; make concept track records producer-owned and available to live Brain
-  as non-gating context; validate on owner-supplied history; and move the 0.25 calibration size floor into WP-B7.
-- **WP-B5 Performance — first implementation layer merged (PR #829).** Pure OHLC concept readings are cached
+  **WP-B4 remains open.** PR #838 added producer-owned descriptive concept track records and injected them into the
+  live Brain as non-gating historical context. They are explicitly not calibrated probabilities or trade gates.
+  The manifest's source attestation remains caller-declared, not independently authenticated; OHLC labels exclude
+  spread/slippage/financing/latency and cannot create System 4's verified bid/ask quote artifacts. Remaining:
+  connect verified quote-history events to `CalibrationProducer` for development/holdout/walk-forward eligibility,
+  validate on owner-supplied history, and complete the independent outcome-provenance audit.
+- **WP-B5 Performance — cache/incremental layer and benchmark tooling merged (PRs #829, #836 and #840).** Pure OHLC concept readings are cached
   per module instance and symbol against a digest of the full completed-bar history; historical corrections invalidate
   the entry and contextual readers (ticks, depth, portfolio, execution costs and reading-composition modules) still
   refresh each cognition pass. Broker frames are materialized once while preserving the existing bounded raw-lens
@@ -248,17 +248,19 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   swing-pool status now uses suffix extrema in linear time. Per-module elapsed time, total per-symbol elapsed time,
   bar counts and cache hit/miss metrics are exposed in structured debug logs. PR #829 passed 4,196 tests on Python
   3.11 and 3.12, Ruff/lint, GitGuardian and both Gold desk suites.
-  **WP-B5 is not accepted yet.** No production full-universe benchmark has been run, so no latency reduction or
-  per-symbol budget is claimed. Remaining: measure the real configured instrument/timeframe universe, set an
-  evidence-based per-symbol budget, and extend incremental computation to the other costly structures/pools while
+  **WP-B5 remains open.** PRs #836 and #840 added a read-only benchmark and made completion require every configured
+  symbol/timeframe pair, with explicit missing-timeframe reporting. No production full-universe benchmark has been run,
+  so no latency reduction or per-symbol budget is claimed. Remaining: measure the real configured universe, set an
+  evidence-based per-symbol budget, and extend incremental computation to other costly structures/pools while
   preserving source-time and concept semantics.
 - **WP-B6 Remove remaining analysis constants — accepted in PR #830.** The universal three-domain gate, observer
   ATR/spread wake thresholds, event confidence-delta wake gate, and additional fixed analysis cutoffs were removed or
   replaced with evidence-lineage/context-specific logic. Owner/account limits, broker feasibility and statistical
   artifact-integrity requirements were retained. Full Python 3.11/3.12 CI and both Gold desk jobs passed on PR #830.
-- **WP-B7 Owner-limits surface.** One explicit place for the limits the account owner sets (risk per trade, daily
-  loss, max exposure, margin), which Apex may *tighten* from its analysis but never loosen. Everything else is Apex's
-  judgement.
+- **WP-B7 Owner-limits surface — initial typed contract merged (PR #831).** The canonical owner-editable surface,
+  strict validation, atomic updates, and separation from internal safety controls are implemented. Final acceptance
+  still requires tracing every live exposure-increasing route through the canonical limits and proving no legacy
+  subsystem can loosen the owner's effective limits. Do not edit `.env` or migrate deployed values without approval.
 
 ## 7. Tech debt to clear alongside
 - `tests/test_silent_swallow_observability.py`: the old 72-handler count is historical and must not be treated as current main status. Keep the audit enabled; PR #847 also classifies its newly introduced safe fallbacks and reruns the full matrix.
