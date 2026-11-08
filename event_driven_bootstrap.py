@@ -5814,6 +5814,7 @@ class EventDrivenSystem:
                             entry_kind = int(deal.get("entry"))
                             price = float(deal.get("price"))
                             volume = float(deal.get("volume"))
+                        # safe-fallback: discard malformed deal rows; only valid broker evidence can attribute a fill.
                         except (TypeError, ValueError, OverflowError):
                             continue
                         if (
