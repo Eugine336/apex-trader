@@ -291,3 +291,21 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 One work package per PR from a branch off the latest `main`; run the full suite and compare to `main`; regenerate the
 register; no force-push to `main`; do not edit another package's files without coordinating (the register and
 `CONCEPT_MODULES` are the merge hot-spots — keep those edits minimal).
+
+## 7. Concurrent Phase 2 data-capability implementation — PR #864
+
+Branch: phase2/concurrent-data-capabilities. This work extends, rather than reopens, the completed WP-B1/WP-B2 implementation.
+
+- **Intermarket:** live cycle-scoped multi-symbol frames are supplied to native readers. Paired returns are calculated only between consecutive exact common completed-bar timestamps; SMT compares the same final common bar; currency strength uses the common return-interval intersection. Cross-asset correlation remains descriptive. Relative-value residual stationarity and relationship stability remain unverified, so these concepts remain DATA-GATED.
+- **External providers:** normalized source/provenance contracts, per-provider failure isolation and native Brain readers are implemented for calendar, macro, derivatives, crypto, trade prints and execution-cost channels. No vendor adapters are registered. Provider selection, credentials, licensing/entitlements, rate limits and historical backfill are not assumed.
+- **Portfolio risk/financing:** the atomic PORTFOLIO_SNAPSHOT contract is assembled fail-closed and wired to PortfolioRiskReadings. It requires one source-attested account snapshot with complete positions, account-currency exposures/risk, equity/return history and synchronized correlations. No live MT5 adapter currently emits this complete contract. Financing/carry remains DATA-GATED until swap-mode conversion, rollover and account-currency economics are fully verified.
+- **Calibration:** producer-owned chronological development/holdout/walk-forward artifacts and descriptive track records remain separate from calibrated probabilities. Acceptance still requires authenticated source manifests and complete owner-supplied broker outcome lineage.
+- **Performance:** the cold/warm full-universe benchmark is available and requires exact universe/timeframe coverage, requested bar depth and zero reader failures. No owner-host result or per-symbol budget is claimed before the benchmark is run.
+- **WP-B3/WP-B7:** broker management acknowledgement/restart and owner-limit static call-path work remain implemented. Live owner-connected lifecycle acceptance is still outstanding.
+
+Owner-host read-only commands:
+
+    python scripts/audit_broker_data_capabilities.py --output data_capability_audit.json
+    python scripts/benchmark_concept_pipeline.py --count 500 --timeframes M5 M15 H1 H4
+
+Keep raw reports on the owner host; share only sanitized acceptance summaries. Neither command sends or modifies broker orders. The .env file remains off limits. Do not promote DATA-GATED capabilities based on reader presence or fixture tests.
