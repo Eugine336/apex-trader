@@ -122,6 +122,8 @@ class SystemContext:
     # research and AI advisors turned into advisory Evidence for the Brain.
     # Read-only, gated, throttled and self-measuring. Default-off.
     knowledge_source: Optional[Any] = None
+    # Optional read-only external/broker data adapters; never an execution gateway.
+    data_source_registry: Optional[Any] = None
     # Reasoning Orchestrator (Part XVII) — lets the one Brain consult several
     # reasoning engines; each opinion becomes advisory Evidence (never a vote).
     # Default-off (consult_multi); the Brain remains the sole decision-maker.
@@ -260,6 +262,12 @@ class SystemContext:
 
         risk_cfg = config.risk
         ctx = cls(owner_limits=getattr(config, "owner_limits", None))
+        try:
+            from data_sources import DataSourceRegistry
+            ctx.data_source_registry = DataSourceRegistry()
+        except Exception as exc:  # noqa: BLE001 — optional read-only provider registry must not break startup
+            logger.warning("[SystemContext] optional data-source registry unavailable: {}", type(exc).__name__)
+            ctx.data_source_registry = None
 
         # ── DrawdownGuard ────────────────────────────────────────────
         try:
@@ -1486,6 +1494,7 @@ class SystemContext:
                             "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
                             "multi_symbol_specs": dict(_concept_market_cycle_specs),
                             "multi_symbol_source_includes_forming_bar": True,
+                            "data_source_registry": ctx.data_source_registry,
                         },
                     )
 
