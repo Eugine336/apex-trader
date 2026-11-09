@@ -225,6 +225,7 @@ def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
     ]
     connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
+        uncertainty_seconds=0.0,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         server_now_epoch=lambda: now + offset,
         observed_gmt_epoch=now,
@@ -305,6 +306,7 @@ def test_server_clock_tick_is_normalized_to_utc_with_raw_provenance(monkeypatch)
     mt5_module.mt5.symbol_info_tick = lambda _symbol: fake_tick
     connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
+        uncertainty_seconds=0.0,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch) - offset,
         sources=(),
