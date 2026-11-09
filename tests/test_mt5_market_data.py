@@ -103,6 +103,7 @@ def _connected_connector(monkeypatch):
     connector = MT5Connector()
     connector._connected = True
     connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=0,
         age_seconds=lambda epoch: __import__("time").time() - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch),
     )
