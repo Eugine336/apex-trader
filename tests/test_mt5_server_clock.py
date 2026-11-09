@@ -65,3 +65,39 @@ def test_clock_reader_rejects_missing_or_implausible_clock(tmp_path):
     assert load_mt5_server_clock(
         tmp_path, "JustMarkets-Demo", now_epoch=1_800_000_005,
     ) is None
+
+
+def test_connector_caches_clock_terminal_ipc_for_one_second(monkeypatch):
+    from types import SimpleNamespace
+
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    class _Terminal:
+        data_path = "C:/mt5-data"
+
+    class _Account:
+        server = "JustMarkets-Demo"
+
+    class _MT5:
+        terminal_calls = 0
+        account_calls = 0
+
+        def terminal_info(self):
+            self.terminal_calls += 1
+            return _Terminal()
+
+        def account_info(self):
+            self.account_calls += 1
+            return _Account()
+
+    fake = _MT5()
+    state = SimpleNamespace(file_age_seconds=0.0, offset_seconds=7200)
+    monkeypatch.setattr(connector_module, "mt5", fake)
+    monkeypatch.setattr(connector_module, "load_mt5_server_clock", lambda *a, **k: state)
+    connector = MT5Connector.__new__(MT5Connector)
+
+    assert connector._read_server_clock_state() is state
+    assert connector._read_server_clock_state() is state
+    assert fake.terminal_calls == 1
+    assert fake.account_calls == 1
