@@ -33,12 +33,12 @@ class MT5ServerClockState:
     observed_server_epoch: int
     observed_gmt_epoch: int
     file_age_seconds: float
-    observed_monotonic: float = 0.0
+    observed_monotonic: float | None = None
     uncertainty_seconds: float = 0.0
     sources: tuple[str, ...] = ()
 
     def server_now_epoch(self, now_epoch: float | None = None) -> float:
-        if now_epoch is None and self.observed_monotonic > 0:
+        if now_epoch is None and self.observed_monotonic is not None:
             return float(self.observed_server_epoch) + (time.monotonic() - self.observed_monotonic)
         now = time.time() if now_epoch is None else float(now_epoch)
         return float(self.observed_server_epoch) + (now - float(self.observed_gmt_epoch))
