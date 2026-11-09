@@ -48,6 +48,10 @@ def _make_mt5(max_tick_age_seconds=120.0):
         c._mapper.to_broker.return_value = "EURUSD"
         c._symbol_cache = {}
         c._max_tick_age_seconds = max_tick_age_seconds
+        c._read_server_clock_state = lambda: SimpleNamespace(
+            age_seconds=lambda epoch: _time.time() - float(epoch),
+            to_utc_epoch=lambda epoch: float(epoch),
+        )
     return c, mock_mt5
 
 
