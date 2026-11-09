@@ -808,9 +808,12 @@ class MT5Connector(BaseConnector):
             tick = mt5.symbol_info_tick(mapped)
             if tick is None or getattr(tick, "time", 0) <= 0:
                 return None
-            tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
-            age = (datetime.now(timezone.utc) - tick_time).total_seconds()
-            return age <= limit
+            clock = self._read_server_clock_state()
+            if clock is None:
+                return None
+            tick_epoch = self._tick_server_epoch(tick)
+            age = clock.age_seconds(tick_epoch)
+            return -1.0 <= age <= limit
         except Exception as exc:  # noqa: BLE001 — a liveness probe must never raise
             logger.debug("[mt5] has_fresh_tick({}) failed: {}", symbol, exc)
             return None
@@ -1181,14 +1184,23 @@ class MT5Connector(BaseConnector):
                 symbol, direction, lots, sl, tp,
                 f"Invalid tick (bid={tick.bid}, ask={tick.ask}, epoch={tick.time})",
             )
-        tick_age = (
-            datetime.now(timezone.utc)
-            - datetime.fromtimestamp(tick.time, tz=timezone.utc)
-        ).total_seconds()
-        if tick_age > self._max_tick_age_seconds:
+        clock = self._read_server_clock_state()
+        if clock is None:
             return self._fail_order(
                 symbol, direction, lots, sl, tp,
-                f"STALE_TICK: {tick_age:.1f}s old (limit {self._max_tick_age_seconds}s)",
+                "MT5_SERVER_CLOCK_OFFSET_UNAVAILABLE",
+            )
+        try:
+            tick_age = clock.age_seconds(self._tick_server_epoch(tick))
+        except (TypeError, ValueError, RuntimeError):
+            return self._fail_order(
+                symbol, direction, lots, sl, tp, "INVALID_TICK_TIMESTAMP_FIELDS",
+            )
+        if tick_age < -1.0 or tick_age > self._max_tick_age_seconds:
+            return self._fail_order(
+                symbol, direction, lots, sl, tp,
+                f"STALE_OR_FUTURE_TICK: age={tick_age:.1f}s "
+                f"(limit {self._max_tick_age_seconds}s)",
             )
 
         is_buy = direction.upper() in ("BUY", "LONG")
@@ -1590,8 +1602,14 @@ class MT5Connector(BaseConnector):
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
             return fail_pending("pending_order_quote_unavailable")
-        tick_age = (datetime.now(timezone.utc) - datetime.fromtimestamp(tick.time, tz=timezone.utc)).total_seconds()
-        if tick_age < -2.0 or tick_age > self._max_tick_age_seconds:
+        clock = self._read_server_clock_state()
+        if clock is None:
+            return fail_pending("mt5_server_clock_offset_unavailable")
+        try:
+            tick_age = clock.age_seconds(self._tick_server_epoch(tick))
+        except (TypeError, ValueError, RuntimeError):
+            return fail_pending("pending_order_quote_timestamp_invalid")
+        if tick_age < -1.0 or tick_age > self._max_tick_age_seconds:
             return fail_pending("pending_order_quote_stale_or_future")
         if is_buy and kind == "LIMIT" and not entry < tick.ask:
             return fail_pending("buy_limit_must_be_below_ask")
