@@ -1006,10 +1006,32 @@ class MT5Connector(BaseConnector):
                 "source_timezone": "UTC",
             })
             return frame
+        # MT5 tick-history epochs are broker-server wall-clock values. A
+        # short window ending near now can be normalized with the live terminal
+        # offset; arbitrary historical ranges need an offset history and remain
+        # explicitly broker-server time.
+        now_epoch = _time.time()
+        window_age = now_epoch - end.timestamp()
+        recent_window = -5.0 <= window_age <= 120.0 and (end - start).total_seconds() <= 300.0
+        clock = self._read_server_clock_state() if recent_window else None
         if "time" in frame.columns:
-            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+            frame["time_server_epoch"] = frame["time"]
+            if clock is not None:
+                frame["time"] = pd.to_datetime(
+                    frame["time"].astype("float64") - clock.offset_seconds,
+                    unit="s", utc=True,
+                )
+            else:
+                frame["time"] = pd.to_datetime(frame["time"], unit="s")
         if "time_msc" in frame.columns:
-            frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
+            frame["time_msc_server_epoch"] = frame["time_msc"]
+            if clock is not None:
+                frame["time_msc_datetime"] = pd.to_datetime(
+                    frame["time_msc"].astype("float64") - clock.offset_seconds * 1000,
+                    unit="ms", utc=True,
+                )
+            else:
+                frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms")
         raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
         buy_flag = getattr(mt5, "TICK_FLAG_BUY", 0)
         sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
@@ -1022,7 +1044,10 @@ class MT5Connector(BaseConnector):
             "source": "mt5.copy_ticks_range",
             "source_verified": True,
             "source_symbol": mapped,
-            "source_timezone": "UTC",
+            "source_timezone": "UTC" if clock is not None else "broker_server",
+            "source_timestamp_verified": clock is not None,
+            "source_utc_offset_seconds": clock.offset_seconds if clock is not None else None,
+            "utc_normalization": "live_server_offset" if clock is not None else "historical_offset_required",
             "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
         })
         return frame
