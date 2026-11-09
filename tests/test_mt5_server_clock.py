@@ -101,3 +101,17 @@ def test_connector_caches_clock_terminal_ipc_for_one_second(monkeypatch):
     assert connector._read_server_clock_state() is state
     assert fake.terminal_calls == 1
     assert fake.account_calls == 1
+
+
+def test_mql5_clock_publisher_is_read_only():
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts" / "mt5_clock_publisher.mq5"
+    ).read_text(encoding="utf-8")
+    assert "TimeTradeServer()" in script
+    assert "TimeGMT()" in script
+    assert "FileOpen(" in script
+    for forbidden in ("OrderSend(", "OrderSendAsync(", "OrderModify(", "OrderDelete("):
+        assert forbidden not in script
