@@ -971,7 +971,7 @@ class MT5Connector(BaseConnector):
                 "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
                 "D1": 86400, "W1": 604800,
             }
-            duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400 if timeframe.upper() == "MN1" else 86400)
+            duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400)
             # A range ending well in the past cannot contain a forming bar. Only
             # recent ranges need the live server clock to classify the final bar.
             clock_required_horizon = duration + MAX_OFFSET_SECONDS + 120
