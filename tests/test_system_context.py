@@ -164,3 +164,30 @@ class TestManagementStateStoreSQLite:
         assert state.trailing is True
         assert state.stop_loss == 1.05
         store2.close()
+
+
+def test_preexisting_safety_degradation_is_applied_when_loop_is_created():
+    from types import SimpleNamespace
+
+    ctx = SystemContext()
+    ctx._mark_safety_degraded("RiskEngine")
+    loop = SimpleNamespace(broker_book_verified=True)
+    ctx.cognition_loop = loop
+
+    ctx._apply_safety_degradation_to_loop()
+
+    assert loop.broker_book_verified is False
+
+
+def test_safety_degradation_trips_cognition_new_exposure_breaker():
+    from types import SimpleNamespace
+
+    ctx = SystemContext()
+    loop = SimpleNamespace(broker_book_verified=True)
+    ctx.cognition_loop = loop
+
+    ctx._mark_safety_degraded("BrokerAccountBalanceUnavailable")
+
+    assert ctx.safety_degraded is True
+    assert "BrokerAccountBalanceUnavailable" in ctx.safety_degraded_reason
+    assert loop.broker_book_verified is False

@@ -111,7 +111,15 @@ def _fake_tick(age_seconds):
 
 
 def _mt5_self():
-    return types.SimpleNamespace(_max_tick_age_seconds=120.0, symbol_map=lambda s: s)
+    import time as _time
+    return types.SimpleNamespace(
+        _max_tick_age_seconds=120.0,
+        symbol_map=lambda s: s,
+        _read_server_clock_state=lambda: types.SimpleNamespace(
+            age_seconds=lambda epoch: _time.time() - float(epoch),
+        ),
+        _tick_server_epoch=lambda tick: float(tick.time),
+    )
 
 
 def test_mt5_has_fresh_tick_true_when_recent(monkeypatch):

@@ -225,10 +225,23 @@ class SystemContext:
     # restarted with a clean init.
     _safety_degraded_subsystems: list = field(default_factory=list)
 
+    def _apply_safety_degradation_to_loop(self) -> None:
+        """Trip the cognition loop's new-exposure breaker for retained failures."""
+        if not self.safety_degraded:
+            return
+        loop = getattr(self, "cognition_loop", None)
+        if loop is not None:
+            loop.broker_book_verified = False
+
     def _mark_safety_degraded(self, name: str) -> None:
-        """Record that a CRITICAL safety subsystem failed to initialise."""
+        """Record a safety failure and trip the live new-exposure circuit breaker."""
         if name not in self._safety_degraded_subsystems:
             self._safety_degraded_subsystems.append(name)
+        # Safety degradation is not merely a status flag. The cognition loop's
+        # broker-book admission gate is the authoritative new-exposure breaker;
+        # trip it whenever a critical subsystem fails, while leaving observation
+        # and existing-position management available.
+        self._apply_safety_degradation_to_loop()
 
     @property
     def safety_degraded(self) -> bool:
@@ -985,13 +998,32 @@ class SystemContext:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[SystemContext] KnowledgeSource init failed: {}", exc)
                     ctx.knowledge_source = None
-                logger.info(
-                    "[SystemContext] Action layer ready — enabled={} adapter={} "
-                    "(dry_run={})",
-                    getattr(comp_cfg, "enabled", False) if comp_cfg else False,
-                    getattr(_adapter, "name", type(_adapter).__name__),
-                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True,
+                _action_enabled = bool(
+                    getattr(comp_cfg, "enabled", False) if comp_cfg else False
                 )
+                _action_dry_run = bool(
+                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True
+                )
+                _action_adapter_name = getattr(
+                    _adapter, "name", type(_adapter).__name__,
+                )
+                if (
+                    _action_enabled
+                    and not _action_dry_run
+                    and _action_adapter_name == "unavailable"
+                ):
+                    logger.warning(
+                        "[SystemContext] Action layer requested live execution but "
+                        "Composio credentials are unavailable; external actions "
+                        "will fail closed. Configure COMPOSIO_API_KEY or disable "
+                        "COMPOSIO_ENABLED / enable COMPOSIO_DRY_RUN."
+                    )
+                else:
+                    logger.info(
+                        "[SystemContext] Action layer ready — enabled={} adapter={} "
+                        "(dry_run={})",
+                        _action_enabled, _action_adapter_name, _action_dry_run,
+                    )
             except Exception as exc:
                 logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
 
@@ -1319,7 +1351,10 @@ class SystemContext:
                             execution_observations=observations,
                         )
                     except Exception as exc:  # noqa: BLE001 — analysis must never break cognition
-                        logger.warning("[cognition] execution-cost read unavailable for %s: %s", symbol, exc)
+                        logger.warning(
+                            "[cognition] execution-cost read unavailable for {}: {}",
+                            symbol, exc,
+                        )
                         return {
                             "symbol": str(symbol or "").strip().upper(),
                             "source_timestamp_epoch": None,
@@ -1706,6 +1741,9 @@ class SystemContext:
                         if cog_cfg is not None else 0.6
                     ),
                 )
+                # Critical subsystems can fail before CognitionLoop exists.
+                # Carry retained failures into its new-exposure circuit breaker.
+                ctx._apply_safety_degradation_to_loop()
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
                     ctx.cognitive_brain,

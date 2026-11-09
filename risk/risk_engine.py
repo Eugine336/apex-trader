@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from typing import Any, Optional
 
 from loguru import logger
@@ -123,6 +124,7 @@ class RiskEngine:
             ),
         )
         self.pnl_tracker = PnLTracker(starting_balance=self.balance)
+        self._has_reconciled_broker_balance = False
         self.spread_monitor = SpreadMonitor(
             max_multiplier=self.risk_cfg.max_spread_multiplier,
         )
@@ -745,9 +747,14 @@ class RiskEngine:
         one-cycle fluke cannot silently corrupt downstream sizing / drawdown
         state.
         """
-        if broker_balance is None or broker_balance < 0:
+        if broker_balance is None:
             return
-        broker_balance = float(broker_balance)
+        try:
+            broker_balance = float(broker_balance)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(broker_balance) or broker_balance < 0:
+            return
         prev = self.balance
         if prev and prev > 0 and broker_balance > 0:
             divergence_pct = abs(prev - broker_balance) / broker_balance * 100.0
@@ -781,6 +788,9 @@ class RiskEngine:
                 )
         self._balance_resync_candidate = None
         self.balance = broker_balance
+        if not self._has_reconciled_broker_balance:
+            self.pnl_tracker.starting_balance = broker_balance
+            self._has_reconciled_broker_balance = True
 
     def reconcile_platform_balances(
         self,
@@ -804,6 +814,7 @@ class RiskEngine:
         """
         if not platform_balances:
             return
+        first_broker_snapshot = not self._platform_balances
         for platform, raw in platform_balances.items():
             if raw is None:
                 continue
@@ -811,7 +822,7 @@ class RiskEngine:
                 bal = float(raw)
             except (TypeError, ValueError):  # SAFE-FALLBACK: ignore malformed optional platform balance
                 continue
-            if bal < 0:
+            if not math.isfinite(bal) or bal < 0:
                 continue
             prev = self._platform_balances.get(platform)
             if prev and prev > 0 and bal > 0:
@@ -840,8 +851,16 @@ class RiskEngine:
             self._platform_resync_candidate.pop(platform, None)
             self._platform_balances[platform] = bal
         pooled = sum(self._platform_balances.values())
-        if pooled > 0:
+        # A confirmed zero balance is broker truth and must replace the
+        # configured cold-start placeholder; RiskEngine.assess rejects it.
+        if self._platform_balances:
             self.balance = pooled
+            if first_broker_snapshot:
+                # PnLTracker's fallback denominator must reflect the first
+                # broker-confirmed account balance, not the configured
+                # backtest/cold-start default.
+                self.pnl_tracker.starting_balance = pooled
+                self._has_reconciled_broker_balance = True
 
     def get_platform_balance(self, platform: str) -> float | None:
         """Last-known independent balance for a single platform, if tracked."""

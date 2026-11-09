@@ -144,18 +144,17 @@ class PlatformManager:
 
         # ── MT5: one connector per broker account ────────────────────────
         mt5_configs = _load_mt5_configs()
-        mt5_terminal_path = os.getenv("MT5_TERMINAL_PATH", "").strip() or None
         self.mt5_connectors: list[MT5Connector] = [
             MT5Connector(
                 login=cfg["login"],
                 password=cfg["password"],
                 server=cfg["server"],
+                terminal_path=os.getenv("MT5_TERMINAL_PATH", "").strip() or None,
                 deviation=self.config.risk.max_deviation_points,
                 reject_on_minlot_inflation=self.config.risk.reject_on_minlot_inflation,
                 max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
                 max_slippage_pips=getattr(self.config.risk, "max_slippage_pips", 0.0),
                 min_rr_after_adjust=self.config.risk.min_risk_reward,
-                terminal_path=mt5_terminal_path,
             )
             for cfg in mt5_configs
         ]
@@ -412,6 +411,11 @@ class PlatformManager:
     @property
     def any_connected(self) -> bool:
         return self._mt5_connected or self._deriv_connected
+
+    @property
+    def deriv_connected(self) -> bool:
+        """Whether the Deriv connector is authenticated and available."""
+        return bool(self._deriv_connected)
 
     # ── Routing ──────────────────────────────────────────────────────────
 
@@ -1517,7 +1521,7 @@ class PlatformManager:
                 bal = float(info.balance)
             except (TypeError, ValueError):  # SAFE-FALLBACK: omit account with malformed balance from summary
                 continue
-            if bal >= 0:
+            if math.isfinite(bal) and bal >= 0:
                 balances[key] = bal
         return balances
 
@@ -1834,6 +1838,12 @@ class PlatformManager:
                 snap[key] = tick
             return tick
         return self.get_connector(symbol).get_price(symbol)
+
+    def get_deriv_price(self, symbol: str) -> TickData:
+        """Fetch only from Deriv; never use Platform.BOTH's MT5 preference."""
+        if not self._deriv_connected:
+            raise ConnectionError(f"Deriv not connected for {symbol}")
+        return self.deriv.get_price(symbol)
 
     def get_spread(self, symbol: str) -> float:
         return self.get_connector(symbol).get_spread(symbol)

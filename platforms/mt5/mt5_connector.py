@@ -21,6 +21,9 @@ from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
+from platforms.mt5.clock import (
+    CLOCK_MAX_AGE_SECONDS, MAX_OFFSET_SECONDS, load_mt5_server_clock,
+)
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -149,6 +152,9 @@ class MT5Connector(BaseConnector):
     # ── Connection ───────────────────────────────────────────────────────
 
     def connect(self) -> bool:
+        self._server_clock_state_cache = None
+        self._server_clock_state_cache_at = None
+        self._server_clock_unavailable_warned = False
         if sys_platform.system() != "Windows":
             logger.warning(
                 "MT5 requires Windows. Use Deriv connector on {}", sys_platform.system()
@@ -215,6 +221,9 @@ class MT5Connector(BaseConnector):
             except Exception as exc:
                 logger.warning("MT5 shutdown error: {}", exc)
         self._connected = False
+        self._server_clock_state_cache = None
+        self._server_clock_state_cache_at = None
+        self._server_clock_unavailable_warned = False
         logger.info("MT5 disconnected")
 
     def is_connected(self) -> bool:
@@ -226,6 +235,59 @@ class MT5Connector(BaseConnector):
         except Exception as exc:
             logger.warning("[mt5] health check failed: {}", exc)
             return False
+
+    def _read_server_clock_state(self):
+        """Read a fresh broker-specific offset, caching terminal IPC for one second."""
+        now_mono = _time.monotonic()
+        cached_at = getattr(self, "_server_clock_state_cache_at", None)
+        if cached_at is not None and now_mono - cached_at < 1.0:
+            cached = getattr(self, "_server_clock_state_cache", None)
+            if cached is None:
+                return None
+            if cached.file_age_seconds + (now_mono - cached_at) <= CLOCK_MAX_AGE_SECONDS:
+                return cached
+        try:
+            terminal = mt5.terminal_info()
+            account = mt5.account_info()
+            data_path = getattr(terminal, "data_path", None) if terminal else None
+            server = getattr(account, "server", None) if account else None
+            state = load_mt5_server_clock(
+                data_path, server, now_epoch=_time.time(),
+            )
+        except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
+            state = None
+            logger.debug("[mt5] server-clock metadata read failed: {}", exc)
+        self._server_clock_state_cache = state
+        self._server_clock_state_cache_at = now_mono
+        warned = bool(getattr(self, "_server_clock_unavailable_warned", False))
+        if state is None and not warned:
+            logger.error(
+                "[mt5] broker server clock offset unavailable or stale; install and "
+                "attach scripts/mt5_clock_publisher.mq5 to this terminal. MT5 quotes "
+                "remain rejected until a fresh server-matched offset is published."
+            )
+            self._server_clock_unavailable_warned = True
+        elif state is not None and warned:
+            logger.info(
+                "[mt5] broker server clock verified — server={} UTC offset={:+d}s",
+                state.server, state.offset_seconds,
+            )
+            self._server_clock_unavailable_warned = False
+        return state
+
+    @staticmethod
+    def _tick_server_epoch(tick: Any) -> float:
+        """Use MT5 millisecond precision when available; preserve seconds fallback."""
+        milliseconds = float(getattr(tick, "time_msc", 0) or 0)
+        seconds = float(getattr(tick, "time", 0) or 0)
+        if milliseconds > 0:
+            epoch = milliseconds / 1000.0
+            if seconds > 0 and abs(epoch - seconds) > 1.5:
+                raise RuntimeError(
+                    f"inconsistent MT5 tick time/time_msc fields: {seconds} vs {epoch}"
+                )
+            return epoch
+        return seconds
 
     # ── Account ──────────────────────────────────────────────────────────
 
@@ -664,17 +726,26 @@ class MT5Connector(BaseConnector):
                 f"Non-positive tick for {mapped}: bid={tick.bid}, ask={tick.ask}"
             )
 
-        tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
         if tick.time <= 0:
             logger.warning("Invalid tick timestamp for {}: epoch={}", mapped, tick.time)
             raise RuntimeError(
                 f"Invalid tick timestamp for {mapped}: epoch={tick.time}"
             )
-        age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        clock = self._read_server_clock_state()
+        if clock is None:
+            raise RuntimeError(
+                "MT5 broker server clock offset unavailable; attach "
+                "scripts/mt5_clock_publisher.mq5 to this terminal"
+            )
+        tick_server_epoch = self._tick_server_epoch(tick)
+        age = clock.age_seconds(tick_server_epoch)
         if age < -1.0:
             raise RuntimeError(
-                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of UTC clock"
+                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of broker server clock"
             )
+        tick_time = datetime.fromtimestamp(
+            clock.to_utc_epoch(tick_server_epoch), tz=timezone.utc,
+        )
         if age > self._max_tick_age_seconds:
             now_mono = _time.monotonic()
             # Tests, health probes and recovery paths may construct a connector
@@ -715,6 +786,13 @@ class MT5Connector(BaseConnector):
             if callable(getattr(tick, "_asdict", None))
             else {}
         )
+        raw_fields.setdefault("time", getattr(tick, "time", None))
+        raw_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
+        raw_fields.update({
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": clock.offset_seconds,
+            "timestamp_utc_epoch": clock.to_utc_epoch(tick_server_epoch),
+        })
         return TickData(
             bid=tick.bid,
             ask=tick.ask,
@@ -739,7 +817,7 @@ class MT5Connector(BaseConnector):
         ``max_age_seconds`` (a live session), ``False`` when it is older (⇒ the
         session is closed/halted — e.g. a weekend or holiday), or ``None`` when
         it cannot be determined (not connected, symbol unmapped, no tick, bad
-        timestamp). Callers treat ``None`` as "unknown" and fail OPEN.
+        timestamp). ``None`` means unknown; entry admission must not treat it as fresh.
 
         This is the session-open signal ``trade_mode`` cannot provide: a broker
         leaves ``trade_mode`` at "full" straight through a weekend, so only the
@@ -755,9 +833,12 @@ class MT5Connector(BaseConnector):
             tick = mt5.symbol_info_tick(mapped)
             if tick is None or getattr(tick, "time", 0) <= 0:
                 return None
-            tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
-            age = (datetime.now(timezone.utc) - tick_time).total_seconds()
-            return age <= limit
+            clock = self._read_server_clock_state()
+            if clock is None:
+                return None
+            tick_epoch = self._tick_server_epoch(tick)
+            age = clock.age_seconds(tick_epoch)
+            return -1.0 <= age <= limit
         except Exception as exc:  # noqa: BLE001 — a liveness probe must never raise
             logger.debug("[mt5] has_fresh_tick({}) failed: {}", symbol, exc)
             return None
@@ -778,6 +859,7 @@ class MT5Connector(BaseConnector):
                 f"No OHLCV for {mapped}/{timeframe}: {mt5.last_error()}"
             )
         df = pd.DataFrame(rates)
+        df["time_server_epoch"] = df["time"]
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         # Preserve every broker-provided bar field used by market analysis.
         # "volume" remains a compatibility alias for tick_volume; it is never
@@ -792,7 +874,7 @@ class MT5Connector(BaseConnector):
         if "spread" not in df.columns:
             df["spread"] = 0
         out = df[[
-            "time", "open", "high", "low", "close", "volume",
+            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
             "tick_volume", "real_volume", "spread",
         ]].copy()
         out.attrs["volume_basis"] = "tick_volume_alias_with_real_volume_preserved"
@@ -802,6 +884,18 @@ class MT5Connector(BaseConnector):
         # closed-bar dual-view: structural modules drop it themselves, live
         # observational reads legitimately keep it).
         if not include_forming:
+            clock = self._read_server_clock_state()
+            if clock is None:
+                raise RuntimeError(
+                    "MT5 server clock offset unavailable; completed-bar status "
+                    "cannot be verified without scripts/mt5_clock_publisher.mq5"
+                )
+            # The DataFrame time column is a broker-server wall-clock label until
+            # a historical offset series is available. Compare it to the matching
+            # broker-server clock, never to the host UTC clock.
+            server_now_label = datetime.fromtimestamp(
+                clock.server_now_epoch(), tz=timezone.utc,
+            )
             seconds_by_tf = {
                 "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
                 "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
@@ -811,18 +905,21 @@ class MT5Connector(BaseConnector):
             }
             if timeframe.upper() == "MN1":
                 close_times = out["time"] + pd.offsets.MonthBegin(1)
-                out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+                out = out.loc[close_times <= server_now_label].copy()
             else:
                 duration = seconds_by_tf.get(timeframe.upper())
                 if duration is not None:
                     close_times = out["time"] + pd.to_timedelta(duration, unit="s")
-                    out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+                    out = out.loc[close_times <= server_now_label].copy()
         out.attrs.update({
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "mt5",
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": None,
+            "utc_normalization": "historical_offset_required",
             "volume_basis": out.attrs.get("volume_basis"),
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
@@ -852,9 +949,13 @@ class MT5Connector(BaseConnector):
                 "source": "mt5.copy_rates_range",
                 "source_timestamp_verified": True,
                 "source_symbol": mapped,
+                "source_timezone": "broker_server",
+                "source_utc_offset_seconds": None,
+                "utc_normalization": "historical_offset_required",
                 "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             })
             return frame
+        frame["time_server_epoch"] = frame["time"]
         frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
         if "tick_volume" in frame.columns:
             frame["volume"] = frame["tick_volume"]
@@ -866,7 +967,7 @@ class MT5Connector(BaseConnector):
         if "spread" not in frame.columns:
             frame["spread"] = 0
         columns = [
-            "time", "open", "high", "low", "close", "volume",
+            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
             "tick_volume", "real_volume", "spread",
         ]
         frame = frame[[column for column in columns if column in frame.columns]].copy()
@@ -878,19 +979,35 @@ class MT5Connector(BaseConnector):
                 "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
                 "D1": 86400, "W1": 604800,
             }
-            if timeframe.upper() == "MN1":
-                bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
-                frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
-            else:
-                duration = seconds_by_tf.get(timeframe.upper())
-                if duration is not None:
+            duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400)
+            # A range ending well in the past cannot contain a forming bar. Only
+            # recent ranges need the live server clock to classify the final bar.
+            clock_required_horizon = duration + MAX_OFFSET_SECONDS + 120
+            server_now_label = None
+            if _time.time() - end.timestamp() <= clock_required_horizon:
+                clock = self._read_server_clock_state()
+                if clock is None:
+                    raise RuntimeError(
+                        "MT5 server clock offset unavailable; recent completed-bar status "
+                        "cannot be verified without scripts/mt5_clock_publisher.mq5"
+                    )
+                server_now_label = datetime.fromtimestamp(
+                    clock.server_now_epoch(), tz=timezone.utc,
+                )
+            if server_now_label is not None:
+                if timeframe.upper() == "MN1":
+                    bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
+                    frame = frame.loc[bar_close_times <= server_now_label].copy()
+                else:
                     bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
-                    frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+                    frame = frame.loc[bar_close_times <= server_now_label].copy()
         frame.attrs.update({
             "source": "mt5.copy_rates_range",
             "source_timestamp_verified": True,
             "source_symbol": mapped,
-            "source_timezone": "UTC",
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": None,
+            "utc_normalization": "historical_offset_required",
             "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
@@ -901,7 +1018,9 @@ class MT5Connector(BaseConnector):
     ) -> pd.DataFrame:
         """Fetch the broker's historical tick tape without inventing aggressor flow.
 
-        Datetimes must be timezone-aware; the MT5 request is normalized to UTC.
+        Request bounds must be timezone-aware and are normalized to UTC. Returned
+        epochs are broker-server time; only a short live window is converted to
+        UTC with a fresh publisher offset. Older history remains unnormalized.
         BUY/SELL aggressor flags are exposed only when the broker supplies them.
         """
         self._require_connection()
@@ -924,13 +1043,38 @@ class MT5Connector(BaseConnector):
                 "source": "mt5.copy_ticks_range",
                 "source_verified": True,
                 "source_symbol": mapped,
-                "source_timezone": "UTC",
+                "source_timezone": "broker_server",
+                "source_timestamp_verified": False,
+                "source_utc_offset_seconds": None,
+                "utc_normalization": "historical_offset_required",
             })
             return frame
+        # MT5 tick-history epochs are broker-server wall-clock values. A
+        # short window ending near now can be normalized with the live terminal
+        # offset; arbitrary historical ranges need an offset history and remain
+        # explicitly broker-server time.
+        now_epoch = _time.time()
+        window_age = now_epoch - end.timestamp()
+        recent_window = -5.0 <= window_age <= 120.0 and (end - start).total_seconds() <= 300.0
+        clock = self._read_server_clock_state() if recent_window else None
         if "time" in frame.columns:
-            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+            frame["time_server_epoch"] = frame["time"]
+            if clock is not None:
+                frame["time"] = pd.to_datetime(
+                    frame["time"].astype("float64") - clock.offset_seconds,
+                    unit="s", utc=True,
+                )
+            else:
+                frame["time"] = pd.to_datetime(frame["time"], unit="s")
         if "time_msc" in frame.columns:
-            frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms", utc=True)
+            frame["time_msc_server_epoch"] = frame["time_msc"]
+            if clock is not None:
+                frame["time_msc_datetime"] = pd.to_datetime(
+                    frame["time_msc"].astype("float64") - clock.offset_seconds * 1000,
+                    unit="ms", utc=True,
+                )
+            else:
+                frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms")
         raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
         buy_flag = getattr(mt5, "TICK_FLAG_BUY", 0)
         sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
@@ -943,7 +1087,10 @@ class MT5Connector(BaseConnector):
             "source": "mt5.copy_ticks_range",
             "source_verified": True,
             "source_symbol": mapped,
-            "source_timezone": "UTC",
+            "source_timezone": "UTC" if clock is not None else "broker_server",
+            "source_timestamp_verified": clock is not None,
+            "source_utc_offset_seconds": clock.offset_seconds if clock is not None else None,
+            "utc_normalization": "live_server_offset" if clock is not None else "historical_offset_required",
             "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
         })
         return frame
@@ -1128,14 +1275,23 @@ class MT5Connector(BaseConnector):
                 symbol, direction, lots, sl, tp,
                 f"Invalid tick (bid={tick.bid}, ask={tick.ask}, epoch={tick.time})",
             )
-        tick_age = (
-            datetime.now(timezone.utc)
-            - datetime.fromtimestamp(tick.time, tz=timezone.utc)
-        ).total_seconds()
-        if tick_age > self._max_tick_age_seconds:
+        clock = self._read_server_clock_state()
+        if clock is None:
             return self._fail_order(
                 symbol, direction, lots, sl, tp,
-                f"STALE_TICK: {tick_age:.1f}s old (limit {self._max_tick_age_seconds}s)",
+                "MT5_SERVER_CLOCK_OFFSET_UNAVAILABLE",
+            )
+        try:
+            tick_age = clock.age_seconds(self._tick_server_epoch(tick))
+        except (TypeError, ValueError, RuntimeError):
+            return self._fail_order(
+                symbol, direction, lots, sl, tp, "INVALID_TICK_TIMESTAMP_FIELDS",
+            )
+        if tick_age < -1.0 or tick_age > self._max_tick_age_seconds:
+            return self._fail_order(
+                symbol, direction, lots, sl, tp,
+                f"STALE_OR_FUTURE_TICK: age={tick_age:.1f}s "
+                f"(limit {self._max_tick_age_seconds}s)",
             )
 
         is_buy = direction.upper() in ("BUY", "LONG")
@@ -1537,8 +1693,14 @@ class MT5Connector(BaseConnector):
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
             return fail_pending("pending_order_quote_unavailable")
-        tick_age = (datetime.now(timezone.utc) - datetime.fromtimestamp(tick.time, tz=timezone.utc)).total_seconds()
-        if tick_age < -2.0 or tick_age > self._max_tick_age_seconds:
+        clock = self._read_server_clock_state()
+        if clock is None:
+            return fail_pending("mt5_server_clock_offset_unavailable")
+        try:
+            tick_age = clock.age_seconds(self._tick_server_epoch(tick))
+        except (TypeError, ValueError, RuntimeError):
+            return fail_pending("pending_order_quote_timestamp_invalid")
+        if tick_age < -1.0 or tick_age > self._max_tick_age_seconds:
             return fail_pending("pending_order_quote_stale_or_future")
         if is_buy and kind == "LIMIT" and not entry < tick.ask:
             return fail_pending("buy_limit_must_be_below_ask")

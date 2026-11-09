@@ -1,6 +1,6 @@
 from collections import namedtuple
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -102,6 +102,12 @@ def _connected_connector(monkeypatch):
     monkeypatch.setattr(mt5_module, "mt5", fake)
     connector = MT5Connector()
     connector._connected = True
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=0,
+        age_seconds=lambda epoch: __import__("time").time() - float(epoch),
+        server_now_epoch=lambda: __import__("time").time(),
+        to_utc_epoch=lambda epoch: float(epoch),
+    )
     return connector
 
 
@@ -111,7 +117,7 @@ def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
     frame = connector.get_ohlcv("EURUSD", "M1", count=2)
 
     assert list(frame.columns) == [
-        "time", "open", "high", "low", "close", "volume",
+        "time", "time_server_epoch", "open", "high", "low", "close", "volume",
         "tick_volume", "real_volume", "spread",
     ]
     assert frame["volume"].tolist() == [100, 120]
@@ -119,6 +125,9 @@ def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source_timestamp_verified"] is True
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert "time_server_epoch" in frame.columns
     assert frame.attrs["volume_basis"] == "tick_volume_alias_with_real_volume_preserved"
 
 
@@ -129,6 +138,40 @@ def test_ohlcv_closed_bar_view_drops_only_forming_row(monkeypatch):
 
     assert len(frame) == 1
     assert frame.iloc[0]["tick_volume"] == 100
+
+
+def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    server_now = now + offset
+    mt5_module.mt5.copy_rates_from_pos = lambda *args: [
+        {"time": int(server_now - 120), "open": 1.0, "high": 1.2, "low": 0.9,
+         "close": 1.1, "tick_volume": 10, "real_volume": 0, "spread": 10},
+        {"time": int(server_now - 30), "open": 1.1, "high": 1.3, "low": 1.0,
+         "close": 1.2, "tick_volume": 11, "real_volume": 0, "spread": 10},
+    ]
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: server_now - float(epoch),
+        server_now_epoch=lambda: server_now,
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+
+    frame = connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
+
+    assert frame["time_server_epoch"].tolist() == [int(server_now - 120)]
+    assert frame.attrs["source_timezone"] == "broker_server"
+
+
+def test_recent_completed_bar_read_fails_closed_without_server_clock(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    connector._read_server_clock_state = lambda: None
+
+    with pytest.raises(RuntimeError, match="completed-bar status cannot be verified"):
+        connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
 
 
 def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggressor_flags(monkeypatch):
@@ -145,6 +188,53 @@ def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggress
     assert frame["volume_real"].tolist() == [2.0, 3.0]
     assert frame.attrs["source"] == "mt5.copy_ticks_range"
     assert frame.attrs["source_verified"] is True
+
+
+def test_historical_ticks_remain_unverified_broker_server_time(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    frame = connector.get_ticks(
+        "EURUSD",
+        datetime(2027, 1, 15, tzinfo=timezone.utc),
+        datetime(2027, 1, 16, tzinfo=timezone.utc),
+    )
+
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["source_timestamp_verified"] is False
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert "time_server_epoch" in frame.columns
+    assert frame["time"].dt.tz is None
+
+
+def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    first_server_epoch = now + offset - 10
+    second_server_epoch = now + offset - 9
+    mt5_module.mt5.copy_ticks_range = lambda *args: [
+        {"time": int(first_server_epoch), "time_msc": int(first_server_epoch * 1000),
+         "bid": 1.0, "ask": 1.1, "last": 1.05, "volume": 2,
+         "volume_real": 2.0, "flags": 16},
+        {"time": int(second_server_epoch), "time_msc": int(second_server_epoch * 1000),
+         "bid": 1.1, "ask": 1.2, "last": 1.15, "volume": 3,
+         "volume_real": 3.0, "flags": 32},
+    ]
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: (now + offset) - float(epoch),
+        server_now_epoch=lambda: now + offset,
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+    end = datetime.fromtimestamp(now, timezone.utc)
+    frame = connector.get_ticks("EURUSD", end - timedelta(seconds=10), end)
+
+    assert frame.attrs["source_timezone"] == "UTC"
+    assert frame.attrs["source_timestamp_verified"] is True
+    assert frame.attrs["source_utc_offset_seconds"] == offset
+    assert abs(frame.iloc[0]["time"].timestamp() - (first_server_epoch - offset)) < 1.0
+    assert frame.iloc[0]["time_server_epoch"] == int(first_server_epoch)
 
 
 def test_historical_ticks_reject_naive_datetimes(monkeypatch):
@@ -171,6 +261,8 @@ def test_historical_bar_range_preserves_native_fields(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source"] == "mt5.copy_rates_range"
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
 
 
 def test_broker_profit_and_margin_calculations_use_native_mt5_functions(monkeypatch):
@@ -191,6 +283,35 @@ def test_unregistered_broker_symbol_quote_preserves_raw_tick_and_uses_tick_units
     assert tick.raw_fields["flags"] == 16
     assert tick.raw_fields["volume"] == 3
     assert tick.source_timestamp_verified is True
+
+
+def test_server_clock_tick_is_normalized_to_utc_with_raw_provenance(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    server_epoch = now + offset
+    fake_tick = SimpleNamespace(
+        time=int(server_epoch),
+        time_msc=int(server_epoch * 1000),
+        bid=100.0, ask=100.02, last=100.01,
+        volume=3, volume_real=3.0, flags=16,
+    )
+    mt5_module.mt5.symbol_info_tick = lambda _symbol: fake_tick
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: (now + offset) - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+
+    tick = connector.get_price("BROKER_CUSTOM")
+
+    assert abs(tick.time.timestamp() - now) < 1.0
+    assert tick.raw_fields["time"] == int(server_epoch)
+    assert tick.raw_fields["source_timezone"] == "broker_server"
+    assert tick.raw_fields["source_utc_offset_seconds"] == 7200
+    assert abs(tick.raw_fields["timestamp_utc_epoch"] - now) < 1.0
 
 
 def test_raw_position_and_pending_order_snapshots_preserve_broker_fields(monkeypatch):

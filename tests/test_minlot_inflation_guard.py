@@ -86,6 +86,10 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._not_found_warned = set()
     c._reject_on_minlot_inflation = reject_on_minlot_inflation
     c._mapper = None
+    c._read_server_clock_state = lambda: SimpleNamespace(
+        age_seconds=lambda epoch: time.time() - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch),
+    )
     return c
 
 
@@ -116,6 +120,18 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
         )
     mt5_mock.order_send = MagicMock(side_effect=fake_order_send)
     return mt5_mock, sent
+
+
+def test_market_order_fails_closed_without_verified_server_clock():
+    mt5_mock, _sent = _setup_mt5_mock_market(volume_min=0.01)
+    connector = _make_connector(reject_on_minlot_inflation=False)
+    connector._read_server_clock_state = lambda: None
+
+    result = connector.place_order("EURUSD", "BUY", 0.05, 1.09, 1.11)
+
+    assert result.success is False
+    assert result.error == "MT5_SERVER_CLOCK_OFFSET_UNAVAILABLE"
+    mt5_mock.order_send.assert_not_called()
 
 
 class TestMarketOrderMinlotInflation:

@@ -1474,7 +1474,6 @@ class EventDrivenSystem:
                 from adaptive.adaptive_scheduler import AdaptiveSchedulerLoop
                 self._adaptive_scheduler = AdaptiveSchedulerLoop(
                     tuner_agent=ctx.tuner_agent,
-                    weight_provider=ctx.adaptive_weight_provider,
                     trade_count_provider=lambda: getattr(self, "_closed_trade_count", 0),
                     periodic_interval_seconds=float(
                         getattr(_at_cfg, "periodic_interval_seconds", 900.0)

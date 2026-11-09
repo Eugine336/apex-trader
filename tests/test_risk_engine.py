@@ -540,6 +540,7 @@ def test_reconcile_applies_zero_broker_balance(engine):
     engine.balance = 10_000.0
     engine.reconcile_balance(0.0)
     assert engine.balance == 0.0
+    assert engine.pnl_tracker.starting_balance == 0.0
 
 
 def test_reconcile_ignores_none_and_negative(engine):
@@ -624,3 +625,26 @@ def test_platform_balances_ignore_none_and_negative(engine):
     assert engine.get_platform_balance("mt5") == 100.0
     assert engine.get_platform_balance("deriv") is None
 
+
+
+def test_first_live_platform_balance_replaces_cold_start_default(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": 30.0})
+    assert engine.get_platform_balance("mt5") == 30.0
+    assert engine.balance == 30.0
+    assert engine.pnl_tracker.starting_balance == 30.0
+
+
+def test_confirmed_zero_platform_balance_replaces_cold_start_default(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": 0.0})
+    assert engine.get_platform_balance("mt5") == 0.0
+    assert engine.balance == 0.0
+
+
+def test_non_finite_platform_balances_are_ignored(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": float("nan"), "deriv": float("inf")})
+    assert engine.get_platform_balance("mt5") is None
+    assert engine.get_platform_balance("deriv") is None
+    assert engine.balance == 10_000.0
