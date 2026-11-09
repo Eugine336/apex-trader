@@ -105,13 +105,11 @@ def test_trading_mode_env_requires_symbols_for_selected_mode(monkeypatch):
 
 
 def test_trading_enabled_false_disables_new_origination_only(monkeypatch):
-    from config import CognitionConfig
-
     monkeypatch.setenv("TRADING_ENABLED", "false")
     monkeypatch.setenv("COGNITION_ORIGINATION_MODE", "live")
-    cognition = CognitionConfig()
-    assert cognition.origination_mode == "off"
-    assert cognition.management_mode == "live"
+    config = AppConfig()
+    assert config.cognition.origination_mode == "off"
+    assert config.cognition.management_mode == "live"
 
 
 def test_trading_enabled_true_preserves_configured_origination_mode(monkeypatch):
