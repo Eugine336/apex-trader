@@ -218,6 +218,16 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   source-time-verified reconciliation resolves it. PR #856 passed 4,308 tests on Python 3.11 and 3.12 plus lint.
   News-window management remains DATA-GATED pending a verified economic-calendar feed. Live owner-connected broker
   lifecycle acceptance remains outstanding; simulated event-store restart tests do not substitute for it.
+
+  **Provider-neutral calendar integration:** `SystemContext` now passes its read-only `DataSourceRegistry` to the live
+  `NewsGuard`, which is the same instance consumed by `ComplianceDivision`. If a provider advertises economic-event
+  capability, the guard accepts only COMPLETE records with verified source time, fresh receipt time, publication and
+  revision vintages no later than the check cutoff, source record identity, and explicit event currency/impact. It keeps
+  provider, venue, record ID and timestamps on each normalized `NewsEvent`; any provider error, partial response, stale
+  record or malformed impact fails closed rather than falling back to a different calendar. No economic-event provider
+  is currently registered by the runtime, so the legacy feed remains the active fallback and verified provider
+  acceptance remains DATA-GATED. Deterministic provider, reversed-cutoff cache, and actual
+  SystemContext/ComplianceDivision wiring tests pass.
 - **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
   reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
   UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain

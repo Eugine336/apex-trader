@@ -433,7 +433,7 @@ class SystemContext:
         # ── NewsGuard ───────────────────────────────────────────────
         try:
             from brain.session_engine import NewsGuard as _NewsGuard
-            ctx.news_guard = _NewsGuard()
+            ctx.news_guard = _NewsGuard(data_source_registry=ctx.data_source_registry)
         except Exception as exc:
             logger.warning("[SystemContext] NewsGuard init failed: {}", exc)
 

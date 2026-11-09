@@ -6,6 +6,7 @@ or right before a news bomb drops.
 """
 
 import threading
+import math
 
 import pandas as pd
 from datetime import datetime, time, timezone
@@ -32,6 +33,12 @@ class NewsEvent:
     time_utc: datetime
     minutes_away: int
     direction: str    # "BEFORE", "AFTER", "NOW"
+    provider: Optional[str] = None
+    venue: Optional[str] = None
+    source_record_id: Optional[str] = None
+    source_timestamp_epoch: Optional[float] = None
+    publication_timestamp_epoch: Optional[float] = None
+    revision_timestamp_epoch: Optional[float] = None
 
 
 @dataclass
@@ -344,9 +351,16 @@ class NewsGuard:
         "safe haven", "safe-haven", "debt ceiling", "default",
     }
 
-    def __init__(self, pause_before: int = 15, pause_after: int = 5):
+    def __init__(
+        self,
+        pause_before: int = 15,
+        pause_after: int = 5,
+        *,
+        data_source_registry=None,
+    ):
         self.pause_before = pause_before
         self.pause_after = pause_after
+        self._data_source_registry = data_source_registry
         self._cache = []
         self._cache_time = None
         # Serializes the freshness-check + network fetch + cache update so
@@ -525,9 +539,31 @@ class NewsGuard:
         no cache exists so callers can fail closed.
         """
         # Return cached events if fresh (< 30 min old)
-        if (self._cache_time and
-            (utc_now - self._cache_time).total_seconds() < 1800):
+        cache_age = (
+            (utc_now - self._cache_time).total_seconds()
+            if self._cache_time is not None else None
+        )
+        if cache_age is not None and 0 <= cache_age < 1800:
             return self._cache
+
+        provider_available = self._has_economic_event_provider()
+        if provider_available is None:
+            self._cache = []
+            self._cache_time = None
+            return None
+        registry_events = self._fetch_registry_events(utc_now, provider_available)
+        if registry_events is not None:
+            self._cache = registry_events
+            self._cache_time = utc_now
+            return registry_events
+
+        if provider_available:
+            # A configured provider is authoritative for this run. A partial,
+            # stale, malformed, or failed response must not silently fall back
+            # to a different calendar whose coverage and provenance differ.
+            self._cache = []
+            self._cache_time = None
+            return None
 
         try:
             import feedparser
@@ -592,4 +628,103 @@ class NewsGuard:
             logger.error(
                 "NEWS FEED DOWN with no cache — trading will be blocked until feed recovers"
             )
+            return None
+
+    def _has_economic_event_provider(self) -> Optional[bool]:
+        registry = self._data_source_registry
+        if registry is None:
+            return False
+        try:
+            from data_sources import ObservationKind
+
+            return any(
+                capability.capability is ObservationKind.ECONOMIC_EVENT
+                for capability in registry.capabilities()
+            )
+        except Exception as exc:  # noqa: BLE001 — uncertain provider configuration is not safe to ignore
+            logger.warning("Economic calendar capability lookup failed: {}", type(exc).__name__)
+            return None
+
+    def _fetch_registry_events(
+        self, utc_now: datetime, provider_available: bool,
+    ) -> Optional[list[NewsEvent]]:
+        """Read only complete, source-attributed, point-in-time calendar events."""
+        registry = self._data_source_registry
+        if registry is None or not provider_available:
+            return None
+
+        from data_sources import Completeness, DataObservation, ObservationKind
+
+        cutoff = utc_now.timestamp()
+        try:
+            capabilities = [
+                capability for capability in registry.capabilities()
+                if capability.capability is ObservationKind.ECONOMIC_EVENT
+            ]
+            if not capabilities or any(
+                capability.completeness is not Completeness.COMPLETE
+                for capability in capabilities
+            ):
+                return None
+            if callable(getattr(registry, "fetch_with_status", None)):
+                observations, errors = registry.fetch_with_status(ObservationKind.ECONOMIC_EVENT)
+                if errors:
+                    logger.warning("Economic calendar provider errors: {}", sorted(errors))
+                    return None
+            else:
+                observations = registry.fetch(ObservationKind.ECONOMIC_EVENT)
+            if not observations:
+                return None
+
+            events = []
+            for observation in observations:
+                if not isinstance(observation, DataObservation):
+                    return None
+                provenance = observation.provenance
+                values = observation.values
+                source_epoch = provenance.source_timestamp_epoch
+                received_epoch = provenance.received_timestamp_epoch
+                published_epoch = provenance.publication_timestamp_epoch
+                revision_epoch = provenance.revision_timestamp_epoch
+                try:
+                    event_epoch = float(values.get("event_time_epoch"))
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if not math.isfinite(event_epoch) or event_epoch <= 0:
+                    return None
+                if (
+                    provenance.kind is not ObservationKind.ECONOMIC_EVENT
+                    or provenance.completeness is not Completeness.COMPLETE
+                    or provenance.source_timestamp_verified is not True
+                    or source_epoch is None or source_epoch > cutoff
+                    or received_epoch > cutoff or cutoff - received_epoch > 1800
+                    or published_epoch is None or published_epoch > cutoff
+                    or (revision_epoch is not None and revision_epoch > cutoff)
+                    or not provenance.source_record_id
+                ):
+                    return None
+                currency = str(values.get("currency") or "").strip().upper()
+                title = str(values.get("title") or "").strip()
+                impact = str(values.get("impact", values.get("importance", ""))).strip().upper()
+                if not currency or not title or impact not in {"HIGH", "MEDIUM", "LOW"}:
+                    return None
+                event_time = datetime.fromtimestamp(event_epoch, tz=timezone.utc)
+                minutes_away = int((event_time - utc_now).total_seconds() / 60)
+                events.append(NewsEvent(
+                    title=title,
+                    currency=currency,
+                    impact=impact,
+                    time_utc=event_time,
+                    minutes_away=minutes_away,
+                    direction="BEFORE" if minutes_away >= 0 else "AFTER",
+                    provider=provenance.source.provider,
+                    venue=provenance.source.venue,
+                    source_record_id=provenance.source_record_id,
+                    source_timestamp_epoch=source_epoch,
+                    publication_timestamp_epoch=published_epoch,
+                    revision_timestamp_epoch=revision_epoch,
+                ))
+            return events
+        except Exception as exc:  # noqa: BLE001 — configured provider failures fail closed
+            logger.warning("Economic calendar observation unavailable: {}", type(exc).__name__)
             return None
