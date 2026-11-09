@@ -137,7 +137,7 @@ def _run_poller(cls, px):
 
 
 def test_mt5_poller_routes_ticks_from_prices():
-    router, pm = _run_poller(tick_sources.MT5TickPoller, _Px(1.2345, 1.2347))
+    router, _pm = _run_poller(tick_sources.MT5TickPoller, _Px(1.2345, 1.2347))
     assert router.ticks, "poller should route at least one tick"
     assert router.ticks[0].symbol == "EURUSD"
     assert router.ticks[0].source == "mt5"
