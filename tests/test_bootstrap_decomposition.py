@@ -303,7 +303,7 @@ def test_tick_eval_loop_runs_evaluator_and_profiles():
 
 
 def test_tick_pollers_do_not_promote_unattested_provider_timestamps():
-    router = _run_poller(
+    router, _pm = _run_poller(
         tick_sources.MT5TickPoller,
         _Px(1.2345, 1.2347, source_timestamp_verified=False),
     )
@@ -313,7 +313,7 @@ def test_tick_pollers_do_not_promote_unattested_provider_timestamps():
 
 
 def test_tick_poller_rejects_missing_provider_symbol():
-    router = _run_poller(
+    router, _pm = _run_poller(
         tick_sources.MT5TickPoller,
         _Px(1.2345, 1.2347, symbol=""),
     )
