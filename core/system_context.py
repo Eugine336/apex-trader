@@ -225,6 +225,14 @@ class SystemContext:
     # restarted with a clean init.
     _safety_degraded_subsystems: list = field(default_factory=list)
 
+    def _apply_safety_degradation_to_loop(self) -> None:
+        """Trip the cognition loop's new-exposure breaker for retained failures."""
+        if not self.safety_degraded:
+            return
+        loop = getattr(self, "cognition_loop", None)
+        if loop is not None:
+            loop.broker_book_verified = False
+
     def _mark_safety_degraded(self, name: str) -> None:
         """Record a safety failure and trip the live new-exposure circuit breaker."""
         if name not in self._safety_degraded_subsystems:
@@ -233,9 +241,7 @@ class SystemContext:
         # broker-book admission gate is the authoritative new-exposure breaker;
         # trip it whenever a critical subsystem fails, while leaving observation
         # and existing-position management available.
-        loop = getattr(self, "cognition_loop", None)
-        if loop is not None:
-            loop.broker_book_verified = False
+        self._apply_safety_degradation_to_loop()
 
     @property
     def safety_degraded(self) -> bool:
@@ -1735,10 +1741,9 @@ class SystemContext:
                         if cog_cfg is not None else 0.6
                     ),
                 )
-                if ctx.safety_degraded:
-                    # Critical subsystems can fail before CognitionLoop exists.
-                    # Carry those failures into its new-exposure circuit breaker.
-                    ctx.cognition_loop.broker_book_verified = False
+                # Critical subsystems can fail before CognitionLoop exists.
+                # Carry retained failures into its new-exposure circuit breaker.
+                ctx._apply_safety_degradation_to_loop()
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
                     ctx.cognitive_brain,
