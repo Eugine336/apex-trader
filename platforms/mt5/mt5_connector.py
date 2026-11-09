@@ -21,7 +21,9 @@ from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
-from platforms.mt5.clock import CLOCK_MAX_AGE_SECONDS, load_mt5_server_clock
+from platforms.mt5.clock import (
+    CLOCK_MAX_AGE_SECONDS, MAX_OFFSET_SECONDS, load_mt5_server_clock,
+)
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -972,7 +974,7 @@ class MT5Connector(BaseConnector):
             duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400 if timeframe.upper() == "MN1" else 86400)
             # A range ending well in the past cannot contain a forming bar. Only
             # recent ranges need the live server clock to classify the final bar.
-            clock_required_horizon = duration + 14 * 3600 + 120
+            clock_required_horizon = duration + MAX_OFFSET_SECONDS + 120
             server_now_label = None
             if _time.time() - end.timestamp() <= clock_required_horizon:
                 clock = self._read_server_clock_state()
