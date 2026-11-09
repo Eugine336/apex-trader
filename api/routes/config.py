@@ -31,6 +31,8 @@ def _owner_limits_audit(data: dict[str, Any], effective: AppConfig) -> dict[str,
         "max_daily_drawdown_pct": "daily_loss_limit_pct",
         "max_open_trades": "max_open_positions",
     }
+
+
     sources: dict[str, str] = {}
     for field in effective.owner_limits.to_owner_dict():
         if field in nested:
@@ -46,6 +48,16 @@ def _owner_limits_audit(data: dict[str, Any], effective: AppConfig) -> dict[str,
         "validation_status": "valid",
         "source_by_field": sources,
     }
+
+
+@router.get("/audit")
+async def owner_limit_audit(
+    limit: int = 100,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    """Return this authenticated user's persisted owner-limit change history."""
+    return {"entries": db.list_owner_limit_audit(int(user["id"]), limit=limit)}
 
 
 @router.get("", response_model=TradingConfig)
@@ -134,8 +146,34 @@ async def update_trading_config(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    previous_config = AppConfig()
+    try:
+        apply_user_overrides(previous_config, current)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="stored trading config must be repaired before updating") from exc
+
+    before_limits = previous_config.owner_limits.to_owner_dict()
+    after_limits = validation_config.owner_limits.to_owner_dict()
+    changed_owner_fields = [
+        field for field in after_limits
+        if before_limits.get(field) != after_limits[field]
+    ]
+
     current.update(updates)
-    db.set_user_config(int(user["id"]), json.dumps(current))
+    if changed_owner_fields:
+        try:
+            db.set_user_config_with_owner_audit(
+                int(user["id"]),
+                json.dumps(current),
+                expected_config_json=raw,
+                before_limits=before_limits,
+                after_limits=after_limits,
+                changed_fields=changed_owner_fields,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
+        db.set_user_config(int(user["id"]), json.dumps(current))
 
     # Legacy response aliases are computed from the validated canonical object;
     # they are never persisted as competing configuration sources.

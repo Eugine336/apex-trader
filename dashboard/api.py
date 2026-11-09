@@ -37,6 +37,7 @@ _MUTATING_PATHS = {
     "/api/control/resume",
     "/api/control/emergency-close",
 }
+_AUTH_REQUIRED_READ_PATHS = {"/api/control/audit"}
 
 
 def _is_mutating_request(path: str) -> bool:
@@ -143,6 +144,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
             return await call_next(request)
 
         if not _API_KEY:
+            if path in _AUTH_REQUIRED_READ_PATHS:
+                return JSONResponse(
+                    {"error": "Authenticated audit access disabled — set DD_DASHBOARD_API_KEY"},
+                    status_code=503,
+                )
             if _is_mutating_request(path) and request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 return JSONResponse(
                     {"error": "Mutating endpoints disabled — set DD_DASHBOARD_API_KEY"},
@@ -378,6 +384,10 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     @app.post("/api/control/emergency-close")
     def emergency_close():
         return _state.emergency_close_all()
+
+    @app.get("/api/control/audit")
+    def control_audit(limit: int = 100):
+        return _state.get_control_audit(limit=min(max(limit, 1), 500))
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

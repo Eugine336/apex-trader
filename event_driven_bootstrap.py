@@ -2288,6 +2288,13 @@ class EventDrivenSystem:
         """
         def _sink(origination: Any) -> bool:
             try:
+                if self._paused:
+                    logger.info(
+                        "[origination-sink] {} {} suppressed — operator pause is active",
+                        getattr(origination, "symbol", ""),
+                        getattr(origination, "direction", ""),
+                    )
+                    return False
                 symbol = str(getattr(origination, "symbol", "") or "")
                 direction = str(getattr(origination, "direction", "") or "").upper()
                 sl = getattr(origination, "sl", None)

@@ -233,6 +233,31 @@ def test_owner_limit_settings_are_isolated_between_api_users(client):
     assert second["owner_limits"]["risk_per_trade_pct"] == 0.75
 
 
+def test_owner_limit_changes_are_durable_audited_and_scoped_to_the_authenticated_user(client):
+    first_token = _register(client, "audit-first@example.com").json()["access_token"]
+    second_token = _register(client, "audit-second@example.com").json()["access_token"]
+    first_headers = _auth_header(first_token)
+    second_headers = _auth_header(second_token)
+
+    saved = client.put(
+        "/api/config",
+        headers=first_headers,
+        json={"owner_limits": {"risk_per_trade_pct": 0.5, "max_open_positions": 4}},
+    )
+    assert saved.status_code == 200
+    assert client.get("/api/config/audit").status_code == 401
+
+    first_audit = client.get("/api/config/audit", headers=first_headers).json()["entries"]
+    second_audit = client.get("/api/config/audit", headers=second_headers).json()["entries"]
+    assert len(first_audit) == 1
+    assert first_audit[0]["action"] == "owner_limits.updated"
+    assert first_audit[0]["before"]["risk_per_trade_pct"] == 0.75
+    assert first_audit[0]["after"]["risk_per_trade_pct"] == 0.5
+    assert set(first_audit[0]["changed_fields"]) == {"risk_per_trade_pct", "max_open_positions"}
+    assert first_audit[0]["actor_user_id"] == first_audit[0]["subject_user_id"]
+    assert second_audit == []
+
+
 def test_config_rejects_invalid_owner_limits_without_persisting(client):
     token = _register(client).json()["access_token"]
     h = _auth_header(token)

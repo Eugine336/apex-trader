@@ -272,9 +272,10 @@ def main() -> None:
                     return
                 from event_driven_bootstrap import EventDrivenSystem
                 ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
-                ed_system.start()
+                # Restore durable dashboard pause/freeze state before any
+                # event-driven threads can evaluate or submit new exposure.
+                state.start_event_driven_system(ed_system)
                 engine_holder["ed_system"] = ed_system
-                state.set_event_driven_system(ed_system)
                 logger.info("Event-driven system started in dashboard mode")
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[dashboard] trading-engine boot failed: {}", exc)

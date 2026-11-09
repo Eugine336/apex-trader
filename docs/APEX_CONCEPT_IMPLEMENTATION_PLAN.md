@@ -264,6 +264,15 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   risk-management legacy views. The repository-wide broker mutation route audit passes. Final production acceptance still
   requires an owner-connected account trace. Do not edit `.env` or migrate deployed values.
 
+  **Continuation implementation:** owner-limit edits now commit to SQLite atomically with an append-only before/after
+  audit row and stale-write conflict check. `GET /api/config/audit` is authenticated and returns only the caller's own
+  records. Dashboard pause/resume and manual FROZEN controls persist in a local SQLite control store with an authenticated
+  audit endpoint. On startup the stored pause is restored before event-driven threads start, and the actual Brain
+  origination sink checks the pause flag before shared execution submission; protective position management and the
+  emergency-close path remain available. Deterministic tests cover restart restoration, fail-closed restoration when a
+  freeze guard is missing, no-credential authorization, audit isolation, stale-write rejection and the Brain-to-executor
+  pause gate. Focused validation passed 79 tests. This does not establish the required owner-connected account trace.
+
   Current generated coverage: 79 analytical methods = 56 FULL, 23 DATA-GATED, 0 MEASURED, 0 UNMEASURED; 38 strategy
   lenses = 20 FULL, 18 DATA-GATED, 0 MEASURED, 0 UNMEASURED. All 79/38 are classified and their registered Brain
   call paths are statically audited. DATA-GATED means a reader/assessment exists but its named feed or contract
