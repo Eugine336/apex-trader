@@ -226,9 +226,16 @@ class SystemContext:
     _safety_degraded_subsystems: list = field(default_factory=list)
 
     def _mark_safety_degraded(self, name: str) -> None:
-        """Record that a CRITICAL safety subsystem failed to initialise."""
+        """Record a safety failure and trip the live new-exposure circuit breaker."""
         if name not in self._safety_degraded_subsystems:
             self._safety_degraded_subsystems.append(name)
+        # Safety degradation is not merely a status flag. The cognition loop's
+        # broker-book admission gate is the authoritative new-exposure breaker;
+        # trip it whenever a critical subsystem fails, while leaving observation
+        # and existing-position management available.
+        loop = getattr(self, "cognition_loop", None)
+        if loop is not None:
+            loop.broker_book_verified = False
 
     @property
     def safety_degraded(self) -> bool:
@@ -1728,6 +1735,10 @@ class SystemContext:
                         if cog_cfg is not None else 0.6
                     ),
                 )
+                if ctx.safety_degraded:
+                    # Critical subsystems can fail before CognitionLoop exists.
+                    # Carry those failures into its new-exposure circuit breaker.
+                    ctx.cognition_loop.broker_book_verified = False
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
                     ctx.cognitive_brain,
