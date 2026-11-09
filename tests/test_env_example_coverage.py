@@ -12,6 +12,8 @@ READ_PATTERNS = (
     re.compile(r"\bos\.environ\.get\(\s*['\"]([A-Z][A-Z0-9_]*)['\"]"),
     re.compile(r"\bos\.environ\[\s*['\"]([A-Z][A-Z0-9_]*)['\"]\s*\]"),
     re.compile(r"\bgetenv\(\s*['\"]([A-Z][A-Z0-9_]*)['\"]"),
+    # Typed environment helpers hide the underlying os.getenv call.
+    re.compile(r"\b(?:_llm_env_bool|_env_bool|_env_int|_env|env_bool)\(\s*['\"]([A-Z][A-Z0-9_]*)['\"]"),
 )
 SKIP_PARTS = {
     ".git", ".venv", "venv", "__pycache__", "node_modules",
@@ -42,10 +44,10 @@ def test_every_runtime_environment_read_is_documented_in_env_example():
         # Config dataclasses use a tuple of (environment-name, attribute)
         # pairs followed by os.getenv(env_name); capture those literal names too.
         for mapping in re.finditer(
-            r"for\\s+env_name\\s*,\\s*attr\\s+in\\s*\\(([\\s\\S]*?)\\)\\s*:",
+            r"for\s+env_name\s*,\s*attr\s+in\s*\(([\s\S]*?)\)\s*:",
             source,
         ):
-            for name in re.findall(r"['\\\"]([A-Z][A-Z0-9_]*)['\\\"]", mapping.group(1)):
+            for name in re.findall(r"['\"]([A-Z][A-Z0-9_]*)['\"]", mapping.group(1)):
                 reads.setdefault(name, []).append(str(path.relative_to(ROOT)))
 
     missing = sorted(set(reads) - declared)
