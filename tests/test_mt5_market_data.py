@@ -140,6 +140,32 @@ def test_ohlcv_closed_bar_view_drops_only_forming_row(monkeypatch):
     assert frame.iloc[0]["tick_volume"] == 100
 
 
+def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    server_now = now + offset
+    mt5_module.mt5.copy_rates_from_pos = lambda *args: [
+        {"time": int(server_now - 120), "open": 1.0, "high": 1.2, "low": 0.9,
+         "close": 1.1, "tick_volume": 10, "real_volume": 0, "spread": 10},
+        {"time": int(server_now - 30), "open": 1.1, "high": 1.3, "low": 1.0,
+         "close": 1.2, "tick_volume": 11, "real_volume": 0, "spread": 10},
+    ]
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: server_now - float(epoch),
+        server_now_epoch=lambda: server_now,
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+
+    frame = connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
+
+    assert frame["time_server_epoch"].tolist() == [int(server_now - 120)]
+    assert frame.attrs["source_timezone"] == "broker_server"
+
+
 def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggressor_flags(monkeypatch):
     connector = _connected_connector(monkeypatch)
 
