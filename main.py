@@ -228,8 +228,8 @@ def main() -> None:
             else:
                 risk_engine.reconcile_platform_balances(live_balances)
                 logger.info(
-                    "[startup] broker capital reconciled — platforms={} pooled_balance=$" + "{:,.2f}",
-                    sorted(live_balances), risk_engine.balance,
+                    "[startup] broker capital reconciled — platforms={} pooled_balance={}",
+                    sorted(live_balances), f"${risk_engine.balance:,.2f}",
                 )
         except Exception as exc:  # noqa: BLE001 — missing capital truth must fail closed
             logger.critical("[startup] broker balance reconciliation failed — new exposure blocked: {}", exc)
