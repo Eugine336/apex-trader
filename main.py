@@ -210,6 +210,37 @@ def main() -> None:
         logger.info("Connecting to platforms…")
         connection_status = platform_manager.connect_all()
 
+        # RiskEngine is constructed before broker connections, so its initial
+        # configured balance is only a cold-start placeholder. Replace it with
+        # independently sourced broker balances before any trading subsystem is
+        # created. Missing account truth is a safety degradation, not permission
+        # to size against the backtest default.
+        try:
+            risk_engine = getattr(sys_ctx, "risk_engine", None)
+            live_balances = platform_manager.get_balances_by_platform()
+            if risk_engine is None or not live_balances:
+                reason = (
+                    "RiskEngine unavailable" if risk_engine is None
+                    else "connected broker account balances unavailable"
+                )
+                logger.critical("[startup] {} — new exposure remains blocked", reason)
+                sys_ctx._mark_safety_degraded("BrokerAccountBalanceUnavailable")
+            else:
+                risk_engine.reconcile_platform_balances(live_balances)
+                logger.info(
+                    "[startup] broker capital reconciled — platforms={} pooled_balance={}",
+                    sorted(live_balances), f"${risk_engine.balance:,.2f}",
+                )
+        except Exception as exc:  # noqa: BLE001 — missing capital truth must fail closed
+            logger.critical("[startup] broker balance reconciliation failed — new exposure blocked: {}", exc)
+            try:
+                sys_ctx._mark_safety_degraded("BrokerAccountBalanceUnavailable")
+            except Exception as mark_exc:  # noqa: BLE001 — preserve the original startup failure
+                logger.critical(
+                    "[startup] failed to persist broker-balance safety degradation: {}",
+                    mark_exc,
+                )
+
         try:
             from risk.spread_bootstrap import bootstrap_spreads
             if connection_status.get("mt5") or connection_status.get("deriv"):
