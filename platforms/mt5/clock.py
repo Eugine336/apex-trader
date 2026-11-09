@@ -179,7 +179,7 @@ def _query_https_time(url: str) -> NTPClockSample | None:
 
 def query_ntp_sources() -> tuple[NTPClockSample, ...]:
     """Collect independent network UTC observations without host wall time."""
-    jobs = [( _query_ntp, host) for host in NTP_SERVERS]
+    jobs = [(_query_ntp, host) for host in NTP_SERVERS]
     with ThreadPoolExecutor(max_workers=5) as pool:
         ntp = tuple(x for x in pool.map(lambda pair: pair[0](pair[1]), jobs) if x is not None)
         if len(ntp) >= NTP_MIN_SOURCES:
@@ -196,6 +196,7 @@ def estimate_mt5_server_clock(
     tick_observed_monotonic: float,
     *,
     ntp_samples: Iterable[NTPClockSample] | None = None,
+    tick_precision_seconds: float = 0.5,
 ) -> MT5ServerClockState | None:
     """Estimate the broker offset from an advancing terminal tick and NTP UTC."""
     if not str(server or "").strip():
@@ -207,7 +208,10 @@ def estimate_mt5_server_clock(
         return None
     if tick_epoch <= 0:
         return None
-    samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
+    raw_samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
+    samples = tuple({sample.server: sample for sample in raw_samples}.values())
+    if len(samples) < NTP_MIN_SOURCES:
+        return None
     estimates = [
         (tick_epoch - (sample.utc_epoch + tick_mono - sample.monotonic_epoch), sample)
         for sample in samples
@@ -218,7 +222,14 @@ def estimate_mt5_server_clock(
     middle = len(ordered) // 2
     median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
     spread = max(abs(value - median) for value in ordered)
-    uncertainty = max(sample.uncertainty_seconds for _, sample in estimates) + spread + 0.15
+    try:
+        tick_precision = max(0.0, float(tick_precision_seconds))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    uncertainty = (
+        max(sample.uncertainty_seconds for _, sample in estimates)
+        + spread + tick_precision / 2.0 + 0.15
+    )
     if not (MIN_OFFSET_SECONDS <= median <= MAX_OFFSET_SECONDS):
         return None
     if spread > 1.25 or uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
