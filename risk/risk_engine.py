@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from typing import Any, Optional
 
 from loguru import logger
@@ -812,7 +813,7 @@ class RiskEngine:
                 bal = float(raw)
             except (TypeError, ValueError):  # SAFE-FALLBACK: ignore malformed optional platform balance
                 continue
-            if bal < 0:
+            if not math.isfinite(bal) or bal < 0:
                 continue
             prev = self._platform_balances.get(platform)
             if prev and prev > 0 and bal > 0:
