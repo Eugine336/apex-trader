@@ -166,6 +166,14 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
     assert frame.attrs["source_timezone"] == "broker_server"
 
 
+def test_recent_completed_bar_read_fails_closed_without_server_clock(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    connector._read_server_clock_state = lambda: None
+
+    with pytest.raises(RuntimeError, match="completed-bar status cannot be verified"):
+        connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
+
+
 def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggressor_flags(monkeypatch):
     connector = _connected_connector(monkeypatch)
 
