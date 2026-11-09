@@ -14,6 +14,9 @@ def test_agent_instructions_bind_constitution_and_delivery_contract():
     assert "The CognitiveBrain is the sole market decision authority" in agents
     assert "real repository `.env` is strictly off-limits" in agents
     assert "No live broker order placement" in agents
+    assert (ROOT / "CLAUDE.md").exists()
+    assert (ROOT / ".github" / "copilot-instructions.md").exists()
+    assert (ROOT / ".cursor" / "rules" / "apex-engineering.mdc").exists()
 
 
 def test_delivery_contract_distinguishes_implementation_from_acceptance():
