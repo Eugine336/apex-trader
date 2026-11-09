@@ -235,8 +235,11 @@ def main() -> None:
             logger.critical("[startup] broker balance reconciliation failed — new exposure blocked: {}", exc)
             try:
                 sys_ctx._mark_safety_degraded("BrokerAccountBalanceUnavailable")
-            except Exception:
-                pass
+            except Exception as mark_exc:  # noqa: BLE001 — preserve the original startup failure
+                logger.critical(
+                    "[startup] failed to persist broker-balance safety degradation: {}",
+                    mark_exc,
+                )
 
         try:
             from risk.spread_bootstrap import bootstrap_spreads
