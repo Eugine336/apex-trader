@@ -104,6 +104,7 @@ def _connected_connector(monkeypatch):
     connector._connected = True
     connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=0,
+        uncertainty_seconds=0.0,
         age_seconds=lambda epoch: __import__("time").time() - float(epoch),
         server_now_epoch=lambda: __import__("time").time(),
         to_utc_epoch=lambda epoch: float(epoch),
@@ -155,6 +156,7 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
     ]
     connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
+        uncertainty_seconds=0.0,
         age_seconds=lambda epoch: server_now - float(epoch),
         server_now_epoch=lambda: server_now,
         to_utc_epoch=lambda epoch: float(epoch) - offset,
@@ -225,6 +227,8 @@ def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
         offset_seconds=offset,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         server_now_epoch=lambda: now + offset,
+        observed_gmt_epoch=now,
+        observed_monotonic=__import__("time").monotonic(),
         to_utc_epoch=lambda epoch: float(epoch) - offset,
     )
     end = datetime.fromtimestamp(now, timezone.utc)
@@ -303,6 +307,7 @@ def test_server_clock_tick_is_normalized_to_utc_with_raw_provenance(monkeypatch)
         offset_seconds=offset,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch) - offset,
+        sources=(),
     )
 
     tick = connector.get_price("BROKER_CUSTOM")
