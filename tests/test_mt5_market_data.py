@@ -108,6 +108,7 @@ def _connected_connector(monkeypatch):
         age_seconds=lambda epoch: __import__("time").time() - float(epoch),
         server_now_epoch=lambda: __import__("time").time(),
         to_utc_epoch=lambda epoch: float(epoch),
+        sources=(),
     )
     return connector
 
@@ -160,6 +161,7 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
         age_seconds=lambda epoch: server_now - float(epoch),
         server_now_epoch=lambda: server_now,
         to_utc_epoch=lambda epoch: float(epoch) - offset,
+        sources=(),
     )
 
     frame = connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
@@ -231,6 +233,7 @@ def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
         observed_gmt_epoch=now,
         observed_monotonic=__import__("time").monotonic(),
         to_utc_epoch=lambda epoch: float(epoch) - offset,
+        sources=(),
     )
     end = datetime.fromtimestamp(now, timezone.utc)
     frame = connector.get_ticks("EURUSD", end - timedelta(seconds=10), end)
