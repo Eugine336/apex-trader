@@ -411,6 +411,11 @@ class PlatformManager:
     def any_connected(self) -> bool:
         return self._mt5_connected or self._deriv_connected
 
+    @property
+    def deriv_connected(self) -> bool:
+        """Whether the Deriv connector is authenticated and available."""
+        return bool(self._deriv_connected)
+
     # ── Routing ──────────────────────────────────────────────────────────
 
     def get_connector(self, symbol: str) -> BaseConnector:
@@ -1832,6 +1837,12 @@ class PlatformManager:
                 snap[key] = tick
             return tick
         return self.get_connector(symbol).get_price(symbol)
+
+    def get_deriv_price(self, symbol: str) -> TickData:
+        """Fetch only from Deriv; never use Platform.BOTH's MT5 preference."""
+        if not self._deriv_connected:
+            raise ConnectionError(f"Deriv not connected for {symbol}")
+        return self.deriv.get_price(symbol)
 
     def get_spread(self, symbol: str) -> float:
         return self.get_connector(symbol).get_spread(symbol)
