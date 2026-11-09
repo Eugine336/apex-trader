@@ -38,6 +38,16 @@ disable reconciliation, existing-position management, or risk-reducing closes.
 the Brain's evidence, opportunity, expected-value, owner-limit, portfolio,
 broker-feasibility, and execution gates remain mandatory.
 
+## Gold Desk observer
+
+| Variable | Accepted values | Effect |
+|---|---|---|
+| `APEX_GOLD_DESK_SHADOW_ENABLED` | boolean | Enables the read-only Gold Desk market observer |
+| `APEX_GOLD_DESK_VENUE` | `MT5`, `DERIV`, `AUTO` | Selects a fixed feed or follows PlatformManager's per-symbol route |
+
+The Gold Desk observer emits factual evidence only. It has no independent order
+submission path; the Brain remains the decision authority.
+
 ## Configuration ownership
 
 - `.env.example` is the documented deployment/environment interface.
