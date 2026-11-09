@@ -53,6 +53,7 @@ def _make_mt5(max_tick_age_seconds=120.0):
             uncertainty_seconds=0.0,
             age_seconds=lambda epoch: _time.time() - float(epoch),
             to_utc_epoch=lambda epoch: float(epoch),
+            sources=(),
         )
     return c, mock_mt5
 
@@ -214,6 +215,7 @@ class TestMT5ConfigurableAge:
                 uncertainty_seconds=0.0,
                 age_seconds=lambda epoch: _time.time() - float(epoch),
                 to_utc_epoch=lambda epoch: float(epoch),
+                sources=(),
             )
         old_epoch = _now_epoch() - 30
         mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick(epoch=old_epoch)
