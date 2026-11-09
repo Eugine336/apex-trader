@@ -125,6 +125,9 @@ def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source_timestamp_verified"] is True
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert "time_server_epoch" in frame.columns
     assert frame.attrs["volume_basis"] == "tick_volume_alias_with_real_volume_preserved"
 
 
@@ -224,6 +227,8 @@ def test_historical_bar_range_preserves_native_fields(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source"] == "mt5.copy_rates_range"
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
 
 
 def test_broker_profit_and_margin_calculations_use_native_mt5_functions(monkeypatch):
