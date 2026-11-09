@@ -1165,14 +1165,15 @@ class EventDrivenSystem:
         # structured hypotheses to EventBus. It has no order/execution API and
         # never bypasses the campaign, portfolio, or execution risk path.
         self._market_observer = None
-        _gold_shadow_enabled = (os.getenv("APEX_MARKET_OBSERVER_ENABLED") or os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1")).strip().lower()
+        _gold_shadow_enabled = os.getenv(
+            "APEX_GOLD_DESK_SHADOW_ENABLED", "1"
+        ).strip().lower()
         if _gold_shadow_enabled not in {"0", "false", "no", "off"}:
             try:
                 from gold_desk.apex_observer import ApexMarketObserver
                 self._market_observer = ApexMarketObserver(
                     symbols=list(getattr(self._config, "enabled_pairs", []) or []),
-                    venue=os.getenv("APEX_MARKET_OBSERVER_VENUE")
-                    or os.getenv("APEX_GOLD_DESK_VENUE", "AUTO"),
+                    venue=os.getenv("APEX_GOLD_DESK_VENUE", "AUTO"),
                     tick_router=self._tick_router,
                     event_bus=self._event_bus,
                     candle_fetcher=self._fetch_confirmed_candles,

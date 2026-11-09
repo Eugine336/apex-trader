@@ -12,7 +12,7 @@ _SRC = pathlib.Path(__file__).resolve().parent.parent / "event_driven_bootstrap.
 
 
 def _methods() -> dict:
-    tree = ast.parse(_SRC.read_text())
+    tree = ast.parse(_SRC.read_text(encoding="utf-8"))
     return {
         n.name: n
         for n in ast.walk(tree)

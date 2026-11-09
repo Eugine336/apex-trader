@@ -115,13 +115,17 @@ def _checkpoint_wal_files(data_dir: Path) -> int:
     """
     checkpointed = 0
     for db_path in sorted(data_dir.glob("*.db")):
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(str(db_path), timeout=5)
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.close()
-            checkpointed += 1
         except Exception as exc:
             logger.debug("[data-sync] WAL checkpoint skipped for {}: {}", db_path.name, exc)
+        else:
+            checkpointed += 1
+        finally:
+            if conn is not None:
+                conn.close()
     if checkpointed:
         logger.info("[data-sync] checkpointed {} WAL files in {}", checkpointed, data_dir)
     return checkpointed

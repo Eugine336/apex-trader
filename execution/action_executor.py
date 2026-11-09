@@ -948,14 +948,18 @@ class ActionExecutor:
                 delay = self._cfg.retry_base_delay_s * (2 ** (attempt - 1))
                 time.sleep(delay)
 
-            t0 = time.monotonic()
+            # ``monotonic`` may have coarse millisecond resolution on Windows
+            # (GetTickCount64). Broker calls can complete within one clock tick,
+            # which would incorrectly report zero latency. ``perf_counter`` is
+            # monotonic and uses the high-resolution performance counter.
+            t0 = time.perf_counter()
             try:
                 # Serialize only the actual broker call. The retry backoff
                 # ``time.sleep`` above runs OUTSIDE the lock so a retrying intent
                 # never stalls other broker operations.
                 with self._lock:
                     result = self._dispatch(intent, open_positions)
-                elapsed_ms = (time.monotonic() - t0) * 1000
+                elapsed_ms = (time.perf_counter() - t0) * 1000
 
                 if result.success:
                     circuit.record_success()
@@ -1043,7 +1047,7 @@ class ActionExecutor:
                 last_error = result.error
 
             except ConnectionError as exc:
-                elapsed_ms = (time.monotonic() - t0) * 1000
+                elapsed_ms = (time.perf_counter() - t0) * 1000
                 last_error = str(exc)
                 if not _is_transient(exc):
                     circuit.record_failure()
@@ -1055,7 +1059,7 @@ class ActionExecutor:
                     )
 
             except Exception as exc:
-                elapsed_ms = (time.monotonic() - t0) * 1000
+                elapsed_ms = (time.perf_counter() - t0) * 1000
                 last_error = f"{type(exc).__name__}: {exc}"
                 circuit.record_failure()
                 self._inc("intents_failed")

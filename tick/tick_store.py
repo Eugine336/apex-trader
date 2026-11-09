@@ -84,7 +84,11 @@ class TickStore:
         Thread-safe. The tick is always recorded as ``latest`` even when
         coalesced, so ``get_latest()`` always returns the freshest price.
         """
-        now = _time.monotonic()
+        # ``monotonic`` is backed by GetTickCount64 on some Windows Python
+        # builds and can have 15.6 ms resolution. Use the high-resolution
+        # monotonic performance counter so short tick intervals are measured
+        # accurately on every supported platform.
+        now = _time.perf_counter()
         with self._lock:
             self._stats.ticks_received += 1
             self._latest[tick.symbol] = tick
