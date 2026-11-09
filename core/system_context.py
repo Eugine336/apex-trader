@@ -985,13 +985,32 @@ class SystemContext:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[SystemContext] KnowledgeSource init failed: {}", exc)
                     ctx.knowledge_source = None
-                logger.info(
-                    "[SystemContext] Action layer ready — enabled={} adapter={} "
-                    "(dry_run={})",
-                    getattr(comp_cfg, "enabled", False) if comp_cfg else False,
-                    getattr(_adapter, "name", type(_adapter).__name__),
-                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True,
+                _action_enabled = bool(
+                    getattr(comp_cfg, "enabled", False) if comp_cfg else False
                 )
+                _action_dry_run = bool(
+                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True
+                )
+                _action_adapter_name = getattr(
+                    _adapter, "name", type(_adapter).__name__,
+                )
+                if (
+                    _action_enabled
+                    and not _action_dry_run
+                    and _action_adapter_name == "unavailable"
+                ):
+                    logger.warning(
+                        "[SystemContext] Action layer requested live execution but "
+                        "Composio credentials are unavailable; external actions "
+                        "will fail closed. Configure COMPOSIO_API_KEY or disable "
+                        "COMPOSIO_ENABLED / enable COMPOSIO_DRY_RUN."
+                    )
+                else:
+                    logger.info(
+                        "[SystemContext] Action layer ready — enabled={} adapter={} "
+                        "(dry_run={})",
+                        _action_enabled, _action_adapter_name, _action_dry_run,
+                    )
             except Exception as exc:
                 logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
 
