@@ -54,22 +54,22 @@ def build_portfolio_risk_snapshot(
         and item.provenance.kind is ObservationKind.PORTFOLIO_SNAPSHOT
         and item.provenance.completeness is Completeness.PARTIAL
     ]
-    if len(valid) != 1:
+    if len(valid) != 1 or len(observations) != 1:
         result["unknowns"].append(
             "exactly one complete, source-verified whole-portfolio snapshot is required; "
-            f"received {len(valid)} valid snapshot(s)"
+            f"received {len(valid)} valid snapshot(s) across {len(observations)} observation(s)"
         )
         if errors:
             result["unknowns"].append("one or more portfolio snapshot providers failed")
-        if len(partial) == 1:
+        if len(partial) == 1 and len(observations) == 1:
             result["partial_observation"] = dict(partial[0].values)
             result["partial_source_provider"] = partial[0].provenance.source.provider
             result["unknowns"].extend(
                 str(reason) for reason in partial[0].values.get("unknowns", ())
                 if isinstance(reason, str) and reason
             )
-        elif len(partial) > 1:
-            result["unknowns"].append("multiple partial whole-portfolio observations cannot be combined safely")
+        elif len(partial) > 1 or (partial and len(observations) > 1):
+            result["unknowns"].append("multiple whole-portfolio observations cannot be combined safely")
         return result
     item = valid[0]
     values = dict(item.values)

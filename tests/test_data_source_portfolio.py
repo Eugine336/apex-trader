@@ -180,6 +180,32 @@ def test_portfolio_reader_surfaces_partial_mt5_evidence_as_data_gated():
     assert reading.facts["partial_account_observations"] == [{"equity": 2500.0}]
 
 
+def test_portfolio_snapshot_rejects_complete_snapshot_ambiguous_with_partial_source():
+    from data_sources.mt5_portfolio import MT5PortfolioAdapter
+
+    class Connector:
+        def get_account_snapshot(self):
+            return {"source_verified": True, "equity": 2500.0}
+
+        def get_position_snapshots(self):
+            return []
+
+    class Manager:
+        mt5_connectors = [Connector()]
+        _mt5_connected_flags = [True]
+
+    registry = DataSourceRegistry()
+    registry.register(_PortfolioProvider())
+    registry.register(MT5PortfolioAdapter(Manager()))
+    result = build_portfolio_risk_snapshot(
+        registry, analysis_epoch=1_800_000_100, completed_bar_epoch=1_799_999_900,
+    )
+    assert result["complete"] is False
+    assert result["source_timestamp_verified"] is False
+    assert any("across 2 observation(s)" in item for item in result["unknowns"])
+    assert any("cannot be combined safely" in item for item in result["unknowns"])
+
+
 
 def test_portfolio_risk_reader_consumes_registered_broker_snapshot():
     from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
