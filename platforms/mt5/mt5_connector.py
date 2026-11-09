@@ -7,6 +7,7 @@ Handles Forex, commodities, and indices on MT5.
 import platform as sys_platform
 import math
 import time as _time
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,10 @@ except ImportError:
 # at this multiple of the current spread so breakeven/profit-lock/trailing
 # modifies are accepted instead of leaving the position unprotected.
 _STOP_SPREAD_FLOOR_MULT = 1.5
+
+# One terminal-wide clock synchronizer prevents every symbol poller from
+# launching duplicate network time queries during startup or reconnect.
+_MT5_CLOCK_SYNC_LOCK = threading.RLock()
 
 
 _MT5_DEAL_REASON_MAP: dict[int, str] = {
@@ -238,6 +243,10 @@ class MT5Connector(BaseConnector):
             return False
 
     def _read_server_clock_state(self, tick=None, symbol: str | None = None):
+        with _MT5_CLOCK_SYNC_LOCK:
+            return self._synchronize_server_clock_state(tick=tick, symbol=symbol)
+
+    def _synchronize_server_clock_state(self, tick=None, symbol: str | None = None):
         """Automatically synchronize broker time from live ticks and network UTC.
 
         The Python terminal API has no TimeTradeServer() call. A verified state
