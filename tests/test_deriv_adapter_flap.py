@@ -52,7 +52,10 @@ def _make_adapter(symbols, results):
             return None
         raise Exception(f"Deriv not connected for {sym}")
 
-    pm = SimpleNamespace(get_price=get_price)
+    pm = SimpleNamespace(
+        deriv_connected=True,
+        get_deriv_price=get_price,
+    )
     adapter = DerivTickAdapter(pm, router, list(symbols), poll_interval=0.0)
     holder[0] = adapter
     return adapter, store
