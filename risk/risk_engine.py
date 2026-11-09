@@ -840,7 +840,9 @@ class RiskEngine:
             self._platform_resync_candidate.pop(platform, None)
             self._platform_balances[platform] = bal
         pooled = sum(self._platform_balances.values())
-        if pooled > 0:
+        # A confirmed zero balance is broker truth and must replace the
+        # configured cold-start placeholder; RiskEngine.assess rejects it.
+        if self._platform_balances:
             self.balance = pooled
 
     def get_platform_balance(self, platform: str) -> float | None:
