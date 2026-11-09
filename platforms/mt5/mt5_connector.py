@@ -152,6 +152,9 @@ class MT5Connector(BaseConnector):
     # ── Connection ───────────────────────────────────────────────────────
 
     def connect(self) -> bool:
+        self._server_clock_state_cache = None
+        self._server_clock_state_cache_at = None
+        self._server_clock_unavailable_warned = False
         if sys_platform.system() != "Windows":
             logger.warning(
                 "MT5 requires Windows. Use Deriv connector on {}", sys_platform.system()
@@ -218,6 +221,9 @@ class MT5Connector(BaseConnector):
             except Exception as exc:
                 logger.warning("MT5 shutdown error: {}", exc)
         self._connected = False
+        self._server_clock_state_cache = None
+        self._server_clock_state_cache_at = None
+        self._server_clock_unavailable_warned = False
         logger.info("MT5 disconnected")
 
     def is_connected(self) -> bool:
