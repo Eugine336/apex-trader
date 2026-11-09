@@ -159,7 +159,12 @@ def data_dir_is_safe(path: Path | None = None) -> tuple[bool, str]:
     walk up into it. This is the topology guard the production incident lacked.
     """
     d = path if path is not None else data_dir()
-    if d.is_symlink():
+    # On Windows, directory junctions are reparse points but pathlib reports
+    # ``is_symlink() == False`` for them. Treat junctions as the intended
+    # external data-repository link too; otherwise a safe data junction nested
+    # under the source checkout is incorrectly rejected as a plain directory.
+    is_junction = getattr(d, "is_junction", None)
+    if d.is_symlink() or (callable(is_junction) and is_junction()):
         return True, "symlink/junction"
     if (d / ".git").exists():
         return True, "dedicated git repo"

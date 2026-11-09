@@ -38,6 +38,7 @@ def test_outcomes_grouped_by_symbol():
         s.resolve_contract("c2", _resolution("LOSS", -1.0))
         s.resolve_contract("c3", _resolution("WIN", 2.0))
         rows = s.get_outcomes_by_symbol()
+        s.close()
 
     by = {(r["symbol"], r["outcome"]): r for r in rows}
     assert by[("EURUSD", "WIN")]["cnt"] == 1
@@ -50,3 +51,4 @@ def test_only_resolved_counted():
         s = ShadowStore(Path(tmp) / "shadow.db")
         s.insert_contract(_contract("p1", "EURUSD"))  # stays PENDING
         assert s.get_outcomes_by_symbol() == []
+        s.close()

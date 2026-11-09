@@ -89,12 +89,8 @@ def _ensure_real_deps(monkeypatch, request):
         for k in saved_submods:
             sys.modules.pop(k, None)
         real_loguru = importlib.import_module("loguru")
-        real_logger = real_loguru.logger
 
-        import ops.logging_config as _lc
-
-        monkeypatch.setattr(_lc, "logger", real_logger, raising=False)
-        monkeypatch.setattr(sys.modules[__name__], "logger", real_logger, raising=False)
+        real_module = real_loguru
 
         def _restore_loguru():
             for k in [k for k in list(sys.modules) if k == "loguru" or k.startswith("loguru.")]:
@@ -102,6 +98,15 @@ def _ensure_real_deps(monkeypatch, request):
             sys.modules.update(saved_submods)
 
         request.addfinalizer(_restore_loguru)
+    else:
+        real_module = saved_loguru
+
+    # Other test modules may leave ops.logging_config holding a stale logger
+    # even when sys.modules itself has been restored. Rebind it for each test.
+    import ops.logging_config as _lc
+
+    monkeypatch.setattr(_lc, "logger", real_module.logger, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "logger", real_module.logger, raising=False)
     yield
 
 
@@ -449,7 +454,7 @@ def test_multi_pair_isolation(tmp_path):
 # ── Test 11 — structured logging output is valid JSON + audit streams ────────
 
 
-def test_structured_logging_output(tmp_path):
+def test_structured_logging_output(tmp_path, request):
     # Isolate loguru from the rest of the (handler-accumulating) suite: snapshot
     # nothing, clear ALL handlers for a clean core, then restore a basic stderr
     # sink afterwards. This makes the file-sink behaviour deterministic
@@ -457,7 +462,16 @@ def test_structured_logging_output(tmp_path):
     import sys as _sys
 
     logger.remove()
-    cfg = _ops_cfg(tmp_path, log_format="json")
+    restored_sink_id: list[int] = []
+
+    def _remove_temporary_console_sink():
+        if restored_sink_id:
+            logger.remove(restored_sink_id[0])
+
+    request.addfinalizer(_remove_temporary_console_sink)
+    log_root = tmp_path / "sandbox.{GUID}"
+    log_root.mkdir()
+    cfg = _ops_cfg(log_root, log_format="json")
     summary = configure_structured_logging(cfg)
     sink_ids = summary.get("sink_ids", [])
     try:
@@ -476,7 +490,7 @@ def test_structured_logging_output(tmp_path):
                 logger.remove(sid)
             except Exception:
                 pass
-        logger.add(_sys.stderr, level="INFO")
+        restored_sink_id.append(logger.add(_sys.stderr, level="INFO"))
 
     assert Path(cfg.main_log).exists(), (
         f"structured main log file must be created — summary={summary}"

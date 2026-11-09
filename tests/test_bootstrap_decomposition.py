@@ -68,6 +68,7 @@ class _Tick:
     def __init__(
         self, symbol, bid, ask, timestamp, source,
         source_timestamp_verified=False, quote_kind="unknown",
+        spread_unit="unknown", raw_fields=None,
     ):
         self.symbol = symbol
         self.bid = bid
@@ -76,6 +77,8 @@ class _Tick:
         self.source = source
         self.source_timestamp_verified = source_timestamp_verified
         self.quote_kind = quote_kind
+        self.spread_unit = spread_unit
+        self.raw_fields = raw_fields or {}
 
 
 _tick_stub.Tick = _Tick

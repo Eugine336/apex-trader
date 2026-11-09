@@ -200,13 +200,17 @@ class TestDailyMaintenance:
             db_path = data_dir / "apex_positions.db"
             # The backup routine uses SQLite's online backup API, so the
             # fixture must be a valid SQLite database rather than arbitrary text.
-            with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "CREATE TABLE managed_positions (order_id TEXT PRIMARY KEY)"
-                )
-                conn.execute(
-                    "INSERT INTO managed_positions(order_id) VALUES (?)", ("test-order",)
-                )
+            conn = sqlite3.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "CREATE TABLE managed_positions (order_id TEXT PRIMARY KEY)"
+                    )
+                    conn.execute(
+                        "INSERT INTO managed_positions(order_id) VALUES (?)", ("test-order",)
+                    )
+            finally:
+                conn.close()
 
             m = DailyMaintenance(data_dir=str(data_dir))
             result = m._backup_database()

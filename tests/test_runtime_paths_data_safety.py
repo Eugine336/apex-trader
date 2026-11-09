@@ -46,10 +46,25 @@ class TestDataDirIsSafe:
             real = Path(tmp) / "apex-trader-data"
             real.mkdir()
             link = Path(tmp) / "data"
-            os.symlink(real, link)
+            try:
+                os.symlink(real, link)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    pytest.skip("Windows symlink privilege is unavailable in this environment")
+                raise
             ok, reason = runtime_paths.data_dir_is_safe(link)
             assert ok
             assert "symlink" in reason
+
+    def test_junction_marker_is_safe_without_creating_a_link(self, monkeypatch, tmp_path):
+        junction = tmp_path / "data"
+        junction.mkdir()
+        monkeypatch.setattr(
+            Path, "is_junction", lambda self: self == junction, raising=False
+        )
+        ok, reason = runtime_paths.data_dir_is_safe(junction)
+        assert ok
+        assert reason == "symlink/junction"
 
     def test_plain_dir_inside_source_repo_is_unsafe(self):
         with tempfile.TemporaryDirectory() as tmp:

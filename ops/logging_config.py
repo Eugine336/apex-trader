@@ -140,6 +140,12 @@ def configure_structured_logging(
     trade_path = getattr(ops_config, "trade_audit_log", "logs/trade_audit.log")
     risk_path = getattr(ops_config, "risk_audit_log", "logs/risk_audit.log")
 
+    # Loguru treats braces in sink paths as str.format fields. Windows
+    # AppContainer temp roots can contain ``sandbox.{GUID}``, so escape literal
+    # braces before handing the path to its file sink.
+    def _sink_path(path: Any) -> str:
+        return str(path).replace("{", "{{").replace("}", "}}")
+
     # Ensure parent directories exist up front — loguru creates them lazily, but
     # being explicit makes the sink add deterministic regardless of cwd.
     import os as _os
@@ -156,7 +162,7 @@ def configure_structured_logging(
     added: list[int] = []
     try:
         sink_id = logger.add(
-            main_path,
+            _sink_path(main_path),
             level=level,
             rotation=rotation,
             retention=retention,
@@ -170,7 +176,9 @@ def configure_structured_logging(
         summary["main_log"] = main_path
         summary["json"] = fmt == "json"
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[ops] structured main-log sink failed ({}): {}", main_path, exc)
+        logger.opt(exception=True).warning(
+            "[ops] structured main-log sink failed ({}): {}", main_path, exc
+        )
 
     for tag, path, key in (
         (_AUDIT_TRADE, trade_path, "trade_audit"),
@@ -178,7 +186,7 @@ def configure_structured_logging(
     ):
         try:
             sink_id = logger.add(
-                path,
+                _sink_path(path),
                 level="DEBUG",
                 rotation=rotation,
                 retention=retention,
@@ -191,7 +199,9 @@ def configure_structured_logging(
             added.append(sink_id)
             summary[key] = path
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[ops] structured {}-audit sink failed ({}): {}", tag, path, exc)
+            logger.opt(exception=True).warning(
+                "[ops] structured {}-audit sink failed ({}): {}", tag, path, exc
+            )
 
     summary["sink_ids"] = added
     logger.bind(component="ops", event="logging_configured").info(

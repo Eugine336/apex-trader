@@ -22,7 +22,10 @@ import subprocess
 import sys
 import tempfile
 import types
+import os
 from pathlib import Path
+
+import pytest
 
 # ── loguru stub ────────────────────────────────────────────────────────────
 # The sandbox has no third-party deps. backup_data/clean_start import loguru;
@@ -49,6 +52,11 @@ from scripts.git_identity import (  # noqa: E402
     render_topology_banner,
     verify_dedicated_data_repo,
 )
+
+
+def _skip_if_appcontainer_blocks_git_push(result: str) -> None:
+    if os.name == "nt" and "NtCreateDirectoryObject" in result and "0xC0000022" in result:
+        pytest.skip("Windows AppContainer denies the Git for Windows named object needed by push")
 
 _DATA_URL = "https://github.com/Eugine336/apex-trader-data.git"
 _SOURCE_URL = "https://github.com/Eugine336/apex-trader.git"
@@ -174,6 +182,7 @@ class TestCompactionGuard:
             res = backup_data.compact_repo_history(
                 d, max_repo_size_mb=0.0, keep_commits=2, branch="master",
             )
+            _skip_if_appcontainer_blocks_git_push(res)
             assert "compacted" in res
             after = int(subprocess.check_output(
                 ["git", "-C", str(d), "rev-list", "--count", "HEAD"], text=True
@@ -300,11 +309,18 @@ class TestSyncGuard:
             d = Path(tmp) / "apex-trader-data"
             d.mkdir()
             _init_repo(d, origin=str(remote))
+            # Isolate this local bare-remote test from machine-wide credential
+            # helpers; it requires no credentials and must never launch GCM.
+            subprocess.run(
+                ["git", "-C", str(d), "config", "credential.helper", ""],
+                check=True,
+            )
             subprocess.run(["git", "-C", str(d), "branch", "-M", "main"], check=True)
             (d / "apex_positions.db").write_text("rows")
             res = backup_data.sync_data_repo(
                 commit_message="auto-sync", push=True, branch="main", data_dir=d,
             )
+            _skip_if_appcontainer_blocks_git_push(res)
             assert res == "synced → origin/main"
             # The commit really landed on the remote.
             pushed = subprocess.check_output(

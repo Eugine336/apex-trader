@@ -12,6 +12,7 @@ Multi-tenant isolation depends on two distinct anchors:
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 import runtime_paths
 
@@ -40,12 +41,12 @@ def test_multi_tenant_isolates_writeable_state(monkeypatch):
         APEX_USER_ID="7",
     )
     # Per-user writeable state follows APEX_DATA_DIR.
-    assert str(rp.data_dir()) == "/tmp/apex_u7/data"
-    assert str(rp.log_dir()) == "/tmp/apex_u7/logs"
+    assert rp.data_dir() == Path("/tmp/apex_u7/data")
+    assert rp.log_dir() == Path("/tmp/apex_u7/logs")
     assert rp.user_id() == "7"
     # Shared read-only assets follow APEX_REPO_DIR, NOT the per-user data dir.
-    assert str(rp.repo_root()) == "/opt/apex-trader"
-    assert str(rp.shared_data_dir()) == "/opt/apex-trader/data"
+    assert rp.repo_root() == Path("/opt/apex-trader")
+    assert rp.shared_data_dir() == Path("/opt/apex-trader/data")
 
 
 def test_reset_env_for_other_tests(monkeypatch):
