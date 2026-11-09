@@ -47,7 +47,7 @@ class MT5ServerClockState:
         return float(server_epoch) - float(self.offset_seconds)
 
     def age_seconds(self, server_epoch: float, now_epoch: float | None = None) -> float:
-        return self.server_now_epoch(now_epoch) - float(server_epoch)
+        return self.server_now_epoch(now_epoch) + self.uncertainty_seconds - float(server_epoch)
 
 
 def _parse_key_values(raw: str) -> dict[str, str]:
@@ -197,6 +197,7 @@ def estimate_mt5_server_clock(
     *,
     ntp_samples: Iterable[NTPClockSample] | None = None,
     tick_precision_seconds: float = 0.5,
+    tick_transport_uncertainty_seconds: float = 1.0,
 ) -> MT5ServerClockState | None:
     """Estimate the broker offset from an advancing terminal tick and NTP UTC."""
     if not str(server or "").strip():
@@ -224,11 +225,12 @@ def estimate_mt5_server_clock(
     spread = max(abs(value - median) for value in ordered)
     try:
         tick_precision = max(0.0, float(tick_precision_seconds))
+        tick_transport_uncertainty = max(0.0, float(tick_transport_uncertainty_seconds))
     except (TypeError, ValueError, OverflowError):
         return None
     uncertainty = (
         max(sample.uncertainty_seconds for _, sample in estimates)
-        + spread + tick_precision / 2.0 + 0.15
+        + spread + tick_precision / 2.0 + tick_transport_uncertainty + 0.15
     )
     if not (MIN_OFFSET_SECONDS <= median <= MAX_OFFSET_SECONDS):
         return None
