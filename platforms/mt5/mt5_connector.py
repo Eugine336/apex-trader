@@ -257,6 +257,7 @@ class MT5Connector(BaseConnector):
         cached = getattr(self, "_server_clock_state_cache", None)
         cached_at = getattr(self, "_server_clock_state_cache_at", None)
         cache_age = now_mono - cached_at if cached_at is not None else float("inf")
+        retry_after = getattr(self, "_server_clock_retry_after", 0.0)
 
         try:
             account = mt5.account_info()
@@ -271,6 +272,8 @@ class MT5Connector(BaseConnector):
                 self._clock_tick_observations = {}
             if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
                 return cached
+            if now_mono < retry_after:
+                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
                 now_mono = _time.monotonic()
@@ -315,6 +318,7 @@ class MT5Connector(BaseConnector):
             old_state = cached
             self._server_clock_state_cache = state
             self._server_clock_state_cache_at = now_mono
+            self._server_clock_retry_after = now_mono + 10.0
             if old_state is None:
                 logger.info(
                     "[mt5] broker server clock synchronized — server={} offset={:+.3f}s "
@@ -329,6 +333,7 @@ class MT5Connector(BaseConnector):
                 )
             return state
         except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
+            self._server_clock_retry_after = now_mono + 3.0
             logger.warning("[mt5] automatic broker-clock synchronization unavailable: {}", exc)
             return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
 
@@ -848,6 +853,8 @@ class MT5Connector(BaseConnector):
         raw_fields.update({
             "source_timezone": "broker_server",
             "source_utc_offset_seconds": clock.offset_seconds,
+            "source_utc_offset_uncertainty_seconds": clock.uncertainty_seconds,
+            "source_clock_sources": list(clock.sources),
             "timestamp_utc_epoch": clock.to_utc_epoch(tick_server_epoch),
         })
         return TickData(
