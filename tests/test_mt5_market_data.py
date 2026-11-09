@@ -117,7 +117,7 @@ def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
     frame = connector.get_ohlcv("EURUSD", "M1", count=2)
 
     assert list(frame.columns) == [
-        "time", "open", "high", "low", "close", "volume",
+        "time", "time_server_epoch", "open", "high", "low", "close", "volume",
         "tick_volume", "real_volume", "spread",
     ]
     assert frame["volume"].tolist() == [100, 120]
