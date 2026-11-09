@@ -1015,21 +1015,17 @@ class MT5Connector(BaseConnector):
                 "D1": 86400, "W1": 604800,
             }
             duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400)
-            # A range ending well in the past cannot contain a forming bar. Only
-            # recent ranges need the live server clock to classify the final bar.
-            clock_required_horizon = duration + MAX_OFFSET_SECONDS + 120
-            server_now_label = None
-            if _time.time() - end.timestamp() <= clock_required_horizon:
-                live_tick = mt5.symbol_info_tick(mapped)
-                clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-                if clock is None:
-                    raise RuntimeError(
-                        "MT5 server clock offset unavailable; recent completed-bar status "
-                        "cannot be verified without scripts/mt5_clock_publisher.mq5"
-                    )
-                server_now_label = datetime.fromtimestamp(
-                    clock.server_now_epoch(), tz=timezone.utc,
+            # Use the synchronized broker clock for every range boundary.
+            # Host wall time must never decide whether a broker bar is complete.
+            live_tick = mt5.symbol_info_tick(mapped)
+            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
+            if clock is None:
+                raise RuntimeError(
+                    "MT5 broker clock unavailable; completed-bar status cannot be verified"
                 )
+            server_now_label = datetime.fromtimestamp(
+                clock.server_now_epoch(), tz=timezone.utc,
+            )
             if server_now_label is not None:
                 if timeframe.upper() == "MN1":
                     bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
