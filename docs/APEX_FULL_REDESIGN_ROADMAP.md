@@ -382,3 +382,18 @@ No broker orders, runtime database changes, credential changes, `.env` access or
 - Do not mark System 1 or System 4 accepted and do not merge PR #798 until the repository owner has run the focused tests, supported Python matrix, lint and the repository-wide identity audit, then reviewed the actual failures and corrected them without weakening controls.
 - The new producer is an auditable family-conditional historical estimator, not proof of profitability or universal conditional prediction. Any predictive claim still requires sufficient untouched data and external statistical review.
 - No live broker orders were sent. No `.env` file, runtime database, credentials or broker configuration was modified.
+
+
+---
+
+## Mandatory agent and delivery governance — 2026-11-09
+
+This roadmap is binding on every human contributor, coding agent, delegated agent and reviewer. Before any work, read the repository-root `AGENTS.md` and `docs/APEX_ENGINEERING_DELIVERY_CONTRACT.md`. Agent-specific entrypoints (`CLAUDE.md`, `.github/copilot-instructions.md` and `.cursor/rules/apex-engineering.mdc`) point to the same contract; they do not create separate rules.
+
+Every work item must follow recover → scope → trace → implement → prove → validate → review → record → accept. The release register must distinguish IMPLEMENTED, INTEGRATED, VALIDATED, DATA-GATED, BLOCKED and PRODUCTION-ACCEPTED. A merge, passing subset, mock fixture or code presence is not acceptance.
+
+**Numbering clarification:** this architecture roadmap is organized into ten systems. Any delivery plan using Phase 1–8 is a separate execution grouping and must be explicitly mapped to these systems in the release register. Do not renumber, collapse or silently replace the ten-system architecture or its acceptance gates.
+
+The configuration contract is binding: all supported operator-tunable startup/deployment/service/integration configuration must be validated and documented in `.env.example`. The real `.env` remains protected and must not be accessed or modified during engineering without explicit authorization. Dashboard runtime controls use authenticated, authorized APIs and durable audited state; they must never write `.env`. Canonical identity, Brain authority and mandatory safety invariants are not operator-overridable configuration.
+
+CI must validate the agent-governance entrypoints and delivery-contract document. The complete environment-variable inventory and reconciliation against `.env.example` remain an explicit acceptance task; do not claim template completeness until that audit is executed.
