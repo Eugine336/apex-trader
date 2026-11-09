@@ -8,6 +8,8 @@ package and compares provider epoch fields with the host UTC clock.
 from __future__ import annotations
 
 import argparse
+import subprocess
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -56,9 +58,25 @@ def main() -> int:
 
     try:
         host_now = datetime.now(timezone.utc)
-        host_epoch = host_now.timestamp()
+        host_epoch = time.time()
         print(f"host_utc={host_now.isoformat()}")
-        print(f"host_epoch={host_epoch:.3f}")
+        print(f"host_epoch_time_time={host_epoch:.3f}")
+        print(f"host_local_timezone={datetime.now().astimezone().tzinfo}")
+        try:
+            status = subprocess.run(
+                ["w32tm", "/query", "/status"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            print("windows_time_service_status:")
+            print((status.stdout or status.stderr or "no status output").strip())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"windows_time_service_status_unavailable={type(exc).__name__}")
+
+        account = mt5.account_info()
+        terminal = mt5.terminal_info()
+        print(f"mt5_account_server={getattr(account, 'server', None)}")
+        print(f"mt5_terminal_company={getattr(terminal, 'company', None)}")
+        print(f"mt5_terminal_build={getattr(terminal, 'build', None)}")
 
         symbols = list(args.symbols or [])
         if not symbols:
