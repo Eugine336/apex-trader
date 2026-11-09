@@ -78,3 +78,11 @@ The server-side secret remains `DD_DASHBOARD_API_KEY` in the root `.env`.
 
 Vite environment coverage is enforced by
 `tests/test_frontend_env_example_coverage.py`.
+
+
+## Full typed-field inventory
+
+See [CONFIGURATION_FIELD_INVENTORY.md](CONFIGURATION_FIELD_INVENTORY.md) for the
+source-backed inventory of all 716 typed fields across 43 configuration
+dataclasses. The inventory is not a blanket permission to expose every field.
+Each field must be classified before it becomes an environment override.
