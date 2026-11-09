@@ -102,6 +102,10 @@ def _connected_connector(monkeypatch):
     monkeypatch.setattr(mt5_module, "mt5", fake)
     connector = MT5Connector()
     connector._connected = True
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        age_seconds=lambda epoch: __import__("time").time() - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch),
+    )
     return connector
 
 
