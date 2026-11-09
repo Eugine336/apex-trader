@@ -86,7 +86,7 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._not_found_warned = set()
     c._reject_on_minlot_inflation = reject_on_minlot_inflation
     c._mapper = None
-    c._read_server_clock_state = lambda: SimpleNamespace(
+    c._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         age_seconds=lambda epoch: time.time() - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch),
     )
@@ -125,7 +125,7 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
 def test_market_order_fails_closed_without_verified_server_clock():
     mt5_mock, _sent = _setup_mt5_mock_market(volume_min=0.01)
     connector = _make_connector(reject_on_minlot_inflation=False)
-    connector._read_server_clock_state = lambda: None
+    connector._read_server_clock_state = lambda *args, **kwargs: None
 
     result = connector.place_order("EURUSD", "BUY", 0.05, 1.09, 1.11)
 
