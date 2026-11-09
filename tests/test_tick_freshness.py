@@ -100,6 +100,18 @@ class TestMT5FreshTick:
 # MT5 — stale tick rejected
 # ═══════════════════════════════════════════════════════════════════════════
 
+class TestMT5ClockOffsetRequired:
+
+    @patch("platforms.mt5.mt5_connector.mt5")
+    def test_missing_server_clock_bridge_fails_closed(self, mock_mt5):
+        c, _ = _make_mt5()
+        c._read_server_clock_state = lambda: None
+        mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick()
+        with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
+            with pytest.raises(RuntimeError, match="server clock offset unavailable"):
+                c.get_price("EURUSD")
+
+
 class TestMT5StaleTick:
 
     @patch("platforms.mt5.mt5_connector.mt5")
