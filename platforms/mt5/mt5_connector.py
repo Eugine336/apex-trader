@@ -894,6 +894,9 @@ class MT5Connector(BaseConnector):
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "mt5",
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": None,
+            "utc_normalization": "historical_offset_required",
             "volume_basis": out.attrs.get("volume_basis"),
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
@@ -923,6 +926,9 @@ class MT5Connector(BaseConnector):
                 "source": "mt5.copy_rates_range",
                 "source_timestamp_verified": True,
                 "source_symbol": mapped,
+                "source_timezone": "broker_server",
+                "source_utc_offset_seconds": None,
+                "utc_normalization": "historical_offset_required",
                 "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             })
             return frame
@@ -961,7 +967,9 @@ class MT5Connector(BaseConnector):
             "source": "mt5.copy_rates_range",
             "source_timestamp_verified": True,
             "source_symbol": mapped,
-            "source_timezone": "UTC",
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": None,
+            "utc_normalization": "historical_offset_required",
             "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
