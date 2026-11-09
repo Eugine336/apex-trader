@@ -32,8 +32,10 @@ this does not lock owner risk-limit controls.
 | `COGNITION_ORIGINATION_MODE` | `off`, `shadow`, `live` | Controls new campaign origination |
 | `COGNITION_MANAGEMENT_MODE` | `off`, `shadow`, `live` | Controls Brain position management |
 
-`TRADING_ENABLED=false` blocks new origination. It deliberately does not
-disable reconciliation, existing-position management, or risk-reducing closes.
+`TRADING_ENABLED=false` blocks Brain origination and is checked again at the
+ActionExecutor boundary, so already-queued market or pending OPEN intents are
+also rejected. It deliberately does not disable reconciliation,
+existing-position management, or risk-reducing closes.
 `COGNITION_ORIGINATION_MODE=live` is necessary but not sufficient for an order:
 the Brain's evidence, opportunity, expected-value, owner-limit, portfolio,
 broker-feasibility, and execution gates remain mandatory.
@@ -52,6 +54,7 @@ submission path; the Brain remains the decision authority.
 
 - `.env.example` is the documented deployment/environment interface.
 - `config.py` defines typed subsystem defaults and validates configuration.
+- `execution/action_executor.py` enforces the final `TRADING_ENABLED` gate on every new OPEN intent.
 - `api/config.py` defines control-plane/API settings.
 - `api/instance_config.py` applies validated per-user overrides after process
   defaults for multi-tenant instances.
