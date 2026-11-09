@@ -144,6 +144,7 @@ class PlatformManager:
 
         # ── MT5: one connector per broker account ────────────────────────
         mt5_configs = _load_mt5_configs()
+        mt5_terminal_path = os.getenv("MT5_TERMINAL_PATH", "").strip() or None
         self.mt5_connectors: list[MT5Connector] = [
             MT5Connector(
                 login=cfg["login"],
@@ -154,6 +155,7 @@ class PlatformManager:
                 max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
                 max_slippage_pips=getattr(self.config.risk, "max_slippage_pips", 0.0),
                 min_rr_after_adjust=self.config.risk.min_risk_reward,
+                terminal_path=mt5_terminal_path,
             )
             for cfg in mt5_configs
         ]

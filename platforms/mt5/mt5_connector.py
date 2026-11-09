@@ -8,6 +8,7 @@ import platform as sys_platform
 import math
 import time as _time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -108,6 +109,7 @@ class MT5Connector(BaseConnector):
         max_slippage_pips: float = 0.0,
         min_rr_after_adjust: float = 1.5,
         preserve_rr_after_adjust: bool = True,
+        terminal_path: Optional[str] = None,
     ):
         self._login = login
         self._password = password
@@ -125,6 +127,7 @@ class MT5Connector(BaseConnector):
         # approved R:R no longer exists. Reject the order if the post-adjustment
         # R:R falls below this floor rather than silently taking a worse trade.
         self._min_rr_after_adjust = float(min_rr_after_adjust)
+        self._terminal_path = str(terminal_path or "").strip() or None
         # When the broker's minimum stop distance widens the SL, the reward leg
         # (TP) is left where the sizer put it, collapsing the approved R:R. With
         # this enabled (default), the TP is extended outward to restore the
@@ -157,7 +160,15 @@ class MT5Connector(BaseConnector):
             return False
 
         try:
-            if not mt5.initialize():
+            if self._terminal_path:
+                terminal_path = Path(self._terminal_path)
+                if not terminal_path.is_absolute() or not terminal_path.is_file():
+                    logger.error("Configured MT5 terminal executable is unavailable")
+                    return False
+                initialized = mt5.initialize(str(terminal_path))
+            else:
+                initialized = mt5.initialize()
+            if not initialized:
                 logger.error("mt5.initialize() failed: {}", mt5.last_error())
                 return False
 
