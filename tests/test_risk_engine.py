@@ -624,3 +624,17 @@ def test_platform_balances_ignore_none_and_negative(engine):
     assert engine.get_platform_balance("mt5") == 100.0
     assert engine.get_platform_balance("deriv") is None
 
+
+
+def test_first_live_platform_balance_replaces_cold_start_default(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": 30.0})
+    assert engine.get_platform_balance("mt5") == 30.0
+    assert engine.balance == 30.0
+
+
+def test_confirmed_zero_platform_balance_replaces_cold_start_default(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": 0.0})
+    assert engine.get_platform_balance("mt5") == 0.0
+    assert engine.balance == 0.0
