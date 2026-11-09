@@ -30,6 +30,7 @@ References:
 - TickData.time is normalized to UTC before it enters Apex cognition. Raw broker time, offset, and normalized epoch are preserved in raw_fields.
 - Market and pending order preflights also require a fresh valid publisher sample. If the bridge is missing, stale, or belongs to another server, MT5 quotes are rejected and order entry fails closed.
 - No fixed GMT+2/GMT+3 value is stored in .env; daylight-saving changes are read from the connected terminal.
+- The Windows host clock must be synchronized for the normalized timestamps to be true UTC. MQL5 TimeGMT() is calculated from the terminal host clock and timezone. Run the Python diagnostic and verify Windows Time reports a successful recent synchronization before treating normalized timestamps as canonical UTC.
 
 ## Diagnostic
 
