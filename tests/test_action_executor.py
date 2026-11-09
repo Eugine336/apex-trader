@@ -187,6 +187,36 @@ class TestTransientDetection:
         assert not _is_transient("Not enough money")
 
 
+
+def test_trading_disabled_rejects_market_and_pending_open_at_executor_boundary(monkeypatch):
+    monkeypatch.setenv("TRADING_ENABLED", "false")
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+
+    market = executor.execute(_open_intent("XAUUSD"), {})
+    pending = executor.execute(
+        _open_intent("XAUUSD", order_type="BUY_LIMIT", entry_price=1.05),
+        {},
+    )
+
+    assert not market.success and market.rejected_by_gate
+    assert not pending.success and pending.rejected_by_gate
+    assert market.gate_reason == "trading_disabled_by_TRADING_ENABLED"
+    assert pending.gate_reason == "trading_disabled_by_TRADING_ENABLED"
+    assert broker.open_calls == []
+
+
+def test_trading_disabled_still_allows_risk_reducing_close(monkeypatch):
+    monkeypatch.setenv("TRADING_ENABLED", "false")
+    broker = FakeBroker()
+    executor = ActionExecutor(broker, _fast_cfg())
+
+    result = executor.execute(_close_intent(), _positions())
+
+    assert result.success
+    assert len(broker.close_calls) == 1
+
+
 # ── Close execution ──────────────────────────────────────────────────
 
 class TestCloseExecution:
