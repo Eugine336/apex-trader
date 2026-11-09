@@ -27,7 +27,9 @@ References:
 - Python reads the publisher file under the connected terminal's data_path.
 - The reader requires schema version 1, exact account server match, plausible offset, internally consistent server/GMT epochs, and a fresh file (20-second maximum).
 - MT5 tick freshness is calculated in broker-server time using the publisher's TimeTradeServer()-TimeGMT() offset.
-- TickData.time is normalized to UTC before it enters Apex cognition. Raw broker time, offset, and normalized epoch are preserved in raw_fields.
+- TickData.time is normalized to UTC before it enters Apex cognition.
+- Short live tick-history windows (up to five minutes, ending within two minutes of now) are normalized with the same fresh offset so tick microstructure can use them. Older tick history is left in broker-server time and marked unnormalized.
+- Completed-bar filtering compares bar close times with the broker-server clock, not the host UTC clock. Historical bar timestamps retain their raw server epoch and are labelled broker-server time until an offset history is available. Raw broker time, offset, and normalized epoch are preserved in raw_fields.
 - Market and pending order preflights also require a fresh valid publisher sample. If the bridge is missing, stale, or belongs to another server, MT5 quotes are rejected and order entry fails closed.
 - No fixed GMT+2/GMT+3 value is stored in .env; daylight-saving changes are read from the connected terminal.
 - The Windows host clock must be synchronized for the normalized timestamps to be true UTC. MQL5 TimeGMT() is calculated from the terminal host clock and timezone. Run the Python diagnostic and verify Windows Time reports a successful recent synchronization before treating normalized timestamps as canonical UTC.
@@ -42,4 +44,4 @@ The Python diagnostic reports host clock state, MT5 server/company/build, and ra
 
 ## Scope limitation
 
-This bridge normalizes live tick timestamps and validates the tick-time basis used by market/pending order preflights. Historical OHLCV, historical tick, deal, and order-history timestamps require a historical broker-offset series to normalize across daylight-saving transitions. They must not be relabelled as UTC using today's offset. That historical mapping remains a separate data-quality gate.
+This bridge normalizes live tick timestamps and short live tick-history windows, and validates the tick-time basis used by market/pending order preflights and completed-bar filtering. Historical OHLCV, older historical ticks, deal, and order-history timestamps require a historical broker-offset series to normalize across daylight-saving transitions. They must not be relabelled as UTC using today's offset. That historical mapping remains a separate data-quality gate.
