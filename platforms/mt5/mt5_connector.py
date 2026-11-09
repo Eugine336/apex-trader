@@ -248,14 +248,20 @@ class MT5Connector(BaseConnector):
         cached = getattr(self, "_server_clock_state_cache", None)
         cached_at = getattr(self, "_server_clock_state_cache_at", None)
         cache_age = now_mono - cached_at if cached_at is not None else float("inf")
-        if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
-            return cached
 
         try:
             account = mt5.account_info()
             server = str(getattr(account, "server", "") or "").strip() if account else ""
             if not server:
                 raise RuntimeError("MT5 account server identity unavailable")
+            if cached is not None and cached.server != server:
+                cached = None
+                cache_age = float("inf")
+                self._server_clock_state_cache = None
+                self._server_clock_state_cache_at = None
+                self._clock_tick_observations = {}
+            if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
+                return cached
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
                 now_mono = _time.monotonic()
@@ -284,6 +290,9 @@ class MT5Connector(BaseConnector):
 
             state = estimate_mt5_server_clock(
                 server, tick_epoch, now_mono, ntp_samples=query_ntp_sources(),
+                tick_precision_seconds=(
+                    0.001 if float(getattr(tick, "time_msc", 0) or 0) > 0 else 1.0
+                ),
             )
             if state is None:
                 raise RuntimeError(
