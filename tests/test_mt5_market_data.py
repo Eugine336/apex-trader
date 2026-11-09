@@ -197,6 +197,35 @@ def test_unregistered_broker_symbol_quote_preserves_raw_tick_and_uses_tick_units
     assert tick.source_timestamp_verified is True
 
 
+def test_server_clock_tick_is_normalized_to_utc_with_raw_provenance(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    server_epoch = now + offset
+    fake_tick = SimpleNamespace(
+        time=int(server_epoch),
+        time_msc=int(server_epoch * 1000),
+        bid=100.0, ask=100.02, last=100.01,
+        volume=3, volume_real=3.0, flags=16,
+    )
+    mt5_module.mt5.symbol_info_tick = lambda _symbol: fake_tick
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: (now + offset) - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+
+    tick = connector.get_price("BROKER_CUSTOM")
+
+    assert abs(tick.time.timestamp() - now) < 1.0
+    assert tick.raw_fields["time"] == int(server_epoch)
+    assert tick.raw_fields["source_timezone"] == "broker_server"
+    assert tick.raw_fields["source_utc_offset_seconds"] == 7200
+    assert abs(tick.raw_fields["timestamp_utc_epoch"] - now) < 1.0
+
+
 def test_raw_position_and_pending_order_snapshots_preserve_broker_fields(monkeypatch):
     connector = _connected_connector(monkeypatch)
 
