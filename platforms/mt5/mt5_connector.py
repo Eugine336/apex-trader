@@ -768,6 +768,11 @@ class MT5Connector(BaseConnector):
             if callable(getattr(tick, "_asdict", None))
             else {}
         )
+        raw_fields.update({
+            "source_timezone": "broker_server",
+            "source_utc_offset_seconds": clock.offset_seconds,
+            "timestamp_utc_epoch": clock.to_utc_epoch(tick_server_epoch),
+        })
         return TickData(
             bid=tick.bid,
             ask=tick.ask,
