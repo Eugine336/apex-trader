@@ -103,9 +103,15 @@ class _PM:
     def __init__(self, px):
         self._px = px
         self.calls = 0
+        self.deriv_calls = 0
+        self.deriv_connected = True
 
     def get_price(self, sym):
         self.calls += 1
+        return self._px
+
+    def get_deriv_price(self, sym):
+        self.deriv_calls += 1
         return self._px
 
 
@@ -127,11 +133,11 @@ def _run_poller(cls, px):
     while not router.ticks and time.time() < deadline:
         time.sleep(0.01)
     src.stop()
-    return router
+    return router, pm
 
 
 def test_mt5_poller_routes_ticks_from_prices():
-    router = _run_poller(tick_sources.MT5TickPoller, _Px(1.2345, 1.2347))
+    router, pm = _run_poller(tick_sources.MT5TickPoller, _Px(1.2345, 1.2347))
     assert router.ticks, "poller should route at least one tick"
     assert router.ticks[0].symbol == "EURUSD"
     assert router.ticks[0].source == "mt5"
@@ -140,11 +146,13 @@ def test_mt5_poller_routes_ticks_from_prices():
 
 
 def test_deriv_adapter_routes_ticks_from_prices():
-    router = _run_poller(
+    router, pm = _run_poller(
         tick_sources.DerivTickAdapter,
         _Px(101.0, 101.0, quote_kind="mid_only"),
     )
     assert router.ticks and router.ticks[0].source == "deriv"
+    assert pm.deriv_calls > 0
+    assert pm.calls == 0
     assert router.ticks[0].source_timestamp_verified is True
     assert router.ticks[0].quote_kind == "mid_only"
 
