@@ -13,10 +13,14 @@ startup configuration. The application must not rewrite `.env`.
 | `TRADING_MODE` | `gold`, `full`, `selected`, `single` | Selects the enabled instrument universe |
 | `TRADING_SYMBOLS` | Comma-separated broker-neutral symbols | Required for `selected` and `single` |
 | `TRADING_ENABLED_CATEGORIES` | Comma-separated category names | Restricts categories in `full` mode |
+| `TRADING_MODE_LOCKED` | boolean | When true, process-level mode and symbols override persisted per-user universe preferences |
 
 `gold` resolves to exactly `XAUUSD`. `full` resolves the broker-supported
 universe within the selected categories. `selected` uses every symbol in
-`TRADING_SYMBOLS`; `single` requires exactly one symbol.
+`TRADING_SYMBOLS`; `single` requires exactly one symbol. By default, a saved
+per-user universe preference can override the process default. Set
+`TRADING_MODE_LOCKED=true` when the process-level universe must be enforced for
+every instance; this does not lock owner risk-limit controls.
 
 ### New exposure and position management
 
