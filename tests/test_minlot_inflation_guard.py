@@ -86,6 +86,10 @@ def _make_connector(reject_on_minlot_inflation: bool = False):
     c._not_found_warned = set()
     c._reject_on_minlot_inflation = reject_on_minlot_inflation
     c._mapper = None
+    c._read_server_clock_state = lambda: SimpleNamespace(
+        age_seconds=lambda epoch: time.time() - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch),
+    )
     return c
 
 
