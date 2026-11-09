@@ -397,3 +397,12 @@ Every work item must follow recover → scope → trace → implement → prove 
 The configuration contract is binding: all supported operator-tunable startup/deployment/service/integration configuration must be validated and documented in `.env.example`. The real `.env` remains protected and must not be accessed or modified during engineering without explicit authorization. Dashboard runtime controls use authenticated, authorized APIs and durable audited state; they must never write `.env`. Canonical identity, Brain authority and mandatory safety invariants are not operator-overridable configuration.
 
 CI must validate the agent-governance entrypoints and delivery-contract document. The complete environment-variable inventory and reconciliation against `.env.example` remain an explicit acceptance task; do not claim template completeness until that audit is executed.
+
+### Cross-platform reliability follow-up — 2026-11-09
+
+Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922ccd21b7` and is recorded in commit `721cd6def05e6771eb2c5cb2f9de88ad696f2952`.
+
+- **IMPLEMENTED:** WAL checkpoint connections close even when a corrupt database raises during checkpointing; retention includes records exactly on the cutoff; execution and tick-coalescing intervals use the high-resolution monotonic performance counter on Windows; the observer uses only the documented `APEX_GOLD_DESK_*` settings instead of undocumented aliases.
+- **VALIDATED:** an automated check compares literal Python environment reads with `.env.example`; source-reading tests specify UTF-8. Focused regression run: 118 passed. Concept coverage check, identity audit, compilation and Ruff passed.
+- **Full local suite:** Python 3.12.10 on Windows reported 4,405 passed and 15 failed, with no collection/setup errors. Remaining failures involve Windows sandbox/process and symlink restrictions, SQLite file locking during test cleanup, a Windows log-sink setup issue, and Windows path expectations. The Linux GitHub Actions runs at the starting PR head passed; CI for this follow-up commit is still required.
+- **Status:** the fixes above are IMPLEMENTED and focused VALIDATED. This does not close the owner/provider evidence gates for WP-B3/B4/B5/B7, change any concept coverage classification, or production-accept Phase 2. The roadmap retains its ten-system acceptance model; no unverified Phase 1–8 mapping is inferred.
