@@ -196,6 +196,10 @@ class DerivTickAdapter:
             target=self._poll_loop, daemon=True, name="deriv-tick-adapter",
         )
         self._thread.start()
+        if not bool(getattr(self._pm, "deriv_connected", False)):
+            logger.info(
+                "[deriv-adapter] waiting for Deriv connection — no alternate-venue fallback"
+            )
         logger.info("[deriv-adapter] started for {} symbols", len(self._symbols))
 
     def stop(self) -> None:
@@ -227,6 +231,14 @@ class DerivTickAdapter:
             )
 
         while self._running:
+            # Platform.BOTH symbols are intentionally polled by both source
+            # adapters. PlatformManager.get_price() prefers MT5 for BOTH, so
+            # Deriv must use its explicit connector and must never inherit MT5
+            # quotes. Stay idle while Deriv is offline; reconnects resume polling.
+            if not bool(getattr(self._pm, "deriv_connected", False)):
+                _time.sleep(max(self._interval, 0.1))
+                continue
+
             # Per-cycle connection stats. The connection state is evaluated once
             # at the end of the full symbol sweep — never mid-cycle — so a flaky
             # link that mixes good and bad ticks within a single pass cannot flap
@@ -243,7 +255,10 @@ class DerivTickAdapter:
                 if not self._should_poll(sym):
                     continue
                 try:
-                    td = self._pm.get_price(sym)
+                    get_deriv_price = getattr(self._pm, "get_deriv_price", None)
+                    if not callable(get_deriv_price):
+                        raise RuntimeError("PlatformManager has no explicit Deriv price route")
+                    td = get_deriv_price(sym)
                     if td is not None and td.bid > 0:
                         reported_symbol = str(getattr(td, "symbol", "") or "").strip().upper()
                         if not reported_symbol or reported_symbol != sym.strip().upper():
