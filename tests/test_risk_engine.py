@@ -640,3 +640,11 @@ def test_confirmed_zero_platform_balance_replaces_cold_start_default(engine):
     engine.reconcile_platform_balances({"mt5": 0.0})
     assert engine.get_platform_balance("mt5") == 0.0
     assert engine.balance == 0.0
+
+
+def test_non_finite_platform_balances_are_ignored(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_platform_balances({"mt5": float("nan"), "deriv": float("inf")})
+    assert engine.get_platform_balance("mt5") is None
+    assert engine.get_platform_balance("deriv") is None
+    assert engine.balance == 10_000.0
