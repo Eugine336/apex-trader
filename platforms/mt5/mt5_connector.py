@@ -21,7 +21,7 @@ from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
-from platforms.mt5.clock import load_mt5_server_clock
+from platforms.mt5.clock import CLOCK_MAX_AGE_SECONDS, load_mt5_server_clock
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -229,7 +229,15 @@ class MT5Connector(BaseConnector):
             return False
 
     def _read_server_clock_state(self):
-        """Read a fresh broker-specific offset published by the MT5 clock EA."""
+        """Read a fresh broker-specific offset, caching terminal IPC for one second."""
+        now_mono = _time.monotonic()
+        cached_at = getattr(self, "_server_clock_state_cache_at", None)
+        if cached_at is not None and now_mono - cached_at < 1.0:
+            cached = getattr(self, "_server_clock_state_cache", None)
+            if cached is None:
+                return None
+            if cached.file_age_seconds + (now_mono - cached_at) <= CLOCK_MAX_AGE_SECONDS:
+                return cached
         try:
             terminal = mt5.terminal_info()
             account = mt5.account_info()
@@ -241,6 +249,8 @@ class MT5Connector(BaseConnector):
         except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
             state = None
             logger.debug("[mt5] server-clock metadata read failed: {}", exc)
+        self._server_clock_state_cache = state
+        self._server_clock_state_cache_at = now_mono
         warned = bool(getattr(self, "_server_clock_unavailable_warned", False))
         if state is None and not warned:
             logger.error(
