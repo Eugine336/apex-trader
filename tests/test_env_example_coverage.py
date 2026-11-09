@@ -73,3 +73,44 @@ def test_template_does_not_advertise_unconsumed_legacy_controls():
         for match in re.finditer(r"^([A-Z][A-Z0-9_]*)=", template, re.M)
     }
     assert not (removed & active)
+
+
+def test_active_template_keys_have_a_runtime_or_external_consumer():
+    active = {
+        match.group(1)
+        for match in re.finditer(
+            r"^([A-Z][A-Z0-9_]*)=", ENV_TEMPLATE.read_text(encoding="utf-8"), re.M
+        )
+    }
+    external_consumers = {
+        # Standard Datadog agent/tracer variables consumed by the external
+        # Datadog runtime rather than by Apex application code.
+        "DD_API_KEY",
+        "DD_AGENT_HOST",
+        "DD_TRACE_AGENT_PORT",
+        "DD_ENV",
+        "DD_SERVICE",
+        "DD_LOGS_INJECTION",
+    }
+    suffixes = {".py", ".js", ".jsx", ".ts", ".tsx", ".yml", ".yaml", ".toml", ".sh", ".ps1"}
+    source_parts = {".git", ".venv", "venv", "__pycache__", "node_modules", "tests", "docs", "build", "dist"}
+    source = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        relative = path.relative_to(ROOT)
+        if source_parts.intersection(relative.parts):
+            continue
+        try:
+            source.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    repository_source = "\\n".join(source)
+    missing = sorted(
+        key for key in active
+        if key not in external_consumers and key not in repository_source
+    )
+    assert not missing, (
+        "Active .env.example keys have no code/config consumer: "
+        + ", ".join(missing)
+    )
