@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from loguru import logger
 
 from tick import EventBus, TickStore, CandleCloseDetector, TickRouter
+import tick.tick_sources as tick_sources
 
 
 def _make_adapter(symbols, results):
@@ -134,3 +135,30 @@ class TestDerivAdapterFlap:
         latest = store.get_latest("A")
         assert latest is not None
         assert latest.source == "deriv"
+
+
+def test_offline_deriv_adapter_never_uses_alternate_venue(monkeypatch):
+    from tick.tick_sources import DerivTickAdapter
+
+    bus = EventBus()
+    store = TickStore()
+    detector = CandleCloseDetector(bus)
+    router = TickRouter(store, detector, bus)
+    calls = []
+
+    def forbidden_fallback(_symbol):
+        calls.append("called")
+        raise AssertionError("offline Deriv adapter must not poll another venue")
+
+    pm = SimpleNamespace(deriv_connected=False, get_deriv_price=forbidden_fallback)
+    adapter = DerivTickAdapter(pm, router, ["EURUSD"], poll_interval=0.0)
+
+    def stop_after_wait(_seconds):
+        adapter._running = False
+
+    monkeypatch.setattr(tick_sources._time, "sleep", stop_after_wait)
+    adapter._running = True
+    adapter._poll_loop()
+
+    assert calls == []
+    assert store.get_latest("EURUSD") is None
