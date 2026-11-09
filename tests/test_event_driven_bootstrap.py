@@ -47,12 +47,15 @@ def _make_position(
 def _mock_platform_manager(positions=None):
     pm = MagicMock()
     pm.get_all_open_positions.return_value = positions or []
-    pm.get_price.side_effect = lambda symbol: SimpleNamespace(
+    _price = lambda symbol: SimpleNamespace(
         symbol=symbol,
         bid=1.1000,
         ask=1.1002,
         time=datetime.now(timezone.utc),
     )
+    pm.get_price.side_effect = _price
+    pm.get_deriv_price.side_effect = _price
+    pm.deriv_connected = True
     pm.get_spread.return_value = 1.2
     pm.get_platform_name.return_value = "deriv"
     pm.fetch_market_data.return_value = {}
