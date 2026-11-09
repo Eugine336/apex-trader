@@ -17,6 +17,7 @@ backoff sleeps run outside the lock so one retrying intent never stalls others.
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass, field, replace
 from threading import Lock
@@ -159,6 +160,19 @@ class ExecutorConfig:
         self.margin_block_entry_level_pct = value
 
 
+def _trading_enabled_from_env() -> bool:
+    """Read the final execution-boundary gate for new exposure."""
+    raw = os.getenv("TRADING_ENABLED")
+    if raw is None:
+        return True
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("TRADING_ENABLED must be a boolean")
+
+
 class ActionExecutor:
     """Serialized, risk-gated broker execution.
 
@@ -175,6 +189,10 @@ class ActionExecutor:
     ) -> None:
         self._broker = broker
         self._cfg = config or ExecutorConfig()
+        # Defense in depth: CognitionConfig stops new Brain origination, while
+        # this last-mile gate also rejects any already-queued OPEN intent.
+        # Management/close intents remain available for risk reduction.
+        self._trading_enabled = _trading_enabled_from_env()
         self._gate = RiskGate(self._cfg.gate_config)
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
@@ -683,6 +701,19 @@ class ActionExecutor:
             Current account drawdown percentage.
         """
         self._inc("intents_received")
+
+        # A disabled trading switch must reject every new exposure at the
+        # execution boundary, including pending OPEN orders already queued
+        # before the operator disabled origination. It must not block closes
+        # or existing-position management.
+        if intent.intent_type == IntentType.OPEN and not self._trading_enabled:
+            reason = "trading_disabled_by_TRADING_ENABLED"
+            self._inc("intents_rejected")
+            logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+            return ExecutionResult(
+                intent=intent, success=False, rejected_by_gate=True,
+                gate_reason=reason, error=reason,
+            )
 
         # The canonical identity is versioned and carried with Brain-originated
         # intent provenance. Reject a malformed/mismatched OPEN before it can
