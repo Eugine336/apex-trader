@@ -102,7 +102,7 @@ def _connected_connector(monkeypatch):
     monkeypatch.setattr(mt5_module, "mt5", fake)
     connector = MT5Connector()
     connector._connected = True
-    connector._read_server_clock_state = lambda: SimpleNamespace(
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=0,
         age_seconds=lambda epoch: __import__("time").time() - float(epoch),
         server_now_epoch=lambda: __import__("time").time(),
@@ -153,7 +153,7 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
         {"time": int(server_now - 30), "open": 1.1, "high": 1.3, "low": 1.0,
          "close": 1.2, "tick_volume": 11, "real_volume": 0, "spread": 10},
     ]
-    connector._read_server_clock_state = lambda: SimpleNamespace(
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
         age_seconds=lambda epoch: server_now - float(epoch),
         server_now_epoch=lambda: server_now,
@@ -168,7 +168,7 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
 
 def test_recent_completed_bar_read_fails_closed_without_server_clock(monkeypatch):
     connector = _connected_connector(monkeypatch)
-    connector._read_server_clock_state = lambda: None
+    connector._read_server_clock_state = lambda *args, **kwargs: None
 
     with pytest.raises(RuntimeError, match="completed-bar status cannot be verified"):
         connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
@@ -221,7 +221,7 @@ def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
          "bid": 1.1, "ask": 1.2, "last": 1.15, "volume": 3,
          "volume_real": 3.0, "flags": 32},
     ]
-    connector._read_server_clock_state = lambda: SimpleNamespace(
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         server_now_epoch=lambda: now + offset,
@@ -299,7 +299,7 @@ def test_server_clock_tick_is_normalized_to_utc_with_raw_provenance(monkeypatch)
         volume=3, volume_real=3.0, flags=16,
     )
     mt5_module.mt5.symbol_info_tick = lambda _symbol: fake_tick
-    connector._read_server_clock_state = lambda: SimpleNamespace(
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
         age_seconds=lambda epoch: (now + offset) - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch) - offset,
