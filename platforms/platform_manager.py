@@ -1520,7 +1520,7 @@ class PlatformManager:
                 bal = float(info.balance)
             except (TypeError, ValueError):  # SAFE-FALLBACK: omit account with malformed balance from summary
                 continue
-            if bal >= 0:
+            if math.isfinite(bal) and bal >= 0:
                 balances[key] = bal
         return balances
 
