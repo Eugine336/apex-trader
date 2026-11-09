@@ -1319,7 +1319,10 @@ class SystemContext:
                             execution_observations=observations,
                         )
                     except Exception as exc:  # noqa: BLE001 — analysis must never break cognition
-                        logger.warning("[cognition] execution-cost read unavailable for %s: %s", symbol, exc)
+                        logger.warning(
+                            "[cognition] execution-cost read unavailable for {}: {}",
+                            symbol, exc,
+                        )
                         return {
                             "symbol": str(symbol or "").strip().upper(),
                             "source_timestamp_epoch": None,
