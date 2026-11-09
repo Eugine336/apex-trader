@@ -44,6 +44,10 @@ def main() -> int:
         "--symbols", nargs="*", default=None,
         help="Exact broker symbols to inspect; default: first five visible symbols",
     )
+    parser.add_argument(
+        "--terminal-path", default=None,
+        help="Exact terminal64.exe path; omit to use MT5 automatic discovery",
+    )
     args = parser.parse_args()
 
     try:
@@ -52,7 +56,11 @@ def main() -> int:
         print("MetaTrader5 Python package is unavailable in this interpreter.")
         return 2
 
-    if not mt5.initialize():
+    initialized = (
+        mt5.initialize(args.terminal_path)
+        if args.terminal_path else mt5.initialize()
+    )
+    if not initialized:
         print(f"MT5 initialize failed: {mt5.last_error()}")
         return 2
 
