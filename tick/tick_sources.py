@@ -196,6 +196,10 @@ class DerivTickAdapter:
             target=self._poll_loop, daemon=True, name="deriv-tick-adapter",
         )
         self._thread.start()
+        if not bool(getattr(self._pm, "deriv_connected", False)):
+            logger.info(
+                "[deriv-adapter] waiting for Deriv connection — no alternate-venue fallback"
+            )
         logger.info("[deriv-adapter] started for {} symbols", len(self._symbols))
 
     def stop(self) -> None:
