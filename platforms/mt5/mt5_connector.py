@@ -1024,7 +1024,10 @@ class MT5Connector(BaseConnector):
                 "source": "mt5.copy_ticks_range",
                 "source_verified": True,
                 "source_symbol": mapped,
-                "source_timezone": "UTC",
+                "source_timezone": "broker_server",
+                "source_timestamp_verified": False,
+                "source_utc_offset_seconds": None,
+                "utc_normalization": "historical_offset_required",
             })
             return frame
         # MT5 tick-history epochs are broker-server wall-clock values. A
