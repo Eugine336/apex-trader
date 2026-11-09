@@ -160,6 +160,7 @@ class MT5Connector(BaseConnector):
         self._server_clock_state_cache = None
         self._server_clock_state_cache_at = None
         self._clock_tick_observations = {}
+        self._server_clock_retry_after = 0.0
         self._server_clock_unavailable_warned = False
         if sys_platform.system() != "Windows":
             logger.warning(
@@ -229,6 +230,8 @@ class MT5Connector(BaseConnector):
         self._connected = False
         self._server_clock_state_cache = None
         self._server_clock_state_cache_at = None
+        self._clock_tick_observations = {}
+        self._server_clock_retry_after = 0.0
         self._server_clock_unavailable_warned = False
         logger.info("MT5 disconnected")
 
