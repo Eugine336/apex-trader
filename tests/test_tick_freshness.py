@@ -208,6 +208,11 @@ class TestMT5ConfigurableAge:
             c._mapper.to_broker.return_value = "EURUSD"
             c._symbol_cache = {}
             c._max_tick_age_seconds = float("10")
+            c._read_server_clock_state = lambda: SimpleNamespace(
+                offset_seconds=0,
+                age_seconds=lambda epoch: _time.time() - float(epoch),
+                to_utc_epoch=lambda epoch: float(epoch),
+            )
         old_epoch = _now_epoch() - 30
         mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick(epoch=old_epoch)
         with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
