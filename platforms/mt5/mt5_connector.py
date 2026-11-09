@@ -1003,7 +1003,9 @@ class MT5Connector(BaseConnector):
     ) -> pd.DataFrame:
         """Fetch the broker's historical tick tape without inventing aggressor flow.
 
-        Datetimes must be timezone-aware; the MT5 request is normalized to UTC.
+        Request bounds must be timezone-aware and are normalized to UTC. Returned
+        epochs are broker-server time; only a short live window is converted to
+        UTC with a fresh publisher offset. Older history remains unnormalized.
         BUY/SELL aggressor flags are exposed only when the broker supplies them.
         """
         self._require_connection()
