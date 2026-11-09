@@ -55,3 +55,23 @@ def test_every_runtime_environment_read_is_documented_in_env_example():
         "Runtime environment variables are missing from .env.example: "
         + ", ".join(f"{name} ({', '.join(sorted(set(reads[name])))})" for name in missing)
     )
+
+
+def test_template_does_not_advertise_unconsumed_legacy_controls():
+    template = ENV_TEMPLATE.read_text(encoding="utf-8")
+    removed = {
+        "COGNITION_ORIGINATION_STOP_FRACTION",
+        "COGNITION_ORIGINATION_REWARD_MULTIPLE",
+        "COGNITION_ORIGINATION_MIN_RR",
+        "APEX_ED_POSEVAL_PARALLEL",
+        "APEX_ED_EVENT_REACTIVE_MGMT",
+        "APEX_OBS_CACHE",
+        "APEX_OBS_CACHE_DIR",
+        "APEX_GOLD_DESK_SHADOW_ENABLED",
+        "APEX_GOLD_DESK_VENUE",
+    }
+    active = {
+        match.group(1)
+        for match in re.finditer(r"^([A-Z][A-Z0-9_]*)=", template, re.M)
+    }
+    assert not (removed & active)
