@@ -39,6 +39,14 @@ def test_every_runtime_environment_read_is_documented_in_env_example():
                 reads.setdefault(match.group(1), []).append(
                     str(path.relative_to(ROOT))
                 )
+        # Config dataclasses use a tuple of (environment-name, attribute)
+        # pairs followed by os.getenv(env_name); capture those literal names too.
+        for mapping in re.finditer(
+            r"for\\s+env_name\\s*,\\s*attr\\s+in\\s*\\(([\\s\\S]*?)\\)\\s*:",
+            source,
+        ):
+            for name in re.findall(r"['\\\"]([A-Z][A-Z0-9_]*)['\\\"]", mapping.group(1)):
+                reads.setdefault(name, []).append(str(path.relative_to(ROOT)))
 
     missing = sorted(set(reads) - declared)
     assert not missing, (
