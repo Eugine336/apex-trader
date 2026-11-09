@@ -873,6 +873,18 @@ class MT5Connector(BaseConnector):
         # closed-bar dual-view: structural modules drop it themselves, live
         # observational reads legitimately keep it).
         if not include_forming:
+            clock = self._read_server_clock_state()
+            if clock is None:
+                raise RuntimeError(
+                    "MT5 server clock offset unavailable; completed-bar status "
+                    "cannot be verified without scripts/mt5_clock_publisher.mq5"
+                )
+            # The DataFrame time column is a broker-server wall-clock label until
+            # a historical offset series is available. Compare it to the matching
+            # broker-server clock, never to the host UTC clock.
+            server_now_label = datetime.fromtimestamp(
+                clock.server_now_epoch(), tz=timezone.utc,
+            )
             seconds_by_tf = {
                 "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
                 "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
@@ -882,12 +894,12 @@ class MT5Connector(BaseConnector):
             }
             if timeframe.upper() == "MN1":
                 close_times = out["time"] + pd.offsets.MonthBegin(1)
-                out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+                out = out.loc[close_times <= server_now_label].copy()
             else:
                 duration = seconds_by_tf.get(timeframe.upper())
                 if duration is not None:
                     close_times = out["time"] + pd.to_timedelta(duration, unit="s")
-                    out = out.loc[close_times <= datetime.now(timezone.utc)].copy()
+                    out = out.loc[close_times <= server_now_label].copy()
         out.attrs.update({
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
@@ -948,6 +960,15 @@ class MT5Connector(BaseConnector):
         ]
         frame = frame[[column for column in columns if column in frame.columns]].copy()
         if not include_forming:
+            clock = self._read_server_clock_state()
+            if clock is None:
+                raise RuntimeError(
+                    "MT5 server clock offset unavailable; completed-bar status "
+                    "cannot be verified without scripts/mt5_clock_publisher.mq5"
+                )
+            server_now_label = datetime.fromtimestamp(
+                clock.server_now_epoch(), tz=timezone.utc,
+            )
             seconds_by_tf = {
                 "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
                 "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
@@ -957,12 +978,12 @@ class MT5Connector(BaseConnector):
             }
             if timeframe.upper() == "MN1":
                 bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
-                frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+                frame = frame.loc[bar_close_times <= server_now_label].copy()
             else:
                 duration = seconds_by_tf.get(timeframe.upper())
                 if duration is not None:
                     bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
-                    frame = frame.loc[bar_close_times <= datetime.now(timezone.utc)].copy()
+                    frame = frame.loc[bar_close_times <= server_now_label].copy()
         frame.attrs.update({
             "source": "mt5.copy_rates_range",
             "source_timestamp_verified": True,
