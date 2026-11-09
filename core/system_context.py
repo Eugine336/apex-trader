@@ -264,7 +264,9 @@ class SystemContext:
         ctx = cls(owner_limits=getattr(config, "owner_limits", None))
         try:
             from data_sources import DataSourceRegistry
+            from data_sources.mt5_portfolio import MT5PortfolioAdapter
             ctx.data_source_registry = DataSourceRegistry()
+            ctx.data_source_registry.register(MT5PortfolioAdapter(platform_manager))
         except Exception as exc:  # noqa: BLE001 — optional read-only provider registry must not break startup
             logger.warning("[SystemContext] optional data-source registry unavailable: {}", type(exc).__name__)
             ctx.data_source_registry = None

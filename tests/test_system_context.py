@@ -33,6 +33,9 @@ class TestSystemContextCreate:
         assert ctx.correlation_engine is not None
         assert ctx.account_risk is not None
         assert ctx.risk_reporter is not None
+        assert ctx.data_source_registry.providers() == ("mt5-portfolio",)
+        (portfolio_capability,) = ctx.data_source_registry.capabilities()
+        assert portfolio_capability.completeness.value == "unknown"
 
     def test_account_key_caching(self, config):
         pm = _FakePM()

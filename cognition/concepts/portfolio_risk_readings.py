@@ -223,6 +223,25 @@ def _read_portfolio(
         facts={
             "portfolio_id": portfolio_id or None,
             "portfolio_snapshot_verified": snapshot_valid,
+            "partial_portfolio_observation_available": bool(
+                isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+            ),
+            "partial_portfolio_unknowns": list(snapshot.get("unknowns", []) or []) if isinstance(snapshot, dict) else [],
+            "partial_portfolio_observation_errors": (
+                list(snapshot.get("partial_observation", {}).get("observation_errors", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
+            "partial_account_observations": (
+                list(snapshot.get("partial_observation", {}).get("account_observations", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
+            "partial_positions_observed": (
+                list(snapshot.get("partial_observation", {}).get("positions_observed", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
             "positions_complete": positions_valid,
             "position_count": len(positions) if positions_valid else None,
             "account_equity": equity if snapshot_valid else None,

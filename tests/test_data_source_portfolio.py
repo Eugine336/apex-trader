@@ -111,6 +111,75 @@ def test_portfolio_snapshot_provider_failure_is_visible_and_incomplete():
     assert result["unknowns"]
 
 
+def test_mt5_adapter_integrates_sanitized_live_partial_evidence_without_claiming_verification():
+    from data_sources.mt5_portfolio import MT5PortfolioAdapter
+
+    class Connector:
+        def get_account_snapshot(self):
+            return {
+                "source_verified": True, "login": 123456, "password": "never-copy",
+                "equity": 2500.0, "currency": "USD", "leverage": 100,
+            }
+
+        def get_position_snapshots(self):
+            return [{"ticket": 9988, "symbol": "EURUSD", "volume": 0.2, "profit": 3.0}]
+
+    class Manager:
+        mt5_connectors = [Connector()]
+        _mt5_connected_flags = [True]
+
+    adapter = MT5PortfolioAdapter(Manager())
+    (observation,) = adapter.fetch(ObservationKind.PORTFOLIO_SNAPSHOT)
+    assert observation.provenance.completeness is Completeness.PARTIAL
+    assert observation.provenance.source_timestamp_verified is False
+    assert observation.provenance.source_timestamp_epoch is None
+    assert observation.values["account_observations"] == [{"equity": 2500.0, "currency": "USD", "leverage": 100}]
+    assert observation.values["positions_observed"] == [{"symbol": "EURUSD", "volume": 0.2, "profit": 3.0}]
+    assert "password" not in repr(observation.values)
+    assert "login" not in repr(observation.values)
+    assert "ticket" not in repr(observation.values)
+
+    registry = DataSourceRegistry()
+    registry.register(adapter)
+    result = build_portfolio_risk_snapshot(
+        registry, analysis_epoch=1_800_000_100, completed_bar_epoch=1_799_999_900,
+    )
+    assert result["complete"] is False
+    assert result["source_timestamp_verified"] is False
+    assert result["partial_observation"]["account_observations"][0]["equity"] == 2500.0
+
+
+def test_portfolio_reader_surfaces_partial_mt5_evidence_as_data_gated():
+    from data_sources.mt5_portfolio import MT5PortfolioAdapter
+    from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
+
+    class Connector:
+        def get_account_snapshot(self):
+            return {"source_verified": True, "equity": 2500.0}
+
+        def get_position_snapshots(self):
+            return []
+
+    class Manager:
+        mt5_connectors = [Connector()]
+        _mt5_connected_flags = [True]
+
+    registry = DataSourceRegistry()
+    registry.register(MT5PortfolioAdapter(Manager()))
+    bars = {"M5": [{
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+        "timestamp_epoch": 1_799_999_900, "source_timestamp_verified": True,
+    }]}
+    (reading,) = PortfolioRiskReadings().read_with_context(
+        "XAUUSD", bars, {"data_source_registry": registry, "analysis_epoch": 1_800_000_100},
+    )
+    assert reading.applicable is False
+    assert reading.facts["portfolio_snapshot_verified"] is False
+    assert reading.facts["partial_portfolio_observation_available"] is True
+    assert reading.facts["account_equity"] is None
+    assert reading.facts["partial_account_observations"] == [{"equity": 2500.0}]
+
+
 
 def test_portfolio_risk_reader_consumes_registered_broker_snapshot():
     from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
