@@ -8,9 +8,11 @@ package and compares provider epoch fields with the host UTC clock.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -45,8 +47,8 @@ def main() -> int:
         help="Exact broker symbols to inspect; default: first five visible symbols",
     )
     parser.add_argument(
-        "--terminal-path", default=None,
-        help="Exact terminal64.exe path; omit to use MT5 automatic discovery",
+        "--terminal-path", default=os.environ.get("MT5_TERMINAL_PATH") or None,
+        help="Exact terminal64.exe path; defaults to MT5_TERMINAL_PATH in process environment",
     )
     args = parser.parse_args()
 
@@ -56,6 +58,9 @@ def main() -> int:
         print("MetaTrader5 Python package is unavailable in this interpreter.")
         return 2
 
+    if args.terminal_path and not Path(args.terminal_path).is_file():
+        print("Configured MT5 terminal executable does not exist.")
+        return 2
     initialized = (
         mt5.initialize(args.terminal_path)
         if args.terminal_path else mt5.initialize()
