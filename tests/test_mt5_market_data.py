@@ -105,6 +105,7 @@ def _connected_connector(monkeypatch):
     connector._read_server_clock_state = lambda: SimpleNamespace(
         offset_seconds=0,
         age_seconds=lambda epoch: __import__("time").time() - float(epoch),
+        server_now_epoch=lambda: __import__("time").time(),
         to_utc_epoch=lambda epoch: float(epoch),
     )
     return connector
