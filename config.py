@@ -3910,6 +3910,11 @@ class CognitionConfig:
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "live"
         ).strip().lower()
+        # Global operator kill switch for NEW exposure. It does not disable
+        # existing-position management, reconciliation, or risk-reducing closes.
+        # Default preserves the pre-existing origination-mode behaviour.
+        if not _llm_env_bool("TRADING_ENABLED", True):
+            self.origination_mode = "off"
         self.management_mode = (
             os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
@@ -4327,6 +4332,46 @@ class AppConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
+        # TRADING_MODE is the operator-facing universe selector documented in
+        # .env.example. Resolve it here so the documented value reaches the live
+        # AppConfig used by PlatformManager and the scan pipeline. Explicit
+        # API/user overrides are applied after construction and retain precedence.
+        env_mode = os.getenv("TRADING_MODE")
+        if env_mode is not None and env_mode.strip():
+            requested_mode = env_mode.strip().lower()
+            if requested_mode in {"gold", "xauusd"}:
+                self.universe_mode = "single"
+                self.enabled_symbols_override = ["XAUUSD"]
+            elif requested_mode in {"full", "all"}:
+                self.universe_mode = "all"
+                raw_categories = os.getenv("TRADING_ENABLED_CATEGORIES")
+                if raw_categories is not None:
+                    self.enabled_categories = [
+                        value.strip().lower()
+                        for value in raw_categories.split(",")
+                        if value.strip()
+                    ]
+            elif requested_mode in {"selected", "custom"}:
+                raw_symbols = os.getenv("TRADING_SYMBOLS", "")
+                self.universe_mode = "selected"
+                self.enabled_symbols_override = [
+                    value.strip().upper()
+                    for value in raw_symbols.split(",")
+                    if value.strip()
+                ]
+            elif requested_mode == "single":
+                raw_symbols = os.getenv("TRADING_SYMBOLS", "")
+                self.universe_mode = "single"
+                self.enabled_symbols_override = [
+                    value.strip().upper()
+                    for value in raw_symbols.split(",")
+                    if value.strip()
+                ]
+            else:
+                raise ValueError(
+                    "TRADING_MODE must be gold, full, selected, or single"
+                )
+
         mode = str(self.universe_mode or "all").strip().lower()
         mode = {"full": "all", "custom": "selected", "one": "single"}.get(mode, mode)
         if mode not in {"all", "selected", "single"}:
