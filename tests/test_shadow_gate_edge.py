@@ -40,6 +40,7 @@ def test_gate_edge_ev_is_count_weighted():
         s.resolve_contract("c2", _resolution("WIN", 1.0))
         s.resolve_contract("c3", _resolution("LOSS", -1.0))
         edge = {g["gate"]: g for g in s.get_gate_edge()}
+        s.close()
 
     g = edge["ev_gate:x"]
     assert g["total"] == 3
@@ -59,6 +60,7 @@ def test_gate_edge_excludes_expired_from_ev():
         s.resolve_contract("w1", _resolution("WIN", 1.0))
         s.mark_expired("e1", bars_replayed=99)  # EXPIRED → no realized R
         edge = {g["gate"]: g for g in s.get_gate_edge()}
+        s.close()
 
     g = edge["spread:2.0"]
     assert g["total"] == 2          # expired still counted as rejected
@@ -77,6 +79,7 @@ def test_gate_edge_negative_ev_gate_is_earning_its_keep():
         s.resolve_contract("l1", _resolution("LOSS", -1.0))
         s.resolve_contract("l2", _resolution("LOSS", -0.5))
         edge = {g["gate"]: g for g in s.get_gate_edge()}
+        s.close()
 
     g = edge["news:HIGH"]
     assert g["ev_r"] == -0.75       # negative EV ⇒ gate correctly filters losers
@@ -88,3 +91,4 @@ def test_gate_edge_empty_when_unresolved():
         s = ShadowStore(Path(tmp) / "shadow.db")
         s.insert_contract(_contract("p1", "ev_gate:x"))  # stays PENDING
         assert s.get_gate_edge() == []
+        s.close()

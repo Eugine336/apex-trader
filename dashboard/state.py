@@ -76,7 +76,9 @@ class LiveState(
     are returned so the frontend never breaks.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, control_store: Any = None) -> None:
+        from dashboard.control_store import DashboardControlStore
+
         self._platform_manager: Any = None
         self._event_driven_system: Any = None
         self._system_context: Any = None
@@ -89,6 +91,7 @@ class LiveState(
         self._events_cache: list = []
         self._events_cache_ts: float = 0.0
         self._events_cache_ttl: float = 2.0
+        self._control_store = control_store or DashboardControlStore()
 
     def attach(
         self,
@@ -109,6 +112,22 @@ class LiveState(
 
     def set_event_driven_system(self, ed_system: Any) -> None:
         self._event_driven_system = ed_system
+        try:
+            self._control_store.apply_to(ed_system)
+        except Exception as exc:  # noqa: BLE001 — unknown persisted pause state fails closed
+            ed_system._paused = True
+            logger.critical(
+                "[dashboard] durable control restore failed; new entries remain paused: {}",
+                type(exc).__name__,
+            )
+
+    def start_event_driven_system(self, ed_system: Any) -> None:
+        """Restore durable operator controls before engine threads can trade."""
+        self.set_event_driven_system(ed_system)
+        ed_system.start()
+
+    def get_control_audit(self, limit: int = 100) -> dict[str, Any]:
+        return {"events": self._control_store.list_recent(limit)}
 
     def get_mt5_instruments(self) -> dict:
         """Expose the connected broker's native symbol catalogue read-only."""

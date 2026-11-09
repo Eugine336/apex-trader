@@ -129,14 +129,14 @@ class ProcessWatchdog:
                             age,
                         )
                         self._stall_logged = True
-                    return round(age, 1)
+                    return age
             if not self._stall_logged:
                 logger.bind(component="ops", event="tick_stall").critical(
                     "🚨 TICK STALL — no completed tick for {:.0f}s (budget {:.0f}s)",
                     age, self._max_tick,
                 )
                 self._stall_logged = True
-            return round(age, 1)
+            return age
         return None
 
     def get_state(self) -> dict:

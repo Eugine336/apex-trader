@@ -122,6 +122,8 @@ class SystemContext:
     # research and AI advisors turned into advisory Evidence for the Brain.
     # Read-only, gated, throttled and self-measuring. Default-off.
     knowledge_source: Optional[Any] = None
+    # Optional read-only external/broker data adapters; never an execution gateway.
+    data_source_registry: Optional[Any] = None
     # Reasoning Orchestrator (Part XVII) — lets the one Brain consult several
     # reasoning engines; each opinion becomes advisory Evidence (never a vote).
     # Default-off (consult_multi); the Brain remains the sole decision-maker.
@@ -260,6 +262,14 @@ class SystemContext:
 
         risk_cfg = config.risk
         ctx = cls(owner_limits=getattr(config, "owner_limits", None))
+        try:
+            from data_sources import DataSourceRegistry
+            from data_sources.mt5_portfolio import MT5PortfolioAdapter
+            ctx.data_source_registry = DataSourceRegistry()
+            ctx.data_source_registry.register(MT5PortfolioAdapter(platform_manager))
+        except Exception as exc:  # noqa: BLE001 — optional read-only provider registry must not break startup
+            logger.warning("[SystemContext] optional data-source registry unavailable: {}", type(exc).__name__)
+            ctx.data_source_registry = None
 
         # ── DrawdownGuard ────────────────────────────────────────────
         try:
@@ -423,7 +433,7 @@ class SystemContext:
         # ── NewsGuard ───────────────────────────────────────────────
         try:
             from brain.session_engine import NewsGuard as _NewsGuard
-            ctx.news_guard = _NewsGuard()
+            ctx.news_guard = _NewsGuard(data_source_registry=ctx.data_source_registry)
         except Exception as exc:
             logger.warning("[SystemContext] NewsGuard init failed: {}", exc)
 
@@ -1345,27 +1355,81 @@ class SystemContext:
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: invalid optional config keeps default history
                     _concept_history_bars = 100
 
+                # One immutable multi-symbol OHLC snapshot is prepared at the
+                # beginning of each CognitionLoop cycle and shared by every
+                # selected symbol. This is the live bridge from the existing
+                # parallel broker batch API into the native concept readers.
+                _concept_market_cycle_snapshot: dict[str, Any] = {}
+                _concept_market_cycle_specs: dict[str, Any] = {}
+                _concept_market_cycle_meta: dict[str, Any] = {"cutoff_epoch": None}
+
+                def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
+                    _concept_market_cycle_snapshot.clear()
+                    _concept_market_cycle_specs.clear()
+                    from datetime import datetime, timezone
+                    _concept_market_cycle_meta["cutoff_epoch"] = datetime.now(timezone.utc).timestamp()
+                    try:
+                        batch = platform_manager.fetch_all_market_data(
+                            symbols=list(symbols),
+                            timeframes=list(_concept_timeframes),
+                            count=_concept_history_bars + 1,
+                        )
+                        _concept_market_cycle_snapshot.update({
+                            str(key or "").strip().upper(): value
+                            for key, value in (batch or {}).items()
+                            if isinstance(value, dict)
+                        })
+                        # Contract metadata is gathered through the adapter and
+                        # kept separate from bars. Readers must verify its source;
+                        # symbol-name parsing is never used as a currency fallback.
+                        for canonical in _concept_market_cycle_snapshot:
+                            try:
+                                spec = platform_manager.get_symbol_spec(canonical)
+                            except Exception as spec_exc:  # noqa: BLE001 — one missing spec must not erase other peers
+                                logger.warning(
+                                    "[cognition] peer specification unavailable for %s: %s",
+                                    canonical, type(spec_exc).__name__,
+                                )
+                                continue
+                            if isinstance(spec, dict):
+                                _concept_market_cycle_specs[canonical] = dict(spec)
+                    except Exception as exc:  # noqa: BLE001 — intermarket context remains unavailable, not fabricated
+                        logger.warning(
+                            "[cognition] multi-symbol completed-bar snapshot unavailable: %s",
+                            type(exc).__name__,
+                        )
+
+                def _end_concept_market_cycle() -> None:
+                    _concept_market_cycle_snapshot.clear()
+                    _concept_market_cycle_specs.clear()
+                    _concept_market_cycle_meta["cutoff_epoch"] = None
+
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
-                    frames = platform_manager.fetch_market_data(
-                        symbol,
-                        timeframes=list(_concept_timeframes),
-                        # Request one extra broker row because the final
-                        # forming candle is excluded by analyze_market_frames.
-                        count=_concept_history_bars + 1,
-                        include_forming=True,
-                    )
+                    canonical_symbol = str(symbol or "").strip().upper()
+                    frames = _concept_market_cycle_snapshot.get(canonical_symbol)
+                    if not isinstance(frames, dict) or not frames:
+                        # Preserve the existing single-symbol observation path if
+                        # batch discovery fails or the symbol is not in the batch.
+                        frames = platform_manager.fetch_market_data(
+                            symbol,
+                            timeframes=list(_concept_timeframes),
+                            count=_concept_history_bars + 1,
+                            include_forming=True,
+                        )
                     # Broker symbol_info is an independent specification
                     # source. Do not substitute config defaults when the
                     # connected venue cannot attest its contract fields.
-                    try:
-                        symbol_spec = platform_manager.get_symbol_spec(symbol)
-                    except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
-                        logger.warning(
-                            "[cognition] broker symbol specification unavailable for %s: %s",
-                            symbol, type(exc).__name__,
-                        )
-                        symbol_spec = {}
+                    symbol_spec = _concept_market_cycle_specs.get(canonical_symbol)
+                    if not isinstance(symbol_spec, dict) or not symbol_spec:
+                        try:
+                            symbol_spec = platform_manager.get_symbol_spec(symbol)
+                        except Exception as exc:  # noqa: BLE001 — keep market analysis alive while recording unavailable spec
+                            logger.warning(
+                                "[cognition] broker symbol specification unavailable for %s: %s",
+                                symbol, type(exc).__name__,
+                            )
+                            symbol_spec = {}
                     try:
                         depth_levels = platform_manager.get_market_depth(symbol)
                         if not isinstance(depth_levels, list):
@@ -1427,8 +1491,20 @@ class SystemContext:
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
                             "tick_history": tick_history,
+                            "multi_symbol_frames": dict(_concept_market_cycle_snapshot),
+                            "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
+                            "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
+                            "multi_symbol_specs": dict(_concept_market_cycle_specs),
+                            "multi_symbol_source_includes_forming_bar": True,
+                            "data_source_registry": ctx.data_source_registry,
                         },
                     )
+
+                # EvidenceConsolidator forwards these lifecycle hooks to
+                # CognitionLoop so all symbols in one reasoning cycle share the
+                # same broker batch instead of independently fetching a new cut.
+                _concept_market_source.begin_cycle = _begin_concept_market_cycle
+                _concept_market_source.end_cycle = _end_concept_market_cycle
 
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,

@@ -111,6 +111,94 @@ def _fake_system(store: ManagementStateStore, inflight: dict):
 
 
 class TestHandleManageResultRollback:
+    def test_successful_partial_close_finishes_pending_state(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        store = ManagementStateStore()
+        mgmt = store.get_or_create(
+            "T1", remaining_size_lots=0.2, partial_closed=True,
+            tp1_hit=True, status="PARTIAL_CLOSE_PENDING",
+        )
+        fake = _fake_system(
+            store,
+            {("T1", int(IntentType.PARTIAL_CLOSE)): {
+                "partial_closed": False, "tp1_hit": False, "status": "OPEN",
+            }},
+        )
+        intent = Intent.partial_close(
+            symbol="EURUSD", ticket="T1", fraction=0.5,
+            source="tp1", reason="test",
+        )
+        EventDrivenSystem._handle_manage_result(
+            fake, intent, SimpleNamespace(success=True, error=None),
+        )
+        assert mgmt.partial_closed is True
+        assert mgmt.status == "OPEN"
+        store.close()
+
+    def test_restart_promotes_unacknowledged_partial_to_reconciliation(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        store = ManagementStateStore()
+        store.get_or_create(
+            "T1", remaining_size_lots=0.2, partial_closed=True,
+            tp1_hit=True, status="PARTIAL_CLOSE_PENDING",
+        )
+        fake = SimpleNamespace(
+            _mgmt_store=store,
+            _pm=SimpleNamespace(get_all_open_positions=lambda: [_position()]),
+        )
+        EventDrivenSystem._recover_open_positions(fake)
+        recovered = store.get("T1")
+        assert recovered.status == "RECONCILIATION_REQUIRED"
+        assert recovered.partial_closed is True
+        assert recovered.tp1_hit is True
+        store.close()
+
+    def test_ambiguous_partial_close_is_durable_and_not_rolled_back(self, tmp_path):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        db_path = str(tmp_path / "management.sqlite")
+        store = ManagementStateStore(db_path)
+        mgmt = store.get_or_create(
+            "T1", remaining_size_lots=0.2, partial_closed=False, status="OPEN",
+        )
+        mgmt.partial_closed = True
+        mgmt.tp1_hit = True
+        inflight = {
+            ("T1", int(IntentType.PARTIAL_CLOSE)): {
+                "partial_closed": False, "tp1_hit": False,
+            },
+        }
+        fake = _fake_system(store, inflight)
+        intent = Intent.partial_close(
+            symbol="EURUSD", ticket="T1", fraction=0.5,
+            source="tp1", reason="test",
+        )
+        EventDrivenSystem._handle_manage_result(
+            fake, intent, SimpleNamespace(success=False, error="AMBIGUOUS_ACK_LOST"),
+        )
+
+        current = store.get("T1")
+        assert current.partial_closed is True
+        assert current.tp1_hit is True
+        assert current.status == "RECONCILIATION_REQUIRED"
+        assert ("T1", int(IntentType.PARTIAL_CLOSE)) not in inflight
+        store.close()
+
+        recovered = ManagementStateStore(db_path)
+        restored = recovered.get("T1")
+        assert restored is not None
+        assert restored.partial_closed is True
+        assert restored.tp1_hit is True
+        assert restored.status == "RECONCILIATION_REQUIRED"
+        assert recovered.reconcile_partial_close("T1", 0.2) is False
+        assert recovered.get("T1").status == "RECONCILIATION_REQUIRED"
+        assert recovered.reconcile_partial_close("T1", 0.1) is True
+        assert recovered.get("T1").status == "OPEN"
+        assert recovered.get("T1").remaining_size_lots == 0.1
+        recovered.close()
+
     def test_failed_sl_rolls_back_and_clears_guard(self):
         from event_driven_bootstrap import EventDrivenSystem
 

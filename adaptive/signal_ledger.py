@@ -617,7 +617,7 @@ class SignalLedger(TuningGuardMixin):
                               o.max_adverse_move_pct, o.graded_at, o.trade_outcome
                        FROM signal_ledger s
                        JOIN signal_outcomes o ON o.signal_id = s.signal_id
-                       WHERE o.graded = 1 AND s.timestamp < ?
+                       WHERE o.graded = 1 AND s.timestamp <= ?
                        ORDER BY s.timestamp ASC""",
                     (cutoff,),
                 )

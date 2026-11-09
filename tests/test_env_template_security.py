@@ -12,11 +12,40 @@ _SECRET_KEY = re.compile(
     r"(?:PASSWORD|TOKEN|SECRET|(?:^|_)KEY$|API_KEY|LOGIN$|CLIENT_ID|ACCOUNT_ID|CREDENTIAL|VAULT)",
     re.IGNORECASE,
 )
+_ENV_READ = re.compile(
+    r'''(?:os\s*\.\s*getenv|os\s*\.\s*environ\s*\.\s*(?:get|setdefault|pop)|'''
+    r'''os\s*\.\s*environ\s*\[)\s*\(?\s*(['"])([A-Z][A-Z0-9_]*)\1'''
+)
+_ENV_TEMPLATE_KEY = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=")
 
 
 def test_secret_free_environment_template_exists():
     assert EXAMPLE.is_file()
     assert GITIGNORE.is_file()
+
+
+def test_literal_python_environment_reads_are_documented():
+    documented = {
+        match.group(1)
+        for line in EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if (match := _ENV_TEMPLATE_KEY.match(line))
+    }
+    missing: dict[str, list[str]] = {}
+    excluded = {".git", "__pycache__", "node_modules", ".venv", "tests"}
+    for path in ROOT.rglob("*.py"):
+        if excluded.intersection(path.relative_to(ROOT).parts):
+            continue
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in _ENV_READ.finditer(line):
+                key = match.group(2)
+                if key not in documented:
+                    missing.setdefault(key, []).append(
+                        f"{path.relative_to(ROOT)}:{line_number}"
+                    )
+
+    assert not missing, "Environment reads missing from .env.example: " + "; ".join(
+        f"{key} ({', '.join(locations)})" for key, locations in sorted(missing.items())
+    )
 
 
 def test_secret_like_environment_values_are_blank_in_example():

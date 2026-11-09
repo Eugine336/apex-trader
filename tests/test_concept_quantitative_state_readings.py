@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import math
+from statistics import pstdev
+from unittest.mock import patch
 
 from cognition.concepts import CONCEPT_MODULES, run_concepts
 from cognition.concepts.quantitative_state_readings import (
     QuantitativeStateReadings,
     _state_vector,
+    _returns,
 )
 
 
@@ -124,6 +127,33 @@ def test_state_vector_is_prefix_local_and_has_no_future_bar_dependency():
     prefix = _state_vector(bars, 79)
     extended = _state_vector(bars + _bars(5)[1:], 79)
     assert prefix == extended
+
+
+def test_state_vector_population_volatility_matches_reference_calculation():
+    bars = _bars(60)
+    vector = _state_vector(bars, 59)
+    assert vector is not None
+    returns = _returns([row["close"] for row in bars[-20:]])
+    assert math.isclose(vector[1], pstdev(returns), rel_tol=1e-12, abs_tol=1e-15)
+
+
+def test_analogue_and_novelty_share_one_state_history_build_per_timeframe():
+    from cognition.concepts import quantitative_state_readings as module
+
+    bars = _bars()
+    with patch.object(
+        module, "_historical_state_rows", wraps=module._historical_state_rows,
+    ) as build_rows:
+        readings = module.QuantitativeStateReadings().read(
+            "XAUUSD", {"M5": bars, "M15": bars},
+        )
+
+    assert build_rows.call_count == 2
+    assert len(readings) == 6
+    for timeframe in ("M5", "M15"):
+        by_concept = {item.concept: item for item in readings if item.timeframe == timeframe}
+        assert by_concept["clustering"].facts["historical_state_sample_count"] > 0
+        assert by_concept["anomaly_detection"].facts["historical_state_count"] > 0
 
 
 def test_native_pipeline_emits_non_directional_quantitative_evidence():

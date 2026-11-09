@@ -38,7 +38,7 @@ def test_data_repo_preflight_accepts_identical_and_plans_only_missing(tmp_path: 
     missing, conflicts = preflight_data_copy(source, target)
 
     assert conflicts == []
-    assert [str(src.relative_to(source)) for src, _ in missing] == ["nested/new.json"]
+    assert [src.relative_to(source).as_posix() for src, _ in missing] == ["nested/new.json"]
     for src, dst in missing:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)

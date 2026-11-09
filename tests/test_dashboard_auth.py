@@ -57,6 +57,9 @@ class TestH4FailClosedNoKey:
         r = client.post("/api/control/emergency-close")
         assert r.status_code == 503
 
+    def test_control_audit_unavailable_without_key(self, client):
+        assert client.get("/api/control/audit").status_code == 503
+
     def test_503_body_explains_reason(self, client):
         r = client.post("/api/control", json={"action": "stop"})
         assert "DD_DASHBOARD_API_KEY" in r.json()["error"]
@@ -96,6 +99,24 @@ class TestH4AuthEnabled:
     def test_control_without_key_returns_401(self, client):
         r = client.post("/api/control", json={"action": "pause"})
         assert r.status_code == 401
+
+    def test_durable_control_audit_requires_key_and_returns_recorded_events(self, tmp_path):
+        from types import SimpleNamespace
+        from dashboard.control_store import DashboardControlStore
+        from dashboard.state import LiveState
+
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "audit-key", "DD_DASHBOARD_TRUST_LOOPBACK": "0"})
+        state = LiveState(control_store=DashboardControlStore(tmp_path / "controls.db"))
+        state.set_event_driven_system(SimpleNamespace(_ctx=None, _paused=False))
+        assert state.pause_trading()["status"] == "paused"
+        client = TestClient(api.create_app(state))
+
+        assert client.get("/api/control/audit").status_code == 401
+        response = client.get("/api/control/audit", headers={"X-API-Key": "audit-key"})
+        assert response.status_code == 200
+        events = response.json()["events"]
+        assert events[0]["action"] == "pause_entries"
+        assert events[0]["outcome"] == "accepted"
 
 
 # ── M6: Constant-time key comparison ─────────────────────────────────────

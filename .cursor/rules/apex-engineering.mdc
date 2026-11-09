@@ -1,0 +1,6 @@
+---
+description: Mandatory Apex Trader engineering, safety, configuration and release contract
+alwaysApply: true
+---
+
+Before any task, read and follow the repository-root `AGENTS.md` and `docs/APEX_ENGINEERING_DELIVERY_CONTRACT.md`. These are mandatory for all engineering. Preserve the canonical identity and Constitution; the CognitiveBrain remains the sole market decision authority. Never access the real `.env`; never place secrets in `.env.example`; never send broker orders or weaken execution safety during engineering. All operator-tunable startup configuration must be validated and documented in `.env.example`. Runtime dashboard actions must use authenticated APIs and durable audited state, never write `.env`. Distinguish IMPLEMENTED, INTEGRATED, VALIDATED, DATA-GATED and PRODUCTION-ACCEPTED. Do not claim completion without the required evidence.

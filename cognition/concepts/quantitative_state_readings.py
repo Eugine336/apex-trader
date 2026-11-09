@@ -8,7 +8,7 @@ from the current observation; the current bar is never used as its own outcome.
 from __future__ import annotations
 
 import math
-from statistics import median, pstdev
+from statistics import median
 from typing import Any
 
 from cognition.concepts.auction_utils import clean_bars, last_source_epoch
@@ -32,6 +32,15 @@ def _returns(closes: list[float]) -> list[float]:
         for left, right in zip(closes, closes[1:])
         if left > 0.0 and right > 0.0
     ]
+
+
+def _population_std(values: list[float]) -> float:
+    """Compute population deviation without statistics' Fraction conversions."""
+    if not values:
+        return 0.0
+    centre = math.fsum(values) / len(values)
+    variance = math.fsum((value - centre) ** 2 for value in values) / len(values)
+    return math.sqrt(max(0.0, variance))
 
 
 def _acf(values: list[float], lag: int) -> float | None:
@@ -63,7 +72,7 @@ def _state_vector(bars: list[dict[str, Any]], end: int) -> tuple[float, ...] | N
     ]
     return (
         sum(returns[-5:]),
-        pstdev(returns),
+        _population_std(returns),
         median(ranges),
     )
 
@@ -185,9 +194,14 @@ def _historical_state_rows(
 
 
 def _analogue_reading(
-    timeframe: str, bars: list[dict[str, Any]], reference: float | None, reference_tf: str,
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    reference: float | None,
+    reference_tf: str,
+    *,
+    state_rows: list[tuple[int, tuple[float, ...], dict[str, float]]] | None = None,
 ) -> ConceptReading:
-    rows = _historical_state_rows(bars)
+    rows = state_rows if state_rows is not None else _historical_state_rows(bars)
     current_index = len(bars) - 1
     current = next((vector for index, vector, _ in reversed(rows) if index == current_index), None)
     historical = [
@@ -302,9 +316,14 @@ def _analogue_reading(
 
 
 def _anomaly_reading(
-    timeframe: str, bars: list[dict[str, Any]], reference: float | None, reference_tf: str,
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    reference: float | None,
+    reference_tf: str,
+    *,
+    state_rows: list[tuple[int, tuple[float, ...], dict[str, float]]] | None = None,
 ) -> ConceptReading:
-    rows = _historical_state_rows(bars)
+    rows = state_rows if state_rows is not None else _historical_state_rows(bars)
     current_index = len(bars) - 1
     current = next((vector for index, vector, _ in reversed(rows) if index == current_index), None)
     historical = [vector for index, vector, _ in rows if index < current_index]
@@ -407,8 +426,20 @@ class QuantitativeStateReadings:
             bars = clean_bars(raw)
             if not bars:
                 continue
-            for reader in (_time_series_reading, _analogue_reading, _anomaly_reading):
-                reading = reader(timeframe, bars, reference, reference_tf)
+            # Analogue and anomaly views consume the same point-in-time state
+            # vectors. Build each rolling window once per timeframe and reuse
+            # it; no result depends on reader invocation order or future bars.
+            state_rows = _historical_state_rows(bars)
+            timeframe_readings = (
+                _time_series_reading(timeframe, bars, reference, reference_tf),
+                _analogue_reading(
+                    timeframe, bars, reference, reference_tf, state_rows=state_rows,
+                ),
+                _anomaly_reading(
+                    timeframe, bars, reference, reference_tf, state_rows=state_rows,
+                ),
+            )
+            for reading in timeframe_readings:
                 reading = ConceptReading(
                     **{
                         **reading.__dict__,

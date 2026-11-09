@@ -223,6 +223,25 @@ def _read_portfolio(
         facts={
             "portfolio_id": portfolio_id or None,
             "portfolio_snapshot_verified": snapshot_valid,
+            "partial_portfolio_observation_available": bool(
+                isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+            ),
+            "partial_portfolio_unknowns": list(snapshot.get("unknowns", []) or []) if isinstance(snapshot, dict) else [],
+            "partial_portfolio_observation_errors": (
+                list(snapshot.get("partial_observation", {}).get("observation_errors", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
+            "partial_account_observations": (
+                list(snapshot.get("partial_observation", {}).get("account_observations", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
+            "partial_positions_observed": (
+                list(snapshot.get("partial_observation", {}).get("positions_observed", []) or [])
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_observation"), dict)
+                else []
+            ),
             "positions_complete": positions_valid,
             "position_count": len(positions) if positions_valid else None,
             "account_equity": equity if snapshot_valid else None,
@@ -268,6 +287,19 @@ class PortfolioRiskReadings:
         self, symbol: str, bars_by_tf: dict[str, list[dict]], context: dict[str, Any],
     ) -> list[ConceptReading]:
         reference, reference_tf = reference_price(bars_by_tf)
+        resolved_context = dict(context or {})
+        if not isinstance(resolved_context.get("portfolio_risk_snapshot"), dict):
+            registry = resolved_context.get("data_source_registry")
+            analysis_epoch = _epoch(resolved_context.get("analysis_epoch"))
+            if registry is not None and analysis_epoch is not None:
+                from data_sources.portfolio import build_portfolio_risk_snapshot
+                resolved_context["portfolio_risk_snapshot"] = build_portfolio_risk_snapshot(
+                    registry,
+                    analysis_epoch=analysis_epoch,
+                    completed_bar_epoch=last_source_epoch(
+                        clean_bars((bars_by_tf or {}).get(reference_tf, []))
+                    ),
+                )
         readings: list[ConceptReading] = []
         for timeframe, raw in (bars_by_tf or {}).items():
             if timeframe not in TIMEFRAME_SECONDS:
@@ -275,7 +307,7 @@ class PortfolioRiskReadings:
             bars = clean_bars(raw)
             if bars:
                 readings.append(_read_portfolio(
-                    symbol, timeframe, bars, context or {}, reference, reference_tf,
+                    symbol, timeframe, bars, resolved_context, reference, reference_tf,
                 ))
         return readings
 

@@ -19,6 +19,7 @@ file concurrently without ``database is locked`` errors.
 from __future__ import annotations
 
 import sqlite3
+import json
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -86,6 +87,19 @@ CREATE TABLE IF NOT EXISTS user_config (
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS owner_limit_audit (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id       INTEGER NOT NULL,
+    subject_user_id     INTEGER NOT NULL,
+    action              TEXT NOT NULL,
+    before_limits_json  TEXT NOT NULL,
+    after_limits_json   TEXT NOT NULL,
+    changed_fields_json TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    FOREIGN KEY (actor_user_id) REFERENCES users (id) ON DELETE CASCADE,
+    FOREIGN KEY (subject_user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS password_resets (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL,
@@ -97,6 +111,8 @@ CREATE TABLE IF NOT EXISTS password_resets (
 
 CREATE INDEX IF NOT EXISTS idx_trade_history_user ON trade_history (user_id, closed_at);
 CREATE INDEX IF NOT EXISTS idx_broker_creds_user ON broker_credentials (user_id);
+CREATE INDEX IF NOT EXISTS idx_owner_limit_audit_subject
+    ON owner_limit_audit (subject_user_id, id DESC);
 """
 
 
@@ -626,6 +642,86 @@ class Database:
                 """,
                 (user_id, config_json, _utcnow()),
             )
+
+    def set_user_config_with_owner_audit(
+        self,
+        user_id: int,
+        config_json: str,
+        *,
+        expected_config_json: Optional[str],
+        before_limits: dict[str, Any],
+        after_limits: dict[str, Any],
+        changed_fields: list[str],
+    ) -> None:
+        """Atomically persist owner limits and their change record.
+
+        The expected prior JSON prevents a concurrent settings update from
+        being overwritten by a stale read/validate/write sequence.
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT config_json FROM user_config WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            current = row["config_json"] if row else None
+            if current != expected_config_json:
+                raise ValueError("trading configuration changed concurrently; reload and retry")
+            now = _utcnow()
+            conn.execute(
+                """
+                INSERT INTO user_config (user_id, config_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    config_json = excluded.config_json,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, config_json, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO owner_limit_audit (
+                    actor_user_id, subject_user_id, action,
+                    before_limits_json, after_limits_json,
+                    changed_fields_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id, user_id, "owner_limits.updated",
+                    json.dumps(before_limits, sort_keys=True, separators=(",", ":")),
+                    json.dumps(after_limits, sort_keys=True, separators=(",", ":")),
+                    json.dumps(sorted(set(changed_fields)), separators=(",", ":")),
+                    now,
+                ),
+            )
+
+    def list_owner_limit_audit(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+        """Return the authenticated user's own durable owner-limit changes."""
+        bounded_limit = min(max(int(limit), 1), 500)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, actor_user_id, subject_user_id, action,
+                       before_limits_json, after_limits_json,
+                       changed_fields_json, created_at
+                FROM owner_limit_audit
+                WHERE subject_user_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (user_id, bounded_limit),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "actor_user_id": int(row["actor_user_id"]),
+                "subject_user_id": int(row["subject_user_id"]),
+                "action": row["action"],
+                "before": json.loads(row["before_limits_json"]),
+                "after": json.loads(row["after_limits_json"]),
+                "changed_fields": json.loads(row["changed_fields_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def get_user_config(self, user_id: int) -> Optional[str]:
         with self._connect() as conn:

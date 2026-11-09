@@ -47,7 +47,7 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     from cognition.brain import CognitiveBrain
     from cognition.brain_reasoning import BrainReasoner
     from cognition.concepts import read_concept_readings
-    from cognition.loop import EvidenceConsolidator
+    from cognition.loop import CognitionLoop, EvidenceConsolidator
     from cognition.market_lenses import analyze_market_frames
     from cognition.strategy_knowledge import assess_strategy_lenses
     from core.system_context import SystemContext
@@ -94,6 +94,8 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     cognitive_hypothesis_source = inspect.getsource(CognitiveBrain._generate_hypotheses)
     system_context_source = inspect.getsource(SystemContext.create)
     consolidator_source = inspect.getsource(EvidenceConsolidator.build)
+    cycle_hook_source = inspect.getsource(EvidenceConsolidator.begin_concept_cycle)
+    loop_cycle_source = inspect.getsource(CognitionLoop.run_once)
     native_reasoning_source = inspect.getsource(CognitiveBrain._native_reasoning)
     cognitive_reason_source = inspect.getsource(CognitiveBrain.reason)
     origination_sink_source = inspect.getsource(EventDrivenSystem._make_origination_sink)
@@ -114,6 +116,14 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     # not only the isolated reader and converter functions.
     assert "analyze_market_frames(" in system_context_source
     assert "concept_source=_concept_market_source" in system_context_source
+    assert "fetch_all_market_data(" in system_context_source
+    assert '"multi_symbol_frames": dict(_concept_market_cycle_snapshot)' in system_context_source
+    assert '"data_source_registry": ctx.data_source_registry' in system_context_source
+    assert "DataSourceRegistry()" in system_context_source
+    assert "_concept_market_source.begin_cycle = _begin_concept_market_cycle" in system_context_source
+    assert "begin_concept_cycle(symbols)" in loop_cycle_source
+    assert "end_concept_cycle()" in loop_cycle_source
+    assert 'getattr(self._concept_source, "begin_cycle", None)' in cycle_hook_source
     assert "self._concept_source(ms.symbol)" in consolidator_source
     assert "for item in concept_evidence" in consolidator_source
     assert "ms.add(item)" in consolidator_source

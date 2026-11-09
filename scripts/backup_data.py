@@ -115,13 +115,17 @@ def _checkpoint_wal_files(data_dir: Path) -> int:
     """
     checkpointed = 0
     for db_path in sorted(data_dir.glob("*.db")):
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(str(db_path), timeout=5)
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.close()
-            checkpointed += 1
         except Exception as exc:
             logger.debug("[data-sync] WAL checkpoint skipped for {}: {}", db_path.name, exc)
+        else:
+            checkpointed += 1
+        finally:
+            if conn is not None:
+                conn.close()
     if checkpointed:
         logger.info("[data-sync] checkpointed {} WAL files in {}", checkpointed, data_dir)
     return checkpointed
@@ -390,28 +394,27 @@ def sync_data_repo(
 
 
 def _repo_object_size_mb(work_tree: str) -> float | None:
-    """Return the total git object size in MB from ``git count-objects``.
+    """Return the size of the Git object store in MiB, or ``None`` if unreadable.
 
-    Sums loose (``size:``) and packed (``size-pack:``) object sizes — both
-    reported in KiB by the plain ``-v`` form. Using only ``size-pack`` would
-    read 0 on a repo whose recent commits aren't packed yet; summing both gives
-    a stable total regardless of pack state. ``None`` when unreadable.
+    ``git count-objects`` reports integer KiB, which truncates tiny test and
+    early-life repositories to zero. Measuring loose objects and packfiles
+    directly keeps the threshold check accurate at byte resolution.
     """
-    ok, out = _run_git(["count-objects", "-v"], work_tree)
+    # ``size`` and ``size-pack`` are integer KiB values. Tiny but non-empty
+    # repositories report zero for both, which made a zero-byte test threshold
+    # (and any very small configured threshold) incorrectly skip compaction.
+    # Sum the actual object files in bytes to avoid that truncation.
+    ok, object_dir = _run_git(["rev-parse", "--git-path", "objects"], work_tree)
     if not ok:
         return None
-    total_kib = 0.0
-    found = False
-    for line in out.splitlines():
-        for key in ("size:", "size-pack:"):
-            if line.startswith(key):
-                try:
-                    total_kib += float(line.split(":", 1)[1].strip())
-                    found = True
-                except ValueError:
-                    logging.getLogger(__name__).debug("Exception handled by fallback in scripts/backup_data.py:410", exc_info=True)
-                    pass
-    return (total_kib / 1024.0) if found else None
+    path = Path(object_dir.strip())
+    if not path.is_absolute():
+        path = Path(work_tree) / path
+    try:
+        total_bytes = sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+    except OSError:
+        return None
+    return total_bytes / (1024.0 * 1024.0)
 
 
 def _recover_stranded_compaction(

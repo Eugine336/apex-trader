@@ -387,6 +387,30 @@ class PositionEvaluator:
                 lowest_price_since_entry=_broker_entry_price(pos, price),
             )
 
+            # A partial close can be applied while its acknowledgement is
+            # lost. Never retry while that outcome is unknown. A later live
+            # broker position snapshot that proves volume reduction resolves
+            # the durable ambiguity marker; unchanged/missing size stays gated.
+            observed_remaining = getattr(
+                pos, "remaining_lots", getattr(pos, "lots", None),
+            )
+            if self._mgmt_store.reconcile_partial_close(order_id, observed_remaining):
+                logger.info(
+                    "[management] partial close reconciled from broker volume | {} | remaining={}",
+                    order_id,
+                    observed_remaining,
+                )
+            elif mgmt.status == "OPEN":
+                # Maintain a broker-book volume baseline for future ambiguous
+                # partials. Do not overwrite it while a partial is in flight or
+                # awaiting reconciliation.
+                try:
+                    observed_lots = float(observed_remaining)
+                except (TypeError, ValueError):
+                    observed_lots = 0.0
+                if observed_lots > 0.0:
+                    mgmt.remaining_size_lots = observed_lots
+
             if price > mgmt.highest_price_since_entry:
                 mgmt.highest_price_since_entry = price
             if price < mgmt.lowest_price_since_entry:
@@ -527,13 +551,19 @@ class PositionEvaluator:
                     elif intent.intent_type == IntentType.PARTIAL_CLOSE:
                         prev_pc = mgmt.partial_closed
                         prev_tp1 = mgmt.tp1_hit
+                        prev_status = mgmt.status
                         mgmt.partial_closed = True
                         mgmt.tp1_hit = True
+                        mgmt.status = "PARTIAL_CLOSE_PENDING"
                         # Snapshot so a rejected TP1 partial rolls back and is
                         # retried instead of being permanently marked taken.
                         self._record_inflight_manage(
                             order_id, intent.intent_type,
-                            {"partial_closed": prev_pc, "tp1_hit": prev_tp1},
+                            {
+                                "partial_closed": prev_pc,
+                                "tp1_hit": prev_tp1,
+                                "status": prev_status,
+                            },
                         )
 
             self._run_decision_engine_management(
@@ -1165,14 +1195,15 @@ class EventDrivenSystem:
         # structured hypotheses to EventBus. It has no order/execution API and
         # never bypasses the campaign, portfolio, or execution risk path.
         self._market_observer = None
-        _gold_shadow_enabled = (os.getenv("APEX_MARKET_OBSERVER_ENABLED") or os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1")).strip().lower()
+        _gold_shadow_enabled = os.getenv(
+            "APEX_GOLD_DESK_SHADOW_ENABLED", "1"
+        ).strip().lower()
         if _gold_shadow_enabled not in {"0", "false", "no", "off"}:
             try:
                 from gold_desk.apex_observer import ApexMarketObserver
                 self._market_observer = ApexMarketObserver(
                     symbols=list(getattr(self._config, "enabled_pairs", []) or []),
-                    venue=os.getenv("APEX_MARKET_OBSERVER_VENUE")
-                    or os.getenv("APEX_GOLD_DESK_VENUE", "AUTO"),
+                    venue=os.getenv("APEX_GOLD_DESK_VENUE", "AUTO"),
                     tick_router=self._tick_router,
                     event_bus=self._event_bus,
                     candle_fetcher=self._fetch_confirmed_candles,
@@ -2287,6 +2318,13 @@ class EventDrivenSystem:
         """
         def _sink(origination: Any) -> bool:
             try:
+                if self._paused:
+                    logger.info(
+                        "[origination-sink] {} {} suppressed — operator pause is active",
+                        getattr(origination, "symbol", ""),
+                        getattr(origination, "direction", ""),
+                    )
+                    return False
                 symbol = str(getattr(origination, "symbol", "") or "")
                 direction = str(getattr(origination, "direction", "") or "").upper()
                 sl = getattr(origination, "sl", None)
@@ -6448,17 +6486,63 @@ class EventDrivenSystem:
             if not ticket or itype is None:
                 return
             is_sl = int(itype) == int(IntentType.MODIFY_SL)
+            is_partial_close = int(itype) == int(IntentType.PARTIAL_CLOSE)
             key = (ticket, int(itype))
             with self._inflight_manage_lock:
                 prev = self._inflight_manage.pop(key, None)
 
             success = bool(getattr(result, "success", False))
             err = str(getattr(result, "error", "") or "").lower()
+            ambiguous = str(getattr(result, "error", "") or "").upper().startswith("AMBIGUOUS_")
             market_closed = (
                 "market_closed" in err
                 or "market closed" in err
                 or "market is closed" in err
             )
+
+            # A partial close has no broker idempotency key. If the broker may
+            # have applied it but the acknowledgement was lost, rolling back
+            # ``partial_closed`` would let the Brain submit the same reduction
+            # again on a later tick. Preserve the fail-closed optimistic marker
+            # durably and make the unresolved lifecycle visible for reconciliation.
+            if (
+                not success
+                and ambiguous
+                and is_partial_close
+            ):
+                mgmt = self._mgmt_store.get(ticket)
+                if mgmt is not None:
+                    mgmt.partial_closed = True
+                    mgmt.tp1_hit = True
+                    mgmt.status = "RECONCILIATION_REQUIRED"
+                    self._mgmt_store.persist(mgmt, force=True)
+                logger.critical(
+                    "[management] ambiguous partial close for %s; retry blocked until broker reconciliation (%s)",
+                    ticket,
+                    getattr(result, "error", ""),
+                )
+                store = get_event_store()
+                if store is not None:
+                    try:
+                        store.emit(
+                            event_type=DE.ORDER_RECONCILIATION_REQUIRED,
+                            severity="ERROR",
+                            symbol=getattr(intent, "symbol", ""),
+                            parent_id=ticket,
+                            source_module="execution.management",
+                            payload={
+                                "action": "PARTIAL_CLOSE",
+                                "status": "RECONCILIATION_REQUIRED",
+                                "error": str(getattr(result, "error", ""))[:300],
+                            },
+                        )
+                    except Exception as emit_exc:
+                        logger.error(
+                            "[management] failed to record ambiguous partial-close event for %s: %s",
+                            ticket,
+                            emit_exc,
+                        )
+                return
 
             # Order matters. On a real failure the optimistic mutation (the
             # unconfirmed SL the worker wrote into the management state) MUST be
@@ -6468,7 +6552,7 @@ class EventDrivenSystem:
             # snapshot; if the guard were dropped first, a concurrent snapshot
             # could pair the cleared guard with the still-rejected SL and fire a
             # phantom stop-hit CLOSE in the window before the rollback landed.
-            if not success and prev is not None and not market_closed:
+            if not success and prev is not None and (not market_closed or is_partial_close):
                 mgmt = self._mgmt_store.get(ticket)
                 if mgmt is not None:
                     for field_name, value in prev.items():
@@ -6502,6 +6586,12 @@ class EventDrivenSystem:
                             "[manage] {} {} failed — rolled back optimistic state ({})",
                             itype.name, ticket, getattr(result, "error", ""),
                         )
+
+            if success and is_partial_close:
+                mgmt = self._mgmt_store.get(ticket)
+                if mgmt is not None and mgmt.status == "PARTIAL_CLOSE_PENDING":
+                    mgmt.status = "OPEN"
+                    self._mgmt_store.persist(mgmt, force=True)
 
             # The SL modify attempt has now concluded (success, rolled-back
             # failure, or expected market-closed skip): clear the pending guard
@@ -6537,7 +6627,7 @@ class EventDrivenSystem:
                 # safe-fallback: pip-size enrichment is optional; stored broker stop values remain authoritative.
                 except Exception:
                     pass
-                self._mgmt_store.get_or_create(
+                mgmt = self._mgmt_store.get_or_create(
                     ticket,
                     original_stop_loss=sl,
                     stop_loss=sl,
@@ -6549,6 +6639,14 @@ class EventDrivenSystem:
                     highest_price_since_entry=entry_price,
                     lowest_price_since_entry=entry_price,
                 )
+                if mgmt.status == "PARTIAL_CLOSE_PENDING":
+                    # The previous process ended before an acknowledgement
+                    # callback committed or rolled back the mutation. Broker
+                    # state must resolve it; never replay a volume reduction.
+                    mgmt.status = "RECONCILIATION_REQUIRED"
+                    mgmt.partial_closed = True
+                    mgmt.tp1_hit = True
+                    self._mgmt_store.persist(mgmt, force=True)
             logger.info(
                 "[event-driven] initialized management state for {} positions",
                 len(self._mgmt_store),

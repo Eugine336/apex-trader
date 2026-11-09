@@ -113,6 +113,7 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
         account_key=lambda _symbol, _pm: "offline-demo:123",
     )
     system = edb.EventDrivenSystem.__new__(edb.EventDrivenSystem)
+    system._paused = False
     system._ctx = ctx
     system._pm = pm
     system._config = SimpleNamespace(

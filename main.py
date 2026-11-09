@@ -221,7 +221,7 @@ def main() -> None:
             logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
 
         logger.info("-" * 60)
-        logger.info("APEX TRADER IS LIVE")
+        logger.info("Platform connection status:")
         logger.info("  MT5   — {}", "ONLINE" if connection_status.get("mt5") else "OFFLINE")
         logger.info("  Deriv — {}", "ONLINE" if connection_status.get("deriv") else "OFFLINE")
         logger.info("-" * 60)
@@ -272,9 +272,10 @@ def main() -> None:
                     return
                 from event_driven_bootstrap import EventDrivenSystem
                 ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
-                ed_system.start()
+                # Restore durable dashboard pause/freeze state before any
+                # event-driven threads can evaluate or submit new exposure.
+                state.start_event_driven_system(ed_system)
                 engine_holder["ed_system"] = ed_system
-                state.set_event_driven_system(ed_system)
                 logger.info("Event-driven system started in dashboard mode")
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[dashboard] trading-engine boot failed: {}", exc)

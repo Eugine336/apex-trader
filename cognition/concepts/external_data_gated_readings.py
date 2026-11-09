@@ -87,8 +87,14 @@ class ExternalDataGatedReadings:
     covers_methods: tuple[str, ...] = ()
     covers_lenses: tuple[str, ...] = ()
     data_gated_methods = DATA_GATED_METHODS
+    consumes_concept_readings = True
 
     def read(self, symbol: str, bars_by_tf: dict[str, list[dict]]) -> list[ConceptReading]:
+        return self.read_with_context(symbol, bars_by_tf, {})
+
+    def read_with_context(
+        self, symbol: str, bars_by_tf: dict[str, list[dict]], context: dict[str, Any],
+    ) -> list[ConceptReading]:
         reference, reference_tf = reference_price(bars_by_tf)
         timeframe = reference_tf or ""
         bars = clean_bars((bars_by_tf or {}).get(timeframe, []))
@@ -99,7 +105,16 @@ class ExternalDataGatedReadings:
             epoch is not None and bars[-1].get("source_timestamp_verified") is True
         )
         readings: list[ConceptReading] = []
+        prior_readings = context.get("concept_readings", ())
+        observed_concepts = {
+            str(getattr(item, "concept", "") or "").strip().lower()
+            for item in prior_readings
+        }
         for concept, (domain, requirement) in _DATA_GATES.items():
+            # A contextual reader may have supplied real measurements for this
+            # concept. Do not emit a contradictory generic "feed absent" record.
+            if concept in observed_concepts:
+                continue
             readings.append(ConceptReading(
                 concept=concept,
                 timeframe=timeframe,

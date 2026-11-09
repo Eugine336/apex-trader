@@ -84,6 +84,22 @@ def test_user_config_roundtrip(db):
     assert db.get_user_config(uid) == '{"risk_per_trade_pct": 1.0}'
 
 
+def test_audited_config_write_rejects_stale_snapshot_without_partial_commit(db):
+    uid = db.create_user("config-audit@example.com", "hash")
+    db.set_user_config(uid, '{"owner_limits":{"risk_per_trade_pct":0.75}}')
+    with pytest.raises(ValueError, match="changed concurrently"):
+        db.set_user_config_with_owner_audit(
+            uid,
+            '{"owner_limits":{"risk_per_trade_pct":0.5}}',
+            expected_config_json=None,
+            before_limits={"risk_per_trade_pct": 0.75},
+            after_limits={"risk_per_trade_pct": 0.5},
+            changed_fields=["risk_per_trade_pct"],
+        )
+    assert db.get_user_config(uid) == '{"owner_limits":{"risk_per_trade_pct":0.75}}'
+    assert db.list_owner_limit_audit(uid) == []
+
+
 def test_password_reset_flow(db):
     uid = db.create_user("k@l.com", "h")
     db.create_password_reset("tok", uid, "2099-01-01T00:00:00+00:00")

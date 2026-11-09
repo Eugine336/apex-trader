@@ -382,3 +382,107 @@ No broker orders, runtime database changes, credential changes, `.env` access or
 - Do not mark System 1 or System 4 accepted and do not merge PR #798 until the repository owner has run the focused tests, supported Python matrix, lint and the repository-wide identity audit, then reviewed the actual failures and corrected them without weakening controls.
 - The new producer is an auditable family-conditional historical estimator, not proof of profitability or universal conditional prediction. Any predictive claim still requires sufficient untouched data and external statistical review.
 - No live broker orders were sent. No `.env` file, runtime database, credentials or broker configuration was modified.
+
+
+---
+
+## Mandatory agent and delivery governance — 2026-11-09
+
+This roadmap is binding on every human contributor, coding agent, delegated agent and reviewer. Before any work, read the repository-root `AGENTS.md` and `docs/APEX_ENGINEERING_DELIVERY_CONTRACT.md`. Agent-specific entrypoints (`CLAUDE.md`, `.github/copilot-instructions.md` and `.cursor/rules/apex-engineering.mdc`) point to the same contract; they do not create separate rules.
+
+Every work item must follow recover → scope → trace → implement → prove → validate → review → record → accept. The release register must distinguish IMPLEMENTED, INTEGRATED, VALIDATED, DATA-GATED, BLOCKED and PRODUCTION-ACCEPTED. A merge, passing subset, mock fixture or code presence is not acceptance.
+
+**Numbering clarification:** this architecture roadmap is organized into ten systems. Any delivery plan using Phase 1–8 is a separate execution grouping and must be explicitly mapped to these systems in the release register. Do not renumber, collapse or silently replace the ten-system architecture or its acceptance gates.
+
+### Evidence-backed cross-reference for the numbered identity implementation phases
+
+`docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md` defines numbered implementation phases 1–7. Their scope maps to the ten systems below; the mapping is many-to-many and does not change system acceptance status. The same audit has no Phase 8 heading, and repository Markdown search found no Phase 8 definition. Phase 8 therefore remains unmapped until an authoritative delivery document defines its scope.
+
+| Numbered phase in identity audit | Ten-system scope supported by the source headings and deliverables |
+| --- | --- |
+| Phase 1 — unified observation plane | Systems 1–2: evidence contracts/provenance, source freshness, provisional observations, and degraded-input handling |
+| Phase 2 — strategy knowledge and dynamic method selection | Systems 2–3: evidence prerequisites and Brain selection/composition of analytical methods |
+| Phase 3 — native hypothesis breadth | Systems 3–4: competing native hypotheses, counter-hypotheses, and separating hypotheses from actionable opportunities |
+| Phase 4 — all-horizon opportunity set and continuous reassessment | Systems 4 and 7: conditional opportunity discovery and ongoing campaign management |
+| Phase 5 — execution/risk consolidation | Systems 5–7: portfolio permission/sizing, shared broker execution, and recoverable position lifecycle |
+| Phase 6 — learning/governance | Systems 8–9: statistical validation, controlled promotion, safety containment, and observability |
+| Phase 7 — docs, full regression and demo gate | System 10, with validation evidence required across Systems 1–9 |
+
+This is a scope cross-reference, not a claim that any phase or system is complete. Use Systems 1–10 for acceptance decisions; do not infer Phase 8 work from this table.
+
+The configuration contract is binding: all supported operator-tunable startup/deployment/service/integration configuration must be validated and documented in `.env.example`. The real `.env` remains protected and must not be accessed or modified during engineering without explicit authorization. Dashboard runtime controls use authenticated, authorized APIs and durable audited state; they must never write `.env`. Canonical identity, Brain authority and mandatory safety invariants are not operator-overridable configuration.
+
+CI must validate the agent-governance entrypoints and delivery-contract document. The complete environment-variable inventory and reconciliation against `.env.example` remain an explicit acceptance task; do not claim template completeness until that audit is executed.
+
+### Cross-platform reliability follow-up — 2026-11-09
+
+Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922ccd21b7` and is recorded in commit `721cd6def05e6771eb2c5cb2f9de88ad696f2952`.
+
+### Windows suite follow-up — 2026-11-09
+
+- **IMPLEMENTED:** structured log paths escape literal braces before entering Loguru templates, so Windows `sandbox.{GUID}` paths work; Git object-store size is measured at byte resolution so small repositories do not appear to be 0 MiB; data safety accepts Windows directory junctions; watchdog stall age is returned without 0.1-second rounding.
+- **TESTED:** Windows-specific fixtures close SQLite connections before temp cleanup, compare paths with platform-native `Path` semantics, and provide the complete `Tick` shape consumed by pollers. ShadowStore test instances are explicitly closed. The market-desk test allows independently sampled timestamps to agree within the test's captured clock window.
+- **VALIDATED:** Python 3.12.10 full suite: **4,440 passed, 4 skipped, 165 warnings**. Ruff, identity audit, concept coverage and `git diff --check` passed. The four skips are three local-bare-remote push tests blocked by Windows AppContainer `NtCreateDirectoryObject` (`0xC0000022`) and one symlink creation test blocked by WinError 1314. A separate junction-marker test exercises the Windows path decision without requiring symlink privilege.
+- The isolated dependency directory's `ddtrace` telemetry thread caused Windows native exception `0xc0000008` when enabled; the final run disabled tracing and telemetry for the test process. This is test-runner configuration, not an application change.
+- The passing GitHub Actions results still refer to the earlier PR head `0406f14823110a2a2a4153c7561651922ccd21b7`; CI for these local commits remains outstanding until they are published. Do not treat local Windows tests as substitutes for the Python 3.11/3.12 CI matrix or provider/broker owner evidence.
+
+- **IMPLEMENTED:** WAL checkpoint connections close even when a corrupt database raises during checkpointing; retention includes records exactly on the cutoff; execution and tick-coalescing intervals use the high-resolution monotonic performance counter on Windows; the observer uses only the documented `APEX_GOLD_DESK_*` settings instead of undocumented aliases.
+- **VALIDATED:** an automated check compares literal Python environment reads with `.env.example`; source-reading tests specify UTF-8. Focused regression run: 118 passed. Concept coverage check, identity audit, compilation and Ruff passed.
+- **Full local suite:** Python 3.12.10 on Windows reported 4,405 passed and 15 failed, with no collection/setup errors. Remaining failures involve Windows sandbox/process and symlink restrictions, SQLite file locking during test cleanup, a Windows log-sink setup issue, and Windows path expectations. The Linux GitHub Actions runs at the starting PR head passed; CI for this follow-up commit is still required.
+- **Status:** the fixes above are IMPLEMENTED and focused VALIDATED. This does not close the owner/provider evidence gates for WP-B3/B4/B5/B7, change any concept coverage classification, or production-accept Phase 2. The roadmap retains its ten-system acceptance model; no unverified Phase 1–8 mapping is inferred.
+
+### Read-only MT5 partial portfolio integration — 2026-11-09
+
+- **IMPLEMENTED:** `SystemContext` registers a read-only MT5 portfolio adapter. It sanitizes current account and position fields, excludes account identifiers/credentials/tickets, preserves typed read errors, and marks the combined observation PARTIAL with no verified source timestamp.
+- **INTEGRATED:** the portfolio snapshot assembler preserves a single partial observation; `PortfolioRiskReadings` passes its sanitized facts and unknowns to Brain evidence but does not use partial equity or positions in verified portfolio-risk metrics. `applicable` remains false and full historical returns/equity/correlation evidence remains DATA-GATED.
+- **VALIDATED:** focused data-source, concept coverage, and SystemContext tests: **23 passed**; Ruff, compileall, identity audit, concept coverage synchronization, and `git diff --check` passed.
+- **Full-suite result:** Python 3.12.10 on Windows first reported **4,418 passed, 4 skipped, 1 failed** in 409.54 seconds. The one failure (`test_strategy_knowledge_assesses_lenses_without_authorizing_trades`) passed in isolation and targeted runs. A complete rerun on the updated tree passed **4,420 tests, 4 skipped, 0 failed, 159 warnings** in 168.01 seconds. The transient failure did not recur; its cause remains unconfirmed.
+- The four skips remain three local-bare-remote push tests blocked by Windows AppContainer `NtCreateDirectoryObject` (`0xC0000022`) and one symlink creation test blocked by WinError 1314. The junction test covers the Windows path decision without symlink privilege. The suite disabled ddtrace tracing and telemetry to avoid the previously observed Windows native telemetry-thread crash.
+- **CI / publication:** current PR #864 remote head is still `0406f14823110a2a2a4153c7561651922ccd21b7`. This local work has not been published, so there is no remote CI result for it. The known Windows Git/AppContainer push issue remains an owner/environment blocker.
+- **Acceptance:** no change to concept FULL/DATA-GATED classifications or production acceptance. Provider entitlement, complete verified portfolio history, owner-connected validation, and other Phase 2 evidence gates remain open.
+
+### Durable owner controls and Brain entry pause — 2026-11-09
+
+- **IMPLEMENTED:** owner-limit updates use a compare-and-set transaction that writes the user's config and before/after audit event atomically; stale concurrent edits return HTTP 409. Authenticated audit reads are scoped to the current user. Dashboard pause/resume and manual FROZEN state are stored in local SQLite with an append-only action history; startup restores controls before engine threads begin.
+- **INTEGRATED:** the event-driven Brain origination sink enforces the restored pause before an OPEN reaches the shared intent aggregator, while position management and the close-intent path stay available. The API `ProcessManager` loads per-user overrides when starting each instance; engine configuration creates the canonical `OwnerLimits` consumed by `SystemContext` and risk authorities.
+- **VALIDATED:** focused dashboard, API, Brain-path and observability regressions: 79 passed. The complete Python 3.12.10 Windows suite, including the final restore fail-closed regression, passed **4,428 tests, 4 skipped, 0 failed, 166 warnings** in 387.47 seconds. Repository Ruff CI command, `compileall`, `git diff --check`, identity audit and concept-coverage synchronization passed.
+- **DATA-GATED / acceptance:** deterministic simulations do not substitute for an owner-connected broker/account trace. Provider feed entitlements, authoritative sessions, complete portfolio history and host full-universe benchmarks remain open. No broker order or position change was issued, and no change is made to concept coverage classifications or production acceptance.
+
+### Provider-neutral economic calendar through ComplianceDivision — 2026-11-09
+
+- **IMPLEMENTED / INTEGRATED:** `SystemContext` supplies the shared read-only provider registry to `NewsGuard`, and the same guard instance is passed to `ComplianceDivision`. Registered economic-event providers are normalized only from complete observations with verified source timestamps, fresh receipt, point-in-time publication/revision vintages and explicit currency/impact. Provenance is retained on the normalized event. Configured provider faults or incomplete evidence block entries rather than silently switching source.
+- **VALIDATED:** deterministic registry events, malformed/incomplete evidence, provider/capability failure, reversed-cutoff cache rejection, actual SystemContext-to-ComplianceDivision wiring, and the repository silent-handler audit: 54 focused tests passed. Full Python 3.12.10 Windows suite: **4,433 passed, 4 skipped, 0 failed, 166 warnings** in 298.16 seconds; Ruff, compileall and `git diff --check` passed.
+- **DATA-GATED:** no economic-event adapter is currently registered by the runtime; the existing legacy calendar remains the fallback. Provider entitlement, event coverage and source-authentication acceptance remain outstanding. This integration does not establish calendar production acceptance or close WP-B3/System 2.
+
+### Local branch delivery checkpoint — 2026-11-09
+
+- Starting `00187b659f430d08a1ed1df207c7f3eda44c1571` and preserving the six existing unpublished commits, the validated continuation commits are `58bd10bd25a507d5f335a6a84f2410955c1dc1d3` (durable dashboard controls and owner-limit audit) and `24390be3d6199b9e00a959fdbc1bd69f0e634e9e` (provider-neutral NewsGuard registry path). At this checkpoint the local branch contains eight commits ahead of `origin/phase2/concurrent-data-capabilities`.
+- The new full-suite result is **4,433 passed, 4 skipped, 0 failed, 166 warnings** on Python 3.12.10/Windows. Ruff, compileall, identity audit, concept coverage synchronization and whitespace checks passed.
+- **Initial publish blocker (resolved below):** standard push could not start Git for Windows' MSYS credential helper (`NtCreateDirectoryObject ... 0xC0000022`); at that time remote HEAD was `0406f14823110a2a2a4153c7561651922ccd21b7` and no Actions run existed for local HEAD `24390be3d6199b9e00a959fdbc1bd69f0e634e9e`.
+- Git Credential Manager device authentication completed with its DPAPI store. A Windows-native askpass bridge retrieved the stored credential directly from GCM without displaying or writing the token, allowing an ordinary fast-forward push. No force-push, broker order, position modification or `.env` access occurred.
+- Provider entitlements and verified calendar events, owner-connected broker/account lifecycle evidence, complete authoritative portfolio history/session inputs, and full-universe host benchmarks remain DATA-GATED. Phase 2 and overall production qualification are not accepted.
+
+### Actions evidence after device authentication — exact head `806b911783b4f9b42b27d0871decd4ad3e7b0097`
+
+- The ordinary fast-forward push succeeded; remote branch HEAD exactly matched local HEAD.
+- **Gold desk focused tests:** success. **APEX TRADER CI:** GitHub reports failure after 51 seconds, but its run page shows the lint and Python test matrix still waiting and provides no job records/logs. The sole annotation is `Internal server error` (correlation ID `b49398b1-f114-46d8-9eb3-b949e858684d`). GitHub's rerun-failed-jobs endpoint rejected a retry with HTTP 403, “This workflow run cannot be retried.” No CI test or lint failure was reported; the full CI result remains unverified because the workflow failed before jobs ran.
+
+### Ambiguous partial-close lifecycle hardening — 2026-11-10
+
+- **IMPLEMENTED / INTEGRATED:** the shared `ActionExecutor` correctly classifies a lost partial-close acknowledgement as ambiguous and refuses an immediate retry, but the Brain result callback previously rolled back `partial_closed`/`tp1_hit`. That made the same Brain path eligible to submit another reduction after the executor's short dedup window. The evaluator now persists `PARTIAL_CLOSE_PENDING` before execution; successful acknowledgement clears the pending marker, ordinary rejection restores the prior state, and an ambiguous result persists `RECONCILIATION_REQUIRED` plus an error-severity lifecycle event. Restart promotes any unacknowledged pending partial to reconciliation-required. The event-driven evaluator updates a normal-state volume baseline and resolves an ambiguity only after a later position-book snapshot shows a lower remaining size; unchanged or missing size stays blocked.
+- **VALIDATED:** executor, result/restart/reconciliation, minimum-lot and event-driven suites: **130 passed**. Full Python 3.12 Windows suite: **4,459 passed, 4 skipped, 0 failed, 172 warnings** in 135.91 seconds. A preceding full run on the initial fix had one strategy-lens context failure that passed in isolation, in its containing file, and on its full rerun. Repository Ruff, `compileall`, identity audit, concept-coverage synchronization and `git diff --check` passed.
+- **PUBLISHED CI before this change:** branch head `f11ceee50f5d0bb9d7672f202e52133ca14ad708` equaled the remote tracking head. GitGuardian passed. GitHub Actions runs #3652 (`42673792419`, APEX TRADER CI) and #1815 (`42673792406`, Gold desk) both failed at workflow service level with no Actions job records; CI code results remain unverified.
+- **PUSH STATUS:** after the default WinCred lookup failed, the existing DPAPI credential store at the task's `work/git-credential-store` path was explicitly selected for GCM. The normal fast-forward push then succeeded without printing or copying the credential. Local and remote branch heads exactly match `e2be767becd7cf9e1363736e7ca4049718b87e41`; no force-push was used.
+- **CI on the exact published tree:** head `ce34674512663e8fdfa4eb160c9d9487687efb9f` completed APEX TRADER CI #3654 (run `42677382260`) and Gold desk #1817 (run `42677382605`) successfully. APEX lint and both Python 3.11/3.12 test, coverage, identity/safety and import jobs passed; both Gold desk Python-version jobs passed.
+- **WP-B5 synthetic harness check:** the read-only `run_benchmark`/`analyze_market_frames` path completed exact cold/warm coverage for 10 deterministic synthetic symbols × 4 timeframes × 500 bars with zero failures or execution mutations. Cold total/p95 per symbol: 12,146.030/1,911.445 ms; warm: 2,278.419/282.391 ms. These synthetic timings exercise the harness and cache path only; they are not broker-host, full-universe or production performance evidence.
+- **DATA-GATED:** broker-history evidence for unchanged/closed positions, owner-connected account lifecycle acceptance, provider/session/portfolio evidence and full-universe host benchmarks remain outstanding. No broker orders or position modifications were sent, and production acceptance is unchanged.
+
+### Local runtime and analytical hot-path follow-up — 2026-11-10
+
+- **IMPLEMENTED:** the quantitative-state reader builds each timeframe's historical state vectors once and shares them between analogue and novelty readings. Population volatility uses an `fsum`-based calculation instead of the standard-library Fraction-heavy path. Equivalence and one-build-per-timeframe regression tests were added.
+- **IMPLEMENTED:** structured default log files resolve under `runtime_paths.log_dir()`, so `APEX_LOG_DIR` actually isolates them. The startup log now reports platform connection status without claiming that Apex is live before an engine is started.
+- **INTEGRATED / LOCALLY VALIDATED:** `main.py --dashboard` was launched with dotenv loading and broker discovery disabled, broker connections stubbed offline, and data/log paths isolated under a temporary directory. The dashboard bound to loopback, `/api/health` returned HTTP 200 with `attached=false` and `running=false`, mutating endpoints were disabled without an API key, and both broker statuses were OFFLINE. The isolated data topology was rejected and clean-start sync/purge were skipped. No broker orders or position modifications were possible in this run.
+- **VALIDATED:** Python 3.12.10 full suite: **4,463 passed, 4 skipped, 0 failed, 172 warnings**. Repository Ruff, compileall, canonical identity audit, concept-coverage synchronization, constitutional audit (0 violations across 10 invariants) and `git diff --check` passed.
+- **PUBLISHED CI:** commit `e3176960cc2a2f00fef727e80304a5d37e42a2be` is the exact remote branch head. APEX TRADER CI #3657 (run `42685289477`) passed, including lint and Python 3.11/3.12 jobs; Gold Desk #1820 (run `42685289700`) passed on Python 3.11/3.12. No force-push was used.
+- **SYNTHETIC ONLY:** a local cProfile of `analyze_market_frames` over one symbol × four timeframes × 1,000 bars per timeframe dropped from about 4.85 s / 12.49 million calls to 3.67 s / 10.19 million calls after state-row reuse and the volatility calculation change. This is a profiling fixture, not a production latency result; WP-B5 remains DATA-GATED on full-universe owner-host measurements.
+- **DATA-GATED:** provider and authoritative-session data, owner-connected broker lifecycle evidence, account/owner-limit acceptance and full-universe host benchmarks remain outstanding. This local run does not production-accept any system or Phase 2.

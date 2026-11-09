@@ -42,6 +42,8 @@ from cognition.concepts.quantitative_outcome_readings import QuantitativeOutcome
 from cognition.concepts.portfolio_risk_readings import PortfolioRiskReadings
 from cognition.concepts.strategy_lens_readings import StrategyLensReadings
 from cognition.concepts.external_data_gated_readings import ExternalDataGatedReadings
+from cognition.concepts.intermarket_readings import IntermarketReadings
+from cognition.concepts.provider_data_readings import ProviderDataReadings
 
 logger = logging.getLogger("apex.cognition.concepts")
 
@@ -73,6 +75,8 @@ CONCEPT_MODULES: tuple[ConceptModule, ...] = (
     QuantitativeStateReadings(),
     QuantitativeOutcomeReadings(),
     PortfolioRiskReadings(),
+    IntermarketReadings(),
+    ProviderDataReadings(),
     StrategyLensReadings(),
     ExternalDataGatedReadings(),
 )

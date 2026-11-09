@@ -114,6 +114,13 @@ class TestMainSinglePath:
         source = inspect.getsource(main)
         assert "_start_trading_loop" not in source, "main.py should not have _start_trading_loop helper"
 
+    def test_platform_connection_status_is_not_reported_as_live(self):
+        import inspect
+        import main
+        source = inspect.getsource(main)
+        assert "APEX TRADER IS LIVE" not in source
+        assert "Platform connection status:" in source
+
 
 # ── is_event_driven_enabled removed ──────────────────────────────────
 
@@ -123,7 +130,7 @@ class TestKillSwitchRemoved:
 
     def test_no_is_event_driven_enabled(self):
         from pathlib import Path
-        source = Path("event_driven_bootstrap.py").read_text()
+        source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
         assert "def is_event_driven_enabled" not in source, \
             "is_event_driven_enabled should be removed from event_driven_bootstrap"
 
@@ -137,7 +144,7 @@ class TestEvolutionHooksInBootstrap:
     @pytest.fixture(autouse=True)
     def _load_source(self):
         from pathlib import Path
-        self.source = Path("event_driven_bootstrap.py").read_text()
+        self.source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
 
     def test_brain_origination_uses_portfolio_division(self):
         # The current architecture sizes Brain-authored exposure through the
@@ -180,7 +187,7 @@ class TestShutdownClosesEvolutionDBs:
 
     def test_shutdown_includes_evolution_engines(self):
         from pathlib import Path
-        source = Path("event_driven_bootstrap.py").read_text()
+        source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
         for name in ("capital_allocator", "execution_profiles",
                      "regime_detector", "behavior_discovery",
                      "signal_discovery", "virtual_module_registry"):
@@ -195,7 +202,7 @@ class TestBrainOriginationSizing:
 
     def test_origination_sink_has_no_inline_sizer_fallback(self):
         from pathlib import Path
-        source = Path("event_driven_bootstrap.py").read_text()
+        source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
         start = source.index("    def _make_origination_sink(")
         end = source.index("    def _compliance_permits(", start)
         sink = source[start:end]
@@ -212,7 +219,7 @@ class TestBootstrapDocstring:
 
     def test_no_kill_switch_in_docstring(self):
         from pathlib import Path
-        source = Path("event_driven_bootstrap.py").read_text()
+        source = Path("event_driven_bootstrap.py").read_text(encoding="utf-8")
         lines = source.split('"""')
         if len(lines) >= 2:
             docstring = lines[1]

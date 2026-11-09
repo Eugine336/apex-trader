@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 
 import json
+from pathlib import Path
 from typing import Any, Optional
 
 from loguru import logger
@@ -140,6 +141,32 @@ def configure_structured_logging(
     trade_path = getattr(ops_config, "trade_audit_log", "logs/trade_audit.log")
     risk_path = getattr(ops_config, "risk_audit_log", "logs/risk_audit.log")
 
+    # The built-in relative paths belong under the active runtime log root.
+    # This keeps APEX_LOG_DIR instances isolated and avoids creating user logs
+    # in the source checkout when the process has a different working directory.
+    from runtime_paths import log_dir
+
+    defaults = {
+        "logs/apex.log": "apex.log",
+        "logs/trade_audit.log": "trade_audit.log",
+        "logs/risk_audit.log": "risk_audit.log",
+    }
+
+    def _runtime_log_path(path: Any) -> Any:
+        relative = Path(str(path)).as_posix()
+        filename = defaults.get(relative)
+        return str(log_dir() / filename) if filename else path
+
+    main_path = _runtime_log_path(main_path)
+    trade_path = _runtime_log_path(trade_path)
+    risk_path = _runtime_log_path(risk_path)
+
+    # Loguru treats braces in sink paths as str.format fields. Windows
+    # AppContainer temp roots can contain ``sandbox.{GUID}``, so escape literal
+    # braces before handing the path to its file sink.
+    def _sink_path(path: Any) -> str:
+        return str(path).replace("{", "{{").replace("}", "}}")
+
     # Ensure parent directories exist up front — loguru creates them lazily, but
     # being explicit makes the sink add deterministic regardless of cwd.
     import os as _os
@@ -156,7 +183,7 @@ def configure_structured_logging(
     added: list[int] = []
     try:
         sink_id = logger.add(
-            main_path,
+            _sink_path(main_path),
             level=level,
             rotation=rotation,
             retention=retention,
@@ -170,7 +197,9 @@ def configure_structured_logging(
         summary["main_log"] = main_path
         summary["json"] = fmt == "json"
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[ops] structured main-log sink failed ({}): {}", main_path, exc)
+        logger.opt(exception=True).warning(
+            "[ops] structured main-log sink failed ({}): {}", main_path, exc
+        )
 
     for tag, path, key in (
         (_AUDIT_TRADE, trade_path, "trade_audit"),
@@ -178,7 +207,7 @@ def configure_structured_logging(
     ):
         try:
             sink_id = logger.add(
-                path,
+                _sink_path(path),
                 level="DEBUG",
                 rotation=rotation,
                 retention=retention,
@@ -191,7 +220,9 @@ def configure_structured_logging(
             added.append(sink_id)
             summary[key] = path
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[ops] structured {}-audit sink failed ({}): {}", tag, path, exc)
+            logger.opt(exception=True).warning(
+                "[ops] structured {}-audit sink failed ({}): {}", tag, path, exc
+            )
 
     summary["sink_ids"] = added
     logger.bind(component="ops", event="logging_configured").info(

@@ -218,6 +218,16 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   source-time-verified reconciliation resolves it. PR #856 passed 4,308 tests on Python 3.11 and 3.12 plus lint.
   News-window management remains DATA-GATED pending a verified economic-calendar feed. Live owner-connected broker
   lifecycle acceptance remains outstanding; simulated event-store restart tests do not substitute for it.
+
+  **Provider-neutral calendar integration:** `SystemContext` now passes its read-only `DataSourceRegistry` to the live
+  `NewsGuard`, which is the same instance consumed by `ComplianceDivision`. If a provider advertises economic-event
+  capability, the guard accepts only COMPLETE records with verified source time, fresh receipt time, publication and
+  revision vintages no later than the check cutoff, source record identity, and explicit event currency/impact. It keeps
+  provider, venue, record ID and timestamps on each normalized `NewsEvent`; any provider error, partial response, stale
+  record or malformed impact fails closed rather than falling back to a different calendar. No economic-event provider
+  is currently registered by the runtime, so the legacy feed remains the active fallback and verified provider
+  acceptance remains DATA-GATED. Deterministic provider, reversed-cutoff cache, and actual
+  SystemContext/ComplianceDivision wiring tests pass.
 - **WP-B4 Calibration without a cold start — OHLC hindcast foundation merged (PR #828).** The shared concept
   reader now powers both live evidence conversion and offline replay. The replay validates SHA-256 manifests, explicit
   UTC source timestamps and bar-open/bar-close semantics; runs every registered concept reader and the native Brain
@@ -264,6 +274,15 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
   risk-management legacy views. The repository-wide broker mutation route audit passes. Final production acceptance still
   requires an owner-connected account trace. Do not edit `.env` or migrate deployed values.
 
+  **Continuation implementation:** owner-limit edits now commit to SQLite atomically with an append-only before/after
+  audit row and stale-write conflict check. `GET /api/config/audit` is authenticated and returns only the caller's own
+  records. Dashboard pause/resume and manual FROZEN controls persist in a local SQLite control store with an authenticated
+  audit endpoint. On startup the stored pause is restored before event-driven threads start, and the actual Brain
+  origination sink checks the pause flag before shared execution submission; protective position management and the
+  emergency-close path remain available. Deterministic tests cover restart restoration, fail-closed restoration when a
+  freeze guard is missing, no-credential authorization, audit isolation, stale-write rejection and the Brain-to-executor
+  pause gate. Focused validation passed 79 tests. This does not establish the required owner-connected account trace.
+
   Current generated coverage: 79 analytical methods = 56 FULL, 23 DATA-GATED, 0 MEASURED, 0 UNMEASURED; 38 strategy
   lenses = 20 FULL, 18 DATA-GATED, 0 MEASURED, 0 UNMEASURED. All 79/38 are classified and their registered Brain
   call paths are statically audited. DATA-GATED means a reader/assessment exists but its named feed or contract
@@ -291,3 +310,21 @@ Each channel delivers **source-timestamped** data with a `source_timestamp_verif
 One work package per PR from a branch off the latest `main`; run the full suite and compare to `main`; regenerate the
 register; no force-push to `main`; do not edit another package's files without coordinating (the register and
 `CONCEPT_MODULES` are the merge hot-spots — keep those edits minimal).
+
+## 7. Concurrent Phase 2 data-capability implementation — PR #864
+
+Branch: phase2/concurrent-data-capabilities. This work extends, rather than reopens, the completed WP-B1/WP-B2 implementation.
+
+- **Intermarket:** live cycle-scoped multi-symbol frames are supplied to native readers. Paired returns are calculated only between consecutive exact common completed-bar timestamps; SMT compares the same final common bar; currency strength uses the common return-interval intersection. Cross-asset correlation remains descriptive. Relative-value residual stationarity and relationship stability remain unverified, so these concepts remain DATA-GATED.
+- **External providers:** normalized source/provenance contracts, per-provider failure isolation and native Brain readers are implemented for calendar, macro, derivatives, crypto, trade prints and execution-cost channels. No vendor adapters are registered. Provider selection, credentials, licensing/entitlements, rate limits and historical backfill are not assumed.
+- **Portfolio risk/financing:** the atomic PORTFOLIO_SNAPSHOT contract is assembled fail-closed and wired to PortfolioRiskReadings. It requires one source-attested account snapshot with complete positions, account-currency exposures/risk, equity/return history and synchronized correlations. No live MT5 adapter currently emits this complete contract. Financing/carry remains DATA-GATED until swap-mode conversion, rollover and account-currency economics are fully verified.
+- **Calibration:** producer-owned chronological development/holdout/walk-forward artifacts and descriptive track records remain separate from calibrated probabilities. Acceptance still requires authenticated source manifests and complete owner-supplied broker outcome lineage.
+- **Performance:** the cold/warm full-universe benchmark is available and requires exact universe/timeframe coverage, requested bar depth and zero reader failures. No owner-host result or per-symbol budget is claimed before the benchmark is run.
+- **WP-B3/WP-B7:** broker management acknowledgement/restart and owner-limit static call-path work remain implemented. Live owner-connected lifecycle acceptance is still outstanding.
+
+Owner-host read-only commands:
+
+    python scripts/audit_broker_data_capabilities.py --output data_capability_audit.json
+    python scripts/benchmark_concept_pipeline.py --count 500 --timeframes M5 M15 H1 H4
+
+Keep raw reports on the owner host; share only sanitized acceptance summaries. Neither command sends or modifies broker orders. The .env file remains off limits. Do not promote DATA-GATED capabilities based on reader presence or fixture tests.
