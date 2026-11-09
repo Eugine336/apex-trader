@@ -115,7 +115,7 @@ def _mt5_self():
     return types.SimpleNamespace(
         _max_tick_age_seconds=120.0,
         symbol_map=lambda s: s,
-        _read_server_clock_state=lambda: types.SimpleNamespace(
+        _read_server_clock_state = lambda *args, **kwargs: types.SimpleNamespace(
             age_seconds=lambda epoch: _time.time() - float(epoch),
         ),
         _tick_server_epoch=lambda tick: float(tick.time),
