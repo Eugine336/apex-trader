@@ -266,6 +266,30 @@ class ManagementStateStore:
                         setattr(state, k, v)
                 self._persist(state)
 
+    def reconcile_partial_close(self, ticket: str, observed_remaining_lots: float) -> bool:
+        """Resolve an ambiguous partial close only after broker size reduction.
+
+        An unchanged, zero, or invalid observation is insufficient evidence:
+        the state remains blocked for operator/broker-history reconciliation.
+        """
+        try:
+            observed = float(observed_remaining_lots)
+        except (TypeError, ValueError):
+            return False
+        if not (observed > 0.0):
+            return False
+        with self._lock:
+            state = self._states.get(ticket)
+            if state is None or state.status != "RECONCILIATION_REQUIRED":
+                return False
+            prior = float(state.remaining_size_lots or 0.0)
+            if prior <= 0.0 or observed >= prior - 1e-9:
+                return False
+            state.remaining_size_lots = observed
+            state.status = "OPEN"
+            self._persist(state)
+            return True
+
     def remove(self, ticket: str) -> None:
         with self._lock:
             self._states.pop(ticket, None)
