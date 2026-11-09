@@ -114,6 +114,13 @@ class TestMainSinglePath:
         source = inspect.getsource(main)
         assert "_start_trading_loop" not in source, "main.py should not have _start_trading_loop helper"
 
+    def test_platform_connection_status_is_not_reported_as_live(self):
+        import inspect
+        import main
+        source = inspect.getsource(main)
+        assert "APEX TRADER IS LIVE" not in source
+        assert "Platform connection status:" in source
+
 
 # ── is_event_driven_enabled removed ──────────────────────────────────
 

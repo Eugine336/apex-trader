@@ -221,7 +221,7 @@ def main() -> None:
             logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
 
         logger.info("-" * 60)
-        logger.info("APEX TRADER IS LIVE")
+        logger.info("Platform connection status:")
         logger.info("  MT5   — {}", "ONLINE" if connection_status.get("mt5") else "OFFLINE")
         logger.info("  Deriv — {}", "ONLINE" if connection_status.get("deriv") else "OFFLINE")
         logger.info("-" * 60)

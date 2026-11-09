@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 
 import json
+from pathlib import Path
 from typing import Any, Optional
 
 from loguru import logger
@@ -139,6 +140,26 @@ def configure_structured_logging(
     main_path = getattr(ops_config, "main_log", "logs/apex.log")
     trade_path = getattr(ops_config, "trade_audit_log", "logs/trade_audit.log")
     risk_path = getattr(ops_config, "risk_audit_log", "logs/risk_audit.log")
+
+    # The built-in relative paths belong under the active runtime log root.
+    # This keeps APEX_LOG_DIR instances isolated and avoids creating user logs
+    # in the source checkout when the process has a different working directory.
+    from runtime_paths import log_dir
+
+    defaults = {
+        "logs/apex.log": "apex.log",
+        "logs/trade_audit.log": "trade_audit.log",
+        "logs/risk_audit.log": "risk_audit.log",
+    }
+
+    def _runtime_log_path(path: Any) -> Any:
+        relative = Path(str(path)).as_posix()
+        filename = defaults.get(relative)
+        return str(log_dir() / filename) if filename else path
+
+    main_path = _runtime_log_path(main_path)
+    trade_path = _runtime_log_path(trade_path)
+    risk_path = _runtime_log_path(risk_path)
 
     # Loguru treats braces in sink paths as str.format fields. Windows
     # AppContainer temp roots can contain ``sandbox.{GUID}``, so escape literal
