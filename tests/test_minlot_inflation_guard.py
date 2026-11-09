@@ -122,6 +122,18 @@ def _setup_mt5_mock_market(volume_min: float = 0.01):
     return mt5_mock, sent
 
 
+def test_market_order_fails_closed_without_verified_server_clock():
+    mt5_mock, _sent = _setup_mt5_mock_market(volume_min=0.01)
+    connector = _make_connector(reject_on_minlot_inflation=False)
+    connector._read_server_clock_state = lambda: None
+
+    result = connector.place_order("EURUSD", "BUY", 0.05, 1.09, 1.11)
+
+    assert result.success is False
+    assert result.error == "MT5_SERVER_CLOCK_OFFSET_UNAVAILABLE"
+    mt5_mock.order_send.assert_not_called()
+
+
 class TestMarketOrderMinlotInflation:
 
     def test_inflation_flag_off_proceeds_with_warning(self):
