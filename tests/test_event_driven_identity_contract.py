@@ -6,6 +6,7 @@ protect the architectural boundary, not market profitability.
 """
 
 import ast
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,11 +118,19 @@ def test_pending_order_staging_routes_are_retired_and_brain_gateway_is_canonical
         assert retired not in defined, f"{retired} must stay deleted"
     assert not (ROOT / "brain" / "news_planner.py").exists()
     allowed_pending_calls = {Path("platforms/platform_manager.py")}
+    excluded_dirs = {
+        ".git", ".venv", "venv", "__pycache__", "node_modules",
+        "build", "dist", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        "tests", "backtest", "test_support",
+    }
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT)
-        if rel.parts[0] in {"tests", "node_modules", "backtest", "test_support"}:
+        if any(part in excluded_dirs for part in rel.parts[:-1]):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Respect PEP 263 source-encoding declarations (for example, Big5)
+        # rather than assuming every Python source file is UTF-8.
+        with tokenize.open(path) as source_file:
+            tree = ast.parse(source_file.read(), filename=str(rel))
         if _calls(tree, attribute="place_pending_order"):
             assert rel in allowed_pending_calls, f"{rel} bypasses the canonical pending-order gateway"
         assert not _calls(tree, attribute="place_pending_entry"), f"{rel} stages pending orders outside the shared executor"
