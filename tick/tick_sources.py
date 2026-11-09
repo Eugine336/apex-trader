@@ -242,8 +242,18 @@ class DerivTickAdapter:
                 # 24/7 synthetics always pass the gate and keep streaming.
                 if not self._should_poll(sym):
                     continue
+                # Platform.BOTH symbols are intentionally polled by both source
+                # adapters. PlatformManager.get_price() prefers MT5 for BOTH,
+                # so using it here silently relabelled MT5 quotes as Deriv ticks.
+                # Wait while Deriv is offline; never fall back to another venue.
+                if not bool(getattr(self._pm, "deriv_connected", False)):
+                    _time.sleep(max(self._interval, 0.1))
+                    continue
                 try:
-                    td = self._pm.get_price(sym)
+                    get_deriv_price = getattr(self._pm, "get_deriv_price", None)
+                    if not callable(get_deriv_price):
+                        raise RuntimeError("PlatformManager has no explicit Deriv price route")
+                    td = get_deriv_price(sym)
                     if td is not None and td.bid > 0:
                         reported_symbol = str(getattr(td, "symbol", "") or "").strip().upper()
                         if not reported_symbol or reported_symbol != sym.strip().upper():
