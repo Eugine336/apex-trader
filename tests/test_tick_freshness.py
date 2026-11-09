@@ -48,7 +48,7 @@ def _make_mt5(max_tick_age_seconds=120.0):
         c._mapper.to_broker.return_value = "EURUSD"
         c._symbol_cache = {}
         c._max_tick_age_seconds = max_tick_age_seconds
-        c._read_server_clock_state = lambda: SimpleNamespace(
+        c._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
             offset_seconds=0,
             age_seconds=lambda epoch: _time.time() - float(epoch),
             to_utc_epoch=lambda epoch: float(epoch),
@@ -106,10 +106,10 @@ class TestMT5ClockOffsetRequired:
     @patch("platforms.mt5.mt5_connector.mt5")
     def test_missing_server_clock_bridge_fails_closed(self, mock_mt5):
         c, _ = _make_mt5()
-        c._read_server_clock_state = lambda: None
+        c._read_server_clock_state = lambda *args, **kwargs: None
         mock_mt5.symbol_info_tick.return_value = _fresh_mt5_tick()
         with patch("platforms.mt5.mt5_connector.mt5", mock_mt5):
-            with pytest.raises(RuntimeError, match="server clock offset unavailable"):
+            with pytest.raises(RuntimeError, match="server clock unavailable"):
                 c.get_price("EURUSD")
 
 
@@ -208,7 +208,7 @@ class TestMT5ConfigurableAge:
             c._mapper.to_broker.return_value = "EURUSD"
             c._symbol_cache = {}
             c._max_tick_age_seconds = float("10")
-            c._read_server_clock_state = lambda: SimpleNamespace(
+            c._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
                 offset_seconds=0,
                 age_seconds=lambda epoch: _time.time() - float(epoch),
                 to_utc_epoch=lambda epoch: float(epoch),
