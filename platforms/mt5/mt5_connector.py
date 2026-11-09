@@ -780,6 +780,8 @@ class MT5Connector(BaseConnector):
             if callable(getattr(tick, "_asdict", None))
             else {}
         )
+        raw_fields.setdefault("time", getattr(tick, "time", None))
+        raw_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
         raw_fields.update({
             "source_timezone": "broker_server",
             "source_utc_offset_seconds": clock.offset_seconds,
