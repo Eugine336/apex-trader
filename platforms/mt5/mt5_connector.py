@@ -797,7 +797,7 @@ class MT5Connector(BaseConnector):
         ``max_age_seconds`` (a live session), ``False`` when it is older (⇒ the
         session is closed/halted — e.g. a weekend or holiday), or ``None`` when
         it cannot be determined (not connected, symbol unmapped, no tick, bad
-        timestamp). Callers treat ``None`` as "unknown" and fail OPEN.
+        timestamp). ``None`` means unknown; entry admission must not treat it as fresh.
 
         This is the session-open signal ``trade_mode`` cannot provide: a broker
         leaves ``trade_mode`` at "full" straight through a weekend, so only the
