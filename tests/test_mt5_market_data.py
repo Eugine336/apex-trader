@@ -1,6 +1,6 @@
 from collections import namedtuple
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -151,6 +151,53 @@ def test_historical_ticks_preserve_broker_fields_and_only_label_explicit_aggress
     assert frame["volume_real"].tolist() == [2.0, 3.0]
     assert frame.attrs["source"] == "mt5.copy_ticks_range"
     assert frame.attrs["source_verified"] is True
+
+
+def test_historical_ticks_remain_unverified_broker_server_time(monkeypatch):
+    connector = _connected_connector(monkeypatch)
+    frame = connector.get_ticks(
+        "EURUSD",
+        datetime(2027, 1, 15, tzinfo=timezone.utc),
+        datetime(2027, 1, 16, tzinfo=timezone.utc),
+    )
+
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["source_timestamp_verified"] is False
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert "time_server_epoch" in frame.columns
+    assert frame["time"].dt.tz is None
+
+
+def test_recent_tick_window_uses_verified_live_server_offset(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    first_server_epoch = now + offset - 10
+    second_server_epoch = now + offset - 9
+    mt5_module.mt5.copy_ticks_range = lambda *args: [
+        {"time": int(first_server_epoch), "time_msc": int(first_server_epoch * 1000),
+         "bid": 1.0, "ask": 1.1, "last": 1.05, "volume": 2,
+         "volume_real": 2.0, "flags": 16},
+        {"time": int(second_server_epoch), "time_msc": int(second_server_epoch * 1000),
+         "bid": 1.1, "ask": 1.2, "last": 1.15, "volume": 3,
+         "volume_real": 3.0, "flags": 32},
+    ]
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        offset_seconds=offset,
+        age_seconds=lambda epoch: (now + offset) - float(epoch),
+        server_now_epoch=lambda: now + offset,
+        to_utc_epoch=lambda epoch: float(epoch) - offset,
+    )
+    end = datetime.fromtimestamp(now, timezone.utc)
+    frame = connector.get_ticks("EURUSD", end - timedelta(seconds=10), end)
+
+    assert frame.attrs["source_timezone"] == "UTC"
+    assert frame.attrs["source_timestamp_verified"] is True
+    assert frame.attrs["source_utc_offset_seconds"] == offset
+    assert abs(frame.iloc[0]["time"].timestamp() - (first_server_epoch - offset)) < 1.0
+    assert frame.iloc[0]["time_server_epoch"] == int(first_server_epoch)
 
 
 def test_historical_ticks_reject_naive_datetimes(monkeypatch):
