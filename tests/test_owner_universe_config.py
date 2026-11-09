@@ -121,3 +121,33 @@ def test_trading_enabled_true_preserves_configured_origination_mode(monkeypatch)
     monkeypatch.setenv("COGNITION_ORIGINATION_MODE", "live")
     cognition = CognitionConfig()
     assert cognition.origination_mode == "live"
+
+
+def test_process_trading_mode_lock_blocks_persisted_user_universe_override(monkeypatch):
+    from api.instance_config import apply_user_overrides
+
+    monkeypatch.setenv("TRADING_MODE", "gold")
+    monkeypatch.setenv("TRADING_MODE_LOCKED", "true")
+    config = AppConfig()
+    apply_user_overrides(config, {
+        "universe_mode": "all",
+        "enabled_categories": ["forex", "commodity", "index", "crypto"],
+        "enabled_symbols_override": [],
+    })
+    assert config.universe_mode == "single"
+    assert config.enabled_symbols_override == ["XAUUSD"]
+    assert config.enabled_pairs == ["XAUUSD"]
+
+
+def test_unlocked_process_trading_mode_allows_persisted_user_override(monkeypatch):
+    from api.instance_config import apply_user_overrides
+
+    monkeypatch.setenv("TRADING_MODE", "gold")
+    monkeypatch.setenv("TRADING_MODE_LOCKED", "false")
+    config = AppConfig()
+    apply_user_overrides(config, {
+        "universe_mode": "selected",
+        "enabled_symbols_override": ["EURUSD"],
+    })
+    assert config.universe_mode == "selected"
+    assert config.enabled_pairs == ["EURUSD"]
