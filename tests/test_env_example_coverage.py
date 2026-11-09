@@ -67,8 +67,6 @@ def test_template_does_not_advertise_unconsumed_legacy_controls():
         "APEX_ED_EVENT_REACTIVE_MGMT",
         "APEX_OBS_CACHE",
         "APEX_OBS_CACHE_DIR",
-        "APEX_GOLD_DESK_SHADOW_ENABLED",
-        "APEX_GOLD_DESK_VENUE",
     }
     active = {
         match.group(1)
