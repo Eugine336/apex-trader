@@ -22,7 +22,7 @@ from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
 from platforms.mt5.clock import (
-    CLOCK_MAX_AGE_SECONDS, MAX_OFFSET_SECONDS, load_mt5_server_clock,
+    CLOCK_MAX_AGE_SECONDS, MAX_OFFSET_SECONDS, estimate_mt5_server_clock, query_ntp_sources,
 )
 from platforms.base_connector import (
     AccountInfo,
@@ -154,6 +154,7 @@ class MT5Connector(BaseConnector):
     def connect(self) -> bool:
         self._server_clock_state_cache = None
         self._server_clock_state_cache_at = None
+        self._clock_tick_observations = {}
         self._server_clock_unavailable_warned = False
         if sys_platform.system() != "Windows":
             logger.warning(
@@ -236,44 +237,77 @@ class MT5Connector(BaseConnector):
             logger.warning("[mt5] health check failed: {}", exc)
             return False
 
-    def _read_server_clock_state(self):
-        """Read a fresh broker-specific offset, caching terminal IPC for one second."""
+    def _read_server_clock_state(self, tick=None, symbol: str | None = None):
+        """Automatically synchronize broker time from live ticks and network UTC.
+
+        The Python terminal API has no TimeTradeServer() call. A verified state
+        therefore requires an advancing tick stream plus independent NTP/HTTPS
+        time sources. No host wall-clock or hardcoded broker offset is used.
+        """
         now_mono = _time.monotonic()
+        cached = getattr(self, "_server_clock_state_cache", None)
         cached_at = getattr(self, "_server_clock_state_cache_at", None)
-        if cached_at is not None and now_mono - cached_at < 1.0:
-            cached = getattr(self, "_server_clock_state_cache", None)
-            if cached is None:
-                return None
-            if cached.file_age_seconds + (now_mono - cached_at) <= CLOCK_MAX_AGE_SECONDS:
-                return cached
+        cache_age = now_mono - cached_at if cached_at is not None else float("inf")
+        if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
+            return cached
+
         try:
-            terminal = mt5.terminal_info()
             account = mt5.account_info()
-            data_path = getattr(terminal, "data_path", None) if terminal else None
-            server = getattr(account, "server", None) if account else None
-            state = load_mt5_server_clock(
-                data_path, server, now_epoch=_time.time(),
+            server = str(getattr(account, "server", "") or "").strip() if account else ""
+            if not server:
+                raise RuntimeError("MT5 account server identity unavailable")
+            if tick is None and symbol:
+                tick = mt5.symbol_info_tick(symbol)
+                now_mono = _time.monotonic()
+            if tick is None:
+                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+            tick_epoch = self._tick_server_epoch(tick)
+            if tick_epoch <= 0:
+                raise RuntimeError("MT5 tick timestamp unavailable")
+
+            key = (server, str(symbol or "").strip().upper())
+            observations = getattr(self, "_clock_tick_observations", None)
+            if not isinstance(observations, dict):
+                observations = {}
+                self._clock_tick_observations = observations
+            previous = observations.get(key)
+            observations[key] = (tick_epoch, now_mono)
+            if previous is None:
+                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+
+            previous_epoch, previous_mono = previous
+            elapsed = now_mono - previous_mono
+            advance = tick_epoch - previous_epoch
+            tolerance = max(2.0, elapsed * 0.50)
+            if elapsed <= 0 or elapsed > 10.0 or advance <= 0 or abs(advance - elapsed) > tolerance:
+                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+
+            state = estimate_mt5_server_clock(
+                server, tick_epoch, now_mono, ntp_samples=query_ntp_sources(),
             )
+            if state is None:
+                raise RuntimeError(
+                    "network time sources disagree or timestamp uncertainty exceeds the safety limit"
+                )
+            old_state = cached
+            self._server_clock_state_cache = state
+            self._server_clock_state_cache_at = now_mono
+            if old_state is None:
+                logger.info(
+                    "[mt5] broker server clock synchronized — server={} offset={:+.3f}s "
+                    "uncertainty={:.3f}s sources={}",
+                    state.server, state.offset_seconds, state.uncertainty_seconds,
+                    ",".join(state.sources),
+                )
+            elif abs(old_state.offset_seconds - state.offset_seconds) >= 30.0:
+                logger.warning(
+                    "[mt5] broker clock offset changed — server={} old={:+.3f}s new={:+.3f}s",
+                    state.server, old_state.offset_seconds, state.offset_seconds,
+                )
+            return state
         except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
-            state = None
-            logger.debug("[mt5] server-clock metadata read failed: {}", exc)
-        self._server_clock_state_cache = state
-        self._server_clock_state_cache_at = now_mono
-        warned = bool(getattr(self, "_server_clock_unavailable_warned", False))
-        if state is None and not warned:
-            logger.error(
-                "[mt5] broker server clock offset unavailable or stale; install and "
-                "attach scripts/mt5_clock_publisher.mq5 to this terminal. MT5 quotes "
-                "remain rejected until a fresh server-matched offset is published."
-            )
-            self._server_clock_unavailable_warned = True
-        elif state is not None and warned:
-            logger.info(
-                "[mt5] broker server clock verified — server={} UTC offset={:+d}s",
-                state.server, state.offset_seconds,
-            )
-            self._server_clock_unavailable_warned = False
-        return state
+            logger.warning("[mt5] automatic broker-clock synchronization unavailable: {}", exc)
+            return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
 
     @staticmethod
     def _tick_server_epoch(tick: Any) -> float:
@@ -731,11 +765,11 @@ class MT5Connector(BaseConnector):
             raise RuntimeError(
                 f"Invalid tick timestamp for {mapped}: epoch={tick.time}"
             )
-        clock = self._read_server_clock_state()
+        clock = self._read_server_clock_state(tick=tick, symbol=mapped)
         if clock is None:
             raise RuntimeError(
-                "MT5 broker server clock offset unavailable; attach "
-                "scripts/mt5_clock_publisher.mq5 to this terminal"
+                "MT5 broker server clock unavailable: waiting for advancing ticks "
+                "and independent network-time agreement"
             )
         tick_server_epoch = self._tick_server_epoch(tick)
         age = clock.age_seconds(tick_server_epoch)
@@ -833,7 +867,7 @@ class MT5Connector(BaseConnector):
             tick = mt5.symbol_info_tick(mapped)
             if tick is None or getattr(tick, "time", 0) <= 0:
                 return None
-            clock = self._read_server_clock_state()
+            clock = self._read_server_clock_state(tick=tick, symbol=mapped)
             if clock is None:
                 return None
             tick_epoch = self._tick_server_epoch(tick)
@@ -884,7 +918,8 @@ class MT5Connector(BaseConnector):
         # closed-bar dual-view: structural modules drop it themselves, live
         # observational reads legitimately keep it).
         if not include_forming:
-            clock = self._read_server_clock_state()
+            live_tick = mt5.symbol_info_tick(mapped)
+            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
             if clock is None:
                 raise RuntimeError(
                     "MT5 server clock offset unavailable; completed-bar status "
@@ -985,7 +1020,8 @@ class MT5Connector(BaseConnector):
             clock_required_horizon = duration + MAX_OFFSET_SECONDS + 120
             server_now_label = None
             if _time.time() - end.timestamp() <= clock_required_horizon:
-                clock = self._read_server_clock_state()
+                live_tick = mt5.symbol_info_tick(mapped)
+                clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
                 if clock is None:
                     raise RuntimeError(
                         "MT5 server clock offset unavailable; recent completed-bar status "
@@ -1053,10 +1089,14 @@ class MT5Connector(BaseConnector):
         # short window ending near now can be normalized with the live terminal
         # offset; arbitrary historical ranges need an offset history and remain
         # explicitly broker-server time.
-        now_epoch = _time.time()
-        window_age = now_epoch - end.timestamp()
-        recent_window = -5.0 <= window_age <= 120.0 and (end - start).total_seconds() <= 300.0
-        clock = self._read_server_clock_state() if recent_window else None
+        clock = None
+        recent_window = (end - start).total_seconds() <= 300.0
+        if recent_window:
+            live_tick = mt5.symbol_info_tick(mapped)
+            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
+            if clock is not None:
+                utc_now = clock.observed_gmt_epoch + (_time.monotonic() - clock.observed_monotonic)
+                recent_window = -5.0 <= utc_now - end.timestamp() <= 120.0
         if "time" in frame.columns:
             frame["time_server_epoch"] = frame["time"]
             if clock is not None:
@@ -1275,7 +1315,7 @@ class MT5Connector(BaseConnector):
                 symbol, direction, lots, sl, tp,
                 f"Invalid tick (bid={tick.bid}, ask={tick.ask}, epoch={tick.time})",
             )
-        clock = self._read_server_clock_state()
+        clock = self._read_server_clock_state(tick=tick, symbol=mapped)
         if clock is None:
             return self._fail_order(
                 symbol, direction, lots, sl, tp,
@@ -1693,9 +1733,9 @@ class MT5Connector(BaseConnector):
         tick = mt5.symbol_info_tick(mapped)
         if tick is None or tick.bid <= 0 or tick.ask <= tick.bid or tick.time <= 0:
             return fail_pending("pending_order_quote_unavailable")
-        clock = self._read_server_clock_state()
+        clock = self._read_server_clock_state(tick=tick, symbol=mapped)
         if clock is None:
-            return fail_pending("mt5_server_clock_offset_unavailable")
+            return fail_pending("mt5_server_clock_unavailable")
         try:
             tick_age = clock.age_seconds(self._tick_server_epoch(tick))
         except (TypeError, ValueError, RuntimeError):
