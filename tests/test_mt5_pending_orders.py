@@ -100,6 +100,10 @@ def _connector(monkeypatch):
     connector._connected = True
     connector.symbol_map = lambda symbol: symbol
     connector._deviation_points = lambda symbol, point: 10
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        age_seconds=lambda epoch: datetime.now(timezone.utc).timestamp() - float(epoch),
+        to_utc_epoch=lambda epoch: float(epoch),
+    )
     return connector, fake
 
 
