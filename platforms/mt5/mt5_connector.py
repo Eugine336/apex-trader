@@ -22,7 +22,7 @@ from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
 from platforms.mt5.clock import (
-    CLOCK_MAX_AGE_SECONDS, MAX_OFFSET_SECONDS, estimate_mt5_server_clock, query_ntp_sources,
+    CLOCK_MAX_AGE_SECONDS, estimate_mt5_server_clock, query_ntp_sources,
 )
 from platforms.base_connector import (
     AccountInfo,
