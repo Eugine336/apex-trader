@@ -285,7 +285,11 @@ class MT5Connector(BaseConnector):
             elapsed = now_mono - previous_mono
             advance = tick_epoch - previous_epoch
             tolerance = max(2.0, elapsed * 0.50)
-            if elapsed <= 0 or elapsed > 10.0 or advance <= 0 or abs(advance - elapsed) > tolerance:
+            if (
+                elapsed <= 0 or elapsed > 10.0 or advance <= 0
+                or advance < max(0.001, elapsed * 0.25)
+                or abs(advance - elapsed) > tolerance
+            ):
                 return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
 
             state = estimate_mt5_server_clock(
@@ -293,6 +297,7 @@ class MT5Connector(BaseConnector):
                 tick_precision_seconds=(
                     0.001 if float(getattr(tick, "time_msc", 0) or 0) > 0 else 1.0
                 ),
+                tick_transport_uncertainty_seconds=1.0,
             )
             if state is None:
                 raise RuntimeError(
@@ -938,7 +943,7 @@ class MT5Connector(BaseConnector):
             # a historical offset series is available. Compare it to the matching
             # broker-server clock, never to the host UTC clock.
             server_now_label = datetime.fromtimestamp(
-                clock.server_now_epoch(), tz=timezone.utc,
+                clock.server_now_epoch() - clock.uncertainty_seconds, tz=timezone.utc,
             )
             seconds_by_tf = {
                 "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
@@ -1033,7 +1038,7 @@ class MT5Connector(BaseConnector):
                     "MT5 broker clock unavailable; completed-bar status cannot be verified"
                 )
             server_now_label = datetime.fromtimestamp(
-                clock.server_now_epoch(), tz=timezone.utc,
+                clock.server_now_epoch() - clock.uncertainty_seconds, tz=timezone.utc,
             )
             if server_now_label is not None:
                 if timeframe.upper() == "MN1":
@@ -1100,7 +1105,11 @@ class MT5Connector(BaseConnector):
             live_tick = mt5.symbol_info_tick(mapped)
             clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
             if clock is not None:
-                utc_now = clock.observed_gmt_epoch + (_time.monotonic() - clock.observed_monotonic)
+                utc_now = (
+                    clock.observed_gmt_epoch
+                    + (_time.monotonic() - clock.observed_monotonic)
+                    - clock.uncertainty_seconds
+                )
                 recent_window = -5.0 <= utc_now - end.timestamp() <= 120.0
         if "time" in frame.columns:
             frame["time_server_epoch"] = frame["time"]
