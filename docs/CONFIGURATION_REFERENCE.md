@@ -60,3 +60,21 @@ must be classified as operator controls, data-derived methodology, internal
 implementation detail, or non-overridable safety invariant before exposing
 them. Do not expose a threshold merely to make it editable; that would turn
 internal methodology into an ungoverned operator override.
+
+## Frontend build-time configuration
+
+The root `.env.example` is for the Python runtime/control plane. Vite build-time
+variables belong in the frontend-specific templates:
+
+- `frontend/.env.example` configures the multi-tenant React client.
+- `dashboard/frontend/.env.example` configures the operator dashboard.
+
+Do not copy broker credentials, JWT secrets, API master keys, or other private
+secrets into a `VITE_*` variable. Vite embeds those values in browser assets.
+The dashboard's `VITE_DASHBOARD_API_KEY` is only a convenience fallback for
+single-user/local builds and is visible to every browser user; production
+operators should enter the key at runtime in the dashboard Controls page.
+The server-side secret remains `DD_DASHBOARD_API_KEY` in the root `.env`.
+
+Vite environment coverage is enforced by
+`tests/test_frontend_env_example_coverage.py`.
