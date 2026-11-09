@@ -124,6 +124,7 @@ class RiskEngine:
             ),
         )
         self.pnl_tracker = PnLTracker(starting_balance=self.balance)
+        self._has_reconciled_broker_balance = False
         self.spread_monitor = SpreadMonitor(
             max_multiplier=self.risk_cfg.max_spread_multiplier,
         )
@@ -746,9 +747,14 @@ class RiskEngine:
         one-cycle fluke cannot silently corrupt downstream sizing / drawdown
         state.
         """
-        if broker_balance is None or broker_balance < 0:
+        if broker_balance is None:
             return
-        broker_balance = float(broker_balance)
+        try:
+            broker_balance = float(broker_balance)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(broker_balance) or broker_balance < 0:
+            return
         prev = self.balance
         if prev and prev > 0 and broker_balance > 0:
             divergence_pct = abs(prev - broker_balance) / broker_balance * 100.0
@@ -782,6 +788,9 @@ class RiskEngine:
                 )
         self._balance_resync_candidate = None
         self.balance = broker_balance
+        if not self._has_reconciled_broker_balance:
+            self.pnl_tracker.starting_balance = broker_balance
+            self._has_reconciled_broker_balance = True
 
     def reconcile_platform_balances(
         self,
@@ -851,6 +860,7 @@ class RiskEngine:
                 # broker-confirmed account balance, not the configured
                 # backtest/cold-start default.
                 self.pnl_tracker.starting_balance = pooled
+                self._has_reconciled_broker_balance = True
 
     def get_platform_balance(self, platform: str) -> float | None:
         """Last-known independent balance for a single platform, if tracked."""
