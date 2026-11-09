@@ -849,6 +849,7 @@ class MT5Connector(BaseConnector):
                 f"No OHLCV for {mapped}/{timeframe}: {mt5.last_error()}"
             )
         df = pd.DataFrame(rates)
+        df["time_server_epoch"] = df["time"]
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         # Preserve every broker-provided bar field used by market analysis.
         # "volume" remains a compatibility alias for tick_volume; it is never
@@ -863,7 +864,7 @@ class MT5Connector(BaseConnector):
         if "spread" not in df.columns:
             df["spread"] = 0
         out = df[[
-            "time", "open", "high", "low", "close", "volume",
+            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
             "tick_volume", "real_volume", "spread",
         ]].copy()
         out.attrs["volume_basis"] = "tick_volume_alias_with_real_volume_preserved"
@@ -944,6 +945,7 @@ class MT5Connector(BaseConnector):
                 "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             })
             return frame
+        frame["time_server_epoch"] = frame["time"]
         frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
         if "tick_volume" in frame.columns:
             frame["volume"] = frame["tick_volume"]
@@ -955,7 +957,7 @@ class MT5Connector(BaseConnector):
         if "spread" not in frame.columns:
             frame["spread"] = 0
         columns = [
-            "time", "open", "high", "low", "close", "volume",
+            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
             "tick_volume", "real_volume", "spread",
         ]
         frame = frame[[column for column in columns if column in frame.columns]].copy()
