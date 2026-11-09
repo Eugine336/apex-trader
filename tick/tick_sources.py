@@ -227,6 +227,14 @@ class DerivTickAdapter:
             )
 
         while self._running:
+            # Platform.BOTH symbols are intentionally polled by both source
+            # adapters. PlatformManager.get_price() prefers MT5 for BOTH, so
+            # Deriv must use its explicit connector and must never inherit MT5
+            # quotes. Stay idle while Deriv is offline; reconnects resume polling.
+            if not bool(getattr(self._pm, "deriv_connected", False)):
+                _time.sleep(max(self._interval, 0.1))
+                continue
+
             # Per-cycle connection stats. The connection state is evaluated once
             # at the end of the full symbol sweep — never mid-cycle — so a flaky
             # link that mixes good and bad ticks within a single pass cannot flap
@@ -241,13 +249,6 @@ class DerivTickAdapter:
                 # Skip closed-market symbols (weekend FX/commodity mirrors).
                 # 24/7 synthetics always pass the gate and keep streaming.
                 if not self._should_poll(sym):
-                    continue
-                # Platform.BOTH symbols are intentionally polled by both source
-                # adapters. PlatformManager.get_price() prefers MT5 for BOTH,
-                # so using it here silently relabelled MT5 quotes as Deriv ticks.
-                # Wait while Deriv is offline; never fall back to another venue.
-                if not bool(getattr(self._pm, "deriv_connected", False)):
-                    _time.sleep(max(self._interval, 0.1))
                     continue
                 try:
                     get_deriv_price = getattr(self._pm, "get_deriv_price", None)
