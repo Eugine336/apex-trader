@@ -27,6 +27,7 @@ class _FakeMT5:
 
 
 def test_connector_pins_initialize_to_configured_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.sys_platform, "system", lambda: "Windows")
     terminal = tmp_path / "terminal64.exe"
     terminal.write_bytes(b"test executable marker")
     fake_mt5 = _FakeMT5()
@@ -39,6 +40,7 @@ def test_connector_pins_initialize_to_configured_terminal(tmp_path, monkeypatch)
 
 
 def test_connector_fails_closed_for_missing_configured_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.sys_platform, "system", lambda: "Windows")
     fake_mt5 = _FakeMT5()
     monkeypatch.setattr(module, "mt5", fake_mt5)
     monkeypatch.setattr(module, "_MT5_AVAILABLE", True)
@@ -51,6 +53,7 @@ def test_connector_fails_closed_for_missing_configured_terminal(tmp_path, monkey
 
 
 def test_connector_rejects_relative_terminal_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.sys_platform, "system", lambda: "Windows")
     fake_mt5 = _FakeMT5()
     monkeypatch.setattr(module, "mt5", fake_mt5)
     monkeypatch.setattr(module, "_MT5_AVAILABLE", True)
@@ -64,6 +67,7 @@ def test_connector_rejects_relative_terminal_path(tmp_path, monkeypatch):
 
 
 def test_connector_keeps_auto_discovery_when_terminal_path_is_blank(monkeypatch):
+    monkeypatch.setattr(module.sys_platform, "system", lambda: "Windows")
     fake_mt5 = _FakeMT5()
     monkeypatch.setattr(module, "mt5", fake_mt5)
     monkeypatch.setattr(module, "_MT5_AVAILABLE", True)
