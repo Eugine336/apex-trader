@@ -149,6 +149,7 @@ class PlatformManager:
                 login=cfg["login"],
                 password=cfg["password"],
                 server=cfg["server"],
+                terminal_path=os.getenv("MT5_TERMINAL_PATH", "").strip() or None,
                 deviation=self.config.risk.max_deviation_points,
                 reject_on_minlot_inflation=self.config.risk.reject_on_minlot_inflation,
                 max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
