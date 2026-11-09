@@ -21,6 +21,7 @@ from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
+from platforms.mt5.clock import load_mt5_server_clock
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -226,6 +227,49 @@ class MT5Connector(BaseConnector):
         except Exception as exc:
             logger.warning("[mt5] health check failed: {}", exc)
             return False
+
+    def _read_server_clock_state(self):
+        """Read a fresh broker-specific offset published by the MT5 clock EA."""
+        try:
+            terminal = mt5.terminal_info()
+            account = mt5.account_info()
+            data_path = getattr(terminal, "data_path", None) if terminal else None
+            server = getattr(account, "server", None) if account else None
+            state = load_mt5_server_clock(
+                data_path, server, now_epoch=_time.time(),
+            )
+        except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
+            state = None
+            logger.debug("[mt5] server-clock metadata read failed: {}", exc)
+        warned = bool(getattr(self, "_server_clock_unavailable_warned", False))
+        if state is None and not warned:
+            logger.error(
+                "[mt5] broker server clock offset unavailable or stale; install and "
+                "attach scripts/mt5_clock_publisher.mq5 to this terminal. MT5 quotes "
+                "remain rejected until a fresh server-matched offset is published."
+            )
+            self._server_clock_unavailable_warned = True
+        elif state is not None and warned:
+            logger.info(
+                "[mt5] broker server clock verified — server={} UTC offset={:+d}s",
+                state.server, state.offset_seconds,
+            )
+            self._server_clock_unavailable_warned = False
+        return state
+
+    @staticmethod
+    def _tick_server_epoch(tick: Any) -> float:
+        """Use MT5 millisecond precision when available; preserve seconds fallback."""
+        milliseconds = float(getattr(tick, "time_msc", 0) or 0)
+        seconds = float(getattr(tick, "time", 0) or 0)
+        if milliseconds > 0:
+            epoch = milliseconds / 1000.0
+            if seconds > 0 and abs(epoch - seconds) > 1.5:
+                raise RuntimeError(
+                    f"inconsistent MT5 tick time/time_msc fields: {seconds} vs {epoch}"
+                )
+            return epoch
+        return seconds
 
     # ── Account ──────────────────────────────────────────────────────────
 
@@ -664,17 +708,26 @@ class MT5Connector(BaseConnector):
                 f"Non-positive tick for {mapped}: bid={tick.bid}, ask={tick.ask}"
             )
 
-        tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
         if tick.time <= 0:
             logger.warning("Invalid tick timestamp for {}: epoch={}", mapped, tick.time)
             raise RuntimeError(
                 f"Invalid tick timestamp for {mapped}: epoch={tick.time}"
             )
-        age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        clock = self._read_server_clock_state()
+        if clock is None:
+            raise RuntimeError(
+                "MT5 broker server clock offset unavailable; attach "
+                "scripts/mt5_clock_publisher.mq5 to this terminal"
+            )
+        tick_server_epoch = self._tick_server_epoch(tick)
+        age = clock.age_seconds(tick_server_epoch)
         if age < -1.0:
             raise RuntimeError(
-                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of UTC clock"
+                f"Future tick for {mapped}: timestamp is {-age:.1f}s ahead of broker server clock"
             )
+        tick_time = datetime.fromtimestamp(
+            clock.to_utc_epoch(tick_server_epoch), tz=timezone.utc,
+        )
         if age > self._max_tick_age_seconds:
             now_mono = _time.monotonic()
             # Tests, health probes and recovery paths may construct a connector
