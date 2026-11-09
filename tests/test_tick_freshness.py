@@ -49,6 +49,7 @@ def _make_mt5(max_tick_age_seconds=120.0):
         c._symbol_cache = {}
         c._max_tick_age_seconds = max_tick_age_seconds
         c._read_server_clock_state = lambda: SimpleNamespace(
+            offset_seconds=0,
             age_seconds=lambda epoch: _time.time() - float(epoch),
             to_utc_epoch=lambda epoch: float(epoch),
         )
