@@ -77,3 +77,47 @@ def test_legacy_instance_override_migrates_to_selected_universe():
     apply_user_overrides(config, {"enabled_symbols_override": ["EURUSD"]})
     assert config.universe_mode == "selected"
     assert config.enabled_symbols_override == ["EURUSD"]
+
+
+def test_trading_mode_env_selects_gold_only(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "gold")
+    config = AppConfig()
+    assert config.universe_mode == "single"
+    assert config.enabled_symbols_override == ["XAUUSD"]
+    assert config.enabled_pairs == ["XAUUSD"]
+    assert config.trading_mode == "gold"
+
+
+def test_trading_mode_env_selects_full_universe(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "full")
+    monkeypatch.setenv("TRADING_ENABLED_CATEGORIES", "commodity")
+    config = AppConfig()
+    assert config.universe_mode == "all"
+    assert config.enabled_categories == ["commodity"]
+
+
+def test_trading_mode_env_requires_symbols_for_selected_mode(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "selected")
+    monkeypatch.setenv("TRADING_SYMBOLS", "xauusd,eurusd")
+    config = AppConfig()
+    assert config.universe_mode == "selected"
+    assert config.enabled_symbols_override == ["XAUUSD", "EURUSD"]
+
+
+def test_trading_enabled_false_disables_new_origination_only(monkeypatch):
+    from config import CognitionConfig
+
+    monkeypatch.setenv("TRADING_ENABLED", "false")
+    monkeypatch.setenv("COGNITION_ORIGINATION_MODE", "live")
+    cognition = CognitionConfig()
+    assert cognition.origination_mode == "off"
+    assert cognition.management_mode == "live"
+
+
+def test_trading_enabled_true_preserves_configured_origination_mode(monkeypatch):
+    from config import CognitionConfig
+
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("COGNITION_ORIGINATION_MODE", "live")
+    cognition = CognitionConfig()
+    assert cognition.origination_mode == "live"
