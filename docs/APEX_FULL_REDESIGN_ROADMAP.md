@@ -394,6 +394,22 @@ Every work item must follow recover → scope → trace → implement → prove 
 
 **Numbering clarification:** this architecture roadmap is organized into ten systems. Any delivery plan using Phase 1–8 is a separate execution grouping and must be explicitly mapped to these systems in the release register. Do not renumber, collapse or silently replace the ten-system architecture or its acceptance gates.
 
+### Evidence-backed cross-reference for the numbered identity implementation phases
+
+`docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md` defines numbered implementation phases 1–7. Their scope maps to the ten systems below; the mapping is many-to-many and does not change system acceptance status. The same audit has no Phase 8 heading, and repository Markdown search found no Phase 8 definition. Phase 8 therefore remains unmapped until an authoritative delivery document defines its scope.
+
+| Numbered phase in identity audit | Ten-system scope supported by the source headings and deliverables |
+| --- | --- |
+| Phase 1 — unified observation plane | Systems 1–2: evidence contracts/provenance, source freshness, provisional observations, and degraded-input handling |
+| Phase 2 — strategy knowledge and dynamic method selection | Systems 2–3: evidence prerequisites and Brain selection/composition of analytical methods |
+| Phase 3 — native hypothesis breadth | Systems 3–4: competing native hypotheses, counter-hypotheses, and separating hypotheses from actionable opportunities |
+| Phase 4 — all-horizon opportunity set and continuous reassessment | Systems 4 and 7: conditional opportunity discovery and ongoing campaign management |
+| Phase 5 — execution/risk consolidation | Systems 5–7: portfolio permission/sizing, shared broker execution, and recoverable position lifecycle |
+| Phase 6 — learning/governance | Systems 8–9: statistical validation, controlled promotion, safety containment, and observability |
+| Phase 7 — docs, full regression and demo gate | System 10, with validation evidence required across Systems 1–9 |
+
+This is a scope cross-reference, not a claim that any phase or system is complete. Use Systems 1–10 for acceptance decisions; do not infer Phase 8 work from this table.
+
 The configuration contract is binding: all supported operator-tunable startup/deployment/service/integration configuration must be validated and documented in `.env.example`. The real `.env` remains protected and must not be accessed or modified during engineering without explicit authorization. Dashboard runtime controls use authenticated, authorized APIs and durable audited state; they must never write `.env`. Canonical identity, Brain authority and mandatory safety invariants are not operator-overridable configuration.
 
 CI must validate the agent-governance entrypoints and delivery-contract document. The complete environment-variable inventory and reconciliation against `.env.example` remain an explicit acceptance task; do not claim template completeness until that audit is executed.
