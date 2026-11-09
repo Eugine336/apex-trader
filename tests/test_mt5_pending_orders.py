@@ -107,6 +107,20 @@ def _connector(monkeypatch):
     return connector, fake
 
 
+def test_pending_entry_fails_closed_without_verified_server_clock(monkeypatch):
+    connector, fake = _connector(monkeypatch)
+    connector._read_server_clock_state = lambda: None
+
+    result = connector.place_pending_order(
+        symbol="EURUSD", direction="BUY", order_type="LIMIT",
+        entry_price=99.0, lots=0.10, sl=98.0, tp=101.0,
+    )
+
+    assert result.success is False
+    assert result.error == "mt5_server_clock_offset_unavailable"
+    assert fake.requests == []
+
+
 def test_buy_limit_is_submitted_as_pending_and_verified_in_broker_book(monkeypatch):
     connector, fake = _connector(monkeypatch)
 
