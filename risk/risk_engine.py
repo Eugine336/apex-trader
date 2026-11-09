@@ -804,6 +804,7 @@ class RiskEngine:
         """
         if not platform_balances:
             return
+        first_broker_snapshot = not self._platform_balances
         for platform, raw in platform_balances.items():
             if raw is None:
                 continue
@@ -844,6 +845,11 @@ class RiskEngine:
         # configured cold-start placeholder; RiskEngine.assess rejects it.
         if self._platform_balances:
             self.balance = pooled
+            if first_broker_snapshot:
+                # PnLTracker's fallback denominator must reflect the first
+                # broker-confirmed account balance, not the configured
+                # backtest/cold-start default.
+                self.pnl_tracker.starting_balance = pooled
 
     def get_platform_balance(self, platform: str) -> float | None:
         """Last-known independent balance for a single platform, if tracked."""
