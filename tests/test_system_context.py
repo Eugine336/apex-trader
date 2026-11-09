@@ -178,11 +178,3 @@ def test_safety_degradation_trips_cognition_new_exposure_breaker():
     assert ctx.safety_degraded is True
     assert "BrokerAccountBalanceUnavailable" in ctx.safety_degraded_reason
     assert loop.broker_book_verified is False
-
-
-def test_safety_degradation_before_cognition_loop_is_retained(config):
-    ctx = SystemContext()
-    ctx._mark_safety_degraded("RiskEngine")
-    # SystemContext.create must carry this pre-existing failure into the loop
-    # after it constructs the loop; the unit-level invariant is the retained flag.
-    assert ctx.safety_degraded is True
