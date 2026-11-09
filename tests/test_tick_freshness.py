@@ -50,6 +50,7 @@ def _make_mt5(max_tick_age_seconds=120.0):
         c._max_tick_age_seconds = max_tick_age_seconds
         c._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
             offset_seconds=0,
+            uncertainty_seconds=0.0,
             age_seconds=lambda epoch: _time.time() - float(epoch),
             to_utc_epoch=lambda epoch: float(epoch),
         )
@@ -210,6 +211,7 @@ class TestMT5ConfigurableAge:
             c._max_tick_age_seconds = float("10")
             c._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
                 offset_seconds=0,
+                uncertainty_seconds=0.0,
                 age_seconds=lambda epoch: _time.time() - float(epoch),
                 to_utc_epoch=lambda epoch: float(epoch),
             )
