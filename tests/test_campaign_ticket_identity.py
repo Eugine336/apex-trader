@@ -146,3 +146,31 @@ def test_terminal_close_removes_ticket_only_from_the_matching_platform():
     )
 
     assert campaign.open_ticket_bindings == [{"platform": "deriv", "ticket": "shared-ticket"}]
+
+
+def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
+    from brain.campaign import CampaignRegistry
+
+    registry = CampaignRegistry(enabled=True)
+    registry.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.5,
+        campaign_id="campaign-close", decision_id="decision-open",
+    )
+    registry.record_leg(
+        "EURUSD", "LONG", LEG_OPEN, ticket="shared-ticket",
+        platform="mt5", decision_id="decision-open",
+    )
+    registry.record_leg(
+        "EURUSD", "LONG", LEG_OPEN, ticket="shared-ticket",
+        platform="deriv", decision_id="decision-open-2",
+    )
+
+    campaign = registry.observe_close(
+        "EURUSD", "LONG", "partial_take_profit",
+        ticket="shared-ticket", platform="mt5",
+    )
+
+    assert campaign is not None
+    assert campaign.open_ticket_bindings == [
+        {"platform": "deriv", "ticket": "shared-ticket"}
+    ]
