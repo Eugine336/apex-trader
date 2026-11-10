@@ -9,6 +9,7 @@ def test_app_config_all_mode_keeps_universe_broad():
     config = AppConfig(universe_mode="all")
     assert "EURUSD" in config.enabled_pairs
     assert "XAUUSD" in config.enabled_pairs
+    assert "synthetic" in config.enabled_categories
     assert config.universe_mode == "all"
 
 
