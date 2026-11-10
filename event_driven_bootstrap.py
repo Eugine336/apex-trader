@@ -1488,12 +1488,8 @@ class EventDrivenSystem:
                 )
                 self._adaptive_scheduler = None
 
-        # ── Cross-instrument opportunity layer (GAP 1) ────────────────
-        # The GlobalOpportunityQueue (collect → cross-instrument rank →
-        # dispatch) is RETIRED with the legacy entry pipeline — its only sink
-        # was the retired entry-decision path. The ProactiveOpportunityScanner
-        # (pre-heat watchlist) remains; default OFF via config.cross_instrument.
-        self._opportunity_queue = None
+        # Observational cross-instrument watchlist. The former global queue
+        # belonged to the retired legacy entry pipeline and has no live sink.
         self._proactive_scanner = None
         _ci_cfg = getattr(self._config, "cross_instrument", None)
         if _ci_cfg is not None and ctx is not None:
@@ -4334,12 +4330,6 @@ class EventDrivenSystem:
             try:
                 self._ctx.campaign_memory.close()
             # safe-fallback: memory close is best-effort; remaining cleanup must continue.
-            except Exception:
-                pass
-        if getattr(self, "_opportunity_queue", None) is not None:
-            try:
-                self._opportunity_queue.stop()
-            # safe-fallback: optional queue shutdown must not prevent core tick services from stopping.
             except Exception:
                 pass
         self._tick_router.stop()
