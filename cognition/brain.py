@@ -1818,7 +1818,6 @@ class CognitiveBrain:
         opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
         ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
         ev_negative = ev_txt.startswith("negative")
-        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
         thesis_invalidated = (thesis == "invalidated") or (opp_status in ("invalidated", "replaced"))
         opportunity_gone = (
             opp_status in ("invalidated", "replaced")
