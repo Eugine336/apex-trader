@@ -175,6 +175,8 @@ class CampaignLeg:
     pnl: float = 0.0
     exit_cause: str = ""
     ticket: str = ""
+    platform: str = ""
+    decision_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -185,6 +187,8 @@ class CampaignLeg:
             "pnl": round(self.pnl, 4),
             "exit_cause": self.exit_cause,
             "ticket": self.ticket,
+            "platform": self.platform,
+            "decision_id": self.decision_id,
         }
 
 
@@ -301,22 +305,29 @@ class Campaign:
         return adds
 
     @property
-    def open_tickets(self) -> list[str]:
-        """Exact broker tickets still represented by this live campaign.
+    def open_ticket_bindings(self) -> list[dict[str, str]]:
+        """Exact platform/ticket pairs still represented by this live campaign.
 
-        Partial closes retain the ticket; a terminal close removes it. Empty
-        ticket metadata is never replaced with a symbol/side guess.
+        Partial closes retain a ticket; a terminal close removes only that exact
+        platform/ticket pair. Missing platform or ticket provenance stays unknown.
         """
-        active: set[str] = set()
+        active: dict[tuple[str, str], dict[str, str]] = {}
         for leg in self.legs:
             ticket = str(leg.ticket or "").strip()
-            if not ticket:
+            platform = str(leg.platform or "").strip().lower()
+            if not ticket or not platform:
                 continue
+            key = (platform, ticket)
             if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
-                active.add(ticket)
+                active[key] = {"platform": platform, "ticket": ticket}
             elif leg.kind == LEG_CLOSE and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS:
-                active.discard(ticket)
-        return sorted(active)
+                active.pop(key, None)
+        return [active[key] for key in sorted(active)]
+
+    @property
+    def open_tickets(self) -> list[str]:
+        """Ticket-only compatibility view; exact execution joins use bindings."""
+        return sorted({item["ticket"] for item in self.open_ticket_bindings})
 
     def staleness_seconds(self, now: Optional[float] = None) -> float:
         t = _now_epoch() if now is None else _safe_float(now)
@@ -380,6 +391,7 @@ class Campaign:
             "refresh_count": int(self.refresh_count),
             "open_legs": int(self.open_legs),
             "open_tickets": self.open_tickets,
+            "open_ticket_bindings": self.open_ticket_bindings,
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(now), 1),
@@ -621,6 +633,8 @@ class CampaignRegistry:
         price: float = 0.0,
         pnl: float = 0.0,
         ticket: str = "",
+        platform: str = "",
+        decision_id: str = "",
         now: Optional[float] = None,
     ) -> None:
         """Attach an exposure-adding leg (open/scale/re-entry) to the campaign.
@@ -644,10 +658,73 @@ class CampaignRegistry:
                     price=_safe_float(price),
                     pnl=_safe_float(pnl),
                     ticket=str(ticket or ""),
+                    platform=str(platform or "").strip().lower(),
+                    decision_id=str(decision_id or "").strip(),
                 ))
         except Exception as exc:  # noqa: BLE001
             logger.debug("[campaign] record_leg({}) ignored a fault: {}",
                          symbol, exc)
+
+    def attach_ticket(
+        self,
+        symbol: str,
+        direction: str,
+        campaign_id: str,
+        decision_id: str,
+        ticket: str,
+        platform: str,
+    ) -> bool:
+        """Bind one acknowledged open leg to its exact broker position identity."""
+        try:
+            sym, side = str(symbol or ""), _norm_dir(direction)
+            cid = str(campaign_id or "").strip()
+            did = str(decision_id or "").strip()
+            tid = str(ticket or "").strip()
+            plat = str(platform or "").strip().lower()
+            if not all((sym, side in (LONG, SHORT), cid, did, tid, plat)):
+                return False
+            with self._lock:
+                camp = self._live.get((sym, side))
+                if camp is None or camp.campaign_id != cid:
+                    return False
+                pending = [
+                    leg for leg in camp.legs
+                    if leg.kind == LEG_OPEN and leg.decision_id == did and not leg.ticket
+                ]
+                if len(pending) != 1:
+                    return False
+                pending[0].ticket = tid
+                pending[0].platform = plat
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] attach_ticket({}) failed closed: {}", symbol, exc)
+            return False
+
+    def reject_pending_leg(
+        self, symbol: str, direction: str, campaign_id: str, decision_id: str,
+    ) -> bool:
+        """Remove exactly one unfilled Brain open leg after an explicit rejection."""
+        try:
+            sym, side = str(symbol or ""), _norm_dir(direction)
+            cid = str(campaign_id or "").strip()
+            did = str(decision_id or "").strip()
+            if not all((sym, side in (LONG, SHORT), cid, did)):
+                return False
+            with self._lock:
+                camp = self._live.get((sym, side))
+                if camp is None or camp.campaign_id != cid:
+                    return False
+                pending = [
+                    leg for leg in camp.legs
+                    if leg.kind == LEG_OPEN and leg.decision_id == did and not leg.ticket
+                ]
+                if len(pending) != 1:
+                    return False
+                camp.legs.remove(pending[0])
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] reject_pending_leg({}) failed closed: {}", symbol, exc)
+            return False
 
     def observe_close(
         self,
