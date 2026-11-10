@@ -17,7 +17,6 @@ backoff sleeps run outside the lock so one retrying intent never stalls others.
 from __future__ import annotations
 
 import math
-import os
 import time
 from dataclasses import dataclass, field, replace
 from threading import Lock
