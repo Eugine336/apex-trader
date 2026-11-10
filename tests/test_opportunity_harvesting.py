@@ -292,7 +292,7 @@ def test_brain_opens_campaign_from_preferred_opportunity():
     ]
     out = _brain(_new_reply(opps, preferred="opp_1")).reason(_confident_state())
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "LONG"
+    assert out.campaign is not None and out.campaign.direction == "LONG"
     assert out.campaign is not None and out.campaign.direction == "LONG"
     qa = out.decision.questions_answered
     assert len(qa["opportunity_set"]) == 2
@@ -309,7 +309,7 @@ def test_brain_multiple_directions_preferred_drives_campaign():
         _opp(id="opp_2", direction="LONG", state="FORMING", quality=0.6, thesis="HTF resumes"),
     ]
     out = _brain(_new_reply(opps, preferred="opp_1")).reason(_confident_state(polarity=-0.6))
-    assert out.direction == "SHORT"
+    assert out.campaign is not None and out.campaign.direction == "SHORT"
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert "HTF resumes" in out.decision.questions_answered["conditional_alternatives"]
 
