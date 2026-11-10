@@ -160,6 +160,10 @@ class PositionView:
     # Original lineage helps the Brain reassess the held campaign without guessing.
     opportunity_id: str = ""
     originating_decision_id: str = ""
+    # Broker identity is required for exact-ticket management; symbol/side alone
+    # is not unique when multiple positions share an instrument and direction.
+    ticket: str = ""
+    platform: str = ""
 
 
 class CognitiveBrain:
