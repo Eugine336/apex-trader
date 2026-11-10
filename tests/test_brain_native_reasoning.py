@@ -452,7 +452,7 @@ def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
     brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == LONG
+    assert out.campaign is not None and out.campaign.direction == LONG
     assert out.decision.confidence < 0.70
     assert out.campaign is not None
     assert out.campaign.initial_execution_intent.get("independent_origination") is True
@@ -640,7 +640,7 @@ def test_weak_native_view_stands_down_when_advisor_unavailable():
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    assert not hasattr(out, "direction")
     assert out.provider_status == "unavailable"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     questions = out.decision.questions_answered
