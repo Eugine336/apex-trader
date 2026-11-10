@@ -105,7 +105,6 @@ This is an allowlist, not a blanket environment override of all 716 typed fields
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | CrossInstrumentConfig.proactive_scan_enabled | bool | True |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | CrossInstrumentConfig.proactive_scan_interval_seconds | float | 60.0 |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_MIN_EV | CrossInstrumentConfig.proactive_scan_min_ev | float | 0.5 |
-| APEX_CROSS_INSTRUMENT_PROACTIVE_PROXIMITY_PCT | CrossInstrumentConfig.proactive_proximity_pct | float | 0.02 |
 
 ## Dedicated controls outside the generic allowlist
 
@@ -418,7 +417,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_MIN_EV | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_PROACTIVE_PROXIMITY_PCT | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_PERFORMANCE_M1_CACHE_TTL | Additional allowlisted controls containing numeric field names. | (blank; typed default or unset) |
 | APEX_DEVELOPING_ANALYSIS_REFRESH_M5 | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_DEVELOPING_ANALYSIS_REFRESH_M15 | 10. Typed operator runtime controls | (blank; typed default or unset) |
