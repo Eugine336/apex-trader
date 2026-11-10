@@ -6169,7 +6169,13 @@ class EventDrivenSystem:
             if not bool(getattr(result, "success", False)):
                 return
             response = getattr(result, "broker_response", None)
-            response_status = str(getattr(response, "order_status", "FILLED") or "FILLED").upper()
+
+            def _response_value(name: str, default: Any = None) -> Any:
+                if isinstance(response, dict):
+                    return response.get(name, default)
+                return getattr(response, name, default)
+
+            response_status = str(_response_value("order_status", "FILLED") or "FILLED").upper()
             if response_status in {
                 "PENDING", "PLACED", "ACCEPTED", "WORKING", "NEW",
                 "PARTIALLY_FILLED", "PARTIALLY_FILLED_PENDING",
@@ -6177,17 +6183,15 @@ class EventDrivenSystem:
                 # A resting or partially filled pending order is not a completed
                 # trade. Keep its decision lineage until broker history confirms
                 # terminal disposition.
-                ticket = str(getattr(response, "order_id", "") or "").strip()
-                submitted_at = getattr(response, "timestamp", None)
+                ticket = str(_response_value("order_id", "") or "").strip()
+                submitted_at = _response_value("timestamp", None)
                 if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
                     submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
                 self._record_pending_order_result(response, {
                     "order_id": ticket,
                     "symbol": str(intent.symbol or "").upper(),
                     "direction": str(intent.direction or "").upper(),
-                    "platform": str(response.get("platform", "") or "").strip().lower()
-                        if isinstance(response, dict)
-                        else str(getattr(response, "platform", "") or "").strip().lower(),
+                    "platform": str(_response_value("platform", "") or "").strip().lower(),
                     "order_type": str(intent.order_type or "").upper(),
                     "lots": float(intent.lots or 0.0),
                     "entry_price": float(intent.entry_price or 0.0),
@@ -6200,7 +6204,7 @@ class EventDrivenSystem:
                     "decision_feature_snapshot": intent.decision_feature_snapshot,
                     "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
                     "status": response_status,
-                    "remaining_lots": float(getattr(response, "lots", intent.lots) or 0.0),
+                    "remaining_lots": float(_response_value("lots", intent.lots) or 0.0),
                 })
                 logger.info(
                     "[decision-provenance] pending order {} accepted; broker reconciliation active",
