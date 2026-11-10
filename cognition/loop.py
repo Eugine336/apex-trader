@@ -1947,9 +1947,8 @@ class CognitionLoop:
             # when it originates a trade.
             try:
                 _dec = output.decision
-                # V-027 — lead with the decision type + opportunity/thesis
-                # (DecisionPackage.summary), not the collapsed dir/conf. Confidence
-                # is kept as supplementary operator context.
+                # Lead with the decision type and thesis. Uncalibrated reasoning
+                # strength is descriptive metadata, not an operator action signal.
                 _summary = getattr(_dec, "summary", None) or (
                     getattr(getattr(_dec, "decision_type", None), "value", None)
                     or str(getattr(_dec, "decision_type", "?"))
@@ -1965,13 +1964,14 @@ class CognitionLoop:
                     ("available" if _provider_available else "unavailable")
                 )
                 _native_status = str(_qa.get("native_fallback_status", "") or "")
-                _confidence = getattr(_dec, "confidence", None)
-                _confidence_label = (
-                    "unknown" if _confidence is None else f"{float(_confidence):.2f}"
+                _reasoning_strength = getattr(_dec, "confidence", None)
+                _strength_label = (
+                    "unknown" if _reasoning_strength is None
+                    else f"{float(_reasoning_strength):.2f}"
                 )
                 logger.info(
-                    "[cognition] %s -> %s (confidence=%s) reasoning_mode=%s external_advisor=%s%s",
-                    symbol, _summary, _confidence_label,
+                    "[cognition] %s -> %s (reasoning_strength=%s; uncalibrated) reasoning_mode=%s external_advisor=%s%s",
+                    symbol, _summary, _strength_label,
                     _reasoning_mode,
                     _external_advisor,
                     f" native_status={_native_status}" if _native_status else "",
