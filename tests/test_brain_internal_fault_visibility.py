@@ -18,7 +18,9 @@ def test_reasoning_fault_is_a_labelled_non_action_not_a_market_conclusion():
     assert out.to_dict()["internal_fault"] is True
     assert "internal fault" in out.decision.questions_answered["should_i_do_nothing"]
     assert out.decision.do_nothing_considered is False
-    assert out.decision.confidence == 0.0
+    assert out.decision.confidence is None
+    assert out.decision.to_dict()["confidence"] is None
+    assert out.decision.to_dict()["confidence_semantics"] == "not_assessed"
     assert out.campaign is None
 
 
@@ -27,3 +29,21 @@ def test_ordinary_observation_is_not_flagged_as_a_fault():
     out = brain._observe("EURUSD", "no qualifying opportunity", {})
     assert out.internal_fault is False
     assert out.decision.do_nothing_considered is True
+
+
+def test_native_no_op_does_not_fabricate_zero_confidence():
+    brain = CognitiveBrain(reasoner=None)
+    out = brain._native_fallback_observe(
+        "XAUUSD",
+        "no qualified opportunity",
+        {},
+        analysis=None,
+        hypotheses=[],
+        advisor_status="unavailable",
+    )
+
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.decision.confidence is None
+    payload = out.decision.to_dict()
+    assert payload["confidence"] is None
+    assert payload["confidence_semantics"] == "not_assessed"

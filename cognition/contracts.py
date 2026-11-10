@@ -869,7 +869,8 @@ class DecisionPackage:
     thesis: str = ""
     supporting_evidence_ids: list[str] = field(default_factory=list)
     contradicting_evidence_ids: list[str] = field(default_factory=list)
-    confidence: float = 0.0
+    confidence: Optional[float] = 0.0
+    confidence_semantics: str = "uncalibrated_reasoning_strength"
     uncertainty: float = 0.0
     expected_value: float = 0.0
     expected_holding_horizon_seconds: Optional[float] = None
@@ -918,7 +919,13 @@ class DecisionPackage:
                 self.decision_type = DecisionType(self.decision_type)
             except ValueError:
                 self.decision_type = DecisionType.CONTINUE_OBSERVING
-        self.confidence = _clamp01(self.confidence)
+        if self.confidence is None:
+            self.confidence_semantics = "not_assessed"
+        else:
+            self.confidence = _clamp01(self.confidence)
+            self.confidence_semantics = str(
+                self.confidence_semantics or "uncalibrated_reasoning_strength"
+            )
         self.uncertainty = _clamp01(self.uncertainty)
 
     @property
@@ -997,7 +1004,8 @@ class DecisionPackage:
             "thesis": self.thesis,
             "supporting_evidence_ids": list(self.supporting_evidence_ids),
             "contradicting_evidence_ids": list(self.contradicting_evidence_ids),
-            "confidence": round(self.confidence, 4),
+            "confidence": round(self.confidence, 4) if self.confidence is not None else None,
+            "confidence_semantics": self.confidence_semantics,
             "uncertainty": round(self.uncertainty, 4),
             "expected_value": round(self.expected_value, 6),
             "expected_holding_horizon_seconds": self.expected_holding_horizon_seconds,

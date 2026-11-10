@@ -1969,10 +1969,13 @@ class CognitionLoop:
                     ("available" if _provider_available else "unavailable")
                 )
                 _native_status = str(_qa.get("native_fallback_status", "") or "")
+                _confidence = getattr(_dec, "confidence", None)
+                _confidence_label = (
+                    "unknown" if _confidence is None else f"{float(_confidence):.2f}"
+                )
                 logger.info(
-                    "[cognition] %s -> %s (conf=%.2f) reasoning_mode=%s external_advisor=%s%s",
-                    symbol, _summary,
-                    float(getattr(_dec, "confidence", 0.0) or 0.0),
+                    "[cognition] %s -> %s (confidence=%s) reasoning_mode=%s external_advisor=%s%s",
+                    symbol, _summary, _confidence_label,
                     _reasoning_mode,
                     _external_advisor,
                     f" native_status={_native_status}" if _native_status else "",

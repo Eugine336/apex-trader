@@ -3424,7 +3424,7 @@ class CognitiveBrain:
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="internal fault — no market view" if internal_fault else "no action",
-            confidence=0.0,
+            confidence=None,
             uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
             campaign_recommendation="observe", risk_rationale=reason_txt,
             questions_answered=questions,
@@ -3560,7 +3560,7 @@ class CognitiveBrain:
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="native analysis completed; no qualified opportunity met action criteria",
-            confidence=0.0, uncertainty=uncertainty,
+            confidence=None, uncertainty=uncertainty,
             campaign_recommendation="observe",
             risk_rationale=(
                 "Native-only opportunity qualification did not pass; no new exposure is authorised. "
