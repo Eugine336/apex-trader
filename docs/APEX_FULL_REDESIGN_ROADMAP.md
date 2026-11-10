@@ -58,7 +58,7 @@ Acceptance:
 
 Deliverables:
 - Consolidate current evidence into a coherent market state with missingness, freshness and contradictions preserved.
-- Generate competing hypotheses, supporting and opposing evidence, confidence, uncertainty, invalidation conditions and time horizon.
+- Generate competing hypotheses with supporting and opposing evidence, decomposed reasoning-strength metadata explicitly marked uncalibrated (not a probability), uncertainty, invalidation conditions and time horizon.
 - Distinguish observed fact, inference, assumption and unknown.
 - Add self-criticism and counter-hypothesis review before a decision.
 - Ensure external AI is optional advice only; native reasoning continues if an external model is absent, rate-limited, wrong or unavailable.
@@ -77,13 +77,16 @@ Deliverables:
 - Treat zones and indicators as evidence, not universal entry permission or direction authority.
 - Produce Brain-owned entry reference, invalidation/stop, target, horizon, expected payoff and supporting evidence IDs.
 - Validate geometry directionally and against current market structure; reject missing or internally inconsistent geometry.
-- Apply confidence, probability, expected-value and cost qualification using the canonical thresholds and verified cost model.
+- Use a producer-issued, direction/family/horizon-scoped calibration artifact for probability only when the Brain resolves and verifies its provenance against the exact symbol, side, opportunity family and horizon; otherwise probability remains unknown.
+- Qualify directional opportunities using producer-verified fixed-horizon expected return and fresh verified execution costs, plus structural geometry, liquidity, duration and portfolio context. Never substitute uncalibrated reasoning strength for win probability or expected return.
+- Do not use a configured confidence floor to authorize, veto, reverse, exit or scale a campaign. Reasoning strength remains descriptive metadata and, where explicitly defined, a conservative sizing input; it is not a probability or trade gate.
 - Keep flat/no-trade as a valid decision when evidence is insufficient.
 
 Acceptance:
 - Scenario tests cover trending, ranging, reversal, low-liquidity, conflicting and unfamiliar markets.
 - Every accepted opportunity traces to a canonical decision and immutable evidence.
-- No fixed indicator, strategy, timeframe, score or AI response independently triggers an order.
+- No uncalibrated confidence score, fixed indicator, strategy, timeframe, arbitrary score or AI response independently triggers or vetoes an order.
+- Missing calibration remains unknown; directional origination must fail its producer-verified expected-return/net-cost qualification rather than inventing a probability.
 
 ### System 5 — Compliance and portfolio capital allocation
 **Purpose:** decide whether a qualified opportunity is permitted and how much capital it may use.
