@@ -2733,7 +2733,7 @@ class CognitiveBrain:
                     "reward_distance": geometry.reward_distance,
                     "reward_r": geometry.reward_r,
                     "geometry_evidence_ids": list(geometry.evidence_ids),
-                    "quality": lead_conf,
+                    "quality": lead_reasoning_strength,
                     "asymmetry": reward_r / max(0.01, reward_r + risk_r),
                     "evidence_strength": evidence_strength,
                     "competing_opportunities": competing_statements[:6],
@@ -2843,7 +2843,7 @@ class CognitiveBrain:
                 self._independent_originations += 1
             logger.info(
                 "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ reasoning_strength %.2f, EV %.4fR — no advisor",
-                symbol, direction, lead.statement[:60], lead_conf, expected_value,
+                symbol, direction, lead.statement[:60], lead_reasoning_strength, expected_value,
             )
             return self._record(BrainOutput(
                 decision=decision, campaign=campaign))
