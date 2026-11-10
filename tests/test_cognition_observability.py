@@ -16,12 +16,6 @@ def _brain_status(**kw):
     return SimpleNamespace(get_status=lambda: base)
 
 
-def _gate_status(**kw):
-    base = dict(mode="shadow", authoritative=False, evaluations=0, would_veto=0, vetoed=0)
-    base.update(kw)
-    return SimpleNamespace(get_status=lambda: base)
-
-
 def _cal_status(**kw):
     base = dict(samples=0, mean_confidence=0.0, win_rate=0.0, reliability_gap=0.0, brier=0.0)
     base.update(kw)
@@ -33,15 +27,11 @@ def _cal_status(**kw):
 def test_metrics_flat_view_from_components():
     obs = CognitionObservability(
         brain=_brain_status(decisions=10, campaigns_opened=3, observed=7, faults=0),
-        gate=_gate_status(mode="veto", evaluations=20, vetoed=5, would_veto=8),
         calibration=_cal_status(samples=30, reliability_gap=0.1, brier=0.12),
         min_calibration_samples=20,
     )
     m = obs.metrics(now=1000.0)
     assert m["decisions_total"] == 10 and m["campaigns_opened"] == 3
-    assert m["gate_mode"] == "veto"
-    assert m["veto_rate"] == 0.25 and m["authorise_rate"] == 0.75
-    assert m["would_veto_rate"] == 0.4
     assert m["reasoning_quality_measurable"] is True
     assert m["reasoning_quality_score"] == 0.9    # 1 - 0.1
 
@@ -70,7 +60,7 @@ def test_decisions_per_min_rolling_rate():
 
 def test_observability_fail_safe_on_absent_components():
     m = CognitionObservability().metrics(now=1.0)
-    assert m["decisions_total"] == 0 and m["gate_mode"] == "unknown"
+    assert m["decisions_total"] == 0
     assert m["reasoning_quality_score"] is None
 
 
@@ -78,7 +68,7 @@ def test_observability_fail_safe_on_faulty_component():
     class _Boom:
         def get_status(self):
             raise RuntimeError("down")
-    m = CognitionObservability(brain=_Boom(), gate=_Boom()).metrics(now=1.0)
+    m = CognitionObservability(brain=_Boom()).metrics(now=1.0)
     assert m["decisions_total"] == 0     # fault swallowed → defaults
 
 

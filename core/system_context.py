@@ -142,12 +142,6 @@ class SystemContext:
     # in shadow by default (observational); surfaced via Governance.
     cognitive_brain: Optional[Any] = None
     cognition_loop: Optional[Any] = None
-    # Brain entry gate (Step C) — one-way authority that can veto (never
-    # originate) a proposed entry when the Brain does not back it. Fail-open.
-    cognition_gate: Optional[Any] = None
-    # Brain management gate (Phase F) — governs exposure-adding management actions
-    # (scale-in/re-entry); de-risking is never gated. Fail-safe.
-    management_gate: Optional[Any] = None
     # Institutional memory (Phase H, Part VII) — persists campaign state
     # fingerprints + realised outcomes so the Brain can consult analogous
     # history. Observational; fail-safe; surfaced via cognition status.
@@ -1684,10 +1678,6 @@ class SystemContext:
                         getattr(cog_cfg, "max_symbols_per_cycle", 12)
                         if cog_cfg is not None else 12
                     ),
-                    shadow_mode=bool(
-                        getattr(cog_cfg, "shadow_mode", True)
-                        if cog_cfg is not None else True
-                    ),
                     action_bridge=_bridge,
                     position_source=_cognition_positions,
                     origination_mode=str(
@@ -1736,26 +1726,6 @@ class SystemContext:
                 # Critical subsystems can fail before CognitionLoop exists.
                 # Carry retained failures into its new-exposure circuit breaker.
                 ctx._apply_safety_degradation_to_loop()
-                from cognition.gate import CognitionGate as _CognitionGate
-                ctx.cognition_gate = _CognitionGate(
-                    ctx.cognitive_brain,
-                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
-                             if cog_cfg is not None else "authoritative"),
-                    max_decision_age_seconds=float(
-                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
-                        if cog_cfg is not None else 300.0
-                    ),
-                )
-                from cognition.management_gate import ManagementGate as _ManagementGate
-                ctx.management_gate = _ManagementGate(
-                    ctx.cognitive_brain,
-                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
-                             if cog_cfg is not None else "authoritative"),
-                    max_decision_age_seconds=float(
-                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
-                        if cog_cfg is not None else 300.0
-                    ),
-                )
                 # Phase L (Part XII) — observability aggregator over the cognitive
                 # components. Read-only; surfaces derived metrics (throughput,
                 # veto/authorise rates, reasoning-quality score) for the rollout.
@@ -1766,8 +1736,6 @@ class SystemContext:
                     ctx.cognition_observability = _CognitionObservability(
                         brain=ctx.cognitive_brain,
                         loop=ctx.cognition_loop,
-                        gate=ctx.cognition_gate,
-                        management_gate=ctx.management_gate,
                         calibration=ctx.brain_calibration,
                         memory=ctx.campaign_memory,
                         min_calibration_samples=int(
@@ -1778,11 +1746,8 @@ class SystemContext:
                     logger.warning("[SystemContext] CognitionObservability init failed: {}", exc)
                     ctx.cognition_observability = None
                 logger.info(
-                    "[SystemContext] Cognitive Brain ready — reasoner_available={} "
-                    "shadow={} gate_mode={}",
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={}",
                     ctx.cognitive_brain.available,
-                    getattr(cog_cfg, "shadow_mode", False) if cog_cfg else False,
-                    getattr(cog_cfg, "gate_mode", "authoritative") if cog_cfg else "authoritative",
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
@@ -1816,8 +1781,6 @@ class SystemContext:
                 action_orchestrator=ctx.action_orchestrator,
                 cognitive_brain=ctx.cognitive_brain,
                 cognition_loop=ctx.cognition_loop,
-                cognition_gate=ctx.cognition_gate,
-                management_gate=ctx.management_gate,
                 campaign_memory=ctx.campaign_memory,
                 action_planner=ctx.action_planner,
                 operations_author=ctx.operations_author,

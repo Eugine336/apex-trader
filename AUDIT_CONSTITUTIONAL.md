@@ -195,6 +195,7 @@ Severity rubric:
 - **Why It Violates**: Provider failure must not equal `FLAT`. A separate decision type helps, but the top-level output still encodes infrastructure failure as a market direction field.
 - **Information Lost**: Consumers that read `BrainOutput.direction` cannot distinguish "no opportunity", "continue observing", "provider unavailable", and "market flat".
 - **Root Cause**: `BrainOutput` has a mandatory FLAT default direction field from the old direction-centric output contract.
+- **Historical resolution (PR #890, pending CI):** the top-level `BrainOutput.direction` field, deprecation getter/setter, serialization key and all production constructor/loop writes were removed. Market side remains on the campaign/preferred-opportunity contract. Provider faults are represented by `decision_type` and provider-status metadata, never a synthetic FLAT direction.
 
 ### V-017: Cognition and management gates are configurable fail-open/off surfaces
 - **Severity**: MEDIUM
@@ -205,6 +206,7 @@ Severity rubric:
 - **Why It Violates**: If legacy execution surfaces are present, absent cognitive availability should be a distinct operational state, not permission to proceed without cognition.
 - **Information Lost**: The reason an entry/scale was allowed can be "no Brain/gate off" rather than a reasoned opportunity decision.
 - **Root Cause**: Shadow migration controls were kept available after the constitution moved to a single cognitive authority.
+- **Historical resolution (PR #890, pending CI):** CognitionGate and ManagementGate had no production evaluate() callers; they were only constructed and surfaced as status. Both modules, their SystemContext/Governance/observability wiring, gate-mode, freshness and single-path configuration, and associated environment variables were removed. This did not remove an active safety check. The canonical Brain loop and shared execution/portfolio/broker/owner-limit controls remain. `TRADING_ENABLED=false` remains the new-exposure kill switch.
 
 ## COUNCIL
 

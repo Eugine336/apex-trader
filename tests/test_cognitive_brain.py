@@ -198,7 +198,7 @@ def test_confident_long_opens_campaign():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "LONG"
+    assert out.campaign is not None and out.campaign.direction == "LONG"
     assert out.campaign is not None
     assert out.campaign.direction == "LONG"
     assert out.campaign.decision_id == out.decision.decision_id

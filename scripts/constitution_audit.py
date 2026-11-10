@@ -194,13 +194,21 @@ CHECKS: list[Check] = [
         id="legacy_single_path_flags",
         clause="§XXX (only one live decider; dead scaffolding is not the implementation)",
         pr="PR-H1",
-        summary="Legacy single-path / shadow / legacy-audit scaffolding still present (only one path should remain).",
+        summary="Retired cognition gates, collapsed BrainOutput direction or legacy single-path controls have been reintroduced.",
         exists=[
             "cognition/single_path.py",
             "cognition/legacy_audit.py",
+            "cognition/gate.py",
+            "cognition/management_gate.py",
         ],
         patterns=[
             _p("event_driven_bootstrap.py", r"def\s+_single_reasoner_path_active\b"),
+            _p("cognition/brain.py", r"def\s+direction\s*\("),
+            _p("cognition/brain.py", r"direction:\s*Optional\[str\]\s*=\s*FLAT"),
+            _p("cognition/loop.py", r"output\.direction\s*="),
+            _p("cognition/loop.py", r"shadow_mode:\s*bool|self\.shadow_mode"),
+            _p("config.py", r"COGNITION_(?:GATE_MODE|SINGLE_PATH|SHADOW_MODE|MAX_DECISION_AGE_SECONDS)"),
+            _p(".env.example", r"COGNITION_(?:GATE_MODE|SINGLE_PATH|MAX_DECISION_AGE_SECONDS)"),
         ],
     ),
     Check(

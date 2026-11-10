@@ -201,7 +201,7 @@ def test_forming_opportunity_waits_instead_of_opening():
     out = _brain(reply).reason(_confident_state(polarity=-0.6))
     assert out.decision.decision_type == DecisionType.OPPORTUNITY_FORMING
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    assert not hasattr(out, "direction")
     # A FORMING opportunity must never authorise execution.
     assert out.decision.authorises_action is False
 
@@ -282,7 +282,7 @@ def test_multiple_coexisting_opportunities_short_active_long_forming():
     ]
     out = _brain(_new_reply(opps, preferred="opp_1")).reason(_confident_state(polarity=-0.6))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "SHORT"
+    assert out.campaign is not None and out.campaign.direction == "SHORT"
     directions = {o.opportunity_id: o.direction for o in out.decision.opportunities}
     assert directions == {"opp_1": "SHORT", "opp_2": "LONG"}
 
@@ -298,7 +298,7 @@ def test_campaign_forms_on_quality_not_directional_consensus():
     ]
     out = _brain(_new_reply(opps, preferred="opp_1")).reason(_confident_state(polarity=-0.6))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "SHORT"
+    assert out.campaign is not None and out.campaign.direction == "SHORT"
 
 
 # ── Backward compatibility: legacy single-direction replies unaffected ──────
@@ -315,7 +315,7 @@ def test_legacy_reply_is_observational_not_execution_authority():
     out = _brain(reply).reason(_confident_state())
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    assert not hasattr(out, "direction")
     # No opportunity-set metadata on a legacy decision.
     assert out.decision.opportunities == []
     assert out.decision.preferred_opportunity_id == ""

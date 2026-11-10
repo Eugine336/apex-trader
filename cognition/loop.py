@@ -517,7 +517,7 @@ class BrainActionBridge:
             # V-026/V-027 — describe the decision by its type + opportunity/thesis,
             # not the collapsed top-level direction. Side is kept only as
             # supplementary operator context, sourced from the campaign/opportunity
-            # (never the deprecated ``BrainOutput.direction``).
+            # (never a top-level direction field).
             dtype = getattr(getattr(decision, "decision_type", None), "value", "") or "decision"
             thesis = str(getattr(decision, "thesis", "") or "")
             camp = getattr(output, "campaign", None)
@@ -536,7 +536,7 @@ class BrainActionBridge:
                     "thesis": thesis[:280],
                     "confidence": round(float(getattr(decision, "confidence", 0.0) or 0.0), 4),
                     # Deprecated/supplementary (V-026): the collapsed side, sourced
-                    # from the campaign/opportunity rather than BrainOutput.direction.
+                    # from the campaign/opportunity rather than a collapsed BrainOutput direction.
                     "direction": side,
                 },
                 expected_outcome="operator informed of a new campaign",
@@ -567,7 +567,6 @@ class CognitionLoop:
         *,
         interval_seconds: float = 30.0,
         max_symbols_per_cycle: int = 12,
-        shadow_mode: bool = True,
         action_bridge: Optional[BrainActionBridge] = None,
         position_source: Optional[Callable[[], Any]] = None,
         origination_mode: str = "shadow",
@@ -597,7 +596,6 @@ class CognitionLoop:
         self._symbols_provider = symbols_provider
         self.interval_seconds = max(1.0, float(interval_seconds))
         self.max_symbols_per_cycle = max(1, int(max_symbols_per_cycle))
-        self.shadow_mode = bool(shadow_mode)
         self._action_bridge = action_bridge
         self._position_source = position_source
         m = str(origination_mode or "shadow").strip().lower()
@@ -897,8 +895,6 @@ class CognitionLoop:
                     questions["portfolio_decision"] = reason
             if hasattr(output, "campaign"):
                 output.campaign = None
-            if hasattr(output, "direction"):
-                output.direction = "FLAT"
         except Exception as exc:  # noqa: BLE001 — fallback must not authorize exposure
             logger.error("[cognition-loop] could not demote an unreviewed campaign: %s", exc)
 
@@ -2203,7 +2199,7 @@ class CognitionLoop:
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
             # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
-            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            # carries one) rather than a deprecated top-level direction field.
             direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
@@ -2288,7 +2284,7 @@ class CognitionLoop:
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
             # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
-            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            # carries one) rather than a deprecated top-level direction field.
             direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
@@ -3245,8 +3241,8 @@ class CognitionLoop:
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self._name)
         self._thread.start()
         logger.info(
-            "[cognition-loop] started (interval=%.0fs, shadow=%s, event_driven=%s)",
-            self.interval_seconds, self.shadow_mode, self.event_driven,
+            "[cognition-loop] started (interval=%.0fs, event_driven=%s)",
+            self.interval_seconds, self.event_driven,
         )
 
     def stop(self) -> None:
@@ -3260,7 +3256,6 @@ class CognitionLoop:
     def get_status(self) -> dict:
         return {
             "running": self._running,
-            "shadow_mode": self.shadow_mode,
             "interval_seconds": self.interval_seconds,
             "cycles": self._cycles,
             "decisions": self._decisions,

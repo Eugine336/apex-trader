@@ -54,8 +54,6 @@ class CognitionObservability:
         *,
         brain: Optional[Any] = None,
         loop: Optional[Any] = None,
-        gate: Optional[Any] = None,
-        management_gate: Optional[Any] = None,
         calibration: Optional[Any] = None,
         memory: Optional[Any] = None,
         window_seconds: float = 300.0,
@@ -64,8 +62,6 @@ class CognitionObservability:
     ) -> None:
         self._brain = brain
         self._loop = loop
-        self._gate = gate
-        self._management_gate = management_gate
         self._calibration = calibration
         self._memory = memory
         self.window_seconds = max(1.0, float(window_seconds))
@@ -99,20 +95,11 @@ class CognitionObservability:
         """Flat, derived metrics view of the cognitive architecture. Fail-safe."""
         t = time.time() if now is None else float(now)
         brain = _status(self._brain)
-        gate = _status(self._gate)
-        mgate = _status(self._management_gate)
         cal = _status(self._calibration)
         mem = _status(self._memory)
 
         decisions = _num(brain, "decisions")
         decisions_per_min = self._record(decisions, t)
-
-        evaluations = _num(gate, "evaluations")
-        vetoed = _num(gate, "vetoed")
-        would_veto = _num(gate, "would_veto")
-        veto_rate = round(vetoed / evaluations, 4) if evaluations > 0 else 0.0
-        would_veto_rate = round(would_veto / evaluations, 4) if evaluations > 0 else 0.0
-        authorise_rate = round(1.0 - veto_rate, 4) if evaluations > 0 else 0.0
 
         cal_samples = int(_num(cal, "samples"))
         reliability_gap = _num(cal, "reliability_gap")
@@ -131,13 +118,6 @@ class CognitionObservability:
             "managed": int(_num(brain, "managed")),
             "brain_faults": int(_num(brain, "faults")),
             "brain_available": bool(brain.get("available", False)),
-            "gate_mode": gate.get("mode", "unknown"),
-            "authoritative": bool(gate.get("authoritative", False)),
-            "gate_evaluations": int(evaluations),
-            "veto_rate": veto_rate,
-            "would_veto_rate": would_veto_rate,
-            "authorise_rate": authorise_rate,
-            "management_gate_mode": mgate.get("mode", "unknown"),
             "calibration_samples": cal_samples,
             "reliability_gap": round(reliability_gap, 4),
             "brier": round(_num(cal, "brier"), 4),

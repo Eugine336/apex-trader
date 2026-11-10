@@ -715,13 +715,9 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `knowledge_max_items`
 - `advisor_enabled`
 
-## `CognitionConfig` (49 fields)
+## `CognitionConfig` (42 fields)
 
 - `enabled`
-- `shadow_mode`
-- `gate_mode`
-- `single_path`
-- `max_decision_age_seconds`
 - `per_module_evidence`
 - `ev_primary_gate`
 - `ev_action_threshold_r`
@@ -865,7 +861,7 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 
 - `TRADING_MODE`, `TRADING_SYMBOLS`, `TRADING_ENABLED_CATEGORIES`
 - `TRADING_ENABLED`
-- `COGNITION_ENABLED`, `COGNITION_GATE_MODE`,
+- `COGNITION_ENABLED`
   `COGNITION_ORIGINATION_MODE`, `COGNITION_MANAGEMENT_MODE`
 - Risk and portfolio limits are represented by the canonical typed
   `OwnerLimits` contract and authenticated API/dashboard controls; do not

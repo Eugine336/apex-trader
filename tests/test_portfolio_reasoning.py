@@ -20,7 +20,7 @@ def _open_output(symbol, direction, ev, exposure):
         symbol=symbol, direction=direction, desired_exposure=exposure,
         expected_value=ev, confidence=0.8, decision_id=decision.decision_id,
     )
-    return BrainOutput(decision=decision, campaign=campaign, direction=direction)
+    return BrainOutput(decision=decision, campaign=campaign)
 
 
 def _brain(**kw):

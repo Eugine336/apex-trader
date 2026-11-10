@@ -133,8 +133,6 @@ class GovernanceDivision:
         # get_status. The Brain reasons; Governance only observes it here.
         cognitive_brain: Optional[object] = None,
         cognition_loop: Optional[object] = None,
-        cognition_gate: Optional[object] = None,
-        management_gate: Optional[object] = None,
         campaign_memory: Optional[object] = None,
         action_planner: Optional[object] = None,
         operations_author: Optional[object] = None,
@@ -198,8 +196,6 @@ class GovernanceDivision:
         # AI Cognitive Brain + loop (observational). Read in get_status only.
         self._cognitive_brain = cognitive_brain
         self._cognition_loop = cognition_loop
-        self._cognition_gate = cognition_gate
-        self._management_gate = management_gate
         # Institutional memory (Phase H, Part VII). Observational — read in
         # get_status only; the Brain/loop own the actual reads and writes.
         self._campaign_memory = campaign_memory
@@ -239,8 +235,6 @@ class GovernanceDivision:
         action_orchestrator: Optional[object] = None,
         cognitive_brain: Optional[object] = None,
         cognition_loop: Optional[object] = None,
-        cognition_gate: Optional[object] = None,
-        management_gate: Optional[object] = None,
         campaign_memory: Optional[object] = None,
         action_planner: Optional[object] = None,
         operations_author: Optional[object] = None,
@@ -275,10 +269,6 @@ class GovernanceDivision:
             self._cognitive_brain = cognitive_brain
         if cognition_loop is not None:
             self._cognition_loop = cognition_loop
-        if cognition_gate is not None:
-            self._cognition_gate = cognition_gate
-        if management_gate is not None:
-            self._management_gate = management_gate
         if campaign_memory is not None:
             self._campaign_memory = campaign_memory
         if action_planner is not None:
@@ -830,7 +820,6 @@ class GovernanceDivision:
                 logger.debug("[governance] action-layer status failed: {}", exc)
         cognition = None
         if (self._cognitive_brain is not None or self._cognition_loop is not None
-                or self._cognition_gate is not None or self._management_gate is not None
                 or self._campaign_memory is not None or self._action_planner is not None
                 or self._operations_author is not None or self._influence_ledger is not None
                 or self._brain_calibration is not None
@@ -847,16 +836,6 @@ class GovernanceDivision:
                     cognition["loop"] = self._cognition_loop.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] cognition-loop status failed: {}", exc)
-            if self._cognition_gate is not None:
-                try:
-                    cognition["gate"] = self._cognition_gate.get_status()
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[governance] cognition-gate status failed: {}", exc)
-            if self._management_gate is not None:
-                try:
-                    cognition["management_gate"] = self._management_gate.get_status()
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[governance] management-gate status failed: {}", exc)
             if self._campaign_memory is not None:
                 try:
                     cognition["memory"] = self._campaign_memory.get_status()
