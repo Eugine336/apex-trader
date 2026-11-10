@@ -2148,7 +2148,6 @@ class EventDrivenSystem:
                 account,
                 SizingFactors(
                     base_risk_pct=base_risk_pct,
-                    calib_mult=self._calibration_size_scale(),
                 ),
             )
             approved_size = float(getattr(verdict, "approved_size", 0.0) or 0.0)
@@ -2453,22 +2452,6 @@ class EventDrivenSystem:
                 return False
 
         return _sink
-
-    def _calibration_size_scale(self) -> float:
-        """Risk scale from verified calibration of the Brain's confidence.
-
-        Unverified (or unavailable) calibration scales risk down to the tracker's
-        floor; it never blocks a trade, concept or instrument. As market outcomes
-        verify stated confidence the scale rises to 1.0.
-        """
-        try:
-            tracker = getattr(getattr(self, "_ctx", None), "brain_calibration", None)
-            if tracker is None:
-                return 0.25
-            return float(tracker.sizing_scale())
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[calibration] size scale fault: {}", exc)
-            return 0.25
 
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
         """Ask the ComplianceDivision whether new exposure is permitted.
