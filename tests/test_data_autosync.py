@@ -605,3 +605,11 @@ class TestDiscardCorruptEventStore:
 
             assert all(path.exists() and path.read_bytes() == data for path, data in rotations)
             assert "preserved 5 corrupt rotation(s)" in res
+
+
+
+def test_public_backup_filter_rejects_secret_like_names():
+    from scripts.backup_data import _should_skip
+
+    for name in (".env", "broker_token.json", "private.pem", "client_secret.txt"):
+        assert _should_skip(Path(name), 10_000, []) is not None
