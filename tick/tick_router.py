@@ -52,6 +52,10 @@ class TickRouter:
         self._detector = candle_close_detector
         self._bus = event_bus
         self._callbacks: list[Callable[[Tick], None]] = []
+        # Raw callbacks observe every tick before the bounded/coalesced store.
+        # Consumers that build candles or measure tick dynamics must use this
+        # path; legacy callbacks retain the sampled/stored semantics.
+        self._raw_callbacks: list[Callable[[Tick], None]] = []
         self._lock = threading.Lock()
         self._running = False
         self._ticks_routed: int = 0
@@ -62,17 +66,29 @@ class TickRouter:
         Called by MT5 poll thread or Deriv WS subscription handler.
         Thread-safe.
         """
-        # Candle-close detection runs on EVERY tick, BEFORE the coalescing
-        # gate. Boundary detection only reads ``tick.epoch`` (one int compare
-        # per tracked timeframe) and has no side effect on the tick itself, so
-        # it is safe and cheap to run unconditionally. Running it here ensures a
-        # boundary-crossing tick is never missed just because the 15Hz
-        # coalescing filter dropped it from the store.
+        # Boundary detection and raw consumers run BEFORE the bounded store's
+        # coalescing gate. This preserves the complete tick sequence delivered
+        # by broker adapters for candle construction and market-state tracking.
         self._detector.on_tick(tick)
-
-        stored = self._store.put(tick)
         self._ticks_routed += 1
+        self._bus.publish("raw_tick", tick)
+        self._bus.publish(f"raw_tick:{tick.symbol}", tick)
 
+        with self._lock:
+            raw_cbs = list(self._raw_callbacks)
+        for cb in raw_cbs:
+            try:
+                cb(tick)
+            except Exception as exc:
+                logger.warning(
+                    "[tick-router] raw callback error: {} — {}",
+                    type(exc).__name__, exc,
+                )
+
+        # The store and legacy "tick" events remain deliberately coalesced for
+        # consumers that need a bounded, rate-limited working set. This is not
+        # the raw ingestion record and must not be used as a complete tick tape.
+        stored = self._store.put(tick)
         if stored:
             self._bus.publish("tick", tick)
             self._bus.publish(f"tick:{tick.symbol}", tick)
@@ -87,7 +103,20 @@ class TickRouter:
                         "[tick-router] callback error: {} — {}", type(exc).__name__, exc
                     )
 
+    def register_raw_callback(self, callback: Callable[[Tick], None]) -> None:
+        """Register a callback that receives every routed tick before coalescing."""
+        with self._lock:
+            self._raw_callbacks.append(callback)
+
+    def unregister_raw_callback(self, callback: Callable[[Tick], None]) -> None:
+        with self._lock:
+            try:
+                self._raw_callbacks.remove(callback)
+            except ValueError:  # SAFE-FALLBACK: unregister is idempotent when already absent
+                pass
+
     def register_callback(self, callback: Callable[[Tick], None]) -> None:
+        """Register a callback for stored ticks after coalescing."""
         with self._lock:
             self._callbacks.append(callback)
 
@@ -95,7 +124,7 @@ class TickRouter:
         with self._lock:
             try:
                 self._callbacks.remove(callback)
-            except ValueError:  # SAFE-FALLBACK: unregister is idempotent when callback is already absent
+            except ValueError:  # SAFE-FALLBACK: unregister is idempotent when already absent
                 pass
 
     def start(self) -> None:
