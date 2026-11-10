@@ -27,38 +27,11 @@ else
     cd "$APEX_DIR" && git pull
 fi
 
-echo "=== Cloning dedicated data repository ==="
-# Runtime state (DB snapshots, journals, learned state) lives in a SEPARATE
-# git repo with its own remote. It MUST NOT be a plain directory inside the
-# source checkout — otherwise git data operations (sync/compaction/clean-start)
-# walk up into the source repo's .git and can destroy its history.
-if [ ! -d "$APEX_DATA_DIR/.git" ]; then
-    git clone "$DATA_REPO_URL" "$APEX_DATA_DIR"
-else
-    cd "$APEX_DATA_DIR" && git pull
-fi
-
-echo "=== Wiring the data junction ($APEX_DIR/data -> ../apex-trader-data) ==="
-# Remove a pre-existing PLAIN data/ directory only if it is not already the
-# junction and not its own git repo — never delete real data.
-if [ -L "$APEX_DIR/data" ]; then
-    echo "  data junction already present"
-elif [ -e "$APEX_DIR/data/.git" ]; then
-    echo "  WARNING: $APEX_DIR/data is its own git repo, leaving as-is"
-elif [ -d "$APEX_DIR/data" ]; then
-    if [ -z "$(ls -A "$APEX_DIR/data" 2>/dev/null)" ]; then
-        rmdir "$APEX_DIR/data"
-        ln -s ../apex-trader-data "$APEX_DIR/data"
-        echo "  replaced empty plain data/ with the junction"
-    else
-        echo "  ERROR: $APEX_DIR/data is a non-empty plain directory."
-        echo "         Move its contents into $APEX_DATA_DIR, remove it, then re-run."
-        exit 1
-    fi
-else
-    ln -s ../apex-trader-data "$APEX_DIR/data"
-    echo "  created data junction"
-fi
+echo "=== Provisioning runtime data repository ==="
+# The same idempotent bootstrap runs on every normal engine startup. Invoke it
+# here too so deployment and desktop installs share one implementation.
+cd "$APEX_DIR"
+python3 -c "from scripts.data_repo_bootstrap import bootstrap_data_repo; bootstrap_data_repo()"
 
 echo "=== Setting up Python virtualenv ==="
 cd "$APEX_DIR"
