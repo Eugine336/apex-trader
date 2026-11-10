@@ -144,7 +144,7 @@ class TestWalCheckpoint:
             calls: list[str] = []
             real_run_git = backup_data._run_git
 
-            def _track_checkpoint(data_dir):
+            def _track_checkpoint(data_dir, **kwargs):
                 calls.append("checkpoint")
                 return 0
 
