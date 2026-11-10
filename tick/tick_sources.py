@@ -199,10 +199,23 @@ class MT5TickPoller:
             return False
 
         newest: Optional[datetime] = None
-        ordered_rows = sorted(
-            frame.iterrows(),
-            key=lambda item: int(item[1].get("time_msc", 0) or 0),
-        )
+        def _history_order(item: Any) -> tuple[int, int, int]:
+            row_index, row = item
+            try:
+                raw_time = row.get("time_msc")
+                if raw_time is None:
+                    raise ValueError("missing time_msc")
+                numeric_time = float(raw_time)
+                if not math.isfinite(numeric_time) or numeric_time <= 0:
+                    raise ValueError("invalid time_msc")
+                return 0, int(numeric_time), int(row_index)
+            except (TypeError, ValueError, OverflowError):
+                # Malformed rows are sorted after timestamped rows and rejected
+                # by the row validator below. They must not abort the entire
+                # broker-history batch or prevent the latest quote fallback.
+                return 1, 0, int(row_index)
+
+        ordered_rows = sorted(frame.iterrows(), key=_history_order)
         for _, row in ordered_rows:
             stamp = row.get("time_msc_datetime")
             if hasattr(stamp, "to_pydatetime"):
