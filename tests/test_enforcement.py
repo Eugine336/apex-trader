@@ -12,7 +12,7 @@ Covered:
   * TuningGuardMixin blocks/allows direct calls and never raises
   * bypass attempts are logged in-memory AND persisted to the audit DB
   * agent-driven (delegated) calls pass the guard (authorization window)
-  * the four real guarded entry points (AdaptiveOptimizer.run_optimization,
+  * the three real guarded entry points (AdaptiveOptimizer.run_optimization,
     GateTuner.calibrate, SignalLedger.run_grading_cycle)
   * detaching the agent restores the legacy behaviour
 
