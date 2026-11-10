@@ -149,3 +149,6 @@ See [CONFIGURATION_FIELD_INVENTORY.md](CONFIGURATION_FIELD_INVENTORY.md) for the
 source-backed inventory of all 716 typed fields across 43 configuration
 dataclasses. The inventory is not a blanket permission to expose every field.
 Each field must be classified before it becomes an environment override.
+For the complete field-by-field list of the 101 supported typed environment
+settings, their types and defaults, see
+[OPERATOR_ENVIRONMENT_REFERENCE.md](OPERATOR_ENVIRONMENT_REFERENCE.md).
