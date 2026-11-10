@@ -225,3 +225,73 @@ def test_portfolio_risk_reader_consumes_registered_broker_snapshot():
     assert reading.facts["portfolio_snapshot_verified"] is True
     assert reading.facts["account_equity"] == 10_000.0
     assert reading.facts["open_risk_account_ccy"] == 100.0
+
+
+def test_mt5_partial_portfolio_adds_broker_calculated_position_stop_risk_and_margin():
+    from data_sources.mt5_portfolio import MT5PortfolioAdapter
+
+    class Connector:
+        def get_account_snapshot(self):
+            return {
+                "source_verified": True,
+                "equity": 2500.0,
+                "currency": "USD",
+                "leverage": 100,
+            }
+
+        def get_position_snapshots(self):
+            return [
+                {
+                    "source_verified": True,
+                    "ticket": 9988,
+                    "symbol": "XAUUSD",
+                    "type": 0,
+                    "volume": 0.1,
+                    "price_current": 2000.0,
+                    "sl": 1990.0,
+                    "tp": 2020.0,
+                    "profit": 5.0,
+                    "swap": -0.2,
+                },
+                {
+                    "source_verified": True,
+                    "ticket": 9989,
+                    "symbol": "XAUUSD",
+                    "type": 1,
+                    "volume": 0.1,
+                    "price_current": 2000.0,
+                    "sl": 0.0,
+                    "tp": 1980.0,
+                    "profit": -2.0,
+                    "swap": -0.1,
+                },
+            ]
+
+        def calculate_profit(self, symbol, direction, volume, price_open, price_close):
+            assert symbol == "XAUUSD"
+            if direction == "LONG":
+                return -10.0
+            return 8.0
+
+        def calculate_margin(self, symbol, direction, volume, price):
+            return 50.0
+
+    class Manager:
+        mt5_connectors = [Connector()]
+        _mt5_connected_flags = [True]
+
+    (observation,) = MT5PortfolioAdapter(Manager()).fetch(
+        ObservationKind.PORTFOLIO_SNAPSHOT,
+    )
+    assert observation.provenance.completeness is Completeness.PARTIAL
+    first, second = observation.values["positions_observed"]
+    assert first["risk_account_ccy"] == 10.0
+    assert first["stop_pnl_account_ccy"] == -10.0
+    assert first["risk_calculation_source"] == "mt5.order_calc_profit"
+    assert first["margin_account_ccy"] == 50.0
+    assert first["margin_calculation_source"] == "mt5.order_calc_margin"
+    assert second["risk_account_ccy"] is None
+    assert second["risk_calculation_source"] is None
+    assert second["margin_account_ccy"] == 50.0
+    assert "ticket" not in first
+    assert "notional_account_ccy" not in first
