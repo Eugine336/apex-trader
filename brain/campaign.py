@@ -299,10 +299,25 @@ class Campaign:
     # ── Derived reads ────────────────────────────────────────────────────
     @property
     def open_legs(self) -> int:
-        """Net exposure-adding legs (open/scale/re-entry) minus full closes."""
-        adds = sum(1 for lg in self.legs
-                   if lg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY))
-        return adds
+        """Count exact active broker tickets plus unresolved unbound opens.
+
+        A close removes only its exact (platform, ticket) binding. Missing
+        identity remains unresolved and cannot silently end a campaign.
+        """
+        active: set[tuple[str, str]] = set()
+        unbound = 0
+        for leg in self.legs:
+            ticket = str(leg.ticket or "").strip()
+            platform = str(leg.platform or "").strip().lower()
+            if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
+                if ticket and platform:
+                    active.add((platform, ticket))
+                else:
+                    unbound += 1
+            elif leg.kind == LEG_CLOSE and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS:
+                if ticket and platform:
+                    active.discard((platform, ticket))
+        return len(active) + unbound
 
     @property
     def open_ticket_bindings(self) -> list[dict[str, str]]:
@@ -772,10 +787,14 @@ class CampaignRegistry:
                 if cause in _PARTIAL_CLOSE_TOKENS:
                     # A partial secures profit but the campaign lives on.
                     return camp
+                # One broker ticket closing does not end a campaign that still
+                # has other exact tickets or unresolved unbound opens.
+                if camp.open_legs > 0:
+                    return camp
                 if cause in _REVERSAL_CLOSE_TOKENS:
                     self._finalize_locked(camp, CampaignState.REVERSED, t, cause)
                     return camp
-                # Any other close ends the campaign; classify realised vs failed.
+                # The campaign ends only after every exact ticket is closed.
                 if cause in _INVALIDATING_CLOSE_TOKENS or won is False:
                     end_state = CampaignState.INVALIDATED
                 else:
