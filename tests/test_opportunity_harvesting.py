@@ -309,7 +309,7 @@ def test_unknown_opportunity_lifecycle_state_cannot_authorise_campaign():
 
     assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
     assert out.campaign is None
-    assert "UNKNOWN" in out.decision.risk_rationale
+    assert "unknown" in out.decision.risk_rationale.lower()
 
 
 def test_brain_opens_campaign_from_preferred_opportunity():
