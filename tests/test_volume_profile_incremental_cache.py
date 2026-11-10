@@ -9,10 +9,10 @@ def _bars():
     first_week = 1_704_067_200.0  # 2024-01-01 UTC
     second_week = 1_704_672_000.0  # 2024-01-08 UTC
     return [
-        {"time": first_week, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1, "tick_volume": 100},
-        {"time": first_week + 3600, "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2, "tick_volume": 110},
-        {"time": second_week, "open": 1.2, "high": 1.4, "low": 1.1, "close": 1.3, "tick_volume": 120},
-        {"time": second_week + 3600, "open": 1.3, "high": 1.5, "low": 1.2, "close": 1.4, "tick_volume": 130},
+        {"time": first_week, "timestamp_epoch": first_week, "source_timestamp_verified": True, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1, "tick_volume": 100},
+        {"time": first_week + 3600, "timestamp_epoch": first_week + 3600, "source_timestamp_verified": True, "open": 1.1, "high": 1.3, "low": 1.0, "close": 1.2, "tick_volume": 110},
+        {"time": second_week, "timestamp_epoch": second_week, "source_timestamp_verified": True, "open": 1.2, "high": 1.4, "low": 1.1, "close": 1.3, "tick_volume": 120},
+        {"time": second_week + 3600, "timestamp_epoch": second_week + 3600, "source_timestamp_verified": True, "open": 1.3, "high": 1.5, "low": 1.2, "close": 1.4, "tick_volume": 130},
     ]
 
 
@@ -70,6 +70,8 @@ def test_appending_a_bar_recomputes_only_the_active_week(monkeypatch):
 
     appended = bars + [{
         "time": bars[-1]["time"] + 3600,
+        "timestamp_epoch": bars[-1]["timestamp_epoch"] + 3600,
+        "source_timestamp_verified": True,
         "open": 1.4, "high": 1.6, "low": 1.3, "close": 1.5,
         "tick_volume": 140,
     }]
