@@ -175,6 +175,8 @@ class CampaignLeg:
     pnl: float = 0.0
     exit_cause: str = ""
     ticket: str = ""
+    platform: str = ""
+    decision_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -185,6 +187,8 @@ class CampaignLeg:
             "pnl": round(self.pnl, 4),
             "exit_cause": self.exit_cause,
             "ticket": self.ticket,
+            "platform": self.platform,
+            "decision_id": self.decision_id,
         }
 
 
@@ -295,10 +299,66 @@ class Campaign:
     # ── Derived reads ────────────────────────────────────────────────────
     @property
     def open_legs(self) -> int:
-        """Net exposure-adding legs (open/scale/re-entry) minus full closes."""
-        adds = sum(1 for lg in self.legs
-                   if lg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY))
-        return adds
+        """Count active broker legs plus unresolved unbound open intentions."""
+        active: dict[tuple[str, str], int] = {}
+        unresolved = 0
+        for leg in self.legs:
+            ticket = str(leg.ticket or "").strip()
+            platform = str(leg.platform or "").strip().lower()
+            if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
+                if ticket and platform:
+                    key = (platform, ticket)
+                    active[key] = active.get(key, 0) + 1
+                else:
+                    unresolved += 1
+            elif (
+                leg.kind == LEG_CLOSE
+                and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS
+                and ticket and platform
+            ):
+                active.pop((platform, ticket), None)
+        return sum(active.values()) + unresolved
+
+    @property
+    def open_ticket_bindings(self) -> list[dict[str, str]]:
+        """Exact platform/ticket pairs still represented by this live campaign.
+
+        Partial closes retain a ticket; a terminal close removes only that exact
+        platform/ticket pair. Missing platform or ticket provenance stays unknown.
+        """
+        active: dict[tuple[str, str], dict[str, str]] = {}
+        for leg in self.legs:
+            ticket = str(leg.ticket or "").strip()
+            platform = str(leg.platform or "").strip().lower()
+            if not ticket or not platform:
+                continue
+            key = (platform, ticket)
+            if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
+                active[key] = {"platform": platform, "ticket": ticket}
+            elif leg.kind == LEG_CLOSE and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS:
+                active.pop(key, None)
+        return [active[key] for key in sorted(active)]
+
+    @property
+    def has_unbound_open_legs(self) -> bool:
+        """Whether an exposure-adding leg still lacks exact broker identity.
+
+        Such a leg may represent a pending order or an unresolved fill. It must
+        not be silently discarded when another ticket in the campaign closes.
+        """
+        return any(
+            leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY)
+            and (
+                not str(leg.ticket or "").strip()
+                or not str(leg.platform or "").strip()
+            )
+            for leg in self.legs
+        )
+
+    @property
+    def open_tickets(self) -> list[str]:
+        """Ticket-only compatibility view; exact execution joins use bindings."""
+        return sorted({item["ticket"] for item in self.open_ticket_bindings})
 
     def staleness_seconds(self, now: Optional[float] = None) -> float:
         t = _now_epoch() if now is None else _safe_float(now)
@@ -335,9 +395,9 @@ class Campaign:
         peak = _safe_float(self.peak_ev_over_flat)
         conf = _clamp01(self.confidence)
         avg = _clamp01(self.avg_confidence)
-        # Opportunity strength: how much live edge remains, blended with how
-        # strongly the evidence still supports the thesis.
-        opportunity = _clamp01(0.5 * conf + 0.5 * _clamp01(ev))
+        # This descriptive read is expected-value-only. Reasoning confidence
+        # must not leak into campaign ranking or portfolio management.
+        opportunity = _clamp01(ev)
         return {
             "identity_version": self.identity_version,
             "identity": IDENTITY_STATEMENT,
@@ -361,6 +421,8 @@ class Campaign:
             "remaining_upside_r": round(max(0.0, ev), 4),
             "refresh_count": int(self.refresh_count),
             "open_legs": int(self.open_legs),
+            "open_tickets": self.open_tickets,
+            "open_ticket_bindings": self.open_ticket_bindings,
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(now), 1),
@@ -389,6 +451,8 @@ class Campaign:
             "ended_reason": self.ended_reason,
             "refresh_count": int(self.refresh_count),
             "open_legs": int(self.open_legs),
+            "open_tickets": self.open_tickets,
+            "open_ticket_bindings": self.open_ticket_bindings,
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(), 1),
@@ -601,6 +665,8 @@ class CampaignRegistry:
         price: float = 0.0,
         pnl: float = 0.0,
         ticket: str = "",
+        platform: str = "",
+        decision_id: str = "",
         now: Optional[float] = None,
     ) -> None:
         """Attach an exposure-adding leg (open/scale/re-entry) to the campaign.
@@ -624,10 +690,75 @@ class CampaignRegistry:
                     price=_safe_float(price),
                     pnl=_safe_float(pnl),
                     ticket=str(ticket or ""),
+                    platform=str(platform or "").strip().lower(),
+                    decision_id=str(decision_id or "").strip(),
                 ))
         except Exception as exc:  # noqa: BLE001
             logger.debug("[campaign] record_leg({}) ignored a fault: {}",
                          symbol, exc)
+
+    def attach_ticket(
+        self,
+        symbol: str,
+        direction: str,
+        campaign_id: str,
+        decision_id: str,
+        ticket: str,
+        platform: str,
+    ) -> bool:
+        """Bind one acknowledged open leg to its exact broker position identity."""
+        try:
+            sym, side = str(symbol or ""), _norm_dir(direction)
+            cid = str(campaign_id or "").strip()
+            did = str(decision_id or "").strip()
+            tid = str(ticket or "").strip()
+            plat = str(platform or "").strip().lower()
+            if not all((sym, side in (LONG, SHORT), cid, did, tid, plat)):
+                return False
+            with self._lock:
+                camp = self._live.get((sym, side))
+                if camp is None or camp.campaign_id != cid:
+                    return False
+                pending = [
+                    leg for leg in camp.legs
+                    if leg.kind == LEG_OPEN and leg.decision_id == did and not leg.ticket
+                ]
+                if len(pending) != 1:
+                    return False
+                pending[0].ticket = tid
+                pending[0].platform = plat
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] attach_ticket({}) failed closed: {}", symbol, exc)
+            return False
+
+    def reject_pending_leg(
+        self, symbol: str, direction: str, campaign_id: str, decision_id: str,
+    ) -> bool:
+        """Remove exactly one unfilled Brain open leg after an explicit rejection."""
+        try:
+            sym, side = str(symbol or ""), _norm_dir(direction)
+            cid = str(campaign_id or "").strip()
+            did = str(decision_id or "").strip()
+            if not all((sym, side in (LONG, SHORT), cid, did)):
+                return False
+            with self._lock:
+                camp = self._live.get((sym, side))
+                if camp is None or camp.campaign_id != cid:
+                    return False
+                pending = [
+                    leg for leg in camp.legs
+                    if leg.kind == LEG_OPEN and leg.decision_id == did and not leg.ticket
+                ]
+                if len(pending) != 1:
+                    return False
+                camp.legs.remove(pending[0])
+                if not camp.legs:
+                    self._live.pop((sym, side), None)
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] reject_pending_leg({}) failed closed: {}", symbol, exc)
+            return False
 
     def observe_close(
         self,
@@ -638,6 +769,7 @@ class CampaignRegistry:
         pnl: float = 0.0,
         won: Optional[bool] = None,
         ticket: str = "",
+        platform: str = "",
         now: Optional[float] = None,
     ) -> Optional[Campaign]:
         """Record a closed leg and, when terminal, end the campaign.
@@ -664,12 +796,21 @@ class CampaignRegistry:
                     pnl=_safe_float(pnl),
                     exit_cause=cause,
                     ticket=str(ticket or ""),
+                    platform=str(platform or "").strip().lower(),
                 ))
                 camp.realized_pnl += _safe_float(pnl)
 
                 if cause in _PARTIAL_CLOSE_TOKENS:
                     # A partial secures profit but the campaign lives on.
                     return camp
+
+                # A campaign may own several independently managed broker
+                # tickets. A terminal close ends only its exact platform/ticket
+                # leg; the thesis remains live while another confirmed ticket
+                # or unresolved pending open leg still exists.
+                if camp.open_ticket_bindings or camp.has_unbound_open_legs:
+                    return camp
+
                 if cause in _REVERSAL_CLOSE_TOKENS:
                     self._finalize_locked(camp, CampaignState.REVERSED, t, cause)
                     return camp
@@ -875,11 +1016,9 @@ class CampaignRegistry:
         if camp is None:
             return (0.0, 0.0, 0.0)
         h = camp.health()
-        return (
-            float(h.get("opportunity_strength", 0.0) or 0.0),
-            float(h.get("confidence", 0.0) or 0.0),
-            float(h.get("ev_over_flat", 0.0) or 0.0),
-        )
+        # Confidence is descriptive evidence metadata, never a portfolio
+        # selection or management-ranking input.
+        return (float(h.get("ev_over_flat", 0.0) or 0.0),)
 
     def is_component_saturated(self, symbol: str, max_per_component: int = 2) -> bool:
         """True when ``symbol`` shares a leg with an over-concentrated cluster.

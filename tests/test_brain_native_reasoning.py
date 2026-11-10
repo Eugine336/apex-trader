@@ -686,16 +686,22 @@ def test_full_reasoning_chain_recorded():
 
 # ── Article XXVIII: book-wide opportunity comparison ──────────────────────────
 
-def test_compare_opportunities_ranks_against_book():
+def test_compare_opportunities_does_not_use_reasoning_confidence_as_book_ev():
     br = BrainReasoner()
-    opp = BrainHypothesis(statement="long", confidence=0.8, direction_implication=LONG)
+    opp = BrainHypothesis(statement="long", confidence=0.99, direction_implication=LONG)
     assert br.compare_opportunities(opp, "EURUSD", []) == "superior"
     # Same symbol + same direction already held ⇒ redundant.
-    held = [{"symbol": "EURUSD", "direction": "LONG", "confidence": 0.7}]
+    held = [{"symbol": "EURUSD", "direction": "LONG", "confidence": 0.01}]
     assert br.compare_opportunities(opp, "EURUSD", held) == "redundant"
-    # A stronger new opportunity beats a weaker existing position ⇒ superior.
-    weak = [{"symbol": "USDJPY", "direction": "LONG", "confidence": 0.4}]
-    assert br.compare_opportunities(opp, "EURUSD", weak) == "superior"
+    # A shared currency leg is not enough to compare expected returns. Different
+    # confidence values must not turn the new hypothesis into superior/inferior.
+    low_confidence_position = [{"symbol": "USDJPY", "direction": "LONG", "confidence": 0.0}]
+    high_confidence_position = [{"symbol": "USDJPY", "direction": "LONG", "confidence": 1.0}]
+    assert br.compare_opportunities(opp, "EURUSD", low_confidence_position) == "unranked"
+    assert br.compare_opportunities(opp, "EURUSD", high_confidence_position) == "unranked"
+    # An unrelated instrument is complementary, without confidence comparison.
+    unrelated = [{"symbol": "GER40", "direction": "LONG", "confidence": 0.99}]
+    assert br.compare_opportunities(opp, "EURUSD", unrelated) == "complementary"
 
 
 def test_native_market_synthesis_does_not_create_advisor_confidence():

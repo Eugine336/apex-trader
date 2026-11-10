@@ -85,3 +85,31 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
   mutation or execution-setting changes are part of this work.
 - Passing CI validates repository behavior; it does not substitute for
   owner-connected broker acceptance or full production qualification.
+
+
+8. **Retire the no-op breakeven re-entry subsystem.** The runtime had no
+   consumer for the stored breakeven/last-close cooldowns, and ReEntryManager
+   only emitted an observational event after M5/FVG/OB checks; it did not
+   submit or authorize an order. Remove its SystemContext construction,
+   close-handler evaluation, re-entry event, snapshot/trade-model flag,
+   package export and source module. A closed campaign returns to the normal
+   Brain observation cycle; no direction-locked re-entry shortcut or dormant
+   cooldown state remains.
+
+
+9. **Retire disconnected cross-instrument heuristics.** Call-site audit found no
+   runtime consumers for the CrossInstrumentRanker, OpportunityQualitySizer or
+   PositionDisplacer beyond SystemContext construction and dashboard status. The
+   quality sizer also used reasoning confidence as a size multiplier. Remove the
+   modules, tests, SystemContext wiring, dashboard/UI status, configuration fields,
+   environment switches and operator-reference rows. Retain only the observational proactive watchlist; the advertised global
+   opportunity queue was never initialized and its configuration was also removed.
+   The scanner's proximity setting was also unused (no proximity callback was
+   wired) and was removed rather than presented as an effective control.
+
+
+10. **Remove the unconsumed execution-quality sizing toggle.** Repository call-site
+    audit found `execution_quality_sizing_enabled` only in RiskConfig, its field
+    inventory and a test that asserted the default was true. No execution quality
+    gate or size-throttle consumer existed. Remove the field and misleading test
+    instead of advertising a live control that had no runtime effect.

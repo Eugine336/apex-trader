@@ -1488,12 +1488,8 @@ class EventDrivenSystem:
                 )
                 self._adaptive_scheduler = None
 
-        # ── Cross-instrument opportunity layer (GAP 1) ────────────────
-        # The GlobalOpportunityQueue (collect → cross-instrument rank →
-        # dispatch) is RETIRED with the legacy entry pipeline — its only sink
-        # was the retired entry-decision path. The ProactiveOpportunityScanner
-        # (pre-heat watchlist) remains; default OFF via config.cross_instrument.
-        self._opportunity_queue = None
+        # Observational cross-instrument watchlist. The former global queue
+        # belonged to the retired legacy entry pipeline and has no live sink.
         self._proactive_scanner = None
         _ci_cfg = getattr(self._config, "cross_instrument", None)
         if _ci_cfg is not None and ctx is not None:
@@ -1697,18 +1693,6 @@ class EventDrivenSystem:
             "world_model_update", self._on_world_model_update,
         )
 
-        self._be_stop_cooldown: dict[str, float] = {}
-        # Retuned for aggressive gold scalping: after a breakeven stop the
-        # system should be ready to re-enter quickly once a new setup forms.
-        self._be_cooldown_seconds = 30.0
-        # General per-symbol re-entry cooldown for the ZONE entry path: last
-        # unix-ts a position closed per symbol. Prevents the zone path from
-        # re-arming on the very next M1 close after any exit (not just BE
-        # exits). Consensus/trigger entries use their own cooldown below.
-        # Retuned to 15s for aggressive gold scalping: long enough to prevent
-        # duplicate entries on the same candle, short enough to re-enter on the
-        # next zone touch so the system can ride a trend in pieces.
-        self._last_close_time: dict[str, float] = {}
         self._zone_reentry_cooldown_seconds = 15.0
         # Re-fire debounce for the ACTIVE consensus entry trigger (Phase 4):
         # last unix-ts a zoneless consensus entry was dispatched per symbol, so
@@ -2663,24 +2647,66 @@ class EventDrivenSystem:
         Stop moves are one-directional-safe: a tighten/protect only ever moves
         the stop to REDUCE risk, never widens it.
         """
-        def _open_position_for(symbol: str, direction: str):
-            try:
-                positions = self._pm.get_all_open_positions() if self._pm is not None else []
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[mgmt-sink] positions fetch failed for {}: {}", symbol, exc)
+        def _open_position_for(symbol: str, direction: str, position: Any):
+            """Resolve exactly the broker position the Brain evaluated.
+
+            Symbol + side is not a position identity: multiple tickets can share
+            both, and MT5 ticket numbers may collide across broker namespaces.
+            Require the ticket and platform carried by PositionView, then match
+            exactly one record in a confirmation-aware broker snapshot.
+            """
+            expected_ticket = str(getattr(position, "ticket", "") or "").strip()
+            expected_platform = str(getattr(position, "platform", "") or "").strip().lower()
+            if not expected_ticket or not expected_platform:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — Brain position lacks exact broker ticket/platform",
+                    symbol, direction,
+                )
                 return None
-            # Broker positions report BUY/SELL; the Brain verdict carries
-            # LONG/SHORT. Compare on the canonical axis or the match ALWAYS fails
-            # and every EXIT/PARTIAL/PROTECT/TIGHTEN is silently dropped.
+            try:
+                snapshot = self._pm.get_open_positions_snapshot() if self._pm is not None else None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[mgmt-sink] broker snapshot failed for {}: {}", symbol, exc)
+                return None
+            if snapshot is None:
+                return None
+            confirmed = {
+                str(item or "").strip().lower()
+                for item in (getattr(snapshot, "confirmed_platforms", set()) or set())
+            }
+            failed = {
+                str(item or "").strip().lower()
+                for item in (getattr(snapshot, "failed_platforms", set()) or set())
+            }
+            if expected_platform in failed or expected_platform not in confirmed:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — platform {} is not confirmed in broker snapshot",
+                    symbol, direction, expected_platform,
+                )
+                return None
+            positions = getattr(snapshot, "positions", None)
+            if positions is None:
+                return None
             from cognition.position_adapter import canonical_side as _canon
             want = _canon(direction)
-            for p in positions or []:
-                if str(getattr(p, "symbol", "") or "") != symbol:
+            matches = []
+            for candidate in positions:
+                ticket = str(getattr(candidate, "order_id", getattr(candidate, "ticket", "")) or "").strip()
+                platform = str(getattr(candidate, "platform", "") or "").strip().lower()
+                if ticket != expected_ticket or platform != expected_platform:
                     continue
-                if want and _canon(getattr(p, "direction", "")) != want:
+                if str(getattr(candidate, "symbol", "") or "") != symbol:
                     continue
-                return p
-            return None
+                if not want or _canon(getattr(candidate, "direction", "")) != want:
+                    continue
+                matches.append(candidate)
+            if len(matches) != 1:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — exact position identity matched {} broker records",
+                    symbol, direction, len(matches),
+                )
+                return None
+            return matches[0]
 
         def _protective_sl(pos, action: Any):
             # A management stop must come from the Brain's explicit concept or
@@ -2722,6 +2748,18 @@ class EventDrivenSystem:
                 reason = str(getattr(action, "reason", "") or "brain_management")[:200]
                 if not symbol or not kind:
                     return False
+                from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+                if (
+                    str(getattr(action, "identity_version", "") or "") != IDENTITY_VERSION
+                    or str(getattr(action, "identity", "") or "") != IDENTITY_STATEMENT
+                    or not str(getattr(action, "decision_id", "") or "").strip()
+                    or not str(getattr(action, "action_id", "") or "").strip()
+                ):
+                    logger.warning(
+                        "[mgmt-sink] {} {} suppressed — canonical identity, decision ID, or action ID missing",
+                        symbol, kind,
+                    )
+                    return False
                 intents: list = []
 
                 if kind == "scale_in":
@@ -2738,7 +2776,7 @@ class EventDrivenSystem:
                     )
                     return False
 
-                pos = _open_position_for(symbol, held)
+                pos = _open_position_for(symbol, held, position)
                 if pos is None:
                     logger.info("[mgmt-sink] {} {} skipped — no matching open position",
                                 symbol, kind)
@@ -4294,12 +4332,6 @@ class EventDrivenSystem:
             # safe-fallback: memory close is best-effort; remaining cleanup must continue.
             except Exception:
                 pass
-        if getattr(self, "_opportunity_queue", None) is not None:
-            try:
-                self._opportunity_queue.stop()
-            # safe-fallback: optional queue shutdown must not prevent core tick services from stopping.
-            except Exception:
-                pass
         self._tick_router.stop()
         self._candle_detector.stop()
         self._candle_handler.shutdown()
@@ -5474,6 +5506,7 @@ class EventDrivenSystem:
             commission=broker_commission,
             swap=broker_swap,
             fee=broker_fee,
+            platform=str(platform or "").strip().lower(),
         )
         try:
             self._mgmt_store.remove(str(ticket))
@@ -6007,9 +6040,29 @@ class EventDrivenSystem:
                             )
                             meta["fill_event_emitted"] = True
                             meta["position_id"] = position_id
+                        fill_platform = str(getattr(position, "platform", "") or "").strip().lower()
+                        fill_context = getattr(self, "_ctx", None)
+                        campaign_registry = getattr(fill_context, "campaign_registry", None) if fill_context is not None else None
+                        attach_campaign_ticket = getattr(campaign_registry, "attach_ticket", None)
+                        if (
+                            campaign_registry is not None
+                            and getattr(campaign_registry, "enabled", False)
+                            and callable(attach_campaign_ticket)
+                            and payload["campaign_id"] and payload["decision_id"] and fill_platform
+                        ):
+                            attached = attach_campaign_ticket(
+                                payload["symbol"], payload["direction"], payload["campaign_id"],
+                                payload["decision_id"], position_id, fill_platform,
+                            )
+                            if not attached:
+                                logger.warning(
+                                    "[campaign] pending fill {} could not be attached to campaign {} decision {}",
+                                    position_id, payload["campaign_id"], payload["decision_id"],
+                                )
                         self._entry_context[position_id] = {
                             "ticket": position_id, "symbol": payload["symbol"],
                             "direction": payload["direction"],
+                            "platform": fill_platform,
                             "decision_id": payload["decision_id"],
                             "campaign_id": payload["campaign_id"],
                             "opportunity_id": payload["opportunity_id"],
@@ -6094,19 +6147,29 @@ class EventDrivenSystem:
             if not bool(getattr(result, "success", False)):
                 return
             response = getattr(result, "broker_response", None)
-            response_status = str(getattr(response, "order_status", "FILLED") or "FILLED").upper()
-            if response_status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+
+            def _response_value(name: str, default: Any = None) -> Any:
+                if isinstance(response, dict):
+                    return response.get(name, default)
+                return getattr(response, name, default)
+
+            response_status = str(_response_value("order_status", "FILLED") or "FILLED").upper()
+            if response_status in {
+                "PENDING", "PLACED", "ACCEPTED", "WORKING", "NEW",
+                "PARTIALLY_FILLED", "PARTIALLY_FILLED_PENDING",
+            }:
                 # A resting or partially filled pending order is not a completed
                 # trade. Keep its decision lineage until broker history confirms
                 # terminal disposition.
-                ticket = str(getattr(response, "order_id", "") or "").strip()
-                submitted_at = getattr(response, "timestamp", None)
+                ticket = str(_response_value("order_id", "") or "").strip()
+                submitted_at = _response_value("timestamp", None)
                 if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
                     submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
                 self._record_pending_order_result(response, {
                     "order_id": ticket,
                     "symbol": str(intent.symbol or "").upper(),
                     "direction": str(intent.direction or "").upper(),
+                    "platform": str(_response_value("platform", "") or "").strip().lower(),
                     "order_type": str(intent.order_type or "").upper(),
                     "lots": float(intent.lots or 0.0),
                     "entry_price": float(intent.entry_price or 0.0),
@@ -6119,13 +6182,17 @@ class EventDrivenSystem:
                     "decision_feature_snapshot": intent.decision_feature_snapshot,
                     "submitted_at": submitted_at.astimezone(timezone.utc).isoformat(),
                     "status": response_status,
-                    "remaining_lots": float(getattr(response, "lots", intent.lots) or 0.0),
+                    "remaining_lots": float(_response_value("lots", intent.lots) or 0.0),
                 })
                 logger.info(
                     "[decision-provenance] pending order {} accepted; broker reconciliation active",
                     ticket,
                 )
                 return
+            # Market fills are bound to a campaign only after the exact
+            # broker-confirmed position snapshot is available. Pending orders
+            # attach later in the reconciliation path.
+            self._attach_open_campaign_ticket(intent, result)
             ticket = ""
             if isinstance(response, dict):
                 ticket = str(
@@ -6165,6 +6232,9 @@ class EventDrivenSystem:
                 "ticket": ticket,
                 "symbol": str(getattr(intent, "symbol", "") or ""),
                 "direction": str(getattr(intent, "direction", "") or "").upper(),
+                "platform": str(response.get("platform", "") or "").strip().lower()
+                    if isinstance(response, dict)
+                    else str(getattr(response, "platform", "") or "").strip().lower(),
                 "decision_id": decision_id,
                 "campaign_id": campaign_id,
                 "opportunity_id": opportunity_id,
@@ -6352,6 +6422,7 @@ class EventDrivenSystem:
             commission=broker_commission,
             swap=broker_swap,
             fee=broker_fee,
+            platform=str(platform or "").strip().lower(),
         )
 
         # Now that the broker-confirmed close is booked, drop management state.
@@ -6388,8 +6459,105 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.warning("[management] failed to clear rollback snapshots for {}: {}", ticket, exc)
 
+    def _attach_open_campaign_ticket(self, intent: Intent, result: Any) -> None:
+        """Attach a Brain open leg only after a confirmed broker fill.
+
+        A submitted order is not a position. Pending/ambiguous outcomes remain
+        unbound until broker truth proves the exact platform and position ticket.
+        """
+        ctx = getattr(self, "_ctx", None)
+        registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+        if registry is None or not getattr(registry, "enabled", False):
+            return
+        symbol = str(getattr(intent, "symbol", "") or "").strip()
+        direction = str(getattr(intent, "direction", "") or "").strip()
+        campaign_id = str(getattr(intent, "campaign_id", "") or "").strip()
+        decision_id = str(getattr(intent, "decision_id", "") or "").strip()
+        if not all((symbol, direction, campaign_id, decision_id)):
+            return
+        broker_response = getattr(result, "broker_response", None)
+        response_success = getattr(broker_response, "success", None)
+        if isinstance(broker_response, dict):
+            response_success = broker_response.get("success")
+        explicit_rejection = (
+            getattr(result, "rejected_by_gate", False) is True
+            or response_success is False
+            or broker_response is False
+        )
+        if explicit_rejection:
+            registry.reject_pending_leg(symbol, direction, campaign_id, decision_id)
+            return
+        if getattr(result, "success", False) is not True or response_success is not True:
+            logger.warning(
+                "[campaign] open outcome for {} remains unresolved; no broker-confirmed ticket",
+                symbol,
+            )
+            return
+        def response_value(name: str) -> Any:
+            if isinstance(broker_response, dict):
+                return broker_response.get(name)
+            return getattr(broker_response, name, None)
+        status = str(response_value("order_status") or "").strip().upper()
+        if status not in {"FILLED", "EXECUTED", "OPEN", "PARTIALLY_FILLED_TERMINAL"}:
+            # PLACED/ACCEPTED pending orders are not live positions.
+            return
+        ticket = str(
+            response_value("position_ticket")
+            or response_value("ticket")
+            or response_value("order_id")
+            or response_value("contract_id")
+            or ""
+        ).strip()
+        platform = str(response_value("platform") or "").strip().lower()
+        if not ticket or not platform or self._pm is None:
+            return
+        try:
+            snapshot = self._pm.get_open_positions_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] fill snapshot failed for {}: {}", symbol, exc)
+            return
+        if snapshot is None:
+            return
+        confirmed = {
+            str(value or "").strip().lower()
+            for value in (getattr(snapshot, "confirmed_platforms", set()) or set())
+        }
+        failed = {
+            str(value or "").strip().lower()
+            for value in (getattr(snapshot, "failed_platforms", set()) or set())
+        }
+        if platform in failed or platform not in confirmed:
+            return
+        from cognition.position_adapter import canonical_side as _canon
+        want = _canon(direction)
+        matches = [
+            position for position in (getattr(snapshot, "positions", None) or [])
+            if str(getattr(position, "order_id", getattr(position, "ticket", "")) or "").strip() == ticket
+            and str(getattr(position, "platform", "") or "").strip().lower() == platform
+            and str(getattr(position, "symbol", "") or "") == symbol
+            and _canon(getattr(position, "direction", "")) == want
+        ]
+        if len(matches) != 1:
+            logger.warning(
+                "[campaign] open fill {} {} {} matched {} broker positions; ticket not attached",
+                platform, ticket, symbol, len(matches),
+            )
+            return
+        if not registry.attach_ticket(symbol, direction, campaign_id, decision_id, ticket, platform):
+            logger.warning(
+                "[campaign] confirmed fill {} could not be attached to campaign {} decision {}",
+                ticket, campaign_id, decision_id,
+            )
+
     def _handle_execution_result(self, intent: Intent, result: Any) -> None:
         """Feed every actual executor outcome back to the Brain action ledger."""
+        if intent.intent_type == IntentType.OPEN:
+            # Successful opens are handled by _handle_open_result after the
+            # broker-success callback. Only explicit rejections may remove a
+            # pending campaign leg here; transport ambiguity must remain visible.
+            if not bool(getattr(result, "success", False)):
+                self._attach_open_campaign_ticket(intent, result)
+            return
         action_id = str(getattr(intent, "action_id", "") or "").strip()
         if not action_id:
             return
@@ -6949,15 +7117,11 @@ class EventDrivenSystem:
         # external provider availability. The mechanical suite is enabled only by
         # the explicit RiskConfig fallback flag, never merely because cognition is off.
         risk_cfg = getattr(self._config, "risk", None)
-        legacy_fallback = bool(
-            getattr(risk_cfg, "legacy_mechanical_exit_fallback_enabled", False)
-        )
-        cfg.discretionary_exits_enabled = legacy_fallback
-        cfg.legacy_mechanical_exit_fallback_enabled = legacy_fallback
-        cfg.scan_directional_exits_enabled = bool(
-            legacy_fallback
-            and getattr(risk_cfg, "scan_directional_exits_enabled", False)
-        )
+        # The live event-driven runtime is Brain-only for discretionary
+        # management. No environment or RiskConfig flag can re-enable the
+        # retired deterministic TP/BE/trailing/stall/scan-exit fallback.
+        cfg.discretionary_exits_enabled = False
+        cfg.scan_directional_exits_enabled = False
         if risk_cfg is None:
             return cfg
         enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
@@ -7597,6 +7761,7 @@ class EventDrivenSystem:
         commission: Optional[float] = None,
         swap: Optional[float] = None,
         fee: Optional[float] = None,
+        platform: str = "",
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 
@@ -7609,6 +7774,8 @@ class EventDrivenSystem:
         info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            if not info.get("platform") and platform:
+                info["platform"] = str(platform).strip().lower()
             # Recover the immutable entry snapshot from the append-only event
             # ledger after process restart. Match the exact broker ticket; never
             # infer a trade link from symbol, direction, or approximate time.
@@ -7636,6 +7803,7 @@ class EventDrivenSystem:
                                     "decision_id": str(payload.get("decision_id") or ""),
                                     "campaign_id": str(payload.get("campaign_id") or ""),
                                     "opportunity_id": str(payload.get("opportunity_id") or ""),
+                                    "platform": str(payload.get("platform") or "").strip().lower(),
                                     "snapshot_id": str(payload.get("snapshot_id") or recovered.get("snapshot_id") or ""),
                                     "decision_snapshot_complete": bool(payload.get("decision_snapshot_complete")),
                                     "decision_feature_snapshot": recovered,
@@ -7737,6 +7905,7 @@ class EventDrivenSystem:
                     pnl=float(pnl_dollars or 0.0),
                     won=won_flag,
                     ticket=str(ticket or ""),
+                    platform=str(info.get("platform") or platform or "").strip().lower(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
@@ -8174,95 +8343,3 @@ class EventDrivenSystem:
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
 
-        # ── BE-stop cooldown — prevent chop re-entry ────────────────
-        is_breakeven_exit = abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0
-        if is_breakeven_exit:
-            self._be_stop_cooldown[symbol] = _time.monotonic() + self._be_cooldown_seconds
-            logger.info("[be-cooldown] {} cooldown for {:.0f}s (breakeven exit)", symbol, self._be_cooldown_seconds)
-
-        # ── Zone re-entry cooldown — record EVERY close ─────────────
-        # Records the last close time per symbol for the re-entry cooldown
-        # bookkeeping consulted by the re-entry evaluation below.
-        self._last_close_time[symbol] = _time.time()
-
-        # ── Re-entry evaluation ──────────────────────────────────────
-        # ReEntryManager only re-arms trades stopped at breakeven whose
-        # structural setup is still valid (see management/re_entry.py).
-        if ctx is not None and ctx.re_entry_manager is not None and is_breakeven_exit:
-            try:
-                entry_tf = str(info.get("entry_timeframe", "M5") or "M5")
-                m5_df = self._fetch_candles(symbol, "M5", 50)
-                m1_df = self._fetch_candles(symbol, "M1", 50)
-                if m5_df is not None:
-                    from types import SimpleNamespace
-                    # Feed the ReEntryManager the REAL closed-trade context (not a
-                    # bare pair/direction stub): the actual ticket, the entry
-                    # price/risk, the captured thesis (zone/regime/concepts) and
-                    # the trade's own timeframe — so the re-entry evaluation and
-                    # its audit reflect the trade that just closed, and the
-                    # cooldown is anchored to the real close time.
-                    closed = SimpleNamespace(
-                        pair=symbol,
-                        direction=direction,
-                        re_entry_eligible=True,
-                        close_time=datetime.now(timezone.utc),
-                        entry_timeframe=entry_tf,
-                        candles_since_entry=0,
-                        trade_id=str(ticket),
-                        entry_price=float(info.get("entry_price", 0.0) or 0.0),
-                        risk_pips=float(info.get("risk_pips", 0.0) or 0.0),
-                        regime=info.get("regime"),
-                        zone_type=info.get("zone_type"),
-                        concepts=info.get("concepts"),
-                    )
-                    opp = ctx.re_entry_manager.check_re_entry(closed, m5_df, m1_df)
-                    if opp is not None and getattr(opp, "eligible", False):
-                        # V-010 — arm the FRESH candidate direction the manager
-                        # derived from the CURRENT structure (which may differ
-                        # from the closed trade's original side), not the original.
-                        re_direction = str(getattr(opp, "direction", "") or direction)
-                        logger.info(
-                            "[re-entry] {} {} opportunity: {} (zone={}, thesis: regime={} zone_type={})",
-                            symbol, re_direction,
-                            getattr(opp, "reason", ""),
-                            getattr(opp, "new_entry_zone", None),
-                            info.get("regime"), info.get("zone_type"),
-                        )
-                        self._arm_re_entry_zone(symbol, re_direction, opp)
-            except Exception as exc:
-                logger.debug("[re-entry] evaluation failed: {}", exc)
-
-    def _arm_re_entry_zone(self, symbol: str, direction: str, opp: Any) -> None:
-        """Re-arm the event-driven entry path after a confirmed re-entry.
-
-        ReEntryManager has confirmed the structural setup is still valid after a
-        breakeven stop.  Rather than placing an order directly (which would bypass
-        the entry gates), we clear the BE-stop cooldown so the normal
-        WorldModel → zone → tick-detection → M1-confirm → gate flow can re-arm the
-        entry on the next analysis-plane update.
-        """
-        try:
-            self._be_stop_cooldown.pop(symbol, None)
-            logger.info(
-                "[re-entry] {} {} re-armed — BE cooldown cleared, entry path live",
-                symbol, direction,
-            )
-            try:
-                es = get_event_store()
-                es.emit(
-                    DE.RE_ENTRY_ARMED, "INFO",
-                    symbol=symbol,
-                    source_module="re_entry",
-                    payload={
-                        "symbol": symbol,
-                        "direction": direction,
-                        "reason": getattr(opp, "reason", ""),
-                        "zone": getattr(opp, "new_entry_zone", ""),
-                        "kind": "re_entry_rearm",
-                    },
-                )
-            # safe-fallback: optional re-entry event logging cannot affect the already-gated re-entry path.
-            except Exception:
-                pass
-        except Exception as exc:
-            logger.debug("[re-entry] arm failed: {}", exc)

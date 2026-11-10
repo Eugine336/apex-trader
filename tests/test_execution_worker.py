@@ -81,7 +81,6 @@ def _snap(
         highest_since_entry=current_price,
         lowest_since_entry=entry_price,
         trailing=False,
-        re_entry_eligible=False,
         tm_trade_id="tm1",
         confluences=(),
         scale_in_count=0,
@@ -102,7 +101,6 @@ def _legacy_worker(config=None):
     cfg = replace(
         cfg,
         discretionary_exits_enabled=True,
-        legacy_mechanical_exit_fallback_enabled=True,
         scan_directional_exits_enabled=True,
     )
     return PositionWorker(cfg)
@@ -235,7 +233,7 @@ class TestBreakeven:
             partial_closed=True, at_breakeven=False,
             pnl_pips=15.0, current_price=1.10150,
         )
-        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW)
         be_intents = [i for i in intents if (i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason) or "[legacy_source=breakeven]" in i.reason]
         assert len(be_intents) == 1
@@ -427,7 +425,7 @@ class TestInvalidation:
     def test_low_score_exits_losing_trade(self):
         snap = _snap(pnl_pips=-5.0)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) or "[legacy_source=invalidation_low_score]" in i.reason for i in intents)
 
@@ -441,7 +439,7 @@ class TestInvalidation:
     def test_opposing_signal_exits(self):
         snap = _snap(direction="BUY", pnl_pips=-5.0)
         scan = ScanContext(direction="SHORT", score=80)
-        worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any((i.source == "invalidation_opposing" or "[legacy_source=invalidation_opposing]" in i.reason) or "[legacy_source=invalidation_opposing]" in i.reason for i in intents)
 
@@ -462,7 +460,7 @@ class TestEntryGracePeriod:
         open_t = NOW - timedelta(seconds=2)
         snap = _snap(pnl_pips=-1.0, open_time=open_t)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert not any("invalidation" in i.source for i in intents)
 
@@ -471,7 +469,7 @@ class TestEntryGracePeriod:
         open_t = NOW - timedelta(seconds=200)
         snap = _snap(pnl_pips=-1.0, open_time=open_t)
         scan = ScanContext(direction="SHORT", score=30)
-        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW, scan=scan)
         assert any((i.source == "invalidation_low_score" or "[legacy_source=invalidation_low_score]" in i.reason) for i in intents)
 
@@ -705,8 +703,7 @@ class TestDiscretionaryExitsToggle:
         # This explicit worker override represents the runtime RiskConfig opt-in.
         cfg = WorkerConfig(
             discretionary_exits_enabled=True,
-            legacy_mechanical_exit_fallback_enabled=True,
-        )
+            )
         intents = PositionWorker(cfg).evaluate(
             _snap(tp2=1.12, current_price=1.121), NOW)
         legacy = [i for i in intents if i.source == "legacy_mechanical"]

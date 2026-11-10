@@ -44,7 +44,7 @@ def _snap(
         entry_timeframe=entry_timeframe, score_history=tuple(score_history),
         stake_usd=stake_usd, multiplier=multiplier, broker_pnl=broker_pnl,
         broker_lots=lots, candles_since_entry=0, highest_since_entry=current_price,
-        lowest_since_entry=entry_price, trailing=False, re_entry_eligible=False,
+        lowest_since_entry=entry_price, trailing=False,
         tm_trade_id="tm1", confluences=(), scale_in_count=0, **kw,
     )
 
@@ -62,10 +62,10 @@ def _has_original_source(intents, source):
 def test_invalidation_low_score_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=30)
-    on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
+    on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "invalidation_low_score")
     off = PositionWorker(WorkerConfig(
-        invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
+        invalidation_score_threshold=40, discretionary_exits_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=scan)
     assert not _has_original_source(off, "invalidation_low_score")
 
@@ -73,10 +73,10 @@ def test_invalidation_low_score_fires_when_legacy_fallback_is_enabled_and_defers
 def test_invalidation_opposing_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(direction="BUY", pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=80)
-    on = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
+    on = PositionWorker(WorkerConfig(opposing_signal_threshold=75, discretionary_exits_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "invalidation_opposing")
     off = PositionWorker(WorkerConfig(
-        opposing_signal_threshold=75, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
+        opposing_signal_threshold=75, discretionary_exits_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=scan)
     assert not _has_original_source(off, "invalidation_opposing")
 
@@ -88,7 +88,7 @@ def test_conviction_collapse_fires_by_default_and_defers_when_disabled():
     scan = ScanContext(direction="LONG", score=78)
     base = dict(conviction_decline_cycles=4, conviction_decline_min_drop=3,
                 conviction_profit_hold_pips=20.0, discretionary_exits_enabled=True,
-                legacy_mechanical_exit_fallback_enabled=True)
+                )
     on = PositionWorker(WorkerConfig(scan_directional_exits_enabled=True, **base)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "conviction_collapse")
     off = PositionWorker(WorkerConfig(
@@ -104,7 +104,7 @@ def test_structure_loss_stall_defers_when_disabled():
     snap = _snap(direction="BUY", pnl_pips=0.5, current_price=1.10000)
     scan = ScanContext(direction="SHORT", score=10)
     base = dict(stall_requires_structure_loss=True, stall_min_hold_minutes=5.0,
-                discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True)
+                discretionary_exits_enabled=True, )
     on = PositionWorker(WorkerConfig(scan_directional_exits_enabled=True, **base)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "stall_exit")
     off = PositionWorker(WorkerConfig(
@@ -118,7 +118,7 @@ def test_time_based_stall_fallback_unaffected_when_disabled():
     # scan-directional exits are deferred — it is a time mechanic, not a vote.
     snap = _snap(direction="BUY", pnl_pips=0.5, current_price=1.10000)
     off = PositionWorker(WorkerConfig(
-        stall_requires_structure_loss=False, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
+        stall_requires_structure_loss=False, discretionary_exits_enabled=True, scan_directional_exits_enabled=False,
     )).evaluate(snap, NOW, scan=ScanContext(direction="LONG", score=90))
     assert _has_original_source(off, "stall_exit")
 

@@ -172,3 +172,133 @@ def test_brain_management_identity_and_provenance_reach_execution_intents():
         for call in calls:
             kwargs = {item.arg: item.value for item in call.keywords if item.arg}
             assert required <= kwargs.keys(), f"{method} intent lost Brain provenance: {required - kwargs.keys()}"
+
+
+def test_brain_management_resolves_exact_confirmed_ticket_not_first_symbol_side_match():
+    module = _parse("event_driven_bootstrap.py")
+    factory = _function(module, "_make_management_sink")
+    resolver = _function(factory, "_open_position_for")
+    resolver_source = ast.unparse(resolver)
+    assert "get_open_positions_snapshot" in resolver_source
+    assert "confirmed_platforms" in resolver_source
+    assert "failed_platforms" in resolver_source
+    assert any(isinstance(node, ast.Constant) and node.value == "ticket" for node in ast.walk(resolver))
+    assert any(isinstance(node, ast.Constant) and node.value == "platform" for node in ast.walk(resolver))
+    assert "get_all_open_positions" not in resolver_source
+    assert "len(matches) != 1" in resolver_source
+
+
+def test_position_management_context_excludes_reasoning_confidence():
+    brain_module = _parse("cognition/brain.py")
+    position_view = next(
+        node for node in brain_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "PositionView"
+    )
+    position_fields = {
+        item.target.id
+        for item in position_view.body
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+    }
+    assert "entry_confidence" not in position_fields
+
+    payload = _function(brain_module, "_management_evidence_payload")
+    assert not any(
+        isinstance(node, ast.Constant) and node.value == "entry_confidence"
+        for node in ast.walk(payload)
+    ), "the Brain must reassess positions from current evidence, not entry confidence"
+
+    context_module = _parse("core/system_context.py")
+    position_builders = [
+        node for node in ast.walk(context_module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_PositionView"
+    ]
+    assert position_builders
+    assert not any(
+        keyword.arg == "entry_confidence"
+        for call in position_builders for keyword in call.keywords
+    )
+
+
+
+
+def test_book_opportunity_comparison_never_uses_reasoning_confidence_as_ev():
+    module = _parse("cognition/brain_reasoning.py")
+    method = _function(module, "compare_opportunities")
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "confidence"
+        for node in ast.walk(method)
+    )
+    assert not any(
+        isinstance(node, ast.Constant) and node.value == "entry_confidence"
+        for node in ast.walk(method)
+    ), "held-position confidence is not comparable expected-return evidence"
+
+
+
+
+def test_breakeven_reentry_subsystem_is_fully_retired():
+    assert not (ROOT / "management" / "re_entry.py").exists()
+
+    bootstrap = _parse("event_driven_bootstrap.py")
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"check_re_entry", "_arm_re_entry_zone"}
+        for node in ast.walk(bootstrap)
+    )
+    assert not any(
+        isinstance(node, ast.Name) and node.id in {
+            "ReEntryManager", "re_entry_manager", "RE_ENTRY_ARMED",
+        }
+        for path in ("core/system_context.py", "event_driven_bootstrap.py", "persistence/domain_events.py")
+        for node in ast.walk(_parse(path))
+    )
+
+
+
+
+def test_disconnected_cross_instrument_heuristics_are_retired():
+    for relative in (
+        "brain/cross_instrument_ranker.py",
+        "brain/opportunity_sizer.py",
+        "management/position_displacer.py",
+    ):
+        assert not (ROOT / relative).exists()
+
+    config_module = _parse("config.py")
+    cross_config = next(
+        node for node in config_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "CrossInstrumentConfig"
+    )
+    fields = {
+        item.target.id
+        for item in cross_config.body
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+    }
+    assert fields == {
+        "proactive_scan_enabled",
+        "proactive_scan_interval_seconds",
+        "proactive_scan_min_ev",
+    }
+
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for field in fields:
+        env_key = "APEX_CROSS_INSTRUMENT_" + field.upper()
+        assert env_key in env_example, f"missing environment control: {env_key}"
+
+    context = _parse("core/system_context.py")
+    assert not any(
+        isinstance(node, ast.Name) and node.id in {
+            "CrossInstrumentRanker", "OpportunityQualitySizer", "PositionDisplacer",
+        }
+        for node in ast.walk(context)
+    )
+    bootstrap = _parse("event_driven_bootstrap.py")
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "_opportunity_queue"
+        for node in ast.walk(bootstrap)
+    )
+
+

@@ -1,6 +1,7 @@
 """Tests for the cognition loop, evidence consolidator, and Brain→action bridge."""
 
 import time
+import uuid
 from types import SimpleNamespace
 
 from cognition.brain import BrainOutput
@@ -730,10 +731,16 @@ class _ManageBrain:
         self._dt = decision_type
         self.management_plan = management_plan
         self.managed = 0
+        self._instance_id = uuid.uuid4().hex
 
     def reason(self, market_state, now=None):
         return SimpleNamespace(
-            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=False))
+            decision=SimpleNamespace(
+                symbol=market_state.symbol, authorises_action=False,
+                decision_id=f"reason-{self._instance_id}-{market_state.symbol}-{self.managed}",
+                identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+            )
+        )
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
@@ -744,7 +751,7 @@ class _ManageBrain:
             }
         dec = SimpleNamespace(
             decision_type=self._dt, symbol=position.symbol,
-            confidence=0.8, thesis="mgmt", decision_id="d1",
+            confidence=0.8, thesis="mgmt", decision_id=f"{self._instance_id}:d{self.managed}",
             identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
             campaign_id=getattr(position, "campaign_id", ""),
             preferred_opportunity_id=getattr(position, "opportunity_id", ""),
@@ -754,7 +761,10 @@ class _ManageBrain:
 
 
 def _mgmt_pos(symbol="XAUUSD", direction="LONG"):
-    return SimpleNamespace(symbol=symbol, direction=direction)
+    return SimpleNamespace(
+        symbol=symbol, direction=direction,
+        ticket=f"ticket-{symbol}", platform="mt5",
+    )
 
 
 def test_management_shadow_records_but_does_not_call_sink():
@@ -763,7 +773,7 @@ def test_management_shadow_records_but_does_not_call_sink():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="shadow",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     st = loop.get_status()
     assert st["manage_intended"] == 1
@@ -777,7 +787,7 @@ def test_management_live_calls_sink():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     st = loop.get_status()
     assert st["manage_submitted"] == 1
@@ -803,7 +813,7 @@ def test_management_hold_is_noop():
         _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert loop.get_status()["manage_intended"] == 0
     assert calls == []
@@ -815,7 +825,7 @@ def test_management_off_skips_entirely():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="off",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert loop.get_status()["manage_intended"] == 0
     assert calls == []
@@ -843,7 +853,7 @@ def test_event_reason_manages_symbol_immediately():
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
         clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.reason_symbol_now("XAUUSD")
     st = loop.get_status()
     assert st["manage_submitted"] == 1
@@ -861,7 +871,7 @@ def test_event_management_respects_per_symbol_floor():
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
         clock=clk,
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.reason_symbol_now("XAUUSD")
     loop.reason_symbol_now("XAUUSD")  # within the 8s floor → throttled
     assert len(calls) == 1
@@ -878,7 +888,7 @@ def test_periodic_backstop_manages_unreasoned_symbol():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: ["OTHER"],
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert len(calls) == 1 and calls[0].kind == "close"
 
@@ -902,8 +912,12 @@ class _FakeRegistry:
         ))
 
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
-                   pnl=0.0, ticket="", now=None):
-        self.legs.append((symbol, direction, kind, size))
+                   pnl=0.0, ticket="", decision_id="", now=None):
+        self.legs.append((symbol, direction, kind, size, decision_id))
+    def reject_pending_leg(self, symbol, direction, campaign_id, decision_id):
+        self.legs = [leg for leg in self.legs if leg[4] != decision_id]
+        self.theses = [thesis for thesis in self.theses if thesis[7] != decision_id]
+        return True
 
     def record_management(self, symbol, direction, objective, *, confidence=0.0,
                           ev_over_flat=0.0, uncertainty=0.0, now=None):
@@ -925,7 +939,12 @@ def test_origination_live_births_campaign():
         origination_mode="live", campaign_registry=reg,
         position_source=lambda: [],
     )
-    loop.set_origination_sink(lambda intent: None)
+    def _submit_after_campaign_birth(intent):
+        assert reg.theses, "campaign thesis must exist before asynchronous dispatch"
+        assert reg.legs, "pending campaign leg must exist before asynchronous dispatch"
+        return True
+
+    loop.set_origination_sink(_submit_after_campaign_birth)
     loop.run_once()
     assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
     assert reg.theses[0][5] == brain.last_campaign.campaign_id
@@ -1008,7 +1027,8 @@ def test_portfolio_evidence_reaches_market_state():
 def _pos_r(symbol, direction="LONG", profit_r=0.0):
     return SimpleNamespace(
         symbol=symbol, direction=direction, profit_r=profit_r, size=0.01,
-        lots=0.01, campaign_id=f"campaign-{symbol}", opportunity_id=f"opportunity-{symbol}",
+        lots=0.01, ticket=f"ticket-{symbol}", platform="mt5",
+        campaign_id=f"campaign-{symbol}", opportunity_id=f"opportunity-{symbol}",
     )
 
 
@@ -1027,7 +1047,7 @@ def test_reallocation_candidate_cannot_create_a_partial_without_brain_plan():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert calls == []
     assert loop.get_status()["reallocations"] == 0
@@ -1071,13 +1091,14 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
         clock=_ManualClock(),
     )
     calls = []
-    loop.set_management_sink(lambda action, pos: calls.append(action) or True)
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     issued = loop._maybe_reallocate(positions, now=100.0)
     assert issued == 1
     assert len(calls) == 1
     assert calls[0].symbol == "AUDUSD"
     assert calls[0].fraction == 0.25
-    assert calls[0].action_id == plan["action_id"]
+    assert calls[0].action_id.startswith("brain-management-")
+    assert calls[0].action_id != plan["action_id"]
     assert loop.get_status()["reallocations"] == 1
     memory.close()
 
@@ -1098,7 +1119,7 @@ def test_reallocation_brain_veto_prevents_mechanical_trim():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
     assert loop.get_status()["reallocations"] == 0
@@ -1118,7 +1139,7 @@ def test_reallocation_disabled_is_noop():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=False, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
 
@@ -1199,7 +1220,7 @@ def test_reallocation_native_scale_out_without_concept_plan_does_not_invent_trim
         campaign_registry=CampaignRegistry(enabled=True),
         reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert brain.managed >= 1, "native review was never consulted"
     assert calls == []
@@ -1216,7 +1237,7 @@ def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():
         campaign_registry=CampaignRegistry(enabled=True),
         reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
     assert loop.get_status()["reallocations"] == 0
@@ -1339,3 +1360,50 @@ def test_concept_cycle_snapshot_hooks_are_forwarded():
         ("begin", ("XAUUSD", "EURUSD")),
         ("end", None),
     ]
+
+
+def test_live_management_derives_stable_action_id_from_decision_and_exact_ticket():
+    import hashlib
+
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT, management_plan={"action_id": "shared-translator-id"}),
+        _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
+    assert loop._manage_one(_mgmt_pos()) == 1
+    assert len(calls) == 1
+    action = calls[0]
+    material = "|".join((
+        "apex-management-action-v1", action.decision_id, "mt5", "ticket-XAUUSD",
+        action.kind, action.milestone_id,
+    ))
+    expected = "brain-management-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    assert action.action_id == expected
+    assert action.action_id != "shared-translator-id"
+
+
+def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
+    position = SimpleNamespace(symbol="XAUUSD", direction="LONG", ticket="", platform="")
+
+    assert loop._realise_management(
+        SimpleNamespace(decision=SimpleNamespace(
+            decision_type=DecisionType.EXIT,
+            symbol="XAUUSD",
+            confidence=0.8,
+            thesis="invalidated",
+            decision_id="decision-missing-ticket",
+            identity_version=IDENTITY_VERSION,
+            identity=IDENTITY_STATEMENT,
+            questions_answered={},
+        )),
+        position,
+    ) is False
+    assert calls == []

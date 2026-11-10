@@ -657,17 +657,6 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
-    # V-009 — scan-direction/score and opposing-HTF exits are mechanical legacy
-    # behavior, not thesis-based management. The default is disabled. They may only
-    # run when the separate explicit fallback flag below is enabled; this setting
-    # chooses whether the directional subset of that fallback is allowed.
-    # env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
-    scan_directional_exits_enabled: bool = False
-    # Explicit opt-in for the legacy fixed-level/time-based exit suite.
-    # Default false: native thesis-based management remains the default even
-    # when every external reasoning provider is unavailable.
-    # env RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED.
-    legacy_mechanical_exit_fallback_enabled: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -879,7 +868,6 @@ class RiskConfig:
     # thresholds get validated/tuned against real fills; it only ever REDUCES
     # size (never increases), so it's safe to run while tuning. Set False to
     # disable.
-    execution_quality_sizing_enabled: bool = True
 
     # ── P5: per-pair cooldown after a breakeven stop-out (minutes) ────────
     # Breaks the enter→BE→stopped-at-BE→re-enter chop loop that bleeds spread.
@@ -974,13 +962,6 @@ class RiskConfig:
 
         self.allow_min_lot_over_risk = _llm_env_bool(
             "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
-        )
-        self.scan_directional_exits_enabled = _llm_env_bool(
-            "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
-        )
-        self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
-            "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
-            self.legacy_mechanical_exit_fallback_enabled,
         )
 
         def _check_finite_positive(name: str, val: float) -> None:
@@ -4067,79 +4048,13 @@ class AdaptiveTunerConfig:
 
 @dataclass
 class CrossInstrumentConfig:
-    """Cross-instrument opportunity layer — make APEX a PORTFOLIO opportunist.
+    """Observational cross-instrument watchlist; never an order authority."""
 
-    Per-instrument the system is already opportunistic (EV-gated entries, no HTF
-    veto). These five layers add the missing cross-instrument view: collect every
-    instrument's scored entry during a window, rank them against each other, size
-    by relative quality, displace a weaker open position for a clearly better
-    idea, and proactively pre-heat the pipeline for instruments approaching a
-    high-EV setup.
-
-    EVERY layer defaults OFF so the system behaves byte-for-byte identically
-    until explicitly enabled. When all five are off, entries flow straight
-    through the unchanged per-instrument pipeline.
-    """
-
-    # ── GAP 1: Global opportunity queue (quality-ordered dispatch) ──────
-    # Collect candidates across all instruments during a window, then dispatch
-    # them best-EV-first instead of first-tick-first.
-    queue_enabled: bool = True
-    queue_window_ms: int = 1000          # collection window before a drain
-
-    # ── GAP 2: Cross-instrument ranking ────────────────────────────────
-    # Normalise EVs across instruments (spread cost, per-pair win rate) before
-    # the queue dispatches. No effect unless the queue is enabled.
-    ranking_enabled: bool = True
-    spread_ev_penalty_per_pip: float = 0.02   # R deducted per spread pip
-    winrate_ev_weight: float = 0.5            # R swing applied by (win_rate-0.5)
-
-    # ── GAP 3: Opportunity-quality-proportional sizing ─────────────────
-    # Size the best opportunities UP (to max_boost) and weaker ones DOWN (to
-    # min_cut) on top of the existing de-risking sizing chain. The per-trade
-    # risk ceiling still clamps the final size.
-    quality_sizing_enabled: bool = True
-    quality_sizing_max_boost: float = 1.3
-    quality_sizing_min_cut: float = 0.7
-    quality_sizing_ev_ref: float = 1.0        # EV (R) that maps to full boost
-
-    # ── GAP 4: Position displacement / upgrade ─────────────────────────
-    # Close a lower-EV open position to fund a clearly better new opportunity
-    # when capacity / budget is exhausted.
-    displacement_enabled: bool = True
-    displacement_ev_margin: float = 0.5       # new EV must beat weakest by this R
-    displacement_max_per_cycle: int = 1
-    displacement_min_profit_protect: float = 1.0   # never displace a >1R winner
-    displacement_cooldown_seconds: float = 300.0
-
-    # ── GAP 5: Proactive opportunity scanner ───────────────────────────
-    # Periodically rank all instruments and publish a watchlist of those
-    # approaching a high-EV setup; feeds the density tracker + dashboard. Never
-    # triggers entries directly — it only pre-heats the pipeline.
     proactive_scan_enabled: bool = True
     proactive_scan_interval_seconds: float = 60.0
     proactive_scan_min_ev: float = 0.5
-    proactive_proximity_pct: float = 0.02     # within 2% of a zone counts as near
 
     def __post_init__(self) -> None:
-        if int(self.queue_window_ms) < 0:
-            raise ValueError("CrossInstrumentConfig.queue_window_ms must be >= 0")
-        if not (0.0 < float(self.quality_sizing_min_cut) <= 1.0):
-            raise ValueError(
-                "CrossInstrumentConfig.quality_sizing_min_cut must be in (0, 1]"
-            )
-        if float(self.quality_sizing_max_boost) < 1.0:
-            raise ValueError(
-                "CrossInstrumentConfig.quality_sizing_max_boost must be >= 1.0"
-            )
-        if float(self.quality_sizing_ev_ref) <= 0:
-            raise ValueError(
-                "CrossInstrumentConfig.quality_sizing_ev_ref must be > 0"
-            )
-        if int(self.displacement_max_per_cycle) < 1:
-            raise ValueError(
-                "CrossInstrumentConfig.displacement_max_per_cycle must be >= 1"
-            )
         if float(self.proactive_scan_interval_seconds) <= 0:
             raise ValueError(
                 "CrossInstrumentConfig.proactive_scan_interval_seconds must be > 0"

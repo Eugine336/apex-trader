@@ -73,18 +73,10 @@ class WorkerConfig:
     # reasoning rather than a predefined level or timer. The broker-side
     # protective stop attached at entry remains the hard capital floor in either
     # case, so a position is never unprotected even if the Brain/provider is down.
+    # Discretionary mechanics remain available only to isolated offline
+    # regression/backtest fixtures. The production bootstrap hard-disables them;
+    # no RiskConfig or environment switch can re-enable this alternate authority.
     discretionary_exits_enabled: bool = False
-    legacy_mechanical_exit_fallback_enabled: bool = False
-
-    # ── V-009: legacy mechanical directional exits ───────────────────────────
-    # Re-derived scan direction/score and opposing-HTF closes are not thesis
-    # authorities. The entire deterministic discretionary suite (TP, breakeven,
-    # trailing, stall, invalidation, conviction, HTF, opportunity-cost) is opt-in
-    # through RiskConfig.legacy_mechanical_exit_fallback_enabled, default False.
-    # This sub-switch only selects the directional subset after that explicit
-    # fallback permission is granted. Any emitted legacy intent is tagged and
-    # warning-logged. Hard SL, weekend/session/spread protection and the absolute
-    # profit backstop remain the independent safety floor.
     scan_directional_exits_enabled: bool = False
 
     # ── TradeManager params ───────────────────────────────────────────
@@ -286,8 +278,8 @@ class PositionWorker:
         """
         if start_index >= len(intents):
             return
-        if not self.cfg.legacy_mechanical_exit_fallback_enabled:
-            return
+        # This helper is reached only inside the explicit offline discretionary
+        # fixture path. Production bootstrap never enables that path.
         for index in range(start_index, len(intents)):
             intent = intents[index]
             original_source = str(intent.source or "")

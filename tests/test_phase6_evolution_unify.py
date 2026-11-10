@@ -71,11 +71,10 @@ class TestSystemContextRetiredPlanningFields:
         assert "outcome_logger" not in fields
         assert "calibrator" not in fields
 
-    def test_re_entry_manager_field(self):
+    def test_re_entry_manager_wiring_is_retired(self):
         from core.system_context import SystemContext
         ctx = SystemContext()
-        assert hasattr(ctx, "re_entry_manager")
-        assert ctx.re_entry_manager is None
+        assert not hasattr(ctx, "re_entry_manager")
 
 
 # ── main.py single path ─────────────────────────────────────────────

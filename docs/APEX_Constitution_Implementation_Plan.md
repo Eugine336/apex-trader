@@ -90,7 +90,7 @@ consensus.
   - volatility → `brain/volatility_stop.py`, `brain/atr_percentile.py`, `brain/compression_detector.py`
   - volume → `brain/volume_analyzer.py`, `brain/session_vwap.py`
   - multi-timeframe → `brain/world_model.py`, `brain/session_context.py`
-  - correlation → `brain/correlation_engine.py`, `brain/currency_strength.py`, `brain/cross_instrument_ranker.py`
+  - correlation → `brain/correlation_engine.py`, `brain/currency_strength.py`
   - session/macro → `brain/session_engine.py`, `brain/news_impact_tracker.py`
   - regime → `brain/regime_detector.py`
   - portfolio → account/portfolio state via `ctx`
@@ -113,9 +113,12 @@ stays as configured.
 **Goal:** the Brain, not the legacy management engine, decides HOLD / SCALE_IN /
 SCALE_OUT / PROTECT / TIGHTEN / EXIT / REVERSE / TERMINATE for open campaigns.
 
-**Current state:** `management/trade_manager.py`, `reversal_manager.py`,
-`re_entry.py`, `partial_close.py`, `position_displacer.py` decide independently;
-`brain/thesis_engine.py` drives evidence-exits. Nothing consults the Brain.
+**Current live state (2026-11-11):** the event-driven runtime uses
+`CognitiveBrain.manage()` and the shared management execution sink. The no-op
+breakeven re-entry path and disconnected position-displacement heuristic are
+retired. The production PositionWorker runs only the independent safety floor;
+its deterministic discretionary TP/BE/trailing/scan-exit suite is hard-disabled.
+Legacy manager modules are not authoritative for live discretionary decisions.
 
 **Tasks**
 - `cognition/brain.py`: add `manage(campaign_state, market_state)` →

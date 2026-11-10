@@ -39,7 +39,7 @@ def _make_position(
         remaining_lots=lots, open_time=datetime.now(timezone.utc),
         score=85, sl=sl, tp1=tp1, tp2=1.1100,
         at_breakeven=False, trailing=False, tp1_hit=False,
-        re_entry_eligible=False, broker_pnl=0.0, broker_lots=lots,
+        broker_pnl=0.0, broker_lots=lots,
         confluences=[], scale_in_count=0, stake_usd=0.0, multiplier=100,
     )
 

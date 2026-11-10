@@ -118,35 +118,22 @@ Severity rubric:
 - **Information Lost**: Thesis evolution, opportunity replacement, expected value over flat, execution feasibility, and risk-adjusted alternatives can be bypassed when a management reply is parsed as legacy direction/confidence.
 - **Root Cause**: Backward-compatible management fallback was retained to handle older/minimal LLM replies.
 
-### V-009: PositionWorker can close positions from compressed scan direction and score
+### V-009: PositionWorker discretionary scan-direction and score exits
 - **Severity**: HIGH
-- **Philosophy Rule**: 6, 10, 17, 18, 20, 31
-- **File(s)**: `execution/position_worker.py:57-88`, `execution/position_worker.py:212-223`, `execution/position_worker.py:259-340`, `execution/position_worker.py:494-582`, `execution/position_worker.py:780-830`, `execution/position_worker.py:858-874`, `event_driven_bootstrap.py:446-450`, `event_driven_bootstrap.py:5073-5116`, `config.py:659-666`
-- **Actual Code Behavior**: `WorkerConfig.discretionary_exits_enabled` defaults true and `scan_directional_exits_enabled` defaults true. When discretionary exits are enabled, `PositionWorker.evaluate()` uses `ScanContext.direction`, `score`, and `opposing_score_boost` to trigger stall, invalidation, and conviction-collapse exits. It also closes on an H1 candle against the held side if PnL is not sufficiently positive. The bootstrap disables discretionary worker exits only when cognition is enabled and `management_mode` is exactly `live`; otherwise these deterministic exits remain available.
-- **Execution Path**: `event_driven_bootstrap.PositionEvaluator` builds a `PositionSnapshot` and calls `PositionWorker.evaluate(snap, now, scan=scan_ctx, market=market_ctx)` -> discretionary checks -> `_check_stall()` / `_stall_structure_lost()` / `_check_invalidation()` / `_check_conviction_collapse()` / `_check_htf_candle_close()` -> close intents.
-- **Why It Violates**: Outside live cognition management, management can still be reduced to a re-derived scan direction/score and candle color instead of a current opportunity/thesis re-evaluation.
-- **Information Lost**: Original thesis, current opportunity set, counter-opportunities, EV of holding versus exiting, and execution/risk context are compressed to "scan still supports direction" or "opposing signal".
-- **Root Cause**: Legacy deterministic TradeManager/ExitChecks behavior was preserved in `PositionWorker` as the non-cognition management suite.
-
-### V-010: Re-entry manager re-arms same-direction trades from M5 trend and zone kind
+- **Status**: RESOLVED for the production event-driven runtime; offline test/backtest fixtures retain explicit constructor-only coverage.
+- **Current Code Behavior**: RiskConfig no longer exposes or parses legacy mechanical-exit environment switches. The live bootstrap unconditionally sets `discretionary_exits_enabled=False` and `scan_directional_exits_enabled=False`; there is no operator setting that can reactivate deterministic TP/BE/trailing/stall/invalidation/conviction/HTF exits. Hard stop-loss, weekend/session/spread protection and the absolute-profit safety backstop remain active. The old discretionary methods are exercised only by isolated WorkerConfig fixtures in tests/backtests.
+- **Execution Path**: Production `PositionEvaluator` -> `PositionWorker.evaluate()` with discretionary checks hard-disabled; independent safety-floor checks remain active.
+- **Regression Evidence**: `tests/test_legacy_mechanical_fallback_config.py` sets both retired environment variables to true and proves they are ignored; it also asserts the live bootstrap hard-disables discretionary exits.
+### V-010: Breakeven re-entry shortcut
 - **Severity**: HIGH
-- **Philosophy Rule**: 4, 6, 9, 17, 18, 20
-- **File(s)**: `management/re_entry.py:46-109`, `management/re_entry.py:113-138`, `event_driven_bootstrap.py:6534-6574`, `core/system_context.py:2074-2080`
-- **Actual Code Behavior**: After a breakeven exit, `ReEntryManager.check_re_entry()` reads the closed trade's `direction`, checks whether M5 trend still matches that direction, then looks for a same-side FVG or order block. If found, it returns `ReEntryOpportunity(direction=direction, eligible=True)`. The bootstrap calls this on breakeven exits and arms a re-entry zone with the same direction.
-- **Execution Path**: Trade close handling detects `is_breakeven_exit` -> builds a `closed` namespace with `direction` -> `ctx.re_entry_manager.check_re_entry(closed, m5_df, m1_df)` -> M5 trend/zone filters -> `_arm_re_entry_zone(symbol, direction, opp)`.
-- **Why It Violates**: Re-entry should ask whether a fresh opportunity exists after the campaign closed. This path assumes the original direction remains the candidate and uses M5 trend/zone agreement as the command filter.
-- **Information Lost**: Whether the breakeven exit invalidated the original thesis, whether the best new opportunity is opposite-side or no-trade, whether EV still exists, and whether the original horizon has changed.
-- **Root Cause**: Legacy re-entry automation preserved as setup-validation logic rather than converted into Brain-managed opportunity re-evaluation.
+- **Status**: RESOLVED in the exact-ticket Brain-management increment.
+- **Resolution**: The no-op ReEntryManager and its M5/FVG/OB re-arm logic were removed. The manager never submitted an order; it only emitted an observational event after checking a separate directional setup. The SystemContext field/wiring, close-handler invocation, dormant cooldown state, RE_ENTRY_ARMED event, re_entry_eligible snapshot/trade-model flag, package export and `management/re_entry.py` module are deleted. A closed campaign returns to the normal CognitiveBrain observation cycle. No re-entry-specific direction or zone can authorize or suppress a new opportunity.
+- **Regression evidence**: The SystemContext test now asserts that ReEntryManager wiring is absent; full CI remains required on the final PR head.
 
-### V-011: Portfolio reallocation fails open to mechanical trim when Brain is unavailable
+### V-011: Portfolio reallocation fails open when Brain is unavailable
 - **Severity**: MEDIUM
-- **Philosophy Rule**: 17, 18, 30, 31
-- **File(s)**: `cognition/loop.py:1129-1217`, `cognition/loop.py:1218-1250`
-- **Actual Code Behavior**: `_maybe_reallocate()` receives mechanical trim candidates from the campaign registry. `_reason_reallocation()` is intended to ask the Brain for veto/approval, but if the Brain is missing or unavailable it returns `(True, "unavailable", 0.0)`, causing the deterministic concentration trim to proceed.
-- **Execution Path**: `CognitionLoop._manage_open_positions()` -> `_maybe_reallocate(positions)` -> registry `reallocation_targets()` -> `_reason_reallocation()` -> if no Brain or unavailable, approve -> `_management_sink(action, pos)` emits trim.
-- **Why It Violates**: The fallback turns lack of cognition into permission for a mechanical capital action. Risk protections must remain alive when cognition is down, but opportunity/capital reallocation should not pretend a provider outage is a reasoned portfolio decision.
-- **Information Lost**: The Brain's comparison of current campaign EV against alternative opportunities, timing, thesis state, and whether the "weakest" campaign is actually about to improve.
-- **Root Cause**: Fail-open safety fallback for de-risking was reused for portfolio opportunity reallocation.
+- **Status**: RESOLVED in the current mainline implementation.
+- **Resolution**: `_reason_reallocation()` returns no output with verdict `unavailable` when the Brain or its management entrypoint is absent. Exceptions return `fault` and no output. `_maybe_reallocate()` skips any candidate without a Brain-authored, translatable management action. The registry cannot synthesize a trim or fraction. Keep this fail-closed contract under regression coverage.
 
 ### V-012: Legacy TradeManager still embodies mechanical management
 - **Severity**: MEDIUM
@@ -335,3 +322,18 @@ Severity rubric:
 3. `CognitionLoop._manage_one()` -> `CognitiveBrain.manage()` -> thesis-based management; missing thesis/action/opportunity fields produce HOLD, and confidence/direction fallback is absent.
 4. `PositionWorker.evaluate()` can close positions from scan `direction`/`score` when live cognition management is not enabled.
 5. Provider default configuration permits one external provider with no required quota meter, no required local baseline, and no required multi-advisor diversity.
+
+
+### V-012: Disconnected cross-instrument ranker, sizer and displacer exposed as active controls
+- **Severity**: HIGH
+- **Status**: RESOLVED in PR #902.
+- **Finding**: SystemContext instantiated a cross-instrument ranker, a confidence-weighted opportunity quality sizer and a mechanical position displacer. Repository call-site search found no runtime decision consumers; the dashboard only surfaced their status. Their configuration flags defaulted on, falsely implying active portfolio ranking, confidence-based sizing and displacement.
+- **Resolution**: Delete the three helper modules and their isolated tests; remove SystemContext construction, dashboard/frontend status, CrossInstrumentConfig fields, env allowlist entries, .env.example keys and operator-reference rows. Remove the uninitialized global opportunity queue and its config/env/UI controls, and remove the scanner proximity setting because no proximity callback was wired. Keep only the observational proactive watchlist with the three settings actually consumed; it cannot authorize or submit a trade.
+- **Regression evidence**: `test_disconnected_cross_instrument_heuristics_are_retired` asserts that modules, config fields and SystemContext wiring remain absent.
+
+
+### V-013: Execution-quality sizing toggle advertised without a runtime consumer
+- **Severity**: MEDIUM
+- **Status**: RESOLVED in PR #902.
+- **Finding**: `execution_quality_sizing_enabled` existed in RiskConfig and had a test asserting that it defaulted to true, but repository call-site inspection found no execution-quality gate or sizing consumer. The test gave false assurance that a live size throttle existed.
+- **Resolution**: Remove the unused config field, its inventory entry and the misleading default-only test. Do not describe execution-quality sizing as live until an actual execution-path consumer and broker-evidence tests exist.

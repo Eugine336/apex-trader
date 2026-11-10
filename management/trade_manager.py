@@ -100,7 +100,6 @@ class ManagedTrade:
     trailing_stop: Optional[float]
     breakeven_active: bool
     partial_closed: bool
-    re_entry_eligible: bool
     score: int
     pip_size: float
     pip_value_per_lot: float
@@ -328,7 +327,6 @@ class TradeManager:
             trailing_stop=None,
             breakeven_active=False,
             partial_closed=False,
-            re_entry_eligible=False,
             score=signal.score,
             pip_size=pip_size,
             pip_value_per_lot=pip_value_per_lot,
@@ -544,7 +542,6 @@ class TradeManager:
             reason = "Stop loss hit"
             if trade.breakeven_active:
                 reason = "Stopped at breakeven"
-                trade.re_entry_eligible = True
             self.close_trade(trade, reason, trade.current_price, TradeStatus.STOPPED, bar_time=bar_time)
         return hit
 

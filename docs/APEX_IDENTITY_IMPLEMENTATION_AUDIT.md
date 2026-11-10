@@ -423,3 +423,27 @@ This update supersedes the 2026-10-30 statement above that the candidate ledger 
 - The code is not proven syntactically valid or runtime-correct yet. Do not mark either system accepted, do not merge, and do not authorize live trading based on this implementation record.
 - The family-conditional estimator is a historical expected-return estimator with walk-forward and untouched-holdout checks. It does not establish profitability or current-regime predictive edge without further independent statistical review.
 - No broker orders, `.env` edits, runtime database mutation/deletion or credential changes were performed.
+
+
+## 2026-11-11 exact-ticket management and confidence-isolation review — PR #902
+
+Source inspection and implementation on `engineering/exact-ticket-brain-management-final`:
+
+- The Brain management boundary now receives exact broker platform/ticket identity and no longer receives `entry_confidence` as a management input.
+- The comparison of a new hypothesis with held positions no longer treats uncalibrated reasoning confidence as expected return. Shared-leg comparisons without verified comparable EV/risk evidence are explicitly `unranked`; exact same-symbol/side remains redundant, and unrelated exposure remains complementary.
+- Campaign reallocation ranking no longer uses confidence metadata. The Brain must author the management verdict; unavailable/fault paths retain the position.
+- Campaign state is ticket-scoped across platform identity. One ticket closing cannot finalize a campaign while another confirmed ticket or unresolved pending open leg remains.
+- The no-op breakeven re-entry subsystem and its dormant state/event/plumbing were removed. Normal Brain observation resumes after close.
+
+Validation snapshot at `172a2ce6e6cabceb9d024b95a375780b06be2544`: lint and Gold Desk Python 3.11/3.12 passed; full Python 3.11/3.12 suites were in progress. A prior run's two incorrect campaign-count assertions were corrected; no full-suite pass is claimed until the final-head workflow completes. No live broker orders were sent. PR #902 is not merged; full System 2 acceptance and owner-connected broker verification remain open.
+
+
+## 2026-11-11 PR #902 — exact-ticket management and legacy authority cleanup
+
+- Exact broker platform/ticket identity is carried into Brain position context and management execution. Management IDs are deterministic over Brain decision, platform, ticket, action kind and milestone; ambiguous provenance suppresses dispatch.
+- Campaigns remain live while any exact ticket or unresolved pending open leg remains. One broker ticket closing cannot terminate other positions in the same campaign. Pending dictionary responses are preserved as pending, not treated as fills.
+- Entry confidence is excluded from the Brain management payload. Confidence is not used as an economic comparator, campaign reallocation rank or sizing input. When comparable expected-return/risk evidence is missing, opportunity comparison is unranked.
+- ReEntryManager and its event/cooldown/flag wiring are removed. The production mechanical discretionary-exit environment switches are removed; live bootstrap hard-disables the old PositionWorker discretionary suite while preserving the safety floor.
+- Disconnected cross-instrument ranker, confidence-weighted sizer and position displacer are deleted with their config, env, dashboard and frontend status. The advertised global queue was never initialized and has been removed with its config/UI controls; only the observational proactive scanner remains.
+
+Validation: final implementation head `cf53f109aa89213d8d8e6c2d664b10499c895d61` passed 4,485 tests on Python 3.11/3.12, lint, generated concept-coverage verification, identity/safety audit and import checks. Gold Desk focused tests and frontend build also passed. The production legacy-exit switches, uninitialized queue controls, unused scanner proximity setting and unconsumed execution-quality sizing toggle are removed. No live broker orders were sent. PR #902 remains unmerged pending merge review; System 2 evidence gates and owner-connected broker acceptance remain open.

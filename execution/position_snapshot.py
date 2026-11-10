@@ -83,7 +83,6 @@ class PositionSnapshot:
     at_breakeven: bool = False
     trailing: bool = False
     partial_closed: bool = False
-    re_entry_eligible: bool = False
     # True while a worker-path SL move is in flight to the broker but not yet
     # confirmed. The optimistic mutation writes the new (unconfirmed) level into
     # the management state, so the synthetic stop-hit check must skip this cycle
@@ -251,7 +250,6 @@ def build_position_snapshot(
         at_breakeven=getattr(pos, "at_breakeven", False),
         trailing=getattr(pos, "trailing", False),
         partial_closed=partial_closed,
-        re_entry_eligible=getattr(pos, "re_entry_eligible", False),
         sl_pending_confirmation=getattr(tm_trade, "sl_pending_confirmation", False),
         current_price=current_price,
         broker_pnl=_pos_pnl(pos),

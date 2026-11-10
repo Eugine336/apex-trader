@@ -1,6 +1,6 @@
 # Configuration field inventory
 
-Source: `config.py` on branch `fix/brain-probability-and-confidence-governance` at commit `861cd7487fbaa360adfe27407534bc418d2ac39e` plus the three retired cognition controls removed in this change.
+Source: `config.py` on the current engineering branch, including the exact-ticket Brain-management and retired-control changes recorded in `APEX_FULL_REDESIGN_ROADMAP.md`.
 
 This is a complete field-name inventory of the typed configuration dataclasses
 declared in `config.py`. It is **not** a declaration that every field should
@@ -14,7 +14,7 @@ default, precedence, restart behavior, audit requirements and safety impact
 are defined. Do not expose a setting that can weaken Brain authority, data
 integrity, unknown-state handling, owner limits, or execution safety.
 
-The typed classes below contain **713 fields across 43 classes**.
+The typed classes below contain **697 fields across 43 classes** after retiring disconnected cross-instrument ranking, quality-sizing and displacement controls.
 Literal runtime environment reads are separately checked against `.env.example`
 by `tests/test_env_example_coverage.py`; frontend Vite reads are checked against
 their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
@@ -138,8 +138,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `deriv_min_stake_usd`
 - `max_risk_pct_per_trade`
 - `allow_min_lot_over_risk`
-- `scan_directional_exits_enabled`
-- `legacy_mechanical_exit_fallback_enabled`
 - `backtest_starting_balance_usd`
 - `tp3_ladder_enabled`
 - `tp3_r_multiple`
@@ -214,7 +212,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `h4_counter_trend_penalty`
 - `regime_score_threshold_mode`
 - `regime_below_threshold_size_mult`
-- `execution_quality_sizing_enabled`
 - `be_stop_cooldown_minutes`
 - `max_deviation_points`
 - `max_slippage_pips`
@@ -767,26 +764,11 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `recommendation_max_change_pct`
 - `recommendation_min_trades`
 
-## `CrossInstrumentConfig` (18 fields)
+## `CrossInstrumentConfig` (3 fields)
 
-- `queue_enabled`
-- `queue_window_ms`
-- `ranking_enabled`
-- `spread_ev_penalty_per_pip`
-- `winrate_ev_weight`
-- `quality_sizing_enabled`
-- `quality_sizing_max_boost`
-- `quality_sizing_min_cut`
-- `quality_sizing_ev_ref`
-- `displacement_enabled`
-- `displacement_ev_margin`
-- `displacement_max_per_cycle`
-- `displacement_min_profit_protect`
-- `displacement_cooldown_seconds`
 - `proactive_scan_enabled`
 - `proactive_scan_interval_seconds`
 - `proactive_scan_min_ev`
-- `proactive_proximity_pct`
 
 ## `RegimeLearnerConfig` (2 fields)
 

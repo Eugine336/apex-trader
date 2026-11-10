@@ -371,6 +371,19 @@ def test_reallocation_trims_weakest_correlated_campaign():
     assert not hasattr(targets[0], "fraction")
 
 
+def test_reallocation_ranking_is_independent_of_reasoning_confidence():
+    reg = _reg()
+    reg.record_management("EURUSD", "LONG", "hold", confidence=1.0, ev_over_flat=0.1)
+    reg.record_management("GBPUSD", "LONG", "hold", confidence=0.0, ev_over_flat=0.3)
+    reg.record_management("AUDUSD", "LONG", "hold", confidence=0.0, ev_over_flat=0.2)
+
+    targets = reg.reallocation_targets(max_per_component=2, concentration_limit=0.6)
+
+    # The lowest expected-value campaign is the candidate regardless of its
+    # descriptive reasoning-confidence metadata.
+    assert [target.symbol for target in targets] == ["EURUSD"]
+
+
 def test_reallocation_none_when_within_allowance():
     reg = _reg()
     # USD carried by exactly two campaigns == the allowance → nothing to trim.

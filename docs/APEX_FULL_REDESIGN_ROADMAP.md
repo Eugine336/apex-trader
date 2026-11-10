@@ -213,10 +213,11 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 
 ## Current baseline and immediate priority
 
-- System 2 is merged into `main` via merge commit `475ad4b0c3214d2a6a737cf6526e13ccaeeb50cd`, but the focused tests and `scripts/identity_audit.py` were not run at the time of the merge.
-- The known System 2 blockers are decision-time feature snapshots linked to trades; complete broker timezone/DST/holiday calendars; full verified constraints for each supported connector; realistic financing costs; and independent walk-forward/untouched-holdout results.
-- First task: close System 2 with source changes, focused tests and an auditable validation report. Do not start implementation work for System 3 until the System 2 acceptance gate is met.
-- No broker orders are to be sent during engineering. Do not access or change actual `.env`, runtime databases or broker settings without explicit authorization.
+- **System 2 remains IMPLEMENTED / INTEGRATED but NOT ACCEPTED.** Its open gates remain decision-time feature snapshots linked through broker close, authoritative connector specifications and calendars, verified financing costs, and independent chronological walk-forward plus untouched-holdout evidence. These must not be inferred from downstream implementation or a green unit suite.
+- **System 3 implementation is merged but NOT ACCEPTED** (PR #796, commit `94a01c793d7418357f81adf7c8989f965c2c3e5b`). **System 4 implementation is merged but NOT ACCEPTED** (PR #797, merge commit `b141881641746f9f64e94cbe246d59684bb3c3f5`). Their implementation records below retain their separate validation and data gates.
+- Later-system work may be implemented or audited in parallel only where it does not assume unaccepted upstream evidence. No downstream system may be marked accepted while System 2 and its required dependencies remain open.
+- **Active engineering increment:** PR #902, exact-ticket Brain management and campaign lineage. It is extending Systems 1, 3, 4, 5, 6, 7 and 10 with exact broker identity, durable management idempotency, campaign multi-ticket lifecycle correctness, confidence isolation from management/economic ranking, retirement of the no-op breakeven re-entry path, and removal of disconnected cross-instrument heuristics and uninitialized queue controls. This PR remains unmerged pending the full CI matrix and final diff review.
+- No broker orders are to be sent during engineering. Do not access or change actual `.env`, runtime databases, credentials, account selection or broker settings.
 
 ## Per-system completion record
 
@@ -574,3 +575,33 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - Gold Desk focused runs **2001** and **2006** passed on Python 3.11 and 3.12.
 - The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference. A new full Apex run **3847** is validating the current head.
 - The current PR remains draft pending final run completion and owner-host acceptance.
+
+
+## Exact-ticket Brain management and campaign lifecycle — 2026-11-11
+
+**PR #902:** `engineering/exact-ticket-brain-management-final`; validation snapshot head `172a2ce6e6cabceb9d024b95a375780b06be2544`. This is implementation evidence, not system acceptance.
+
+- **Exact management identity:** live management action IDs are deterministic over Brain decision ID, broker platform, exact position ticket, action kind and milestone. Missing decision/ticket/platform provenance suppresses dispatch. Management joins use exact confirmed broker identity; ambiguous matches fail closed.
+- **Durable execution lifecycle:** write-ahead milestone state is persisted before dispatch. Queue acceptance is not broker acknowledgement. Ambiguous outcomes remain non-replayable until verified broker reconciliation; explicit rejection is distinct from timeout/unknown.
+- **Campaign lineage:** campaign tickets are bound only after an exact confirmed broker snapshot. Terminal close removes only the matching platform/ticket. A campaign remains live while any other confirmed ticket or unresolved unbound open leg remains; open-leg counts now reflect remaining active/unresolved legs.
+- **Unknown broker status:** dictionary-shaped pending-order responses are handled explicitly and remain pending; they are not treated as filled positions.
+- **Confidence isolation:** entry confidence is no longer included in the Brain's position-management context. Campaign reallocation ranking uses expected-value metadata only, and opportunity-vs-book comparison returns `unranked` when comparable expected-return/risk evidence is absent. The uncalibrated hypothesis reasoning-strength field remains descriptive as permitted by System 3; it is not an economic probability, expected-value substitute, management input or sizing input.
+- **Legacy cleanup:** removed the no-op breakeven ReEntryManager, dormant cooldown state, `re_entry_eligible` plumbing, `RE_ENTRY_ARMED` event and runtime/package wiring. A closed campaign returns to ordinary Brain observation.
+
+**Validation:** on head `172a2ce`, lint passed and Gold Desk focused tests passed on Python 3.11 and 3.12. The full Python 3.11/3.12 suites were still running when this record was written. An earlier pre-correction run had two incorrect test expectations (4,514 passed); those assertions were corrected. Do not mark this increment validated until the full suite, generated concept-coverage check, identity/safety audit and import check all pass on the final PR head.
+
+**Safety boundary:** no live broker orders, .env access, credentials, runtime databases or broker settings were changed. PR #902 remains open and unmerged. Owner-connected broker acceptance and the remaining System 2 evidence gates are still separate requirements.
+
+
+## Production management and disconnected heuristic retirement — 2026-11-11
+
+PR #902 has expanded the exact-ticket management increment to close additional identity and legacy-path findings:
+
+- **V-009 production discretionary fallback:** removed `RiskConfig` fields and environment parsing for scan-directional and legacy mechanical exits. The live bootstrap hard-sets `discretionary_exits_enabled=False` and `scan_directional_exits_enabled=False`. The PositionWorker retains only the independent hard-stop, weekend/session/spread and absolute-profit safety floor in production. Explicit worker discretionary fixtures remain isolated to offline tests/backtests.
+- **V-012 disconnected cross-instrument helpers:** repository call-site audit found no runtime decision consumers for `CrossInstrumentRanker`, `OpportunityQualitySizer` or `PositionDisplacer`; the sizer also used confidence as a size multiplier. Their modules, tests, SystemContext wiring, dashboard/frontend status, config fields and env switches were removed. The advertised global opportunity queue was never initialized and its controls were removed. Only the proactive scanner remains, and it is observational only.
+- **Configuration reconciliation:** removed retired controls from `.env.example`, `config_env.py`, the operator environment reference and typed configuration inventory. The inventory now records 697 fields across 43 classes, including the three retained CrossInstrumentConfig fields.
+- **Runtime identity:** no re-entry manager, no production-configurable mechanical discretionary-exit fallback, no confidence-based management comparison, no confidence-based reallocation ranking, and no disconnected sizing/displacement helper remains in the live SystemContext.
+
+**Validation snapshot:** final implementation head `cf53f109aa89213d8d8e6c2d664b10499c895d61` passed 4,485 tests on Python 3.11 and 3.12, lint, generated concept-coverage verification, canonical identity/safety audit and import checks. Gold Desk focused tests and frontend build also passed. This head includes exact-ticket lifecycle, confidence isolation, removal of no-op re-entry, production hard-disable of mechanical discretionary exits, retirement of disconnected cross-instrument helpers and queue controls, removal of the unused proximity setting, and removal of the unconsumed execution-quality sizing toggle.
+
+**Still not accepted:** System 2's broker/calendar/financing and independent holdout gates; owner-connected broker execution acceptance; full ten-system acceptance. No live broker orders, .env access, runtime database changes or credential changes were made.

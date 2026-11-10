@@ -180,7 +180,6 @@ class TestBreakeven:
         assert trade.breakeven_active
         tm.update(trade, trade.stop_loss - 0.0001)
         assert trade.status == TradeStatus.STOPPED
-        assert trade.re_entry_eligible is True
         assert trade.close_reason == "Stopped at breakeven"
 
 

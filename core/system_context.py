@@ -182,9 +182,6 @@ class SystemContext:
     # Pure helpers consumed at gated call sites; default-disabled behaviour is an
     # identity no-op. The queue + proactive scanner live on the event-driven
     # system (they need runtime dispatch / event-bus callables).
-    cross_instrument_ranker: Optional[Any] = None
-    opportunity_quality_sizer: Optional[Any] = None
-    position_displacer: Optional[Any] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
     win_rate_provider: Optional[Any] = None
 
@@ -202,8 +199,6 @@ class SystemContext:
     signal_discovery: Optional[Any] = None
     virtual_module_registry: Optional[Any] = None
     virtual_signal_manager: Optional[Any] = None
-
-    re_entry_manager: Optional[Any] = None
 
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
@@ -1583,19 +1578,30 @@ class SystemContext:
                         positions = getattr(snapshot, "positions", None)
                         if positions is None:
                             raise RuntimeError("broker positions snapshot omitted positions")
-                        # Best-effort campaign enrichment, keyed by (symbol, side).
-                        camp_by_key: dict = {}
+                        # Campaign context is joined by exact broker ticket, never
+                        # by symbol/side alone. A campaign can contain multiple
+                        # order-level legs; a same-symbol position may belong to a
+                        # different thesis or be externally/manual opened.
+                        camp_by_ticket: dict[tuple[str, str, str], list[dict]] = {}
                         reg = ctx.campaign_registry
                         if reg is not None:
                             try:
                                 for c in (reg.get_status() or {}).get("live", []) or []:
-                                    key = (
-                                        str(c.get("symbol", "") or ""),
-                                        _canon(c.get("direction", "")),
-                                    )
-                                    camp_by_key[key] = c
+                                    if not isinstance(c, dict):
+                                        continue
+                                    csym = str(c.get("symbol", "") or "")
+                                    cside = _canon(c.get("direction", ""))
+                                    for binding in c.get("open_ticket_bindings", []) or []:
+                                        if not isinstance(binding, dict):
+                                            continue
+                                        ticket_key = str(binding.get("ticket", "") or "").strip()
+                                        platform_key = str(binding.get("platform", "") or "").strip().lower()
+                                        if csym and cside in ("LONG", "SHORT") and ticket_key and platform_key:
+                                            camp_by_ticket.setdefault(
+                                                (csym, cside, platform_key, ticket_key), []
+                                            ).append(c)
                             except Exception:  # noqa: BLE001
-                                camp_by_key = {}
+                                camp_by_ticket = {}
                         out = []
                         for p in positions:
                             side = _canon(getattr(p, "direction", ""))
@@ -1604,11 +1610,23 @@ class SystemContext:
                             sym = str(getattr(p, "symbol", "") or "")
                             if not sym:
                                 continue
-                            camp = camp_by_key.get((sym, side)) or {}
-                            ec = camp.get("entry_confidence") if isinstance(camp, dict) else None
+                            ticket = str(getattr(p, "order_id", getattr(p, "ticket", "")) or "").strip()
+                            platform = str(getattr(p, "platform", "") or "").strip().lower()
+                            camp_matches = (
+                                camp_by_ticket.get((sym, side, platform, ticket), [])
+                                if ticket and platform else []
+                            )
+                            if len(camp_matches) > 1:
+                                logger.warning(
+                                    "[SystemContext] campaign identity ambiguous for ticket {} on {} {}; context withheld",
+                                    ticket, sym, side,
+                                )
+                            camp = camp_matches[0] if len(camp_matches) == 1 else {}
                             out.append(_PositionView(
                                 symbol=sym,
                                 direction=side,
+                                ticket=str(getattr(p, "order_id", getattr(p, "ticket", "")) or ""),
+                                platform=str(getattr(p, "platform", "") or "").strip().lower(),
                                 profit_r=_profit_r(
                                     side,
                                     getattr(p, "open_price", 0.0),
@@ -1628,9 +1646,6 @@ class SystemContext:
                                 originating_decision_id=(
                                     str(camp.get("originating_decision_id", "") or "")
                                     if isinstance(camp, dict) else ""
-                                ),
-                                entry_confidence=(
-                                    float(ec) if ec is not None else None
                                 ),
                             ))
                         return out
@@ -1867,52 +1882,9 @@ class SystemContext:
             ctx.recommendation_applier is not None,
         )
 
-        # ── Cross-instrument opportunity layer (GAP 1-5) ─────────────
-        # Pure helpers built from the cross_instrument config. They are consumed
-        # only at gated call sites, so when every cross_instrument flag is off the
-        # system behaves identically. The queue + proactive scanner are built on
-        # the event-driven system (they need runtime callables).
-        ci_cfg = getattr(config, "cross_instrument", None)
-        try:
-            from brain.cross_instrument_ranker import CrossInstrumentRanker as _XRank
-            from brain.opportunity_sizer import OpportunityQualitySizer as _QSizer
-            from management.position_displacer import PositionDisplacer as _Displacer
-
-            ctx.cross_instrument_ranker = _XRank(
-                spread_pips_lookup=None,  # bound at runtime by the bootstrap
-                win_rate_lookup=None,
-                spread_ev_penalty_per_pip=float(
-                    getattr(ci_cfg, "spread_ev_penalty_per_pip", 0.02) if ci_cfg else 0.02
-                ),
-                winrate_ev_weight=float(
-                    getattr(ci_cfg, "winrate_ev_weight", 0.5) if ci_cfg else 0.5
-                ),
-            )
-            ctx.opportunity_quality_sizer = _QSizer(
-                enabled=bool(getattr(ci_cfg, "quality_sizing_enabled", False) if ci_cfg else False),
-                max_boost=float(getattr(ci_cfg, "quality_sizing_max_boost", 1.3) if ci_cfg else 1.3),
-                min_cut=float(getattr(ci_cfg, "quality_sizing_min_cut", 0.7) if ci_cfg else 0.7),
-                ev_ref=float(getattr(ci_cfg, "quality_sizing_ev_ref", 1.0) if ci_cfg else 1.0),
-            )
-            ctx.position_displacer = _Displacer(
-                enabled=bool(getattr(ci_cfg, "displacement_enabled", False) if ci_cfg else False),
-                ev_margin=float(getattr(ci_cfg, "displacement_ev_margin", 0.5) if ci_cfg else 0.5),
-                min_profit_protect=float(
-                    getattr(ci_cfg, "displacement_min_profit_protect", 1.0) if ci_cfg else 1.0
-                ),
-                max_per_cycle=int(getattr(ci_cfg, "displacement_max_per_cycle", 1) if ci_cfg else 1),
-                cooldown_seconds=float(
-                    getattr(ci_cfg, "displacement_cooldown_seconds", 300.0) if ci_cfg else 300.0
-                ),
-            )
-            logger.info(
-                "[SystemContext] cross-instrument layer — quality_sizing={} "
-                "displacement={} (queue/scanner on event-driven system)",
-                ctx.opportunity_quality_sizer.enabled,
-                ctx.position_displacer.enabled,
-            )
-        except Exception as exc:
-            logger.warning("[SystemContext] cross-instrument layer init failed: {}", exc)
+        # Cross-instrument queue and observational scanner are wired by the
+        # event-driven runtime. No independent ranker, sizer or displacer is
+        # constructed in SystemContext; the Brain owns opportunity decisions.
 
         # ── Ops / Dashboard / Persistence (Phase 5) ──────────────────
 
@@ -2111,18 +2083,10 @@ class SystemContext:
         # Signal discovery / parameter evolution / virtual-module engines
         # RETIRED - severed from the live path; the Cognitive Brain decides.
 
-        # ── ReEntryManager ─────────────────────────────────────────
-        try:
-            from management.re_entry import ReEntryManager as _ReEntry
-            ctx.re_entry_manager = _ReEntry()
-        except Exception as exc:
-            logger.warning("[SystemContext] ReEntryManager init failed: {}", exc)
-
         logger.info(
             "[SystemContext] evolution subsystems initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
-            "sig_disc={} virt_reg={} virt_mgr={} "
-            "re_entry={}",
+            "sig_disc={} virt_reg={} virt_mgr={}",
             ctx.capital_allocator is not None,
             ctx.execution_profiles is not None,
             ctx.regime_detector is not None,
@@ -2130,7 +2094,6 @@ class SystemContext:
             ctx.signal_discovery is not None,
             ctx.virtual_module_registry is not None,
             ctx.virtual_signal_manager is not None,
-            ctx.re_entry_manager is not None,
         )
 
         return ctx

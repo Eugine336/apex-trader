@@ -102,13 +102,9 @@ This is an allowlist, not a blanket environment override of all 716 typed fields
 | APEX_ADAPTIVE_TUNER_ENABLED | AdaptiveTunerConfig.enabled | bool | True |
 | APEX_ADAPTIVE_TUNER_PERIODIC_INTERVAL_SECONDS | AdaptiveTunerConfig.periodic_interval_seconds | float | 900.0 |
 | APEX_ADAPTIVE_TUNER_SCAN_INTERVAL_SECONDS | AdaptiveTunerConfig.scan_interval_seconds | float | 3600.0 |
-| APEX_CROSS_INSTRUMENT_QUEUE_ENABLED | CrossInstrumentConfig.queue_enabled | bool | True |
-| APEX_CROSS_INSTRUMENT_QUEUE_WINDOW_MS | CrossInstrumentConfig.queue_window_ms | int | 1000 |
-| APEX_CROSS_INSTRUMENT_RANKING_ENABLED | CrossInstrumentConfig.ranking_enabled | bool | True |
-| APEX_CROSS_INSTRUMENT_QUALITY_SIZING_ENABLED | CrossInstrumentConfig.quality_sizing_enabled | bool | True |
-| APEX_CROSS_INSTRUMENT_DISPLACEMENT_ENABLED | CrossInstrumentConfig.displacement_enabled | bool | True |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | CrossInstrumentConfig.proactive_scan_enabled | bool | True |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | CrossInstrumentConfig.proactive_scan_interval_seconds | float | 60.0 |
+| APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_MIN_EV | CrossInstrumentConfig.proactive_scan_min_ev | float | 0.5 |
 
 ## Dedicated controls outside the generic allowlist
 
@@ -205,8 +201,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | COGNITION_FINANCING_PER_LOT_ROUND_TRIP_JSON | Per-symbol round-trip financing estimate per 1 lot in account currency, for the expected holding horizon. Example: {"XAUUSD": 4.5, "EURUSD": 1.2}. Empty/missing symbols fail net-EV | {} |
 | COGNITION_FINANCING_MODEL_VERIFIED | 3. Identity, cognition, and live execution mode | false |
 | RISK_ALLOW_MIN_LOT_OVER_RISK | Explicitly retain the conservative risk configuration: do not inflate a minimum lot beyond the risk budget and do not silently restore legacy exits. | false |
-| RISK_SCAN_DIRECTIONAL_EXITS_ENABLED | 3. Identity, cognition, and live execution mode | false |
-| RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED | 3. Identity, cognition, and live execution mode | false |
 | LLM_PROVIDER | ============================================================================= 4. Primary LLM adviser and provider resilience ======================================================= | gemini |
 | LLM_MODEL | 4. Primary LLM adviser and provider resilience | gemini-3.8-flash |
 | LLM_API_KEY | 4. Primary LLM adviser and provider resilience | (blank secret) |
@@ -420,13 +414,9 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | APEX_ADAPTIVE_TUNER_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_ADAPTIVE_TUNER_PERIODIC_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_ADAPTIVE_TUNER_SCAN_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_QUEUE_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_QUEUE_WINDOW_MS | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_RANKING_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_QUALITY_SIZING_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_DISPLACEMENT_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
+| APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_MIN_EV | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_PERFORMANCE_M1_CACHE_TTL | Additional allowlisted controls containing numeric field names. | (blank; typed default or unset) |
 | APEX_DEVELOPING_ANALYSIS_REFRESH_M5 | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_DEVELOPING_ANALYSIS_REFRESH_M15 | 10. Typed operator runtime controls | (blank; typed default or unset) |

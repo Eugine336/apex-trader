@@ -67,7 +67,6 @@ def _snap(
         at_breakeven=at_breakeven,
         trailing=False,
         partial_closed=partial_closed,
-        re_entry_eligible=False,
         current_price=current_price,
         broker_pnl=pnl_dollars,
         broker_lots=lots,
@@ -90,7 +89,6 @@ def _legacy_worker() -> PositionWorker:
     """Explicitly enable the retired mechanical suite for contract tests only."""
     return PositionWorker(WorkerConfig(
         discretionary_exits_enabled=True,
-        legacy_mechanical_exit_fallback_enabled=True,
         scan_directional_exits_enabled=True,
     ))
 
@@ -148,7 +146,6 @@ class TestScanContextChecks:
             conviction_decline_min_drop=3,
             conviction_profit_hold_pips=20.0,
             discretionary_exits_enabled=True,
-            legacy_mechanical_exit_fallback_enabled=True,
             scan_directional_exits_enabled=True,
         ))
         scores = (80, 75, 70, 65)

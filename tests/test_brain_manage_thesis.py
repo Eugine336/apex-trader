@@ -228,8 +228,7 @@ def test_management_prefers_reason_management_entrypoint():
 def test_management_payload_includes_campaign_context():
     brain = CognitiveBrain(reasoner=_MgmtReasoner(_mgmt_op(thesis="intact")))
     pos = PositionView(symbol="EURUSD", direction="SHORT", profit_r=1.4,
-                       hold_seconds=3600.0, size=0.5, campaign_id="c1",
-                       entry_confidence=0.7)
+                       hold_seconds=3600.0, size=0.5, campaign_id="c1")
     ms = _state()
     payload = brain._management_evidence_payload("EURUSD", ms, ms.consolidation(), pos)
     camp = payload["campaign"]
@@ -237,6 +236,7 @@ def test_management_payload_includes_campaign_context():
     assert camp["profit_r"] == 1.4
     assert camp["hold_seconds"] == 3600.0
     assert camp["campaign_id"] == "c1"
+    assert "entry_confidence" not in camp
     assert payload["management"] is True
 
 
