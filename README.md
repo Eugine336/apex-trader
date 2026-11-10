@@ -195,7 +195,6 @@ docker-compose up -d
 | `DERIV_APP_ID` | Deriv only | App ID from app.deriv.com |
 | `DD_DASHBOARD_API_KEY` | No | API key for dashboard authentication |
 | `DD_API_KEY` | No | Datadog API key for APM |
-| `APP_ENV` | No | development or production (default: development) |
 
 ### Cognition and origination controls
 
