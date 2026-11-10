@@ -330,3 +330,10 @@ Severity rubric:
 - **Finding**: SystemContext instantiated a cross-instrument ranker, a confidence-weighted opportunity quality sizer and a mechanical position displacer. Repository call-site search found no runtime decision consumers; the dashboard only surfaced their status. Their configuration flags defaulted on, falsely implying active portfolio ranking, confidence-based sizing and displacement.
 - **Resolution**: Delete the three helper modules and their isolated tests; remove SystemContext construction, dashboard/frontend status, CrossInstrumentConfig fields, env allowlist entries, .env.example keys and operator-reference rows. Remove the uninitialized global opportunity queue and its config/env/UI controls, and remove the scanner proximity setting because no proximity callback was wired. Keep only the observational proactive watchlist with the three settings actually consumed; it cannot authorize or submit a trade.
 - **Regression evidence**: `test_disconnected_cross_instrument_heuristics_are_retired` asserts that modules, config fields and SystemContext wiring remain absent.
+
+
+### V-013: Execution-quality sizing toggle advertised without a runtime consumer
+- **Severity**: MEDIUM
+- **Status**: RESOLVED in PR #902.
+- **Finding**: `execution_quality_sizing_enabled` existed in RiskConfig and had a test asserting that it defaulted to true, but repository call-site inspection found no execution-quality gate or sizing consumer. The test gave false assurance that a live size throttle existed.
+- **Resolution**: Remove the unused config field, its inventory entry and the misleading default-only test. Do not describe execution-quality sizing as live until an actual execution-path consumer and broker-evidence tests exist.
