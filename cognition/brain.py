@@ -1952,7 +1952,7 @@ class CognitiveBrain:
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
         out_dir = _opp(held_dir) if action == DecisionType.REVERSE else held_dir
-        return BrainOutput(decision=decision, direction=out_dir)
+        return BrainOutput(decision=decision)
 
     def _record_management(self, output: BrainOutput) -> BrainOutput:
         output.decided_at_epoch = time.time()
@@ -3334,7 +3334,7 @@ class CognitiveBrain:
             questions_answered=questions,
             do_nothing_considered=not internal_fault, reasoner=self.reasoner_name,
         )
-        return self._record(BrainOutput(decision=decision, direction=FLAT))
+        return self._record(BrainOutput(decision=decision))
 
     def _native_fallback_diagnostic(
         self,
@@ -3473,7 +3473,7 @@ class CognitiveBrain:
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
-        return self._record(BrainOutput(decision=decision, direction=FLAT))
+        return self._record(BrainOutput(decision=decision))
 
     def _record(self, output: BrainOutput) -> BrainOutput:
         output.decided_at_epoch = time.time()
