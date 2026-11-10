@@ -8,12 +8,14 @@ from brain.campaign import (
 )
 
 
-def _leg(kind, ticket, *, exit_cause=""):
+def _leg(kind, ticket, *, exit_cause="", platform="mt5", decision_id=""):
     return CampaignLeg(
         kind=kind,
         at_iso="2026-11-11T00:00:00Z",
         at_epoch=1_000.0,
         ticket=ticket,
+        platform=platform,
+        decision_id=decision_id,
         exit_cause=exit_cause,
     )
 
@@ -71,3 +73,61 @@ def test_system_context_enriches_campaigns_by_exact_ticket_not_symbol_side():
     assert "camp_by_ticket" in source
     assert 'c.get("open_tickets", [])' in source
     assert "camp_by_key.get((sym, side))" not in source
+
+
+def test_campaign_registry_attaches_only_one_exact_pending_open_leg():
+    from brain.campaign import CampaignRegistry
+
+    registry = CampaignRegistry(enabled=True)
+    registry.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.5,
+        campaign_id="campaign-fill", decision_id="decision-fill",
+    )
+    registry.record_leg(
+        "EURUSD", "LONG", LEG_OPEN, size=0.1,
+        decision_id="decision-fill",
+    )
+
+    assert registry.attach_ticket(
+        "EURUSD", "LONG", "campaign-fill", "decision-fill", "broker-ticket", "mt5",
+    ) is True
+    live = registry.get_status()["live"]
+    assert live[0]["open_ticket_bindings"] == [
+        {"platform": "mt5", "ticket": "broker-ticket"}
+    ]
+
+
+def test_campaign_registry_rejects_ambiguous_or_wrong_decision_ticket_attachment():
+    from brain.campaign import CampaignRegistry
+
+    registry = CampaignRegistry(enabled=True)
+    registry.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.5,
+        campaign_id="campaign-fill", decision_id="decision-fill",
+    )
+    registry.record_leg("EURUSD", "LONG", LEG_OPEN, size=0.1, decision_id="decision-fill")
+    registry.record_leg("EURUSD", "LONG", LEG_OPEN, size=0.1, decision_id="decision-fill")
+
+    assert registry.attach_ticket(
+        "EURUSD", "LONG", "campaign-fill", "decision-fill", "ticket-1", "mt5",
+    ) is False
+    assert registry.attach_ticket(
+        "EURUSD", "LONG", "wrong-campaign", "decision-fill", "ticket-1", "mt5",
+    ) is False
+    assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
+
+
+def test_explicit_open_rejection_removes_only_the_unfilled_pending_leg():
+    from brain.campaign import CampaignRegistry
+
+    registry = CampaignRegistry(enabled=True)
+    registry.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.5,
+        campaign_id="campaign-fill", decision_id="decision-fill",
+    )
+    registry.record_leg("EURUSD", "LONG", LEG_OPEN, size=0.1, decision_id="decision-fill")
+
+    assert registry.reject_pending_leg(
+        "EURUSD", "LONG", "campaign-fill", "decision-fill",
+    ) is True
+    assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
