@@ -1213,7 +1213,7 @@ class PerformanceConfig:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Portfolio Governor — portfolio-level risk limits (advisory to the planner).
+# Portfolio Governor — portfolio-level risk limits used by shared risk admission.
 # The dataclass lives in governor.models (leaf, no config import) so it is
 # imported here to keep all configuration under the single AppConfig.
 # ---------------------------------------------------------------------------
