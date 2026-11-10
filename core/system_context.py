@@ -1596,10 +1596,15 @@ class SystemContext:
                                         continue
                                     csym = str(c.get("symbol", "") or "")
                                     cside = _canon(c.get("direction", ""))
-                                    for raw_ticket in c.get("open_tickets", []) or []:
-                                        ticket_key = str(raw_ticket or "").strip()
-                                        if csym and cside in ("LONG", "SHORT") and ticket_key:
-                                            camp_by_ticket.setdefault((csym, cside, ticket_key), []).append(c)
+                                    for binding in c.get("open_ticket_bindings", []) or []:
+                                        if not isinstance(binding, dict):
+                                            continue
+                                        ticket_key = str(binding.get("ticket", "") or "").strip()
+                                        platform_key = str(binding.get("platform", "") or "").strip().lower()
+                                        if csym and cside in ("LONG", "SHORT") and ticket_key and platform_key:
+                                            camp_by_ticket.setdefault(
+                                                (csym, cside, platform_key, ticket_key), []
+                                            ).append(c)
                             except Exception:  # noqa: BLE001
                                 camp_by_ticket = {}
                         out = []
@@ -1611,7 +1616,11 @@ class SystemContext:
                             if not sym:
                                 continue
                             ticket = str(getattr(p, "order_id", getattr(p, "ticket", "")) or "").strip()
-                            camp_matches = camp_by_ticket.get((sym, side, ticket), []) if ticket else []
+                            platform = str(getattr(p, "platform", "") or "").strip().lower()
+                            camp_matches = (
+                                camp_by_ticket.get((sym, side, platform, ticket), [])
+                                if ticket and platform else []
+                            )
                             if len(camp_matches) > 1:
                                 logger.warning(
                                     "[SystemContext] campaign identity ambiguous for ticket {} on {} {}; context withheld",
