@@ -132,3 +132,85 @@ def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monke
     backups = list(tmp_path.glob("apex-trader-data-local-backup-*"))
     assert len(backups) == 1
     assert (backups[0] / "apex_positions.db").read_bytes() == b"local"
+
+
+
+def test_preserve_conflicts_keeps_active_target_and_source_copy(tmp_path):
+    local = tmp_path / "source-data"
+    target = tmp_path / "target-data"
+    backup = tmp_path / "conflicts"
+    local.mkdir()
+    target.mkdir()
+    (local / "apex_events.db").write_bytes(b"source-event-store")
+    (target / "apex_events.db").write_bytes(b"target-event-store")
+
+    copied = bootstrap._copy_local_data(
+        local, target, backup, preserve_conflicts=True
+    )
+
+    assert copied == 0
+    assert (target / "apex_events.db").read_bytes() == b"target-event-store"
+    assert (local / "apex_events.db").read_bytes() == b"source-event-store"
+    assert not backup.exists()
+
+
+def test_adoption_creates_verified_full_backup_and_configures_git_lfs(tmp_path, monkeypatch):
+    target = tmp_path / "apex-trader-data"
+    target.mkdir()
+    (target / "apex_events.db").write_bytes(b"large-local-database")
+    (target / "state.json").write_text('{"preserve":true}', encoding="utf-8")
+    commands = []
+
+    def fake_git(args, *, cwd=None, timeout=180):
+        commands.append((list(args), cwd))
+        if args == ["init"]:
+            (cwd / ".git").mkdir()
+        if args[:2] == ["branch", "--show-current"]:
+            return "main"
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return "origin/main"
+        if args[:2] == ["config", "--get"]:
+            return "git-lfs-command"
+        if args[:2] == ["lfs", "version"]:
+            return "git-lfs/3.8.1"
+        return ""
+
+    monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(
+        bootstrap, "verify_dedicated_data_repo",
+        lambda *a, **k: (True, "eugine336/apex-trader-data"),
+    )
+
+    backup = bootstrap._adopt_existing_data_repo(
+        target, bootstrap.DEFAULT_DATA_REPO_URL
+    )
+
+    assert backup.is_dir()
+    assert (backup / "apex_events.db").read_bytes() == b"large-local-database"
+    assert (backup / "state.json").read_text(encoding="utf-8") == '{"preserve":true}'
+    assert (target / "apex_events.db").read_bytes() == b"large-local-database"
+    assert (target / "state.json").read_text(encoding="utf-8") == '{"preserve":true}'
+    assert (target / ".git").is_dir()
+    assert any(args[:2] == ["lfs", "install"] for args, _ in commands)
+    assert any(args[:2] == ["read-tree", "origin/main"] for args, _ in commands)
+    assert any(args[:2] == ["checkout-index", "--all"] for args, _ in commands)
+
+
+def test_adoption_backup_failure_leaves_original_directory_untouched(tmp_path, monkeypatch):
+    target = tmp_path / "apex-trader-data"
+    target.mkdir()
+    database = target / "apex_events.db"
+    database.write_bytes(b"do-not-touch")
+
+    def fail_copy(*args, **kwargs):
+        raise OSError("simulated backup failure")
+
+    monkeypatch.setattr(bootstrap, "_copy_tree_verified", fail_copy)
+
+    with pytest.raises(bootstrap.DataRepoBootstrapError, match="original untouched"):
+        bootstrap._adopt_existing_data_repo(
+            target, bootstrap.DEFAULT_DATA_REPO_URL
+        )
+
+    assert database.read_bytes() == b"do-not-touch"
+    assert not (target / ".git").exists()
