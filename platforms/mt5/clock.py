@@ -218,9 +218,30 @@ def estimate_mt5_server_clock(
         return None
 
     raw_samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
-    # One observation per named source. Repeated responses from the same
-    # endpoint are not independent corroboration.
-    samples = tuple({sample.server: sample for sample in raw_samples}.values())
+    # Count one observation per clock operator. NTP and HTTPS endpoints
+    # operated by the same provider are not independent witnesses.
+    by_authority: dict[str, NTPClockSample] = {}
+    for sample in raw_samples:
+        endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
+        endpoint = endpoint.split(":", 1)[0].strip().lower()
+        authority = next(
+            (
+                domain for domain in ("cloudflare.com", "google.com", "ntp.org")
+                if endpoint == domain or endpoint.endswith("." + domain)
+            ),
+            endpoint,
+        )
+        current = by_authority.get(authority)
+        try:
+            sample_quality = float(sample.uncertainty_seconds)
+            current_quality = (
+                float(current.uncertainty_seconds) if current is not None else float("inf")
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(sample_quality) and sample_quality >= 0 and sample_quality < current_quality:
+            by_authority[authority] = sample
+    samples = tuple(by_authority.values())
     if len(samples) < NTP_MIN_SOURCES:
         return None
 
