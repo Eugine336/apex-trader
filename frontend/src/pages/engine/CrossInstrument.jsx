@@ -11,8 +11,6 @@ export default function CrossInstrument() {
   );
 
   const queue = data?.queue || {};
-  const sizer = data?.quality_sizer || {};
-  const displacer = data?.displacer || {};
   const scanner = data?.proactive_scanner || {};
   const watchlist = data?.watchlist || [];
 
@@ -20,7 +18,7 @@ export default function CrossInstrument() {
     <div className="space-y-6">
       <EngineHeader
         title="Cross-Instrument Opportunities"
-        subtitle="Portfolio-level opportunism — the global opportunity queue, cross-instrument ranking + quality sizing, position displacement, and the proactive high-EV watchlist. Each layer is opt-in via config.cross_instrument."
+        subtitle="The queue batches intents already authorized by the Cognitive Brain. The proactive scanner is observational and cannot create or authorize orders."
       />
 
       <EngineNotice
@@ -32,31 +30,21 @@ export default function CrossInstrument() {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4">
             <StatTile
-              label="Queue"
+              label="Authorized-intent queue"
               value={queue.enabled ? "ON" : "OFF"}
               accent={queue.enabled ? "text-emerald-400" : "text-gray-500"}
             />
             <StatTile
-              label="Quality Sizing"
-              value={sizer.enabled ? "ON" : "OFF"}
-              accent={sizer.enabled ? "text-emerald-400" : "text-gray-500"}
-            />
-            <StatTile
-              label="Displacement"
-              value={displacer.enabled ? "ON" : "OFF"}
-              accent={displacer.enabled ? "text-emerald-400" : "text-gray-500"}
-            />
-            <StatTile
-              label="Proactive Scan"
+              label="Observational scan"
               value={scanner.enabled ? "ON" : "OFF"}
               accent={scanner.enabled ? "text-emerald-400" : "text-gray-500"}
             />
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Panel title="Global opportunity queue">
+            <Panel title="Brain-authorized intent queue">
               <table className="w-full text-[11px]">
                 <tbody>
                   <tr className="border-b border-gray-800/60">
@@ -87,40 +75,28 @@ export default function CrossInstrument() {
               </table>
             </Panel>
 
-            <Panel title="Quality sizer · Displacer">
-              <table className="w-full text-[11px]">
-                <tbody>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Size boost / cut</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      ×{Number(sizer.max_boost || 1).toFixed(2)} /{" "}
-                      ×{Number(sizer.min_cut || 1).toFixed(2)}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Displacements</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {displacer.total_displacements || 0}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">EV margin</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {Number(displacer.ev_margin || 0).toFixed(2)}R
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Scanner runs</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {scanner.scans || 0}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <Panel title="Proactive scanner">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[10px] text-gray-500">Scans</div>
+                  <div className="font-mono text-sm text-gray-200">
+                    {scanner.scans || 0}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-gray-500">Watchlist entries</div>
+                  <div className="font-mono text-sm text-gray-200">
+                    {watchlist.length}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-3 text-[11px] text-gray-500">
+                Watchlist observations do not authorize or submit trades.
+              </p>
             </Panel>
           </div>
 
-          <Panel title="Proactive watchlist (approaching high-EV setups)">
+          <Panel title="Observational watchlist">
             {watchlist.length === 0 ? (
               <div className="py-3 text-center text-xs text-gray-600">
                 No instruments on the watchlist.
