@@ -233,7 +233,6 @@ class CognitiveBrain:
         # Council coverage is enforced by quorum and is never converted into a
         # confidence adjustment.
         _ = degraded_confidence_multiplier
-        self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
         # ``reward_r_default`` remains an ignored constructor compatibility
         # argument for older callers. It must never synthesize payoff geometry
         # or a reward estimate; only verified market-derived opportunity
@@ -3217,7 +3216,6 @@ class CognitiveBrain:
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
                 "confidence_authority": "descriptive metadata only",
-                "degrade_on_unknown_council": self._degrade_on_unknown_council,
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,
