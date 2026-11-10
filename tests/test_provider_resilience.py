@@ -96,12 +96,12 @@ def test_v013_unknown_council_not_penalised_by_default():
     assert out.campaign is None
 
 
-def test_v013_unknown_council_penalised_when_enabled():
+def test_v013_unknown_council_is_never_converted_to_confidence_penalty():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
                            degrade_on_unknown_council=True,
                            degraded_confidence_multiplier=0.7)
     out = brain.reason(_no_council_state())
-    assert abs(out.decision.confidence - 0.56) < 1e-6  # 0.8 x 0.7
+    assert abs(out.decision.confidence - 0.8) < 1e-6
     assert out.decision.questions_answered.get(
         "cognitive_degradation", "").startswith("OBSERVED")
 
