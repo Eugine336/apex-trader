@@ -723,7 +723,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `single_path`
 - `max_decision_age_seconds`
 - `per_module_evidence`
-- `min_confidence_to_act`
 - `ev_primary_gate`
 - `ev_action_threshold_r`
 - `min_advisors_for_action`
@@ -737,9 +736,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `event_driven`
 - `event_min_interval_seconds`
 - `manage_min_interval_seconds`
-- `allow_scale_in`
-- `manage_reverse_confidence`
-- `manage_exit_floor`
 - `reallocation_enabled`
 - `reallocation_max_per_component`
 - `reallocation_concentration_limit`
