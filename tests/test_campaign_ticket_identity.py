@@ -114,7 +114,7 @@ def test_campaign_registry_rejects_ambiguous_or_wrong_decision_ticket_attachment
     assert registry.attach_ticket(
         "EURUSD", "LONG", "wrong-campaign", "decision-fill", "ticket-1", "mt5",
     ) is False
-    assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
+    assert registry.get_status()["live"] == []
 
 
 def test_explicit_open_rejection_removes_only_the_unfilled_pending_leg():
