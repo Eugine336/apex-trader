@@ -1944,6 +1944,7 @@ class CognitiveBrain:
         else:
             questions = {q: (do_nothing_txt if q == "should_i_do_nothing" else reason)
                          for q in REQUIRED_QUESTIONS}
+        questions["held_direction"] = str(held_dir or "").upper()
         decision = DecisionPackage(
             symbol=symbol, decision_type=action, thesis=reason,
             confidence=confidence, uncertainty=uncertainty,
