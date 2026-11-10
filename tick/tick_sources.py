@@ -208,8 +208,8 @@ class MT5TickPoller:
                 try:
                     if abs(float(time_milliseconds) / 1000.0 - float(time_seconds)) > 1.5:
                         continue
+                # SAFE-FALLBACK: malformed broker timestamp pairs are excluded from verified replay.
                 except (TypeError, ValueError, OverflowError):
-                    # SAFE-FALLBACK: malformed broker timestamp pairs are excluded from verified replay.
                     continue
             if newest is None or stamp > newest:
                 newest = stamp
@@ -224,8 +224,8 @@ class MT5TickPoller:
                 if time_msc is None:
                     time_msc = int(stamp.timestamp() * 1000)
                 key = self._tick_key(time_msc, bid, ask, row.get("flags", 0))
+            # SAFE-FALLBACK: malformed quote rows are skipped; no fabricated quote is routed.
             except (TypeError, ValueError, OverflowError):
-                # SAFE-FALLBACK: malformed quote rows are skipped; no fabricated quote is routed.
                 continue
             if not self._remember_history_tick(symbol, key):
                 continue
