@@ -81,7 +81,6 @@ def _snap(
         highest_since_entry=current_price,
         lowest_since_entry=entry_price,
         trailing=False,
-        re_entry_eligible=False,
         tm_trade_id="tm1",
         confluences=(),
         scale_in_count=0,
