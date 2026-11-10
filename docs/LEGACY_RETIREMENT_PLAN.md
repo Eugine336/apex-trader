@@ -17,8 +17,8 @@ absent; and decision/ contains only __init__.py and actions.py. The old
 Remaining historical documents and audit text that name those modules require
 reconciliation separately.
 
-The entry/ package currently contains shared models, M1 patterns, and the
-M1/M5 flip-sequence implementation. Source tracing found that
+Before this increment, the entry/ package contained shared models, M1
+patterns, and the M1/M5 flip-sequence implementation. Source tracing found that
 event_driven_bootstrap.py constructed and fed FlipSequenceTracker on M1 and M5
 candle-close events, but no production caller read its is_confirmed() result.
 Its flip_require_sequence profile setting therefore advertised a gate that did
