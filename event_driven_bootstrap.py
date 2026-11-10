@@ -6064,12 +6064,14 @@ class EventDrivenSystem:
                             meta["position_id"] = position_id
                         fill_platform = str(getattr(position, "platform", "") or "").strip().lower()
                         campaign_registry = getattr(self._ctx, "campaign_registry", None)
+                        attach_campaign_ticket = getattr(campaign_registry, "attach_ticket", None)
                         if (
                             campaign_registry is not None
                             and getattr(campaign_registry, "enabled", False)
+                            and callable(attach_campaign_ticket)
                             and payload["campaign_id"] and payload["decision_id"] and fill_platform
                         ):
-                            attached = campaign_registry.attach_ticket(
+                            attached = attach_campaign_ticket(
                                 payload["symbol"], payload["direction"], payload["campaign_id"],
                                 payload["decision_id"], position_id, fill_platform,
                             )
