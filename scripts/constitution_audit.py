@@ -130,6 +130,7 @@ CHECKS: list[Check] = [
             _p("event_driven_bootstrap.py", r"def\s+_on_entry_decision\b"),
             _p("scanner/candle_close_handler.py", r"\bextract_entry_zones\b"),
             _p("scanner/candle_close_handler.py", r"\bentry_quality_(long|short)\b"),
+            _p("brain/instrument_profile.py", r"\bflip_(?:atr_move_threshold|tick_threshold_default|tick_threshold_asian|require_m15_non_opposition|volume_ratio_min|volume_ratio_asian|require_clean_break|delta_threshold|delta_tick_count|require_delta_confirmation|require_sequence|sequence_window_bars)\b"),
         ],
     ),
     Check(
