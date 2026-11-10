@@ -332,47 +332,39 @@ def test_campaign_carries_expected_value_field():
     assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)
 
 
-# ── V13: Brain applies calibration correction to effective confidence ──────────
+# ── Calibration is observational; it never adjusts advisor confidence ───────
 
 class _StubCalibration:
     def __init__(self, factor):
         self._factor = factor
 
     def calibration_adjustment(self):
-        return self._factor
+        raise AssertionError("Brain must not apply calibration as confidence correction")
 
     def metrics(self):
         return {"samples": 100, "mean_confidence": 0.9,
                 "win_rate": 0.63, "reliability_gap": 0.27, "brier": 0.24}
 
 
-def test_calibration_attenuates_effective_confidence():
-    # Over-predicting Brain: factor 0.7 attenuates eff_conf 0.8 → 0.56.
+def test_calibration_does_not_modify_advisor_confidence():
     brain = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
         calibration=_StubCalibration(0.7),
     )
     out = brain.reason(_confident_state(polarity=0.8))
-    assert out.decision.confidence == pytest.approx(0.56)
-    note = out.decision.questions_answered.get("calibration_correction", "")
-    assert note.startswith("applied: factor 0.700")
+    assert out.decision.confidence == pytest.approx(0.8)
+    assert out.decision.questions_answered["calibration_correction"] == (
+        "observational only; no confidence adjustment is applied"
+    )
 
 
-def test_calibration_not_wired_records_inactive():
+def test_calibration_absence_does_not_change_confidence_semantics():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_confident_state(polarity=0.8))
-    assert out.decision.questions_answered.get("calibration_correction") == (
-        "not active (insufficient samples or not wired)"
-    )
-
-
-def test_calibration_neutral_factor_leaves_confidence_unchanged():
-    brain = CognitiveBrain(
-        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-        calibration=_StubCalibration(1.0),
-    )
-    out = brain.reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
+    assert out.decision.questions_answered["calibration_correction"] == (
+        "observational only; no confidence adjustment is applied"
+    )
 
 
 def test_competing_hypotheses_do_not_convert_uncalibrated_confidence_to_probability():
