@@ -266,7 +266,8 @@ class Evidence:
     source_module: str
     domain: EvidenceDomain = EvidenceDomain.OTHER
     observation: str = ""
-    confidence: float = 0.0
+    confidence: Optional[float] = 0.0
+    confidence_semantics: str = "uncalibrated_reasoning_strength"
     uncertainty: float = 0.0
     polarity: float = 0.0
     measurements: dict = field(default_factory=dict)
@@ -296,7 +297,13 @@ class Evidence:
         if not self.timestamp_iso:
             self.timestamp_iso = _now_iso()
         self.domain = domain_from(self.domain)
-        self.confidence = _clamp01(self.confidence)
+        if self.confidence is None:
+            self.confidence_semantics = "not_assessed"
+        else:
+            self.confidence = _clamp01(self.confidence)
+            self.confidence_semantics = str(
+                self.confidence_semantics or "uncalibrated_reasoning_strength"
+            )
         self.uncertainty = _clamp01(self.uncertainty)
         self.polarity = _clamp_signed(self.polarity)
         measurements = self.measurements if isinstance(self.measurements, dict) else {}
@@ -381,7 +388,8 @@ class Evidence:
             "domain": self.domain.value,
             "symbol": self.symbol,
             "observation": self.observation,
-            "confidence": round(self.confidence, 4),
+            "confidence": round(self.confidence, 4) if self.confidence is not None else None,
+            "confidence_semantics": self.confidence_semantics,
             "uncertainty": round(self.uncertainty, 4),
             "polarity": round(self.polarity, 4),
             "measurements": dict(self.measurements),
