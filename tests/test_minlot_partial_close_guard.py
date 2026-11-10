@@ -189,7 +189,6 @@ def _legacy_worker() -> PositionWorker:
     """Enable legacy discretionary mechanics only for these isolated tests."""
     return PositionWorker(WorkerConfig(
         discretionary_exits_enabled=True,
-        legacy_mechanical_exit_fallback_enabled=True,
         scan_directional_exits_enabled=True,
     ))
 
