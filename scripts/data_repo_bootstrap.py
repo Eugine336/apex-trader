@@ -8,6 +8,7 @@ in a timestamped backup before the local copy becomes active.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -80,8 +81,19 @@ def _files_equal(left: Path, right: Path) -> bool:
                 return True
 
 
-def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
-    """Merge local files, preserving any replaced remote file in backup_root."""
+def _copy_local_data(
+    source: Path,
+    destination: Path,
+    backup_root: Path,
+    *,
+    preserve_conflicts: bool = False,
+) -> int:
+    """Copy local-only files; optionally keep both sides of every conflict.
+
+    With preserve_conflicts=True, destination data remains untouched when the
+    same relative path contains different bytes. Bootstrap retains the complete
+    source directory separately, so conflicting databases are never merged.
+    """"
     copied = 0
     for root, dirs, files in os.walk(source, followlinks=False):
         root_path = Path(root)
@@ -107,6 +119,10 @@ def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
                     same = False
                 if same:
                     continue
+                if preserve_conflicts:
+                    # The complete source tree is retained as a timestamped
+                    # sibling backup after this merge. Keep the active target.
+                    continue
                 preserved = backup_root / relative
                 preserved.parent.mkdir(parents=True, exist_ok=True)
                 if preserved.exists() or preserved.is_symlink():
@@ -120,6 +136,120 @@ def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
                 shutil.copy2(src, dst)
             copied += 1
     return copied
+
+
+def _tree_manifest(root: Path) -> list[tuple[str, str, int]]:
+    """Describe a directory tree without following symbolic links."""
+    entries: list[tuple[str, str, int]] = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        dirs[:] = [name for name in dirs if not (current_path / name).is_symlink()]
+        for name in files:
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            if item.is_symlink():
+                entries.append((relative, "link:" + os.readlink(item), 0))
+            else:
+                entries.append((relative, "file", item.stat().st_size))
+    return sorted(entries)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_tree_verified(source: Path, destination: Path) -> None:
+    """Create a complete independent backup and verify every copied file."""
+    shutil.copytree(source, destination, symlinks=True)
+    source_entries = _tree_manifest(source)
+    copied_entries = _tree_manifest(destination)
+    if source_entries != copied_entries:
+        raise DataRepoBootstrapError(
+            f"pre-adoption backup inventory differs: {destination}"
+        )
+    for relative, kind, _size in source_entries:
+        if kind != "file":
+            continue
+        if _sha256_file(source / relative) != _sha256_file(destination / relative):
+            raise DataRepoBootstrapError(
+                f"pre-adoption backup hash mismatch: {relative}"
+            )
+
+
+def _verify_git_lfs_and_tracking(target: Path) -> None:
+    """Require main -> origin/main tracking and usable Git LFS filters."""
+    branch = _run_git(["branch", "--show-current"], cwd=target)
+    upstream = _run_git(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        cwd=target,
+    )
+    if branch != "main" or upstream != "origin/main":
+        raise DataRepoBootstrapError(
+            f"data repository branch tracking is invalid: {branch!r} -> {upstream!r}"
+        )
+    _run_git(["lfs", "version"], cwd=target)
+    for key in (
+        "filter.lfs.clean", "filter.lfs.smudge",
+        "filter.lfs.process", "filter.lfs.required",
+    ):
+        if not _run_git(["config", "--get", key], cwd=target):
+            raise DataRepoBootstrapError(f"Git LFS filter is not configured: {key}")
+
+
+def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
+    """Adopt a populated plain directory without replacing any existing data.
+
+    A byte-for-byte verified sibling backup is created first. Git metadata is
+    initialized in place; the remote tree is loaded into the index without
+    checking out over existing files. checkout-index writes only missing paths.
+    A recovery ref retains the original remote main commit.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = target.parent / f"{target.name}-pre-adoption-{stamp}"
+    staging = target.parent / f".{target.name}-pre-adoption-{stamp}.tmp"
+    if backup.exists() or staging.exists():
+        raise DataRepoBootstrapError(f"pre-adoption backup path collision: {backup}")
+    try:
+        _copy_tree_verified(target, staging)
+        staging.rename(backup)
+    except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise DataRepoBootstrapError(
+            f"could not create verified pre-adoption backup; original untouched: {exc}"
+        ) from exc
+
+    _run_git(["init"], cwd=target)
+    _run_git(["remote", "add", "origin", data_repo_url], cwd=target)
+    _run_git(["fetch", "--no-tags", "origin", "main"], cwd=target, timeout=900)
+    _run_git(["lfs", "install", "--local"], cwd=target)
+    _run_git(["read-tree", "origin/main"], cwd=target)
+    _run_git(["update-ref", "refs/heads/main", "refs/remotes/origin/main"], cwd=target)
+    _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target)
+    _run_git(["config", "branch.main.remote", "origin"], cwd=target)
+    _run_git(["config", "branch.main.merge", "refs/heads/main"], cwd=target)
+    _run_git(
+        ["update-ref", f"refs/apex-bootstrap/original-origin-main/{stamp}",
+         "refs/remotes/origin/main"],
+        cwd=target,
+    )
+    # No --force: existing files are never overwritten. Missing LFS-tracked
+    # paths are materialized through the installed LFS smudge filter.
+    _run_git(["checkout-index", "--all"], cwd=target, timeout=900)
+    ok, reason = verify_dedicated_data_repo(
+        target, expected_repo_url=data_repo_url, require_remote=True
+    )
+    if not ok:
+        raise DataRepoBootstrapError(
+            f"adopted repository identity verification failed: {reason}; "
+            f"original data backup retained at {backup}"
+        )
+    _verify_git_lfs_and_tracking(target)
+    return backup
 
 
 def bootstrap_data_repo(
@@ -162,14 +292,13 @@ def bootstrap_data_repo(
 
     if target.exists():
         if not (target / ".git").exists():
-            raise DataRepoBootstrapError(
-                f"{target} already exists but is not a Git clone; preserving it"
-            )
+            _adopt_existing_data_repo(target, data_repo_url)
         ok, reason = verify_dedicated_data_repo(
             target, expected_repo_url=data_repo_url, require_remote=True
         )
         if not ok:
             raise DataRepoBootstrapError(f"existing data repository is unsafe: {reason}")
+        _verify_git_lfs_and_tracking(target)
     else:
         if link.exists() and not link.is_dir():
             raise DataRepoBootstrapError(f"{link} exists and is not a directory")
@@ -191,7 +320,9 @@ def bootstrap_data_repo(
         conflict_backup = target / ".apex-bootstrap-preserved" / stamp
         try:
             if any(link.iterdir()):
-                _copy_local_data(link, target, conflict_backup)
+                _copy_local_data(
+                    link, target, conflict_backup, preserve_conflicts=True
+                )
             link.rename(backup)
             try:
                 _make_directory_link(link, target)
