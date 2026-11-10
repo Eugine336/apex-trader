@@ -107,10 +107,8 @@ class PatternOutcomeTracker:
     def __init__(
         self,
         *,
-        min_samples: int = 10,
         max_records: int = 2000,
     ) -> None:
-        self.min_samples = max(1, int(min_samples))
         self.max_records = max(1, int(max_records))
         self._records: "list[_Record]" = []
         self._lock = threading.Lock()
@@ -272,13 +270,12 @@ class PatternOutcomeTracker:
             return {
                 "total_records": total,
                 "patterns_tracked": len(names),
-                "min_samples": self.min_samples,
                 "top_by_win_rate": top,
                 "bottom_by_win_rate": bottom,
             }
         except Exception as exc:  # noqa: BLE001 — status must never raise
             logger.debug("[pattern-evolution] get_status fault: %s", exc)
-            return {"total_records": 0, "patterns_tracked": 0, "min_samples": self.min_samples,
+            return {"total_records": 0, "patterns_tracked": 0,
                     "top_by_win_rate": [], "bottom_by_win_rate": []}
 
 
