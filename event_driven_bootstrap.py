@@ -7127,15 +7127,11 @@ class EventDrivenSystem:
         # external provider availability. The mechanical suite is enabled only by
         # the explicit RiskConfig fallback flag, never merely because cognition is off.
         risk_cfg = getattr(self._config, "risk", None)
-        legacy_fallback = bool(
-            getattr(risk_cfg, "legacy_mechanical_exit_fallback_enabled", False)
-        )
-        cfg.discretionary_exits_enabled = legacy_fallback
-        cfg.legacy_mechanical_exit_fallback_enabled = legacy_fallback
-        cfg.scan_directional_exits_enabled = bool(
-            legacy_fallback
-            and getattr(risk_cfg, "scan_directional_exits_enabled", False)
-        )
+        # The live event-driven runtime is Brain-only for discretionary
+        # management. No environment or RiskConfig flag can re-enable the
+        # retired deterministic TP/BE/trailing/stall/scan-exit fallback.
+        cfg.discretionary_exits_enabled = False
+        cfg.scan_directional_exits_enabled = False
         if risk_cfg is None:
             return cfg
         enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
