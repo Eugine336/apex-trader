@@ -549,3 +549,8 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - The benchmark now fetches `count + 1` raw rows, reports both `raw_timeframes` and completed `timeframes`, and makes the requested bar depth refer to completed candles. The pass gate requires the full requested completed-bar count across every requested symbol/timeframe in both cold and warm passes.
 - **TESTS ADDED:** exact fetch depth, raw-versus-completed counts, and complete cold/warm coverage.
 - Actual broker-universe timing remains an owner-host, read-only measurement. CI validates the benchmark logic; it cannot substitute synthetic data for the broker-connected performance acceptance.
+
+
+### Full-universe category correction — 2026-11-10
+
+- **FIXED:** the default full-universe category list omitted `synthetic`, even though the instrument registry classifies Deriv synthetic instruments under that category. The default `AppConfig.enabled_categories` and `.env.example` now include `synthetic` alongside forex, commodity, index and crypto. Gold mode remains XAUUSD-only. Full mode still requires a non-empty list of valid registered category names.
