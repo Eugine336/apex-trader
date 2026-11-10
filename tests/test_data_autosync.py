@@ -57,6 +57,9 @@ class TestSyncDataRepo:
             _init_repo(d)
             (d / "apex_positions.db").write_text("rows")
             (d / "market.csv").write_text("a,b,c")
+            (d / ".env").write_text("SECRET=must-not-publish")
+            (d / "broker_token.json").write_text('{"token":"must-not-publish"}')
+            (d / "private.pem").write_text("PRIVATE KEY")
 
             with patch.object(backup_data, "_DATA_DIR", d):
                 # push=False so we don't need a remote in the test sandbox
@@ -71,6 +74,9 @@ class TestSyncDataRepo:
             )
             assert "apex_positions.db" in tracked
             assert "market.csv" not in tracked
+            assert ".env" not in tracked
+            assert "broker_token.json" not in tracked
+            assert "private.pem" not in tracked
 
     def test_idempotent_no_changes(self):
         from scripts import backup_data
@@ -599,3 +605,11 @@ class TestDiscardCorruptEventStore:
 
             assert all(path.exists() and path.read_bytes() == data for path, data in rotations)
             assert "preserved 5 corrupt rotation(s)" in res
+
+
+
+def test_public_backup_filter_rejects_secret_like_names():
+    from scripts.backup_data import _should_skip
+
+    for name in (".env", "broker_token.json", "private.pem", "client_secret.txt"):
+        assert _should_skip(Path(name), 10_000, []) is not None

@@ -17,23 +17,36 @@ Everything the engine addresses as `data/...` therefore physically lives in the
 data repo, which has its own git remote, daily auto-backup, and clean-start
 sync (see `platforms/maintenance.py`, `platforms/clean_start.py`).
 
-> The junction is created on the host, outside this repo. It is **not** checked
-> in — a fresh clone has no `data/` directory until the operator creates the
-> junction (e.g. `mklink /J data ..\apex-trader-data` on Windows, or
-> `ln -s ../apex-trader-data data` on POSIX). `deploy/setup-vps.sh` does this
-> automatically: it clones `apex-trader-data` to `/opt/apex-trader-data` and
-> symlinks `/opt/apex-trader/data → ../apex-trader-data`.
-
-> **A plain `data/` directory inside the source checkout is NOT a valid data
-> repo.** All data git operations (auto-sync, history compaction, clean-start
-> reset) verify — via `scripts/git_identity.py` — that `data/` is its own
-> dedicated repo whose `origin` normalizes to `Eugine336/apex-trader-data`, and
-> set `GIT_CEILING_DIRECTORIES` so git can never walk up into the source repo.
-> If `data/` is a plain directory nested in the source checkout, those
-> operations **refuse** rather than risk destroying the source repo's history,
-> and `runtime_paths.ensure_data_dir()` raises `DataJunctionError` rather than
-> silently create it. The engine's own stores still create their schema on first
-> write, but git-backed data maintenance is disabled until the junction exists.
+> **Automatic provisioning:** On normal single-user startup, before the event store,
+> databases, or trading subsystems initialize, main.py calls
+> scripts/data_repo_bootstrap.py. It clones the public
+> `Eugine336/apex-trader-data` repository into the sibling directory when absent,
+> verifies its Git identity, and creates the platform-appropriate junction or
+> symlink automatically. No manual junction command or data-path environment
+> variable is required.
+>
+> If an existing plain `data/` directory is found, local files are merged into
+> the dedicated data repository. Local files take precedence for same-path
+> conflicts; the replaced remote versions are preserved under
+> `.apex-bootstrap-preserved/<timestamp>/`, and the complete original directory
+> is retained beside the source checkout as a timestamped backup. The original
+> is never deleted automatically. If provisioning or verification fails, Apex
+> logs a critical error and its existing data-topology safety gate prevents new
+> exposure.
+>
+> Existing valid junctions are verified, not recreated. Existing sibling paths
+> that are not valid clones are left untouched and cause a clear bootstrap
+> failure. The bootstrap never edits `.env`, resets Git history, or force-pushes.
+> Multi-tenant processes with `APEX_DATA_DIR` continue using isolated per-user
+> storage and do not join the shared data repository.
+>
+> The data repository is public by design. Every committed file is publicly
+> readable. Do not store or sync broker credentials, API keys, passwords,
+> personal data, or other secrets in it. Cloning requires no authentication;
+> pushing still requires an existing machine-level GitHub write credential
+> (for example, a configured Git credential helper or authenticated GitHub CLI
+> session). Without one, runtime data remains local and synchronization reports
+> failure rather than weakening repository safety.
 
 ## Two kinds of data — do not conflate them
 
