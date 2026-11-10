@@ -278,6 +278,7 @@ def test_disconnected_cross_instrument_heuristics_are_retired():
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
     }
     assert not fields.intersection({
+        "queue_enabled", "queue_window_ms",
         "ranking_enabled", "quality_sizing_enabled", "displacement_enabled",
         "spread_ev_penalty_per_pip", "winrate_ev_weight",
         "quality_sizing_max_boost", "quality_sizing_min_cut", "quality_sizing_ev_ref",
@@ -291,6 +292,11 @@ def test_disconnected_cross_instrument_heuristics_are_retired():
             "CrossInstrumentRanker", "OpportunityQualitySizer", "PositionDisplacer",
         }
         for node in ast.walk(context)
+    )
+    bootstrap = _parse("event_driven_bootstrap.py")
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "_opportunity_queue"
+        for node in ast.walk(bootstrap)
     )
 
 
