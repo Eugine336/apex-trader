@@ -53,6 +53,8 @@ def test_benchmark_runs_cold_and_warm_on_one_immutable_market_snapshot():
     assert report["bars_fetched_per_timeframe"] == 21
     assert report["cold"]["samples"][0]["raw_timeframes"]["M5"] == 21
     assert report["cold"]["samples"][0]["timeframes"]["M5"] == 20
+    assert _pass_complete(report["cold"], ["EURUSD", "GBPUSD"], ["M5", "H1"], 20)
+    assert _pass_complete(report["warm"], ["EURUSD", "GBPUSD"], ["M5", "H1"], 20)
     assert report["execution_mutations_performed"] == 0
 
 
