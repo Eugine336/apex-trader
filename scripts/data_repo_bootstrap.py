@@ -57,6 +57,14 @@ def _is_link(path: Path) -> bool:
         return False
 
 
+def _remove_directory_link(link: Path) -> None:
+    """Remove the link object only; never recurse into its target."""
+    if os.name == "nt":
+        os.rmdir(link)
+    else:
+        link.unlink()
+
+
 def _make_directory_link(link: Path, target: Path) -> None:
     if os.name == "nt":
         result = subprocess.run(
@@ -348,40 +356,53 @@ def bootstrap_data_repo(
         _run_git(["lfs", "install", "--local"], cwd=target)
         _verify_git_lfs_and_tracking(target)
 
+    source_backup: Path | None = None
     if link.exists():
         if not link.is_dir():
             raise DataRepoBootstrapError(f"{link} exists and is not a directory")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup = source.parent / f"{source.name}-data-local-backup-{stamp}"
+        source_backup = source.parent / f"{source.name}-data-local-backup-{stamp}"
         conflict_backup = target / ".apex-bootstrap-preserved" / stamp
         try:
             if any(link.iterdir()):
                 _copy_local_data(
                     link, target, conflict_backup, preserve_conflicts=True
                 )
-            link.rename(backup)
+            link.rename(source_backup)
             try:
                 _make_directory_link(link, target)
             except Exception:
-                backup.rename(link)
+                source_backup.rename(link)
                 raise
         except Exception as exc:
-            if backup.exists() and not link.exists():
-                backup.rename(link)
+            if source_backup.exists() and not link.exists():
+                source_backup.rename(link)
             raise DataRepoBootstrapError(
                 f"could not safely route existing data; original preserved: {exc}"
             ) from exc
     else:
         _make_directory_link(link, target)
 
-    ok, reason = verify_dedicated_data_repo(
-        link, expected_repo_url=data_repo_url, require_remote=True
-    )
-    if not ok:
-        raise DataRepoBootstrapError(f"post-bootstrap verification failed: {reason}")
-    _verify_git_lfs_and_tracking(target)
-    if link.resolve() != target.resolve():
-        raise DataRepoBootstrapError(
-            f"junction resolution mismatch: {link.resolve()} != {target.resolve()}"
+    try:
+        ok, reason = verify_dedicated_data_repo(
+            link, expected_repo_url=data_repo_url, require_remote=True
         )
+        if not ok:
+            raise DataRepoBootstrapError(
+                f"post-bootstrap verification failed: {reason}"
+            )
+        _verify_git_lfs_and_tracking(target)
+        if link.resolve() != target.resolve():
+            raise DataRepoBootstrapError(
+                f"junction resolution mismatch: {link.resolve()} != {target.resolve()}"
+            )
+    except Exception as exc:
+        if _is_link(link):
+            _remove_directory_link(link)
+        if source_backup is not None and source_backup.exists() and not link.exists():
+            source_backup.rename(link)
+        raise DataRepoBootstrapError(
+            f"post-bootstrap verification failed; source data restored where "
+            f"applicable: {exc}"
+        ) from exc
     return link
