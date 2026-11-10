@@ -574,6 +574,12 @@ def compact_repo_history(
         return refusal
 
     temp_branch = "_compact_temp"
+    # Capture the old tree before creating the orphan. The compacted index is
+    # seeded from this tree so excluded oversized tracked files retain their
+    # last committed blobs without checking them out over live working files.
+    ok_head, original_head = _run_git(["rev-parse", "HEAD"], work_tree)
+    if not ok_head:
+        return "could not resolve current data-repository HEAD"
     # Drop any stale temp branch left by a previous interrupted run.
     _run_git(["branch", "-D", temp_branch], work_tree)
 
@@ -581,8 +587,18 @@ def compact_repo_history(
     if not ok:
         return f"orphan checkout failed: {out.splitlines()[0] if out else 'unknown'}"
 
-    # Stage only eligible files. Oversized tracked files retain their existing
-    # index entries; oversized untracked files never enter the compacted commit.
+    # Restore the old tree into the orphan index without touching the
+    # working tree. This is required because checkout --orphan clears the
+    # index; otherwise pathspec-excluded tracked files would disappear from
+    # the compacted commit.
+    ok_tree, tree_out = _run_git(["read-tree", original_head], work_tree)
+    if not ok_tree:
+        _run_git(["checkout", "-f", branch], work_tree)
+        _run_git(["branch", "-D", temp_branch], work_tree)
+        return f"index seed failed: {tree_out.splitlines()[0] if tree_out else 'unknown'}"
+
+    # Stage only eligible files. Oversized tracked files retain their old blobs;
+    # oversized untracked files never enter the compacted commit.
     max_bytes = int(max_file_size_mb * 1024 * 1024)
     effective_excludes = list(dict.fromkeys(
         [*(exclude_patterns or _DEFAULT_EXCLUDE_PATTERNS), *_PUBLIC_REPO_SECRET_EXCLUDES]
