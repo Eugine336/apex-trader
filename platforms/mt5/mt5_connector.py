@@ -17,6 +17,7 @@ import pandas as pd
 from loguru import logger
 
 from config import get_pip_size
+from config_env import trading_enabled_from_env
 from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
@@ -1301,6 +1302,11 @@ class MT5Connector(BaseConnector):
         comment: str = "",
         idempotency_key: str = "",
     ) -> OrderResult:
+        if not trading_enabled_from_env(default=True):
+            return self._fail_order(
+                symbol, direction, lots, sl, tp,
+                "trading_disabled_by_TRADING_ENABLED",
+            )
         self._require_connection()
         mapped = self.symbol_map(symbol)
         if mapped is None:
@@ -1690,7 +1696,6 @@ class MT5Connector(BaseConnector):
         observed in the broker's current pending-order book. An acknowledgement
         without that confirmation is AMBIGUOUS and must be reconciled, not retried.
         """
-        self._require_connection()
         side = str(direction or "").strip().upper()
         kind = str(order_type or "").strip().upper()
         entry = requested_lots = stop = target = 0.0
@@ -1701,6 +1706,9 @@ class MT5Connector(BaseConnector):
                 symbol=symbol, direction=side, sl=stop, tp=target, platform="mt5",
                 error=message, order_status="REJECTED", order_type=kind,
             )
+        if not trading_enabled_from_env(default=True):
+            return fail_pending("trading_disabled_by_TRADING_ENABLED")
+        self._require_connection()
         if idempotency_key and (
             len(str(idempotency_key)) != 12
             or any(character not in "0123456789abcdefABCDEF" for character in str(idempotency_key))
