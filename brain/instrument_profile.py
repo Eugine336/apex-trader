@@ -156,50 +156,6 @@ class InstrumentProfile:
     dxy_opposition_penalty: float = 0.15
     dxy_lookback_bars: int = 20
 
-    # ── Hardened flip confirmation (entry/flip_confirmer.py) ──────────
-    # Tuning for the 5-check flip confirmation that gates both the stop-out
-    # flip and the A1 direction-flip / momentum-override paths. Every value is
-    # per-instrument tunable here; the confirmer resolves the profile first,
-    # then the EntryConfig default, then the literal fallback.
-    #
-    # 1. ATR-normalised magnitude — the net directional move over the recent
-    #    tick window must clear ``flip_atr_move_threshold`` × the M5 ATR (so a
-    #    spread spike or single wick can never satisfy the flip).
-    # 2. Session-aware tick efficiency — the signed tick_momentum efficiency
-    #    must reach ``flip_tick_threshold_asian`` in the low-liquidity Asian
-    #    session and ``flip_tick_threshold_default`` in London / NY / overlap.
-    # 3. Multi-TF non-opposition — M5 must not oppose the flip and, when
-    #    ``flip_require_m15_non_opposition`` is set, M15 must not oppose either
-    #    (missing structure is permissive, never a block).
-    # 4. Volume confirmation — recent M1 tick_volume vs its 20-bar average must
-    #    clear ``flip_volume_ratio_min`` (``flip_volume_ratio_asian`` in Asian).
-    # 5. Invalidation clean-break — when ``flip_require_clean_break`` is set the
-    #    last CLOSED M1 candle must close cleanly beyond the invalidation level
-    #    (a wick-only breach that the close retreats from is rejected).
-    flip_atr_move_threshold: float = 0.3
-    flip_tick_threshold_default: float = 0.30
-    flip_tick_threshold_asian: float = 0.45
-    flip_require_m15_non_opposition: bool = True
-    flip_volume_ratio_min: float = 1.0
-    flip_volume_ratio_asian: float = 1.3
-    flip_require_clean_break: bool = True
-
-    # ── Momentum confirmation Checks 6 & 7 (Session 16) ───────────────
-    # The final two gates of the 8-check flip confirmation.
-    #
-    # 6. Tick-rule order-flow delta (entry/tick_delta_analyzer.py) — the recent
-    #    stored ticks must show net aggressor pressure in the flip direction.
-    #    ``flip_delta_tick_count`` recent ticks are read; the signed delta ratio
-    #    in [-1, +1] must clear ``flip_delta_threshold`` (LONG needs ≥ +thr,
-    #    SHORT ≤ −thr). Gated by ``flip_require_delta_confirmation`` — ON by
-    #    default; a graceful skip when fewer than 10 usable ticks are available.
-    # Fast-then-slow M1/M5 sequencing was retired: its state was never read
-    # by a live decision consumer and therefore could not qualify any action.
-    flip_delta_threshold: float = 0.2
-    flip_delta_tick_count: int = 30
-    flip_require_delta_confirmation: bool = True
-
-
 # ---------------------------------------------------------------------------
 # Profile definitions per category
 # ---------------------------------------------------------------------------
@@ -368,7 +324,6 @@ _GOLD_PROFILE = InstrumentProfile(
     dxy_filter_enabled=True,            # Gold's inverse-USD correlation is core
     # Tick-rule delta remains a contextual measurement; the retired M1/M5
     # sequencing tracker was never consumed by the live decision path.
-    flip_require_delta_confirmation=True,
     vwap_zone_enabled=True,
 )
 
