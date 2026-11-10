@@ -149,3 +149,17 @@ def test_unlocked_process_trading_mode_allows_persisted_user_override(monkeypatc
     })
     assert config.universe_mode == "selected"
     assert config.enabled_pairs == ["EURUSD"]
+
+
+def test_full_trading_mode_rejects_empty_category_universe(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "full")
+    monkeypatch.setenv("TRADING_ENABLED_CATEGORIES", "")
+    with pytest.raises(ValueError, match="at least one enabled category"):
+        AppConfig()
+
+
+def test_full_trading_mode_rejects_unknown_categories(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "full")
+    monkeypatch.setenv("TRADING_ENABLED_CATEGORIES", "forex,unobtainium")
+    with pytest.raises(ValueError, match="unsupported trading categories"):
+        AppConfig()
