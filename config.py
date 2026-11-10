@@ -3760,16 +3760,6 @@ class CognitionConfig:
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
     min_advisors_for_action: int = 1
-    # Article XXI / V-013 — when the council under-delivers (most available
-    # advisors did not respond) the Brain attenuates its effective confidence by
-    # this multiplier: degraded cognition is ENFORCED, not merely observed.
-    degraded_confidence_multiplier: float = 0.7
-    # V-013 — extend the same attenuation to the case where NO council metadata
-    # exists at all (coverage unknown): the Brain cannot confirm whether one
-    # advisor or several backed a read, so unknown coverage is treated as degraded
-    # cognition. Default True (the deployed system enforces it); the unknown state
-    # is ALWAYS logged/recorded regardless. env COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL.
-    degrade_on_unknown_council: bool = True
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
     # Native concept intelligence fetches completed OHLCV independently of
@@ -3904,9 +3894,6 @@ class CognitionConfig:
         self.ev_primary_gate = _llm_env_bool(
             "COGNITION_EV_PRIMARY_GATE", self.ev_primary_gate
         )
-        self.degrade_on_unknown_council = _llm_env_bool(
-            "COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL", self.degrade_on_unknown_council
-        )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
@@ -4002,11 +3989,6 @@ class CognitionConfig:
             )
             self.min_advisors_for_action = 1
 
-        if not (0.0 <= float(self.degraded_confidence_multiplier) <= 1.0):
-            raise ValueError(
-                "CognitionConfig.degraded_confidence_multiplier must be in [0, 1], got "
-                f"{self.degraded_confidence_multiplier!r}"
-            )
         if float(self.manage_min_interval_seconds) < 0:
             raise ValueError(
                 "CognitionConfig.manage_min_interval_seconds must be >= 0, got "
