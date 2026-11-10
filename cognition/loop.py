@@ -897,8 +897,6 @@ class CognitionLoop:
                     questions["portfolio_decision"] = reason
             if hasattr(output, "campaign"):
                 output.campaign = None
-            if hasattr(output, "direction"):
-                output.direction = "FLAT"
         except Exception as exc:  # noqa: BLE001 — fallback must not authorize exposure
             logger.error("[cognition-loop] could not demote an unreviewed campaign: %s", exc)
 
