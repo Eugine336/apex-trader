@@ -318,3 +318,105 @@ def test_tick_poller_rejects_missing_provider_symbol():
         _Px(1.2345, 1.2347, symbol=""),
     )
     assert router.ticks == []
+
+
+class _HistoryFrame:
+    def __init__(self, rows, *, verified=True):
+        self._rows = list(rows)
+        self.attrs = {"source_timestamp_verified": verified}
+        self.empty = not self._rows
+
+    def iterrows(self):
+        return iter(enumerate(self._rows))
+
+
+class _HistoryPM(_PM):
+    def __init__(self, px, frames):
+        super().__init__(px)
+        self.frames = list(frames)
+        self.history_calls = []
+
+    def get_tick_history(self, symbol, start, end):
+        self.history_calls.append((symbol, start, end))
+        return self.frames.pop(0)
+
+
+def _history_row(stamp, bid, ask, flags=2):
+    return {
+        "time_msc_datetime": stamp,
+        "time_msc": int(stamp.timestamp() * 1000),
+        "bid": bid,
+        "ask": ask,
+        "last": 0.0,
+        "volume": 0,
+        "volume_real": 0.0,
+        "flags": flags,
+    }
+
+
+def _history_quote(stamp, bid, ask):
+    return types.SimpleNamespace(
+        symbol="EURUSD",
+        bid=bid,
+        ask=ask,
+        time=stamp,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        spread_unit="unknown",
+        raw_fields={
+            "time_msc": int(stamp.timestamp() * 1000),
+            "flags": 2,
+            "provider_timestamp_semantics": "broker_server_epoch",
+        },
+    )
+
+
+def test_mt5_poller_replays_all_available_quote_ticks_and_deduplicates_overlap():
+    from datetime import timedelta
+
+    t0 = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(milliseconds=120)
+    t2 = t0 + timedelta(milliseconds=240)
+    t3 = t0 + timedelta(milliseconds=360)
+    rows = [
+        _history_row(t0, 1.1000, 1.1002),
+        _history_row(t1, 1.1001, 1.1003),
+        _history_row(t2, 1.1002, 1.1004),
+    ]
+    pm = _HistoryPM(
+        _history_quote(t2, 1.1002, 1.1004),
+        [_HistoryFrame(rows), _HistoryFrame(rows + [
+            _history_row(t3, 1.1003, 1.1005),
+        ])],
+    )
+    router = _Router()
+    poller = tick_sources.MT5TickPoller(pm, router, ["EURUSD"], poll_interval=0.0)
+
+    poller._poll_symbol("EURUSD")
+    assert [tick.timestamp for tick in router.ticks] == [t0, t1, t2]
+    assert poller._history_cursor["EURUSD"] == t2
+
+    pm._px = _history_quote(t3, 1.1003, 1.1005)
+    poller._poll_symbol("EURUSD")
+
+    assert [tick.timestamp for tick in router.ticks] == [t0, t1, t2, t3]
+    assert len(router.ticks) == 4
+    assert pm.history_calls[1][1] == t2 - timedelta(milliseconds=1)
+
+
+def test_mt5_poller_does_not_route_or_advance_unverified_history():
+    from datetime import timedelta
+
+    stamp = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    pm = _HistoryPM(
+        _history_quote(stamp, 1.1000, 1.1002),
+        [_HistoryFrame([_history_row(stamp, 1.1000, 1.1002)], verified=False)],
+    )
+    router = _Router()
+    poller = tick_sources.MT5TickPoller(pm, router, ["EURUSD"], poll_interval=0.0)
+
+    poller._poll_symbol("EURUSD")
+
+    assert len(router.ticks) == 1  # current broker-verified quote fallback only
+    assert router.ticks[0].timestamp == stamp
+    assert "EURUSD" not in poller._history_cursor
