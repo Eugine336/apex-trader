@@ -17,15 +17,15 @@ from typing import Any, Optional, Sequence
 class PortfolioCandidate:
     """A single trade the organisation wants to size.
 
-    Direction/conviction come from Consensus; the trade has already passed
-    Compliance by the time it reaches Portfolio.
+    Direction comes from the canonical Brain campaign. The legacy conviction
+    field is retained for compatibility only and is not used to size capital.
     """
 
     symbol: str
     direction: str
     entry_price: float
     stop_loss: float
-    conviction: float = 0.0          # 0..100 (consensus score)
+    conviction: float = 0.0          # deprecated metadata; never a sizing input
     context: Any = None              # PlatformContext (duck-typed: .uses_stake)
     pip_size: float = 0.0
     pip_value_per_lot: float = 10.0
