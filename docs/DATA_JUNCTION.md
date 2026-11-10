@@ -115,3 +115,36 @@ reference configuration reachable from an isolated instance.
 - `APEX_USER_CONFIG` — per-user trading-preference JSON
 - `APEX_TRADE_REPORT_DB` — API database for the trade-reporting bridge
 - `APEX_REPO_DIR` — code-repo root, for shared repo-relative resources
+
+
+## Removing historical runtime files from the code repository
+
+The source repository previously tracked a small set of mutable runtime files under
+data/ (calibration state, journals, heartbeat/crash markers, and learned state).
+Those files belong only in apex-trader-data; they are not code-shipped reference
+assets. The source repository now ignores the entire data/ path and does not need
+a tracked placeholder because bootstrap creates the junction automatically.
+
+For an existing checkout whose data/ is already a verified junction, bootstrap
+removes any remaining legacy data/** entries from the source Git index only.
+It verifies that the path resolves to the sibling data repository first. Active
+data files and timestamped backups are not deleted or modified. This prevents a
+later source-repository checkout from mistaking junction contents for files
+owned by the code repository.
+
+Before pulling the cleanup commit into an already-migrated Windows checkout, run
+this once from the apex-trader repository root:
+
+```powershell
+git rm --cached --force -r --ignore-unmatch -- data
+git pull --ff-only
+```
+
+The first command removes legacy paths from the source repository index only; it
+does not remove files from the junction target. Confirm the data junction still
+points to the sibling apex-trader-data directory afterward. New clones need no
+manual step: bootstrap provisions the junction and performs the same index cleanup.
+
+Removing these paths from the current source tree does not erase their historical
+versions from the public Git commit history. The data repository remains public by
+design; only data intended for public visibility should be committed there.
