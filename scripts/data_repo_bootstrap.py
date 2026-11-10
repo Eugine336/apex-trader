@@ -143,7 +143,16 @@ def _tree_manifest(root: Path) -> list[tuple[str, str, int]]:
     entries: list[tuple[str, str, int]] = []
     for current, dirs, files in os.walk(root, followlinks=False):
         current_path = Path(current)
-        dirs[:] = [name for name in dirs if not (current_path / name).is_symlink()]
+        traversable_dirs: list[str] = []
+        for name in dirs:
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            if item.is_symlink():
+                entries.append((relative, "link:" + os.readlink(item), 0))
+            else:
+                entries.append((relative, "directory", 0))
+                traversable_dirs.append(name)
+        dirs[:] = traversable_dirs
         for name in files:
             item = current_path / name
             relative = item.relative_to(root).as_posix()
