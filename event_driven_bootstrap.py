@@ -6063,7 +6063,8 @@ class EventDrivenSystem:
                             meta["fill_event_emitted"] = True
                             meta["position_id"] = position_id
                         fill_platform = str(getattr(position, "platform", "") or "").strip().lower()
-                        campaign_registry = getattr(self._ctx, "campaign_registry", None)
+                        fill_context = getattr(self, "_ctx", None)
+                        campaign_registry = getattr(fill_context, "campaign_registry", None) if fill_context is not None else None
                         attach_campaign_ticket = getattr(campaign_registry, "attach_ticket", None)
                         if (
                             campaign_registry is not None
