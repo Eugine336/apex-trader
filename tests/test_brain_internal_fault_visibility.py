@@ -29,3 +29,21 @@ def test_ordinary_observation_is_not_flagged_as_a_fault():
     out = brain._observe("EURUSD", "no qualifying opportunity", {})
     assert out.internal_fault is False
     assert out.decision.do_nothing_considered is True
+
+
+def test_native_no_op_does_not_fabricate_zero_confidence():
+    brain = CognitiveBrain(reasoner=None)
+    out = brain._native_fallback_observe(
+        "XAUUSD",
+        "no qualified opportunity",
+        {},
+        analysis=None,
+        hypotheses=[],
+        advisor_status="unavailable",
+    )
+
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.decision.confidence is None
+    payload = out.decision.to_dict()
+    assert payload["confidence"] is None
+    assert payload["confidence_semantics"] == "not_assessed"
