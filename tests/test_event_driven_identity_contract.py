@@ -236,3 +236,24 @@ def test_book_opportunity_comparison_never_uses_reasoning_confidence_as_ev():
     ), "held-position confidence is not comparable expected-return evidence"
 
 
+
+
+def test_breakeven_reentry_subsystem_is_fully_retired():
+    assert not (ROOT / "management" / "re_entry.py").exists()
+
+    bootstrap = _parse("event_driven_bootstrap.py")
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"check_re_entry", "_arm_re_entry_zone"}
+        for node in ast.walk(bootstrap)
+    )
+    assert not any(
+        isinstance(node, ast.Name) and node.id in {
+            "ReEntryManager", "re_entry_manager", "RE_ENTRY_ARMED",
+        }
+        for path in ("core/system_context.py", "event_driven_bootstrap.py", "persistence/domain_events.py")
+        for node in ast.walk(_parse(path))
+    )
+
+
