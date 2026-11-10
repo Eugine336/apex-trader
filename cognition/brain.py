@@ -1035,8 +1035,9 @@ class CognitiveBrain:
         # Opportunity objects and reason over them directly (not only over the
         # collapsed direction). ``driving_opp`` is the opportunity whose
         # activation this campaign depends on; ``is_harvesting`` marks a multi-
-        # opportunity reply (a legacy single-direction reply leaves both empty and
-        # every gate below behaves exactly as before).
+        # opportunity reply. A legacy single-direction reply remains parseable
+        # for observability, but the activation gate below deliberately prevents
+        # it from authorising a campaign without a structured opportunity.
         # Item 8 — remember the set per symbol so MANAGEMENT can later compare a
         # live campaign against the currently visible opportunities.
         # The latest opportunity set was captured immediately after parsing the

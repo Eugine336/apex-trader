@@ -2,13 +2,13 @@
 
 APEX moved from single-direction voting to multi-opportunity hypothesis-ranking.
 The reasoner now accepts a SET of ranked opportunities plus a market-state read
-and collapses the PREFERRED opportunity to the legacy direction/confidence fields
-the whole downstream pipeline already consumes — while carrying the full set for
-auditability. The OLD single-direction format must still parse identically
-(backward compatibility is required). These tests cover both formats, the
-untradeable/FLAT mapping, preferred selection across competing directions, the
-prompt contents, and the Brain integration (quality/asymmetry → confidence/EV/
-sizing).
+and exposes the preferred opportunity through compatibility direction/strength
+fields for observability while carrying the full structured set. Execution must
+consume the structured opportunity and must never act from a legacy direction/
+confidence pair alone. The OLD single-direction format remains parseable but is
+observational only. These tests cover both formats, activation, the untradeable/
+FLAT mapping, preferred selection across competing directions, prompt contents,
+and Brain integration (quality/asymmetry → reasoning metadata and EV).
 """
 
 import json
@@ -125,7 +125,7 @@ def test_new_format_invalidation_and_alternatives_backfilled():
     assert any("LONG" in a and "reversal later" in a for a in op.alternative_hypotheses)
 
 
-# ── Old-format backward compatibility (CRITICAL) ───────────────────────────────
+# ── Old-format parse compatibility (non-authoritative) ─────────────────────────
 
 def test_old_format_direction_confidence_unchanged():
     reply = json.dumps({
@@ -283,6 +283,33 @@ def _brain(reply):
         reasoner=_PassThroughReasoner(reply),
         min_confidence_to_act=0.5,
     )
+
+
+def test_legacy_direction_confidence_without_opportunity_is_observational_only():
+    reply = json.dumps({
+        "direction": "LONG",
+        "confidence": 0.99,
+        "rationale": "strong directional opinion",
+        "competing_hypotheses": ["range rotation"],
+        "missing_information": [],
+    })
+    out = _brain(reply).reason(_confident_state())
+
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "no structured, activated opportunity" in out.decision.risk_rationale
+
+
+def test_unknown_opportunity_lifecycle_state_cannot_authorise_campaign():
+    reply = _new_reply(
+        [_opp(id="unknown", direction="LONG", state="UNKNOWN", quality=0.99)],
+        preferred="unknown",
+    )
+    out = _brain(reply).reason(_confident_state())
+
+    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
+    assert out.campaign is None
+    assert "unknown" in out.decision.risk_rationale.lower()
 
 
 def test_brain_opens_campaign_from_preferred_opportunity():
