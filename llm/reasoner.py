@@ -4,7 +4,7 @@ The language model is **not** a chatbot bolted onto the side and it is **not**
 an oracle that overrides deterministic safeguards. It is an additional reasoning
 participant that receives the same *structured evidence* every other module sees
 (the competing theses, the vote panel summary, regime, structure) and returns a
-structured opinion: a direction, a calibrated confidence, a short rationale, the
+structured opinion: a direction, an uncalibrated reasoning-strength descriptor, a short rationale, the
 competing hypotheses it considered, and the information it feels is missing.
 
 That opinion is emitted as **evidence**, exactly like any analytical module — it
@@ -250,18 +250,22 @@ _MANAGEMENT_SYSTEM_PROMPT = (
     "\"what_would_change_my_mind\": [\"...\"], "
     "\"invalidation\": \"the condition that proves the campaign thesis dead\", "
     "\"action\": \"HOLD|TIGHTEN_RISK|PROTECT_PROFIT|SCALE_IN|SCALE_OUT|EXIT|REVERSE\", "
-    "\"confidence\": 0.0-1.0, "
-    "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
-    "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
+    "\"confidence\": 0.0-1.0 (uncalibrated reasoning strength, not probability), "
+    "\"thesis_confidence\": 0.0-1.0 (uncalibrated), \"opportunity_confidence\": 0.0-1.0 (uncalibrated), "
+    "\"timing_confidence\": 0.0-1.0 (uncalibrated), \"execution_confidence\": 0.0-1.0 (uncalibrated), "
     "\"rationale\": \"one or two sentences tying it together\"}\n"
-    "'confidence' is your calibrated probability that the chosen action is the "
-    "correct thing to do with this campaign right now. Decompose it into "
-    "thesis_confidence (is the original read still correct?), "
-    "opportunity_confidence (does a real exploitable edge still exist?), "
-    "timing_confidence (is now the moment to take this action?) and "
-    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
-    "If unsure, default to HOLD with thesis_state THESIS_INTACT — uncertainty "
-    "resolves toward holding, never toward liquidation."
+    "Confidence fields are uncalibrated reasoning-strength metadata only, not "
+    "probabilities, win rates, odds, or estimates of the chance an action succeeds. "
+    "Never describe them as calibrated. Use them only to summarise relative "
+    "reasoning strength from the supplied evidence; if an assessment is not "
+    "possible, state that explicitly in key_uncertainty and do not use zero to mean "
+    "unknown. Decompose the assessment into thesis_confidence (is the "
+    "original read still supported?), opportunity_confidence (does a real "
+    "exploitable edge still exist?), timing_confidence (is now the moment to take "
+    "this action?) and execution_confidence (can it be realised after "
+    "spread/slippage/liquidity?). These fields must never authorize, veto, or size "
+    "a trade. The Brain alone evaluates evidence, expected value, geometry and "
+    "risk. Preserve uncertainty and explain what evidence is missing."
 )
 
 
@@ -697,6 +701,7 @@ class LLMOpinion:
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
+            "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
             "thesis_confidence": thesis_c,
             "opportunity_confidence": opp_c,
             "timing_confidence": timing_c,
@@ -757,7 +762,9 @@ class LLMOpinion:
             parts.append(self.rationale[:300])
         observation = " | ".join(parts)[:900]
 
-        measurements: dict = {}
+        measurements: dict = {
+            "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
+        }
         for k in ("thesis_confidence", "opportunity_confidence",
                   "timing_confidence", "execution_confidence"):
             v = getattr(self, k, None)
