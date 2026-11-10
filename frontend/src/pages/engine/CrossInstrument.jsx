@@ -10,7 +10,6 @@ export default function CrossInstrument() {
     5000
   );
 
-  const queue = data?.queue || {};
   const scanner = data?.proactive_scanner || {};
   const watchlist = data?.watchlist || [];
 
@@ -18,7 +17,7 @@ export default function CrossInstrument() {
     <div className="space-y-6">
       <EngineHeader
         title="Cross-Instrument Opportunities"
-        subtitle="The queue batches intents already authorized by the Cognitive Brain. The proactive scanner is observational and cannot create or authorize orders."
+        subtitle="The proactive scanner is observational and cannot create or authorize orders."
       />
 
       <EngineNotice
@@ -30,52 +29,7 @@ export default function CrossInstrument() {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 gap-4">
-            <StatTile
-              label="Authorized-intent queue"
-              value={queue.enabled ? "ON" : "OFF"}
-              accent={queue.enabled ? "text-emerald-400" : "text-gray-500"}
-            />
-            <StatTile
-              label="Observational scan"
-              value={scanner.enabled ? "ON" : "OFF"}
-              accent={scanner.enabled ? "text-emerald-400" : "text-gray-500"}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Panel title="Brain-authorized intent queue">
-              <table className="w-full text-[11px]">
-                <tbody>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Window</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {queue.window_ms || 0} ms
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Submitted</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {queue.submitted || 0}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Dispatched</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {queue.dispatched || 0}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-gray-800/60">
-                    <td className="py-0.5 text-gray-500">Windows</td>
-                    <td className="py-0.5 text-right font-mono text-gray-200">
-                      {queue.windows || 0}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </Panel>
-
-            <Panel title="Proactive scanner">
+          <Panel title="Proactive scanner">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="text-[10px] text-gray-500">Scans</div>
@@ -93,8 +47,7 @@ export default function CrossInstrument() {
               <p className="mt-3 text-[11px] text-gray-500">
                 Watchlist observations do not authorize or submit trades.
               </p>
-            </Panel>
-          </div>
+          </Panel>
 
           <Panel title="Observational watchlist">
             {watchlist.length === 0 ? (
