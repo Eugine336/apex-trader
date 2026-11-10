@@ -393,7 +393,7 @@ class TestRealisticGraph:
                          dependencies=["pair_learner"]))
         agent.register(F("gate_tuner", frequency=TuneFrequency.PERIODIC,
                          dependencies=["ev_estimator"]))
-        agent.register(F("planner_calibrator", frequency=TuneFrequency.ON_TRADE_BATCH,
+        agent.register(F("position_sizer", frequency=TuneFrequency.ON_TRADE_BATCH,
                          dependencies=["regime_learner"]))
         agent.register(F("signal_ledger", frequency=TuneFrequency.PER_SCAN_CYCLE))
 
@@ -401,9 +401,9 @@ class TestRealisticGraph:
         self._build(agent)
         results = agent.on_trade_close(_ctx())
         order = [r.tunable_name for r in results if not r.skipped]
-        # ev depends on pair_learner; planner depends on regime_learner.
+        # ev depends on pair_learner; position sizing depends on regime_learner.
         assert order.index("pair_learner") < order.index("ev_estimator")
-        assert order.index("regime_learner") < order.index("planner_calibrator")
+        assert order.index("regime_learner") < order.index("position_sizer")
         # gate_tuner is PERIODIC and signal_ledger PER_SCAN — not in this batch.
         assert "gate_tuner" not in order
         assert "signal_ledger" not in order
