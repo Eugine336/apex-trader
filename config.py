@@ -4054,7 +4054,6 @@ class CrossInstrumentConfig:
     proactive_scan_enabled: bool = True
     proactive_scan_interval_seconds: float = 60.0
     proactive_scan_min_ev: float = 0.5
-    proactive_proximity_pct: float = 0.02
 
     def __post_init__(self) -> None:
         if float(self.proactive_scan_interval_seconds) <= 0:
