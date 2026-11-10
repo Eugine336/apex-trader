@@ -40,6 +40,16 @@ existing-position management, or risk-reducing closes.
 the Brain's evidence, opportunity, expected-value, owner-limit, portfolio,
 broker-feasibility, and execution gates remain mandatory.
 
+## Event-driven runtime performance controls
+
+| Variable | Accepted values | Effect |
+|---|---|---|
+| `APEX_ED_POSEVAL_PARALLEL` | boolean | Enables parallel per-symbol position evaluation; set false to use serial evaluation |
+| `APEX_ED_EVENT_REACTIVE_MGMT` | boolean | Enables event-reactive management scheduling; set false to use the periodic safety-net sweep |
+
+These are operational rollback controls, not strategy or risk thresholds. The
+default is enabled for both.
+
 ## Gold Desk observer
 
 | Variable | Accepted values | Effect |
