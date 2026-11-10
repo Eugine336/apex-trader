@@ -5,8 +5,8 @@ timeframes (M1, M5, M15, H1, H4, D1) without any broker fetch after the
 initial warmup seed.
 
 It hooks into the existing :class:`tick.tick_router.TickRouter` via
-``register_callback`` and receives every *stored* tick (post-coalescing,
-~15Hz max per symbol).  For each (symbol, timeframe) it maintains:
+``register_raw_callback`` and receives every tick delivered by the broker adapter,
+before the bounded TickStore's 15Hz coalescing.  For each (symbol, timeframe) it maintains:
 
 * a ring buffer (``deque`` with ``maxlen``) of **closed** candles, and
 * one **forming** candle that is updated on every tick.
@@ -79,7 +79,7 @@ class LiveCandleAggregator:
     def on_tick(self, tick: Tick) -> None:
         """Update forming candles for all timeframes from a single tick.
 
-        Registered with ``TickRouter.register_callback``.  Best-effort and
+        Registered with ``TickRouter.register_raw_callback``.  Best-effort and
         fully self-contained: any failure is caught and logged so it can
         never propagate back into the tick router (which would break tick
         routing for every other subscriber).
