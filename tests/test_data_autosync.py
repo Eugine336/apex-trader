@@ -790,7 +790,9 @@ def test_public_sync_untracks_sqlite_sidecars_and_secret_named_files_without_del
     data.mkdir()
     _init_repo(data)
     database = data / "apex_positions.db"
-    sidecar = data / "apex_positions.db-wal"
+    # Keep this sidecar independent of the .db file above: the sync's
+    # SQLite WAL checkpoint correctly consumes WAL files belonging to a DB.
+    sidecar = data / "orphan.db-wal"
     secret = data / ".env"
     database.write_bytes(b"database-v1")
     sidecar.write_bytes(b"wal-v1")
