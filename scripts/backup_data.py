@@ -132,7 +132,12 @@ def _excluded_git_pathspecs(
 # ── WAL checkpoint helper ─────────────────────────────────────────────────
 
 
-def _checkpoint_wal_files(data_dir: Path) -> int:
+def _checkpoint_wal_files(
+    data_dir: Path,
+    *,
+    max_bytes: int | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> int:
     """Flush WAL journals into main .db files before a git sync.
 
     SQLite WAL mode keeps recent writes in a separate -wal file. Git
