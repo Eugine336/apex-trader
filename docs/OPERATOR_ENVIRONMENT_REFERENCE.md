@@ -177,7 +177,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | DERIV_ACCESS_TOKEN_FILE | Optional mounted token file for rotation. If set and readable, refresh uses it. | (blank secret) |
 | DERIV_TOKEN_EXPIRES_IN | Access-token lifetime in seconds. Blank or invalid values also fall back safely to 3600. | (redacted secret placeholder) |
 | COGNITION_ENABLED | ============================================================================= 3. Identity, cognition, and live execution mode ====================================================== | true |
-| COGNITION_SHADOW_MODE | 3. Identity, cognition, and live execution mode | false |
 | COGNITION_ORIGINATION_MODE | 3. Identity, cognition, and live execution mode | live |
 | COGNITION_MANAGEMENT_MODE | 3. Identity, cognition, and live execution mode | live |
 | COGNITION_MEMORY_ENABLED | 3. Identity, cognition, and live execution mode | true |
