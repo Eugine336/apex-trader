@@ -2367,10 +2367,15 @@ is updated as each item lands. Ratification does not assert full compliance.
   state (regime, hypotheses, invalidation, opportunity, EV) on the management
   `DecisionPackage` — parity with entry cognition (Article 11). Empty-field
   opinions preserve prior behaviour.
-- **RESOLVED (item 6) — audit gate.** `cognition/legacy_audit.py::
-  audit_nondirectional_cognition()` fails if any cognition Evidence producer
-  reintroduces a directional reading (a non-zero `polarity=`, a `_sign` /
-  `_sentiment_polarity` lean, or a `directional_lean` measurement) (Article 14).
+- **Static regression guard.** The active repository-wide guard is
+  scripts/constitution_audit.py. It checks the retired modules and named
+  source patterns listed in that script, including known directional-output,
+  wake-trigger, fail-open EV and alternate-decider regressions. The former
+  cognition/legacy_audit.py helper is not present in the current tree; do not
+  claim that its old audit_nondirectional_cognition() function is running.
+  The current static checks are a regression net, not a complete runtime
+  call-graph proof. Each new evidence producer and execution route still
+  requires direct source tracing, tests and runtime acceptance.
 - **Historical directional-vote stack retirement.** Earlier revisions
   recorded approximately 209 non-test reads of
   brain.vote_evidence.Vote.direction and deferred physical deletion because
