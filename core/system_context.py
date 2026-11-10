@@ -1106,12 +1106,8 @@ class SystemContext:
                     max_total_exposure=float(
                         getattr(owner_limits, "max_campaign_exposure_units", 3.0)
                     ),
-                    min_confidence_to_act=float(
-                        getattr(cog_cfg, "min_confidence_to_act", 0.55)
-                        if cog_cfg is not None else 0.55
-                    ),
                     # V-01 (§I/§VI/§VIII) — opt-in EV-primary actionability gate.
-                    # Default off ⇒ the legacy confidence-floor gate is unchanged.
+                    # The Brain's producer-verified net-EV gate is authoritative.
                     ev_primary_gate=bool(
                         getattr(cog_cfg, "ev_primary_gate", False)
                         if cog_cfg is not None else False
@@ -1123,14 +1119,6 @@ class SystemContext:
                     allow_scale_in=bool(
                         getattr(cog_cfg, "allow_scale_in", False)
                         if cog_cfg is not None else False
-                    ),
-                    reverse_confidence=float(
-                        getattr(cog_cfg, "manage_reverse_confidence", 0.7)
-                        if cog_cfg is not None else 0.7
-                    ),
-                    exit_floor=float(
-                        getattr(cog_cfg, "manage_exit_floor", 0.3)
-                        if cog_cfg is not None else 0.3
                     ),
                     # Part IX Q35/Q36 — act only when expected value clears this
                     # threshold (in R). Default 0.0 ⇒ decline non-positive-EV

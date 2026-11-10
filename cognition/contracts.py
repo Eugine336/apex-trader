@@ -626,17 +626,18 @@ class Hypothesis:
 
     The constitution forbids collapsing cognition prematurely into a single
     LONG/SHORT/FLAT verdict. A :class:`DecisionPackage` therefore carries the
-    Brain's *competing* hypotheses simultaneously — each with its own
-    probability, directional interpretation, payoff geometry (in units of risk,
-    R) and invalidation — so the richer reasoning survives into the decision
-    record instead of being reduced to one direction+confidence pair. The
+    Brain's *competing* hypotheses simultaneously — each with a directional
+    interpretation, payoff geometry (in units of risk, R) and invalidation.
+    Probability remains unknown until a trusted producer can supply a genuinely
+    calibrated probability artifact. The
     ``direction`` here is an execution hint for a hypothesis, never an authority
     of its own; only a :class:`DecisionPackage` / :class:`CampaignSpecification`
     authorises action.
     """
 
     statement: str
-    probability: float = 0.0          # Brain's P(this hypothesis is correct), [0, 1]
+    probability: Optional[float] = None
+    probability_semantics: str = "not_calibrated"
     direction: str = ""               # LONG | SHORT | FLAT | "" (unknown)
     expected_reward_r: float = 0.0    # favorable excursion, in units of risk (R)
     expected_risk_r: float = 1.0      # adverse excursion, in units of risk (R)
@@ -648,7 +649,15 @@ class Hypothesis:
 
     def __post_init__(self) -> None:
         self.identity_version = IDENTITY_VERSION
-        self.probability = _clamp01(self.probability)
+        if self.probability is None:
+            self.probability_semantics = "not_calibrated"
+        else:
+            # No currently accepted producer artifact establishes a calibrated
+            # hypothesis probability. A caller-supplied number or artifact ID is
+            # not producer attestation, so retain the hypothesis and mark its
+            # probability unknown until a trusted calibration contract exists.
+            self.probability = None
+            self.probability_semantics = "unverified_probability_rejected"
         d = str(self.direction or "").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else ""
 
@@ -656,7 +665,8 @@ class Hypothesis:
         return {
             "identity_version": self.identity_version,
             "statement": self.statement,
-            "probability": round(self.probability, 4),
+            "probability": round(self.probability, 4) if self.probability is not None else None,
+            "probability_semantics": self.probability_semantics,
             "direction": self.direction,
             "expected_reward_r": round(self.expected_reward_r, 4),
             "expected_risk_r": round(self.expected_risk_r, 4),

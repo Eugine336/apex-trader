@@ -110,11 +110,10 @@ def test_single_scalar_opinion_opens_campaign_unchanged():
     ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert abs(out.decision.confidence - 0.8) < 1e-9
-    # Sizing now reflects EV and reasoning quality (Art XIX/XXVIII): a shallow
-    # scalar-only opinion is sized within (0, confidence], never above it, and
-    # the sizing formula is documented on the record.
-    assert 0.0 < out.campaign.desired_exposure <= 0.8
-    assert "min(quality-weighted confidence" in \
+    # Uncalibrated reasoning strength remains descriptive; the same verified
+    # economics must produce the same provisional exposure regardless of score.
+    assert out.campaign.desired_exposure > 0.0
+    assert "reasoning strength is excluded" in \
         out.decision.questions_answered["sizing_rationale"]
 
 
@@ -125,23 +124,15 @@ def test_weak_execution_is_evaluated_by_net_ev_and_activation():
     weaker = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9,
                                 execution_confidence=0.2))
     assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    # The calibrated win probability is unchanged for the same market/setup;
-    # execution quality changes exposure, not the empirical outcome probability.
+    # A weaker uncalibrated execution-strength descriptor is not a probability
+    # or a sizing input. Verified costs and geometry are unchanged here.
     assert weaker.decision.expected_value == strong.decision.expected_value
     assert weaker.campaign is not None
-    assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
-    if weaker.decision.expected_value > 0:
-        assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-        assert weaker.campaign is not None
-        assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
-    else:
-        assert weaker.decision.decision_type in {
-            DecisionType.CONTINUE_OBSERVING, DecisionType.REJECT_OPPORTUNITY,
-        }
-        assert weaker.campaign is None
+    assert weaker.campaign.desired_exposure == strong.campaign.desired_exposure
+    assert weaker.decision.questions_answered["confidence_profile"] != strong.decision.questions_answered["confidence_profile"]
 
 
-# ── moderate execution: still acts, but sizes DOWN ──────────────────────────
+# ── moderate execution: reasoning metadata changes, sizing does not ───────
 
 def test_weak_execution_sizes_down_when_it_still_acts():
     strong = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
@@ -149,7 +140,7 @@ def test_weak_execution_sizes_down_when_it_still_acts():
                                 execution_confidence=0.6))
     assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
+    assert weaker.campaign.desired_exposure == strong.campaign.desired_exposure
     assert weaker.campaign.desired_exposure > 0
     assert "execution 0.60" in weaker.decision.questions_answered["confidence_profile"]
 

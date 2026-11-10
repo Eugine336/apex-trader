@@ -219,10 +219,10 @@ def test_high_uncertainty_blocks_action():
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
 
 
-def test_flat_high_confidence_rejects_opportunity():
+def test_flat_reports_no_opportunity_independent_of_confidence():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("FLAT", 0.9)))
     out = brain.reason(_confident_state())
-    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
     assert out.campaign is None
 
 
@@ -282,17 +282,21 @@ class _RichOpinion:
         self.preferred_opportunity_id = "auto"
 
 
-def test_sizing_is_lesser_of_confidence_and_ev_normalized():
-    # Market geometry supplies the reward distance. Sizing takes the lesser of
-    # EV-normalized payoff and quality-weighted confidence. This bare opinion has
-    # quality 0.1, so 0.8 effective confidence is scaled by 0.55 to 0.44.
+def test_sizing_uses_verified_ev_not_uncalibrated_reasoning_strength():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.44)
-    assert out.campaign.desired_exposure < out.campaign.confidence
-    assert "sizing_rationale" in out.decision.questions_answered
+    assert out.campaign.desired_exposure == pytest.approx(0.675)
+    assert "reasoning strength is excluded" in out.decision.questions_answered["sizing_rationale"]
 
+
+def test_sizing_is_invariant_to_uncalibrated_reasoning_strength():
+    low = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.15)), reward_r_default=2.0)
+    high = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.99)), reward_r_default=2.0)
+    low_out = low.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
+    high_out = high.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
+    assert low_out.campaign is not None and high_out.campaign is not None
+    assert low_out.campaign.desired_exposure == pytest.approx(high_out.campaign.desired_exposure)
 
 
 def test_high_confidence_without_producer_verified_return_stands_down():
@@ -315,6 +319,8 @@ def test_high_confidence_without_producer_verified_return_stands_down():
         "qualified_from_fresh_completed_market_evidence"
     )
     assert out.decision.expected_value == 0.0
+    assert "DIAGNOSTIC ONLY" not in out.decision.questions_answered["expected_value"]
+    assert "no probability or diagnostic EV is inferred" in out.decision.questions_answered["expected_value"]
     assert "fixed-horizon expected return is unverified" in out.decision.risk_rationale
 
 
@@ -367,3 +373,23 @@ def test_calibration_neutral_factor_leaves_confidence_unchanged():
     )
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
+
+
+def test_competing_hypotheses_do_not_convert_uncalibrated_confidence_to_probability():
+    hypotheses = CognitiveBrain._build_hypotheses(
+        "LONG",
+        2.0,
+        1.0,
+        "primary explanation",
+        ["competing explanation A", "competing explanation B"],
+        "invalidation",
+        ["evidence-1"],
+        ["evidence-2"],
+    )
+
+    assert len(hypotheses) == 3
+    assert all(hypothesis.probability is None for hypothesis in hypotheses)
+    assert all(
+        hypothesis.probability_semantics == "not_calibrated"
+        for hypothesis in hypotheses
+    )

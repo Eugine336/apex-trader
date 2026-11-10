@@ -1,6 +1,6 @@
 # Configuration field inventory
 
-Source: `config.py` on branch `fix/mt5-automatic-broker-clock` at commit `88776a885e069bdcf2c7a5135d49b71d90fbbc47`.
+Source: `config.py` on branch `fix/brain-probability-and-confidence-governance` at commit `861cd7487fbaa360adfe27407534bc418d2ac39e` plus the three retired cognition controls removed in this change.
 
 This is a complete field-name inventory of the typed configuration dataclasses
 declared in `config.py`. It is **not** a declaration that every field should
@@ -14,7 +14,7 @@ default, precedence, restart behavior, audit requirements and safety impact
 are defined. Do not expose a setting that can weaken Brain authority, data
 integrity, unknown-state handling, owner limits, or execution safety.
 
-The typed classes below contain **716 fields across 43 classes**.
+The typed classes below contain **713 fields across 43 classes**.
 Literal runtime environment reads are separately checked against `.env.example`
 by `tests/test_env_example_coverage.py`; frontend Vite reads are checked against
 their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
@@ -723,7 +723,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `single_path`
 - `max_decision_age_seconds`
 - `per_module_evidence`
-- `min_confidence_to_act`
 - `ev_primary_gate`
 - `ev_action_threshold_r`
 - `min_advisors_for_action`
@@ -738,8 +737,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `event_min_interval_seconds`
 - `manage_min_interval_seconds`
 - `allow_scale_in`
-- `manage_reverse_confidence`
-- `manage_exit_floor`
 - `reallocation_enabled`
 - `reallocation_max_per_component`
 - `reallocation_concentration_limit`

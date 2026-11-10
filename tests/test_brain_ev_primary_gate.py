@@ -183,11 +183,11 @@ def test_negative_net_ev_is_rejected_even_without_a_confidence_floor():
     assert out.campaign is None
 
 
-def test_flat_rejects_in_both_modes():
+def test_flat_reports_no_opportunity_without_confidence_threshold():
     assert _brain(0.90, direction="FLAT").reason(_state()).decision.decision_type \
-        == DecisionType.REJECT_OPPORTUNITY
+        == DecisionType.NO_OPPORTUNITY
     assert _brain(0.90, ev_primary=True, direction="FLAT").reason(_state()).decision.decision_type \
-        == DecisionType.REJECT_OPPORTUNITY
+        == DecisionType.NO_OPPORTUNITY
 
 
 def test_status_exposes_gate_fields():

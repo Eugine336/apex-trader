@@ -116,7 +116,7 @@ Apex continuously repeats the same cognitive loop:
 3.  Understand.
 4.  Generate competing hypotheses.
 5.  Challenge every hypothesis.
-6.  Estimate probability.
+6.  Resolve probability only from a trusted, calibrated artifact; otherwise preserve it as unknown.
 7.  Estimate expected value.
 8.  Decide.
 9.  Execute when appropriate.
@@ -225,7 +225,7 @@ The AI Cognitive Brain shall continuously:
 -   Generate competing hypotheses.
 -   Challenge every hypothesis.
 -   Estimate uncertainty.
--   Estimate probability.
+-   Preserve probability as unknown unless a trusted, calibrated, symbol/side/family/horizon-scoped artifact is verified.
 -   Estimate expected value.
 -   Estimate expected holding time.
 -   Estimate campaign viability.
@@ -248,8 +248,8 @@ Before every decision the Brain must be capable of answering:
 9.  What is the opportunity?
 10. Should I do nothing?
 
-If these questions cannot be answered with sufficient confidence, Apex
-should not initiate a campaign.
+If these questions cannot be answered from sufficient attributable evidence, Apex
+should not initiate a campaign. Uncalibrated reasoning strength is not probability.
 
 ------------------------------------------------------------------------
 
@@ -268,7 +268,7 @@ Examples:
 -   Breakout failure
 -   Liquidity sweep
 
-Each hypothesis is scored against available evidence.
+Each hypothesis is compared against attributable supporting and contradicting evidence; an arbitrary score is not a probability.
 
 The selected thesis is the one with the strongest supported expected
 value---not merely the highest confidence.
@@ -315,7 +315,7 @@ The package should include:
 -   Current thesis.
 -   Supporting evidence.
 -   Contradicting evidence.
--   Confidence.
+-   Decomposed reasoning-strength metadata, explicitly uncalibrated and never treated as probability or an action threshold.
 -   Uncertainty.
 -   Expected value.
 -   Expected holding horizon.
