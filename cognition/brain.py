@@ -256,7 +256,9 @@ class CognitiveBrain:
             self.identity_version, self.identity_statement,
         )
         self._reasoner = reasoner
-        self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
+        # Compatibility-only constructor input. Uncalibrated reasoning strength
+        # is metadata; it is never compared with a configured action threshold.
+        _ = min_confidence_to_act
         # Apex identity invariant: exposure is qualified by net expected value,
         # not a raw confidence-floor shortcut. Keep the argument for constructor
         # compatibility, but an explicit False cannot restore the legacy gate.
@@ -270,7 +272,10 @@ class CognitiveBrain:
         self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
-        self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
+        # Compatibility-only. Management actions are derived from explicit thesis
+        # invalidation, opportunity state and verified economics, never a
+        # confidence threshold.
+        _ = reverse_confidence
         # Retained for config compatibility (wired from ``manage_exit_floor``).
         # V-008 removed the legacy direction-based management tree that consulted
         # this to auto-TIGHTEN on a weakening aligned read; management is now
@@ -1246,7 +1251,6 @@ class CognitiveBrain:
                 self.ev_primary_gate
                 and directional
                 and not ev_ok
-                and confidence >= self.min_confidence_to_act
                 and limiting_dim in ("timing", "execution")
             ):
                 # A thesis can remain valid while timing/execution conditions are
@@ -1255,8 +1259,7 @@ class CognitiveBrain:
                 # dimension lowered effective EV at this instant.
                 reason_txt = (
                     f"{limiting_dim} conditions insufficient — waiting "
-                    f"(thesis holds at {confidence:.2f}, "
-                    f"{limiting_dim} {conf_dims[limiting_dim]:.2f}); "
+                    f"({limiting_dim} evidence {conf_dims[limiting_dim]:.2f}); "
                     "reassess when execution/timing evidence improves"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
@@ -1297,12 +1300,10 @@ class CognitiveBrain:
                 # clears the bar) but a WEAK actionability dimension (timing or
                 # execution) pulled the effective conviction below it, this is a
                 # deliberate WAIT for better conditions, not a rejected thesis.
-                elif (confidence >= self.min_confidence_to_act
-                        and limiting_dim in ("timing", "execution")):
+                elif limiting_dim in ("timing", "execution"):
                     reason_txt = (
                         f"{limiting_dim} conditions insufficient — waiting "
-                        f"(thesis holds at {confidence:.2f}, "
-                        f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
+                        f"({limiting_dim} evidence {conf_dims[limiting_dim]:.2f})"
                     )
                     do_nothing_txt = (
                         f"evaluated: doing nothing is correct — {limiting_dim} "
@@ -1349,9 +1350,7 @@ class CognitiveBrain:
                 )
             else:
                 reason_txt = "no exploitable directional opportunity"
-                dtype = (DecisionType.REJECT_OPPORTUNITY
-                         if eff_conf >= self.min_confidence_to_act
-                         else DecisionType.CONTINUE_OBSERVING)
+                dtype = DecisionType.NO_OPPORTUNITY
                 do_nothing_txt = (
                     "evaluated: doing nothing is correct — no directional edge (FLAT)"
                 )
@@ -1821,10 +1820,6 @@ class CognitiveBrain:
         ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
         ev_negative = ev_txt.startswith("negative")
         in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
-        # A "very high" bar for flipping the book — at least the reverse gate and
-        # never below a hard 0.7 floor, symmetric for both sides.
-        very_high = max(self.reverse_confidence, 0.7)
-
         thesis_invalidated = (thesis == "invalidated") or (opp_status in ("invalidated", "replaced"))
         opportunity_gone = (
             opp_status in ("invalidated", "replaced")
@@ -1838,27 +1833,25 @@ class CognitiveBrain:
         # 2) Honour an explicit action, cross-checked so uncertainty never
         #    liquidates a live campaign.
         if action_hint == "REVERSE":
-            if eff_conf >= very_high and conf >= self.reverse_confidence:
-                return DecisionType.REVERSE, "very high-confidence contrary evidence — reverse"
-            # Not conclusive enough to flip: de-risk, do not liquidate on doubt.
+            # A management opinion cannot authorize an immediate flip. The new
+            # side must be originated as a separate Brain opportunity with its
+            # own completed-bar evidence, geometry, net EV, costs and risk permit.
             return DecisionType.TIGHTEN_RISK, (
-                "contrary evidence not conclusive enough to reverse — tighten risk")
+                "reverse request requires a separately qualified Brain opportunity; "
+                "management cannot reverse on uncalibrated confidence")
         if action_hint == "EXIT":
-            if ev_negative or opportunity_gone or conf >= self.min_confidence_to_act:
+            if ev_negative or opportunity_gone:
                 return DecisionType.EXIT, "thesis no longer supports the position — exit"
-            # Model wants out but has not justified full liquidation → reduce risk.
+            # An uncorroborated advisor exit is not a thesis invalidation.
             return DecisionType.TIGHTEN_RISK, (
-                "exit not sufficiently justified — tighten risk instead")
+                "exit request lacks explicit invalidation or negative verified EV — tighten risk")
         if action_hint == "SCALE_IN":
-            if (self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence
-                    and thesis in ("intact", "strengthening", "")):
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            if (self.allow_scale_in and in_profit and conf >= self.reverse_confidence
-                    and eff_conf < self.reverse_confidence):
-                return DecisionType.HOLD, (
-                    f"thesis strong but {limiting_dim} weak "
-                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
-            return DecisionType.HOLD, "scale-in conditions not met — hold"
+            # Additional exposure is a new opportunity, not a confidence-driven
+            # management adjustment. Re-enter only through the Brain's full
+            # opportunity/geometry/EV/cost/risk admission path.
+            return DecisionType.HOLD, (
+                "scale-in requires a separately qualified Brain opportunity; "
+                "uncalibrated confidence cannot authorize additional exposure")
         if action_hint == "SCALE_OUT":
             return DecisionType.SCALE_OUT, "bank partial — reduce exposure while the thesis clarifies"
         if action_hint == "PROTECT_PROFIT":
@@ -1877,10 +1870,9 @@ class CognitiveBrain:
             return DecisionType.TIGHTEN_RISK, (
                 "opportunity evolving / superseded — tighten risk while reassessing")
         if thesis in ("intact", "strengthening"):
-            if (self.allow_scale_in and in_profit and thesis == "strengthening"
-                    and eff_conf >= self.reverse_confidence):
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            return DecisionType.HOLD, "thesis intact — hold"
+            return DecisionType.HOLD, (
+                "thesis remains valid — hold; any additional exposure requires "
+                "a separately qualified Brain opportunity")
 
         # 4) Uncertain / temporarily obscured / ambiguous → HOLD (never auto-exit).
         return DecisionType.HOLD, (
@@ -3592,7 +3584,6 @@ class CognitiveBrain:
                 "identity": IDENTITY_STATEMENT,
                 "available": self.available,
                 "reasoner": self.reasoner_name,
-                "min_confidence_to_act": self.min_confidence_to_act,
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
