@@ -4404,6 +4404,12 @@ class AppConfig:
         elif not isinstance(self.owner_limits, OwnerLimits):
             raise TypeError("owner_limits must be an OwnerLimits instance")
         self.sync_owner_limit_views()
+        raw_log_level = os.getenv("APEX_LOG_LEVEL")
+        if raw_log_level is not None and raw_log_level.strip():
+            level = raw_log_level.strip().upper()
+            if level not in {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}:
+                raise ValueError("APEX_LOG_LEVEL must be TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR or CRITICAL")
+            self.log_level = level
         # Apply only the explicit operator/deployment allowlist. OwnerLimits,
         # analytical thresholds, broker-derived facts and safety invariants are
         # intentionally excluded from generic environment overrides.
