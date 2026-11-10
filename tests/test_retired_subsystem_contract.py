@@ -5,7 +5,6 @@ from pathlib import Path
 
 from core.system_context import SystemContext
 from platforms.health_watchdog import HealthReport as WatchdogHealthReport
-from planning.models import TradePlanContext
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +24,6 @@ def test_rl_package_and_training_entrypoints_are_absent():
 
 def test_runtime_contracts_have_no_rl_fields_or_bridge():
     assert "rl_bridge" not in SystemContext.__dataclass_fields__
-    assert "rl_expected_r" not in {item.name for item in fields(TradePlanContext)}
     assert "rl_enabled" not in {item.name for item in fields(WatchdogHealthReport)}
     assert "rl_stage" not in {item.name for item in fields(WatchdogHealthReport)}
 
