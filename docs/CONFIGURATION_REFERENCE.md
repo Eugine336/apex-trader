@@ -34,11 +34,12 @@ should override the process default; this does not lock owner risk-limit control
 | `COGNITION_MANAGEMENT_MODE` | `off`, `shadow`, `live` | Controls Brain position management |
 
 The example template defaults `TRADING_ENABLED=false`; set it to `true` only when
-new exposure is intentionally enabled. The switch blocks Brain origination and
-is checked again at the
-ActionExecutor boundary, so already-queued market or pending OPEN intents are
-also rejected. It deliberately does not disable reconciliation,
-existing-position management, or risk-reducing closes.
+new exposure is intentionally enabled. For backwards compatibility, an existing
+deployment with no `TRADING_ENABLED` variable retains the legacy enabled default;
+set it explicitly to `false` to disable new exposure. The switch blocks Brain
+origination and is checked again at the ActionExecutor boundary, so already-queued
+market or pending OPEN intents are also rejected. It deliberately does not
+disable reconciliation, existing-position management, or risk-reducing closes.
 `COGNITION_ORIGINATION_MODE=live` is necessary but not sufficient for an order:
 the Brain's evidence, opportunity, expected-value, owner-limit, portfolio,
 broker-feasibility, and execution gates remain mandatory.
