@@ -1,78 +1,59 @@
-# APEX — Cognition and Identity Rollout Runbook
+# APEX — Cognition Runtime and Production Acceptance
 
-> Companion to the binding identity in docs/APEX_IDENTITY.md and the current source-backed gates in docs/APEX_IDENTITY_IMPLEMENTATION_AUDIT.md.
+> Current contract: the CognitiveBrain is the sole market decision authority.
+> The historical CognitionGate/ManagementGate shadow-veto-authoritative ladder
+> has been retired. This runbook describes the active runtime, not that legacy
+> routing model.
 
-Apex's identity is market-aware reasoning, not merely flipping a configuration flag to route orders through a Brain. Promotion requires proof that the full market state reaches the Brain, the Brain can form and criticize relevant hypotheses, opportunities are qualified net of costs, all exposure paths share risk controls, positions are re-evaluated, and outcomes are measured.
+## Active runtime controls
 
-The repository has previously used shadow, veto and authoritative gate modes plus a separate origination switch. These controls describe runtime routing only; they do not certify market-data completeness, provider availability, strategy quality, expected profitability or demo readiness. Provider failures and stale evidence must remain visible, not be misreported as a market no-opportunity result.
+- `COGNITION_ENABLED`: constructs and runs the native Brain/loop subsystem.
+- `COGNITION_ORIGINATION_MODE`: `off`, `shadow`, or `live` for new Brain-authored campaigns.
+- `COGNITION_MANAGEMENT_MODE`: controls Brain-authored management actions; do not disable risk-reducing broker mechanics.
+- `TRADING_ENABLED=false`: global kill switch for new exposure. Existing-position management, reconciliation and risk-reducing closes remain enabled.
 
-## The single control: `COGNITION_GATE_MODE`
+There is no `COGNITION_GATE_MODE`, `CognitionGate`, or `ManagementGate`. No legacy
+entry route is permitted to originate exposure as a fallback. A missing, stale,
+invalid or incomplete Brain decision must not be converted into permission to
+trade. The shared execution, portfolio-risk, broker-geometry and owner-limit
+checks remain mandatory after the Brain decision.
 
-The Brain's authority on the entry decision path is the `CognitionGate`, whose
-mode is set by `COGNITION_GATE_MODE` (also `CognitionConfig.gate_mode`):
+## Production promotion requirements
 
-| mode | meaning | Brain authority | rollback |
-| --- | --- | --- | --- |
-| `off` | gate disabled | none — legacy path decides | n/a |
-| `shadow` | Brain reasons, decisions recorded only | observe only (fail-open) | already safe |
-| `veto` | Brain may **block** a legacy entry, never originate | one-way veto (fail-open) | → `shadow` |
-| `authoritative` | Brain is the **sole** decider | full (fail-closed on staleness) | → `veto`/`shadow` |
+1. Confirm the same timestamped market observations reach the Brain and that
+   forming candles remain provisional while completed-bar evidence is explicit.
+2. Verify provider outage and native-only operation separately. Advisor failure
+   must not be confused with a market no-opportunity verdict.
+3. Verify the Brain emits a structured opportunity set, challenges competing
+   hypotheses, and authorizes only a qualified opportunity with verified net EV.
+4. Trace every exposure-increasing path through the canonical Brain campaign
+   contract, shared execution authority, whole-book risk and broker preflight.
+5. Verify open-position management, pending-order lifecycle, reconciliation and
+   risk-reducing exits independently. A failed origination path must not disable
+   position protection.
+6. Run Python 3.11/3.12, lint, constitutional audit, replay/backtest, fault
+   injection and broker-demo checks. CI does not replace owner-connected MT5
+   acceptance or holdout performance evidence.
 
-Rollback is always a single env change + restart: set `COGNITION_GATE_MODE` back
-one rung. No code change, no redeploy of logic. Origination
-(`COGNITION_ORIGINATION_MODE`: `off`→`shadow`→`live`) follows the same ladder
-independently.
+## Cognition observability
 
-## Promotion ladder (per symbol group)
+`CognitionObservability.metrics()` reports decision throughput, campaigns opened,
+observed/managed counts, Brain availability/faults, calibration sample count,
+reliability gap, Brier score, reasoning-quality measurability, campaign-memory
+counts and origination intent/submission counts. It no longer reports gate modes,
+veto rates or authorization rates because those retired gates no longer exist.
 
-Promote **one symbol group at a time** (e.g. majors → crosses → synthetics),
-never the whole book at once.
+## Safe rollback
 
-1. **Shadow (observe).** `gate_mode=shadow`, `origination_mode=shadow`. Run for a
-   sustained window. Watch the observability metrics (below). Exit criteria:
-   `brain_available=true`, `brain_faults=0`, decisions flowing
-   (`decisions_per_min > 0`), and `reasoning_quality_measurable=true`.
-2. **Veto.** `gate_mode=veto`. The Brain can now block a legacy entry it does
-   not back. Watch `would_veto_rate` vs `veto_rate` and confirm vetoes correlate
-   with avoided losers (institutional memory / post-mortems). Exit criteria:
-   `readiness_verdict(...) == ready` and no veto-driven regressions.
-3. **Authoritative.** `gate_mode=authoritative`. The Brain is the sole decider;
-   the gate fails **closed** on stale/absent decisions (no reasoning ⇒ no trade).
-   Only enter after step 2's readiness holds for the group.
+Set `TRADING_ENABLED=false` to stop new exposure while preserving existing-position
+management and risk-reducing closes. Do not restore the retired shadow/veto gate
+or legacy entry route as a rollback mechanism. Any production rollback that changes
+management or execution behavior requires a separate safety review and explicit
+owner approval.
 
-At each rung, the offline **validation harness must be green first**:
-`ReplayHarness(brain).run(states, outcomes=...)` → `report.ready == True`, and the
-live `readiness_verdict(governance.get_status()["cognition"])` → ready.
+## Non-negotiable acceptance
 
-## What to watch (observability — Part XII)
-
-Surfaced under governance `get_status()["cognition"]["observability"]`
-(`CognitionObservability.metrics()`):
-
-- `brain_available`, `brain_faults`, `gate_mode`, `authoritative`
-- `decisions_total`, `decisions_per_min`, `campaigns_opened`, `observed`, `managed`
-- `veto_rate`, `would_veto_rate`, `authorise_rate`, `gate_evaluations`
-- `calibration_samples`, `reliability_gap`, `brier`,
-  `reasoning_quality_score`, `reasoning_quality_measurable`
-- `memory_completed_campaigns`, `orig_intended`, `orig_submitted`
-
-`reasoning_quality_score` (= `1 − reliability_gap`, only once calibration is
-statistically meaningful) is the headline "is the Brain trustworthy yet" signal.
-
-## Rollback triggers (immediate step-down)
-
-Step the group down one rung on any of: a fault storm (`brain_faults` rising),
-`reliability_gap` degrading past the promotion threshold, an unexpected
-`veto_rate` spike, or any deterministic-safety (Part X) alarm. Rollback is
-`COGNITION_GATE_MODE` ↓ + restart; the legacy feasibility/mechanics path remains
-intact beneath the Brain throughout the rollout, which is *why* the legacy
-decision code is not physically deleted until a group has held `authoritative`
-cleanly.
-
-## Gate to the remaining Phase K deletion
-
-The legacy-decider physical deletion and coupled-core decomposition are unlocked
-only after a representative symbol group has run `authoritative` cleanly for a
-sustained window with the harness green and observability healthy. Until then the
-legacy path stays as the validated fallback (Constitution Part XV: no deletion
-until superseded **and** validated).
+- No broker orders during engineering validation.
+- No weakening of portfolio, broker, owner-limit or execution safety controls.
+- Unknown evidence remains unknown; no inferred probability or fabricated geometry.
+- A green CI run is necessary but not sufficient for live deployment.
