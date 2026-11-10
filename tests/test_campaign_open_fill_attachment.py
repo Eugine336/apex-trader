@@ -29,6 +29,7 @@ def _system(*, positions, confirmed=("mt5",), failed=()):
     system = EventDrivenSystem.__new__(EventDrivenSystem)
     system._ctx = SimpleNamespace(campaign_registry=registry)
     system._pm = _PlatformManager(positions, confirmed=confirmed, failed=failed)
+    system._entry_context = {}
     return system, registry
 
 
@@ -85,7 +86,7 @@ def test_successful_market_fill_attaches_exact_confirmed_ticket_to_campaign():
 def test_pending_order_placement_is_not_misclassified_as_open_position():
     system, registry = _system(positions=[])
 
-    system._handle_execution_result(_intent("LIMIT"), _result(order_status="PLACED"))
+    system._handle_open_result(_intent("LIMIT"), _result(order_status="PLACED"))
 
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
 
