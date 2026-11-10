@@ -186,3 +186,35 @@ def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkey
         assert native_calls[0][0][2] is analysis
         assert native_calls[0][0][3] is hypotheses
         assert native_calls[0][1]["advisor_status"] == "available"
+
+def test_unqualified_native_fallback_observes_when_advisor_quorum_is_unknown(monkeypatch):
+    brain = CognitiveBrain(
+        reasoner=SimpleNamespace(
+            available=True,
+            reason=lambda symbol, evidence, now=None: LLMOpinion(
+                symbol=symbol, direction="LONG", confidence=0.99,
+            ),
+        ),
+        min_advisors_for_action=2,
+    )
+    analysis = object()
+    hypotheses = [object()]
+    marker = object()
+    fallback_calls = []
+    monkeypatch.setattr(
+        brain, "_native_reasoning",
+        lambda market_state, consolidation, symbol, now=None: (analysis, hypotheses),
+    )
+    monkeypatch.setattr(brain, "_originate_independent", lambda *args, **kwargs: None)
+
+    def observe(*args, **kwargs):
+        fallback_calls.append((args, kwargs))
+        return marker
+
+    monkeypatch.setattr(brain, "_native_fallback_observe", observe)
+    output = brain.reason(MarketState(symbol="BTCUSD"))
+    assert output is marker
+    assert len(fallback_calls) == 1
+    assert "advisor quorum unknown" in fallback_calls[0][0][1]
+    assert fallback_calls[0][1]["analysis"] is analysis
+    assert fallback_calls[0][1]["hypotheses"] is hypotheses
