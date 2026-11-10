@@ -563,7 +563,7 @@ def test_brain_originates_independently_when_advisor_unavailable():
                            reward_r_default=2.0)
     out = brain.reason(_strong_long_state())
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == LONG
+    assert out.campaign is not None and out.campaign.direction == LONG
     assert out.campaign is not None
     assert out.campaign.initial_execution_intent.get("independent_origination") is True
     note = out.decision.questions_answered.get("brain_independent_origination", "")
