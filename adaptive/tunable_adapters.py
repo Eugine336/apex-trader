@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import Callable, Optional
 
 from loguru import logger
@@ -533,103 +533,6 @@ class EVEstimatorTunable(_BaseTunable):
             tunable_name=self._name, success=True, changed=changed,
             params_before=before, params_after=self._read_params(),
             reason=f"history refreshed (n={n})",
-        )
-
-
-# ───────────────────────────── Planner ─────────────────────────────────
-
-
-class PlannerCalibratorTunable(_BaseTunable):
-    """Wraps the planner ``Calibrator.calibrate`` — 4 PlannerConfig params."""
-
-    _FIELDS = (
-        "prefer_structure_sl_within_atr",
-        "limit_order_zone_distance_atr",
-        "default_be_trigger_r",
-        "min_confidence_to_enter",
-    )
-
-    def __init__(
-        self,
-        calibrator,
-        completed_provider: TradesProvider,
-        *,
-        planner=None,
-        planner_enabled: bool = True,
-        on_update: Optional[Callable[[object], None]] = None,
-        min_trades: int = 50,
-        min_interval: float = 4 * 3600,
-    ) -> None:
-        super().__init__(
-            name="planner_calibrator",
-            frequency=TuneFrequency.ON_TRADE_BATCH,
-            dependencies=["regime_learner"],
-            min_trades=min_trades,
-            min_interval=min_interval,
-        )
-        self._calibrator = calibrator
-        self._completed_provider = completed_provider
-        self._planner = planner
-        self._planner_enabled = planner_enabled
-        self._on_update = on_update
-
-    def _read_params(self) -> dict:
-        cfg = self._calibrator.config
-        return {f: getattr(cfg, f, None) for f in self._FIELDS}
-
-    def _apply_params(self, params: dict) -> None:
-        clean = {f: params[f] for f in self._FIELDS if params.get(f) is not None}
-        new_cfg = replace(self._calibrator.config, **clean)
-        self._calibrator.config = new_cfg
-        if self._planner is not None and hasattr(self._planner, "update_config"):
-            new_cfg.enabled = self._planner_enabled
-            self._planner.update_config(new_cfg)
-
-    def validate_params(self, params: dict) -> tuple[bool, str]:
-        mc = params.get("min_confidence_to_enter")
-        if mc is not None and not (0.0 <= float(mc) <= 1.0):
-            return False, f"min_confidence_to_enter {mc} out of [0,1]"
-        be = params.get("default_be_trigger_r")
-        if be is not None and float(be) <= 0:
-            return False, f"default_be_trigger_r {be} <= 0"
-        zd = params.get("limit_order_zone_distance_atr")
-        if zd is not None and float(zd) < 0:
-            return False, f"limit_order_zone_distance_atr {zd} < 0"
-        ps = params.get("prefer_structure_sl_within_atr")
-        if ps is not None and float(ps) < 0:
-            return False, f"prefer_structure_sl_within_atr {ps} < 0"
-        return True, "ok"
-
-    def tune(self, ctx: TuneContext) -> TuneResult:
-        before = self._begin()
-        completed = list(self._completed_provider() or [])
-        if not self._calibrator.should_calibrate(len(completed)):
-            return TuneResult(
-                tunable_name=self._name, success=True, skipped=True,
-                params_before=before, params_after=before,
-                reason=f"not due ({len(completed)} completed)",
-            )
-        new_cfg = self._calibrator.calibrate(completed)
-        if self._planner is not None and hasattr(self._planner, "update_config"):
-            new_cfg.enabled = self._planner_enabled
-            self._planner.update_config(new_cfg)
-            try:
-                new_cfg.save()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[planner_calibrator] config save failed: {}", exc)
-        if self._on_update is not None:
-            try:
-                self._on_update(new_cfg)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[planner_calibrator] on_update failed: {}", exc)
-        after = self._read_params()
-        changed = after != before
-        self._mark_tuned(ctx)
-        return TuneResult(
-            tunable_name=self._name, success=True, changed=changed,
-            params_before=before, params_after=after,
-            reason=f"calibrated on {len(completed)} completed plans"
-            + ("" if changed else " (no change)"),
         )
 
 
@@ -1554,7 +1457,6 @@ __all__ = [
     "PairLearnerTunable",
     "SessionLearnerTunable",
     "EVEstimatorTunable",
-    "PlannerCalibratorTunable",
     "SignalLedgerTunable",
     "PostCloseTrackerTunable",
     "CounterfactualTunable",
