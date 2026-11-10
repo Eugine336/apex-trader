@@ -325,6 +325,22 @@ class Campaign:
         return [active[key] for key in sorted(active)]
 
     @property
+    def has_unbound_open_legs(self) -> bool:
+        """Whether an exposure-adding leg still lacks exact broker identity.
+
+        Such a leg may represent a pending order or an unresolved fill. It must
+        not be silently discarded when another ticket in the campaign closes.
+        """
+        return any(
+            leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY)
+            and (
+                not str(leg.ticket or "").strip()
+                or not str(leg.platform or "").strip()
+            )
+            for leg in self.legs
+        )
+
+    @property
     def open_tickets(self) -> list[str]:
         """Ticket-only compatibility view; exact execution joins use bindings."""
         return sorted({item["ticket"] for item in self.open_ticket_bindings})
@@ -772,6 +788,14 @@ class CampaignRegistry:
                 if cause in _PARTIAL_CLOSE_TOKENS:
                     # A partial secures profit but the campaign lives on.
                     return camp
+
+                # A campaign may own several independently managed broker
+                # tickets. A terminal close ends only its exact platform/ticket
+                # leg; the thesis remains live while another confirmed ticket
+                # or unresolved pending open leg still exists.
+                if camp.open_ticket_bindings or camp.has_unbound_open_legs:
+                    return camp
+
                 if cause in _REVERSAL_CLOSE_TOKENS:
                     self._finalize_locked(camp, CampaignState.REVERSED, t, cause)
                     return camp
