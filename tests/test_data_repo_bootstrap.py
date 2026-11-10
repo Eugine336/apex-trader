@@ -343,3 +343,59 @@ def test_verified_backup_refuses_nested_directory_symlink(tmp_path):
 
     assert not destination.exists()
     assert (external / "outside.db").read_bytes() == b"external"
+
+
+
+def test_bootstrap_adopts_populated_sibling_and_keeps_both_data_trees(tmp_path, monkeypatch):
+    monkeypatch.delenv("APEX_DATA_DIR", raising=False)
+    source = tmp_path / "apex-trader"
+    local = source / "data"
+    target = tmp_path / "apex-trader-data"
+    local.mkdir(parents=True)
+    target.mkdir()
+    (target / "apex_events.db").write_bytes(b"sibling-event-store")
+    (target / "sibling-only.json").write_text('{"owner":"sibling"}')
+    (local / "apex_events.db").write_bytes(b"source-event-store")
+    (local / "source-only.json").write_text('{"owner":"source"}')
+    commands = []
+
+    def fake_git(args, *, cwd=None, timeout=180):
+        commands.append(list(args))
+        if args == ["init"]:
+            (cwd / ".git").mkdir()
+        if args[:2] == ["branch", "--show-current"]:
+            return "main"
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return "origin/main"
+        if args[:2] == ["config", "--get"]:
+            return "git-lfs-command"
+        if args[:2] == ["lfs", "version"]:
+            return "git-lfs/3.8.1"
+        if args[:1] == ["check-attr"]:
+            return "apex_events.db: filter: lfs"
+        if args[:2] == ["lfs", "env"]:
+            return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
+        return ""
+
+    monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(
+        bootstrap, "verify_dedicated_data_repo",
+        lambda *a, **k: (True, "eugine336/apex-trader-data"),
+    )
+
+    link = bootstrap.bootstrap_data_repo(source_root=source)
+
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+    assert (target / "apex_events.db").read_bytes() == b"sibling-event-store"
+    assert (target / "source-only.json").read_text() == '{"owner":"source"}'
+    assert (target / "sibling-only.json").read_text() == '{"owner":"sibling"}'
+
+    sibling_backups = list(tmp_path.glob("apex-trader-data-pre-adoption-*"))
+    source_backups = list(tmp_path.glob("apex-trader-data-local-backup-*"))
+    assert len(sibling_backups) == 1
+    assert len(source_backups) == 1
+    assert (sibling_backups[0] / "apex_events.db").read_bytes() == b"sibling-event-store"
+    assert (source_backups[0] / "apex_events.db").read_bytes() == b"source-event-store"
+    assert (source_backups[0] / "source-only.json").read_text() == '{"owner":"source"}'
+    assert any(args[:2] == ["read-tree", "origin/main"] for args in commands)
