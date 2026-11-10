@@ -322,12 +322,12 @@ def test_legacy_reply_is_observational_not_execution_authority():
     assert "observational" in out.decision.risk_rationale
 
 
-def test_legacy_flat_reply_still_continue_observing():
-    # A legacy FLAT reply keeps its historical decision type — the new
-    # NO_OPPORTUNITY / OPPORTUNITY_FORMING states apply only to harvesting replies.
+def test_legacy_flat_reply_reports_no_opportunity_without_confidence_gate():
+    # FLAT with no directional candidate is a no-opportunity outcome regardless
+    # of whether the legacy advisor supplied a high or low confidence score.
     reply = json.dumps({"direction": "FLAT", "confidence": 0.1})
     out = _brain(reply).reason(_confident_state(0.0))
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
     assert out.decision.opportunities == []
 
 
