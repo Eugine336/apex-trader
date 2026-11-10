@@ -1339,6 +1339,10 @@ class CognitiveBrain:
             symbol=symbol, thesis=decision.thesis, direction=direction,
             desired_exposure=desired_exposure,
             expected_value=expected_value,
+            expected_return_r=expected_return_r,
+            expected_cost_r=cost_r,
+            expected_return_verified=return_verified,
+            expected_return_source=return_source,
             initial_execution_intent={
                 "kind": (geometry.order_type.lower() if geometry is not None else "market"),
                 "order_type": (geometry.order_type if geometry is not None else "MARKET"),
