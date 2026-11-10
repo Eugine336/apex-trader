@@ -10,6 +10,7 @@ from cognition.contracts import (
     DecisionType,
     Evidence,
     EvidenceDomain,
+    Hypothesis,
     MarketState,
     domain_from,
 )
