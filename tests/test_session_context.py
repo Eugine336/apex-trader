@@ -250,13 +250,11 @@ def test_vwap_zone_enabled_defaults_on():
     assert get_profile("EURUSD").vwap_zone_enabled is True
 
 
-def test_flip_confirmation_checks_enabled_by_default():
-    # Session 16 checks 6 (order-flow delta) and 7 (temporal sequencing) are
-    # active out of the box on every profile, including the Gold override.
+def test_flip_delta_confirmation_setting_remains_enabled_by_default():
+    # Tick-delta observation remains configured; the unconsumed M1/M5 sequence
+    # gate has been removed rather than presented as an active decision check.
     for sym in ("EURUSD", "XAUUSD"):
-        prof = get_profile(sym)
-        assert prof.flip_require_delta_confirmation is True
-        assert prof.flip_require_sequence is True
+        assert get_profile(sym).flip_require_delta_confirmation is True
 
 
 def test_instrument_profiles_get_independent_default_dicts():
