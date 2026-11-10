@@ -229,16 +229,10 @@ class CognitiveBrain:
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
         self.min_advisors_for_action = max(1, int(min_advisors_for_action))
-        # Article XXI / V-013 — degraded cognition must be recognised AND
-        # enforced. When the council under-delivers (most available advisors did
-        # not respond) the Brain attenuates its effective conviction by this
-        # multiplier — degradation is no longer observation-only. ``degrade_on_
-        # unknown_council`` extends the same penalty to the case where NO council
-        # metadata exists at all (coverage unknown); it is off by default at this
-        # (library) layer so a Brain deliberately wired without a council is not
-        # blanket-penalised, but the deployed system opts in via config, and the
-        # unknown state is ALWAYS logged and recorded (never a silent pass).
-        self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
+        # Retain the old constructor option for configuration compatibility.
+        # Council coverage is enforced by quorum and is never converted into a
+        # confidence adjustment.
+        _ = degraded_confidence_multiplier
         self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
         # ``reward_r_default`` remains an ignored constructor compatibility
         # argument for older callers. It must never synthesize payoff geometry
@@ -621,16 +615,14 @@ class CognitiveBrain:
         if council_partial:
             logger.warning(
                 "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
-                "attenuating conviction x%.2f",
+                "coverage is recorded; confidence is not modified",
                 advisors_responded, advisors_available,
-                self.degraded_confidence_multiplier,
             )
         elif council_unknown:
             logger.warning(
                 "[brain] DEGRADED COGNITION: council coverage UNKNOWN (no council "
                 "metadata) — cannot confirm advisor count; %s",
-                ("attenuating conviction x%.2f" % self.degraded_confidence_multiplier)
-                if self._degrade_on_unknown_council else "recorded, not penalised",
+                "recorded; confidence is not modified",
             )
         # Native hypotheses remain an independent source of market analysis.
         # They challenge the advisor's thesis and are retained as evidence, but
@@ -1210,7 +1202,7 @@ class CognitiveBrain:
             symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
             thesis=rationale or f"{direction} opportunity",
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=eff_conf, uncertainty=uncertainty,
+            confidence=confidence, uncertainty=uncertainty,
             expected_value=expected_value,
             campaign_recommendation=f"open {direction}",
             risk_rationale="producer-verified net expected return is positive",
@@ -1548,7 +1540,8 @@ class CognitiveBrain:
             # This metadata cannot authorize, veto, reverse, or scale management.
             # SCALE_IN is not permitted through management; additional exposure
             # must be a separate Brain opportunity through origination admission.
-            conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
+            eff_conf = conf
+            conf_dims = {}
             # A management opinion (any of thesis_state / opportunity_status /
             # management_action present) is decided by the thesis-based tree —
             # LONG and SHORT are perfectly symmetric and nothing here compares a
@@ -1823,12 +1816,10 @@ class CognitiveBrain:
                 if _v:
                     questions[_k] = _v
             _raw = _clamp01(getattr(opinion, "confidence", 0.0))
-            _dims, _eff, _lim = self._confidence_profile(opinion, _raw)
-            questions["confidence_raw"] = round(_raw, 4)
-            questions["confidence_profile"] = (
-                f"thesis {_dims['thesis']:.2f} / opportunity {_dims['opportunity']:.2f} / "
-                f"timing {_dims['timing']:.2f} / execution {_dims['execution']:.2f} "
-                f"→ effective {_eff:.2f} (weakest: {_lim})"
+            questions["advisor_confidence_raw"] = round(_raw, 4)
+            questions["confidence_authority"] = (
+                "descriptive advisor metadata only; not calibrated, aggregated, "
+                "probability, qualification, action permission or sizing"
             )
             # Part XXV Art 11 — record the management thesis state / recommended
             # action / opportunity status when present (a management opinion), so
@@ -2218,33 +2209,6 @@ class CognitiveBrain:
         except Exception:  # noqa: BLE001 — audit recording must never break reasoning
             pass
 
-    @staticmethod
-    def _confidence_profile(opinion: Any, base: float) -> "tuple[dict, float, str]":
-        """Resolve the multidimensional confidence (Part XXV): each dimension, the
-        effective conviction (the weakest), and which dimension limited it.
-
-        A dimension absent on the opinion resolves to ``base`` (the overall
-        ``confidence``), so a legacy single-scalar opinion yields every dimension
-        equal to it and an effective conviction identical to the scalar (zero
-        behaviour change). Never raises.
-        """
-        def _rd(attr: str) -> float:
-            v = getattr(opinion, attr, None)
-            if v is None:
-                return base
-            try:
-                return min(1.0, max(0.0, float(v)))
-            except (TypeError, ValueError):
-                return base
-        dims = {
-            "thesis": _rd("thesis_confidence"),
-            "opportunity": _rd("opportunity_confidence"),
-            "timing": _rd("timing_confidence"),
-            "execution": _rd("execution_confidence"),
-        }
-        eff = min(dims.values())
-        limiting = min(dims, key=dims.get)
-        return dims, eff, limiting
 
     @staticmethod
     def _cost_value(value: Any) -> Optional[float]:
@@ -2857,17 +2821,11 @@ class CognitiveBrain:
             if not cost_verified:
                 return None
 
-            # Acknowledge uncertainty as an evidence-quality descriptor. It may
-            # qualify the descriptive reasoning-strength metadata, but it never
-            # converts that metadata into a probability or expected-return input.
-            # Article X — pattern history may inform calibration when available,
-            # but no specific pattern name is required for native reasoning.
-            raw_lead_conf = _clamp01(lead.confidence)
-            uncertainty_adjusted_conf = _clamp01(
-                raw_lead_conf * (1.0 - 0.5 * uncertainty)
-            )
-            lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
-                uncertainty_adjusted_conf, lead)
+            # Native hypothesis confidence is retained exactly as supplied by
+            # the hypothesis producer. Uncertainty and pattern outcomes remain
+            # separate evidence; neither is multiplied into a synthetic score.
+            lead_conf = _clamp01(lead.confidence)
+            lead_pattern_names = list(getattr(lead, "supporting_patterns", []) or [])
             reward_r, risk_r = geometry.reward_r, 1.0
             expected_value = expected_return_r - cost_r
             # EV must still be positive to justify capital when acting alone.
@@ -3404,7 +3362,7 @@ class CognitiveBrain:
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
-                "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
+                "confidence_authority": "descriptive metadata only",
                 "degrade_on_unknown_council": self._degrade_on_unknown_council,
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
