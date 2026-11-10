@@ -120,10 +120,10 @@ Severity rubric:
 
 ### V-009: PositionWorker discretionary scan-direction and score exits
 - **Severity**: HIGH
-- **Status**: PARTIALLY RESOLVED — production defaults are fail-closed, but the explicit legacy fallback remains available.
-- **Current Code Behavior**: `WorkerConfig.discretionary_exits_enabled`, `legacy_mechanical_exit_fallback_enabled` and `scan_directional_exits_enabled` default false. The event-driven Brain-managed path leaves discretionary TP/BE/trailing/stall/invalidation/conviction/HTF exits disabled. Hard stop-loss, weekend/session/spread protection and the absolute-profit safety backstop remain active. The old discretionary suite can still be invoked by explicitly enabling its fallback configuration, including in isolated tests/backtests.
-- **Execution Path**: `PositionEvaluator` -> `PositionWorker.evaluate()`. With discretionary fallback disabled, only the independent safety-floor checks run; with explicit fallback enabled, legacy mechanical intents are tagged and warning-logged.
-- **Remaining Work**: Remove the production-configurable legacy fallback and its environment keys after verifying no owner workflow depends on it. Retain only deterministic capital-protection mechanics and Brain-authored discretionary management. Do not mark this finding resolved until the fallback cannot be activated in a live runtime.
+- **Status**: RESOLVED for the production event-driven runtime; offline test/backtest fixtures retain explicit constructor-only coverage.
+- **Current Code Behavior**: RiskConfig no longer exposes or parses legacy mechanical-exit environment switches. The live bootstrap unconditionally sets `discretionary_exits_enabled=False` and `scan_directional_exits_enabled=False`; there is no operator setting that can reactivate deterministic TP/BE/trailing/stall/invalidation/conviction/HTF exits. Hard stop-loss, weekend/session/spread protection and the absolute-profit safety backstop remain active. The old discretionary methods are exercised only by isolated WorkerConfig fixtures in tests/backtests.
+- **Execution Path**: Production `PositionEvaluator` -> `PositionWorker.evaluate()` with discretionary checks hard-disabled; independent safety-floor checks remain active.
+- **Regression Evidence**: `tests/test_legacy_mechanical_fallback_config.py` sets both retired environment variables to true and proves they are ignored; it also asserts the live bootstrap hard-disables discretionary exits.
 ### V-010: Breakeven re-entry shortcut
 - **Severity**: HIGH
 - **Status**: RESOLVED in the exact-ticket Brain-management increment.
