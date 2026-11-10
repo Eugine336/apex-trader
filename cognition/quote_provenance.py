@@ -48,6 +48,17 @@ def verify_quote_source_provenance(
         source_time = _finite(raw_fields.get("time_msc"))
         if source_time is None or source_time <= 0.0:
             source_time = _finite(raw_fields.get("time"))
+        server_epoch = (
+            source_time / 1000.0
+            if source_time is not None and source_time > 10_000_000_000
+            else source_time
+        )
+        offset_seconds = _finite(raw_fields.get("source_utc_offset_seconds"))
+        normalized_epoch = (
+            server_epoch - offset_seconds
+            if server_epoch is not None and offset_seconds is not None
+            else None
+        )
         return bool(
             str(raw_fields.get("source_timezone", "") or "").lower()
                 == "broker_server"
@@ -55,10 +66,12 @@ def verify_quote_source_provenance(
             and abs(utc_epoch - epoch) <= 1e-6
             and uncertainty is not None
             and 0.0 <= uncertainty <= 2.5
+            and normalized_epoch is not None
+            and abs(normalized_epoch - utc_epoch) <= max(0.05, uncertainty)
             and isinstance(sources, list)
             and len({str(item).strip() for item in sources if str(item).strip()}) >= 2
-            and source_time is not None
-            and source_time > 0.0
+            and server_epoch is not None
+            and server_epoch > 0.0
         )
 
     if adapter == "deriv":
