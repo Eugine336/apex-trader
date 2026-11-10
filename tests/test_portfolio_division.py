@@ -109,7 +109,7 @@ def test_factor_fold_derisks_and_clamps_ceiling():
     pf = PortfolioDivision(FakeSizer())
     # Two >1 factors must NOT inflate above the 1.0 ceiling.
     v = pf.evaluate(_candidate(), [], _account(),
-                    SizingFactors(base_risk_pct=0.01, de_size_mult=1.5,
+                    SizingFactors(base_risk_pct=0.01, vol_mult=1.5,
                                   orch_mult=1.5))
     assert v.approved
     assert v.combined_mult == 1.0
