@@ -2,7 +2,7 @@
 
 Tests:
 - SystemContext creates evolution engine subsystems
-- SystemContext creates planning/shadow subsystems
+- SystemContext has no retired planning/shadow subsystems
 - main.py no longer imports TradingLoop or checks USE_EVENT_DRIVEN
 - EventDrivenSystem uses evolution engines in entry/close paths
 - Shutdown closes evolution engine DB connections
