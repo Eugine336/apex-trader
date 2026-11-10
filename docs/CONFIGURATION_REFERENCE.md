@@ -133,8 +133,11 @@ invalid operational ranges fail startup; they do not silently fall back.
 This is deliberately not a blanket 716-field override. Risk/OwnerLimits,
 analytical scoring cutoffs, statistical model thresholds, broker-derived facts,
 and constitutional safety invariants are not generic environment overrides.
-Owner capital limits remain in the canonical authenticated and audited
-OwnerLimits surface. The allowlist is regression-tested in
+Owner capital limits may be bootstrapped at startup through
+`APEX_OWNER_LIMITS_JSON`, which accepts only the canonical OwnerLimits editable
+fields and still enforces immutable hard safety ceilings. Authenticated and
+audited runtime edits remain available through the OwnerLimits API/dashboard
+surface; generic `APEX_<SECTION>_<FIELD>` overrides cannot mutate OwnerLimits. The allowlist is regression-tested in
 `tests/test_config_env.py` and `tests/test_env_example_coverage.py`.
 
 ## Full typed-field inventory
