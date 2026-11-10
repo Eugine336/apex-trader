@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 import sys
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 # Running a file under scripts/ puts that directory, not the repository root,
 # at sys.path[0]. Add the project root so package imports work from a venv.
@@ -20,6 +20,51 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock, query_ntp_sources  # noqa: E402
+
+
+def _tick_epoch_milliseconds(tick: Any) -> float:
+    milliseconds = float(getattr(tick, "time_msc", 0) or 0)
+    return milliseconds if milliseconds > 0 else float(getattr(tick, "time", 0) or 0) * 1000.0
+
+
+def wait_for_advancing_tick(
+    get_tick: Callable[[str], Any],
+    symbol: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 0.25,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[Any, float, Any, float] | None:
+    """Wait boundedly for a newer provider tick instead of sampling only once.
+
+    A quiet symbol can legitimately return the same last tick for a short
+    interval. Keep the first observation fixed and wait for a strictly newer
+    provider timestamp; do not mistake a repeated cached tick for a clock fault.
+    """
+    timeout = float(timeout_seconds)
+    interval = float(poll_interval_seconds)
+    if not (0.0 < timeout <= 60.0):
+        raise ValueError("tick wait timeout must be greater than 0 and at most 60 seconds")
+    if not (0.05 <= interval <= 5.0):
+        raise ValueError("tick poll interval must be between 0.05 and 5 seconds")
+    first = get_tick(symbol)
+    first_mono = monotonic()
+    if first is None:
+        return None
+    first_ms = _tick_epoch_milliseconds(first)
+    if first_ms <= 0:
+        return None
+    deadline = first_mono + timeout
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return None
+        sleep(min(interval, remaining))
+        tick = get_tick(symbol)
+        observed_mono = monotonic()
+        if tick is not None and _tick_epoch_milliseconds(tick) > first_ms:
+            return first, first_mono, tick, observed_mono
 
 
 def measure_tick_clock(
@@ -57,6 +102,14 @@ def main() -> int:
     parser.add_argument(
         "--symbols", nargs="*", default=None,
         help="Exact broker symbols to inspect; default: first five visible symbols",
+    )
+    parser.add_argument(
+        "--tick-wait-seconds", type=float, default=10.0,
+        help="Maximum time to wait for a newer tick per symbol (default: 10)",
+    )
+    parser.add_argument(
+        "--tick-poll-interval", type=float, default=0.25,
+        help="Seconds between read-only tick observations (default: 0.25)",
     )
     parser.add_argument(
         "--terminal-path", default=os.environ.get("MT5_TERMINAL_PATH") or None,
@@ -107,23 +160,23 @@ def main() -> int:
         samples = query_ntp_sources()
         print(f"independent_network_time_sources={len(samples)}")
         for symbol in symbols:
-            first = mt5.symbol_info_tick(symbol)
-            first_mono = time.monotonic()
-            if first is None:
-                print(f"{symbol}: no tick ({mt5.last_error()})")
+            observations = wait_for_advancing_tick(
+                mt5.symbol_info_tick, symbol,
+                args.tick_wait_seconds, args.tick_poll_interval,
+            )
+            if observations is None:
+                print(
+                    f"{symbol}: no advancing tick within {args.tick_wait_seconds:.1f}s "
+                    f"(last_error={mt5.last_error()})"
+                )
                 continue
-            time.sleep(1.05)
-            tick = mt5.symbol_info_tick(symbol)
-            observed_mono = time.monotonic()
-            if tick is None:
-                print(f"{symbol}: no second tick observation ({mt5.last_error()})")
-                continue
-            first_ms = float(getattr(first, "time_msc", 0) or getattr(first, "time", 0) * 1000)
-            second_ms = float(getattr(tick, "time_msc", 0) or getattr(tick, "time", 0) * 1000)
+            first, first_mono, tick, observed_mono = observations
+            first_ms = _tick_epoch_milliseconds(first)
+            second_ms = _tick_epoch_milliseconds(tick)
             elapsed = observed_mono - first_mono
             advance = (second_ms - first_ms) / 1000.0
-            if advance <= 0 or elapsed <= 0 or elapsed > 10 or abs(advance - elapsed) > max(2.0, elapsed * 0.5):
-                print(f"{symbol}: tick stream did not advance consistently (elapsed={elapsed:.3f}s advance={advance:.3f}s)")
+            if elapsed <= 0 or elapsed > 10 or abs(advance - elapsed) > max(2.0, elapsed * 0.5):
+                print(f"{symbol}: tick timestamps advanced inconsistently (elapsed={elapsed:.3f}s advance={advance:.3f}s)")
                 continue
             measured = measure_tick_clock(tick, server, observed_mono, samples)
             print(
