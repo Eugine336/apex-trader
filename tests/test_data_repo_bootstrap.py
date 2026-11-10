@@ -87,9 +87,18 @@ def test_fresh_clone_automatically_clones_and_links_sibling_data_repo(tmp_path, 
 
     def fake_git(args, **kwargs):
         commands.append(args)
-        assert args[0] == "clone"
-        target.mkdir()
-        (target / ".git").mkdir()
+        if args[0] == "clone":
+            target.mkdir()
+            (target / ".git").mkdir()
+            return ""
+        if args[:2] == ["branch", "--show-current"]:
+            return "main"
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return "origin/main"
+        if args[:2] == ["config", "--get"]:
+            return "git-lfs-command"
+        if args[:2] == ["lfs", "version"]:
+            return "git-lfs/3.8.1"
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
@@ -122,7 +131,17 @@ def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monke
         bootstrap, "verify_dedicated_data_repo",
         lambda *a, **k: (True, "eugine336/apex-trader-data"),
     )
-    monkeypatch.setattr(bootstrap, "_run_git", lambda *a, **k: "")
+    def fake_git(args, **kwargs):
+        if args[:2] == ["branch", "--show-current"]:
+            return "main"
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return "origin/main"
+        if args[:2] == ["config", "--get"]:
+            return "git-lfs-command"
+        if args[:2] == ["lfs", "version"]:
+            return "git-lfs/3.8.1"
+        return ""
+    monkeypatch.setattr(bootstrap, "_run_git", fake_git)
 
     result = bootstrap.bootstrap_data_repo(source_root=source)
 
@@ -215,3 +234,30 @@ def test_adoption_backup_failure_leaves_original_directory_untouched(tmp_path, m
 
     assert database.read_bytes() == b"do-not-touch"
     assert not (target / ".git").exists()
+
+
+
+def test_adoption_git_failure_keeps_original_data_and_verified_backup(tmp_path, monkeypatch):
+    target = tmp_path / "apex-trader-data"
+    target.mkdir()
+    database = target / "apex_events.db"
+    database.write_bytes(b"original-database")
+
+    def fail_fetch(args, *, cwd=None, timeout=180):
+        if args[:2] == ["fetch", "--no-tags"]:
+            raise bootstrap.DataRepoBootstrapError("simulated fetch failure")
+        if args == ["init"]:
+            (cwd / ".git").mkdir()
+        return ""
+
+    monkeypatch.setattr(bootstrap, "_run_git", fail_fetch)
+
+    with pytest.raises(bootstrap.DataRepoBootstrapError, match="simulated fetch failure"):
+        bootstrap._adopt_existing_data_repo(
+            target, bootstrap.DEFAULT_DATA_REPO_URL
+        )
+
+    backups = list(tmp_path.glob("apex-trader-data-pre-adoption-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "apex_events.db").read_bytes() == b"original-database"
+    assert database.read_bytes() == b"original-database"
