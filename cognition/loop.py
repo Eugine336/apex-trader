@@ -42,7 +42,6 @@ from cognition.management_translator import translate_management as _translate_m
 from cognition.management_translator import ManagementAction as _ManagementAction
 from cognition.evidence_adapters import (
     evidence_from_analogues,
-    evidence_from_developing_bias,
     evidence_from_market_desk,
     evidence_from_portfolio,
     evidence_from_reasoning,
@@ -68,9 +67,9 @@ def _f(v: Any, default: float = 0.0) -> float:
 class EvidenceConsolidator:
     """Builds a consolidated :class:`MarketState` from live subsystem readings.
 
-    Phase E: converts the live subsystem readings (the ThesisEngine's
-    supporting/opposing modules, the developing forming-bar structural read, the
-    portfolio/price/structural-interaction sources) into domain-classified
+    Phase E: converts completed market observations (ThesisEngine's
+    supporting/opposing modules, portfolio/price/structural-interaction sources)
+    into domain-classified
     :class:`~cognition.contracts.Evidence`, plus an aggregate read. Read-only and
     fail-safe. Every source is a non-directional OBSERVATION feed — the Brain, not
     a pre-collapsed vote panel, forms direction (V-004).
@@ -80,7 +79,6 @@ class EvidenceConsolidator:
         self,
         ctx: Optional[Any] = None,
         *,
-        developing_source: Optional[Callable[[str], Any]] = None,
         per_module: bool = True,
         memory: Optional[Any] = None,
         max_analogues: int = 5,
@@ -92,7 +90,6 @@ class EvidenceConsolidator:
         concept_source: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._ctx = ctx
-        self._developing_source = developing_source
         self._per_module = bool(per_module)
         self._memory = memory
         self._max_analogues = max(1, int(max_analogues))
@@ -119,15 +116,6 @@ class EvidenceConsolidator:
         # Part XXI Art 9/10/11 — records each council consultation + grades each
         # advisor. Observability/learning only; never authority. Fail-safe.
         self._consult_ledger: Optional[Any] = None
-
-    def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
-        """Wire (or clear) the DEVELOPING (forming-bar) bias source.
-
-        Returns the developing WorldModel's bias dict for a symbol; the
-        consolidator surfaces it as one short-lived multi-timeframe Evidence so
-        the Brain also sees the fresher between-close read. Fail-safe callable.
-        """
-        self._developing_source = developing_source
 
     def set_concept_source(self, source: Optional[Callable[[str], Any]]) -> None:
         """Wire the live multi-timeframe concept-reading source.
@@ -343,14 +331,6 @@ class EvidenceConsolidator:
                     # When per-module is off, keep only the aggregate read.
                     if self._per_module or e.source_module == "brain.thesis_engine":
                         ms.add(e)
-            if self._developing_source is not None:
-                try:
-                    for e in evidence_from_developing_bias(
-                        ms.symbol, self._developing_source(ms.symbol),
-                    ):
-                        ms.add(e)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
             # Native execution-cost method: the registered reader receives a
             # broker quote/specification and empirical entry telemetry. It emits
             # neutral evidence only; incomplete cost coverage remains unverified.
@@ -724,17 +704,6 @@ class CognitionLoop:
         broker position and submits the close/partial/modify/reverse/scale-in.
         When unset, ``live`` management degrades to shadow-record. Fail-safe."""
         self._management_sink = sink
-
-    def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
-        """Wire the DEVELOPING (forming-bar) bias source onto the consolidator.
-
-        Delegates to :meth:`EvidenceConsolidator.set_developing_source` so the
-        Brain also sees the fresher between-close structural read alongside the
-        confirmed readings. Fail-safe — a wiring fault must never break startup."""
-        try:
-            self._consolidator.set_developing_source(developing_source)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] set_developing_source ignored a fault: %s", exc)
 
     def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
         """Wire the portfolio-assessment source onto the consolidator (Art 11).
@@ -1947,9 +1916,8 @@ class CognitionLoop:
             # when it originates a trade.
             try:
                 _dec = output.decision
-                # V-027 — lead with the decision type + opportunity/thesis
-                # (DecisionPackage.summary), not the collapsed dir/conf. Confidence
-                # is kept as supplementary operator context.
+                # Lead with the decision type and thesis. Uncalibrated reasoning
+                # strength is descriptive metadata, not an operator action signal.
                 _summary = getattr(_dec, "summary", None) or (
                     getattr(getattr(_dec, "decision_type", None), "value", None)
                     or str(getattr(_dec, "decision_type", "?"))
@@ -1965,13 +1933,14 @@ class CognitionLoop:
                     ("available" if _provider_available else "unavailable")
                 )
                 _native_status = str(_qa.get("native_fallback_status", "") or "")
-                _confidence = getattr(_dec, "confidence", None)
-                _confidence_label = (
-                    "unknown" if _confidence is None else f"{float(_confidence):.2f}"
+                _reasoning_strength = getattr(_dec, "confidence", None)
+                _strength_label = (
+                    "unknown" if _reasoning_strength is None
+                    else f"{float(_reasoning_strength):.2f}"
                 )
                 logger.info(
-                    "[cognition] %s -> %s (confidence=%s) reasoning_mode=%s external_advisor=%s%s",
-                    symbol, _summary, _confidence_label,
+                    "[cognition] %s -> %s (reasoning_strength=%s; uncalibrated) reasoning_mode=%s external_advisor=%s%s",
+                    symbol, _summary, _strength_label,
                     _reasoning_mode,
                     _external_advisor,
                     f" native_status={_native_status}" if _native_status else "",
@@ -2257,11 +2226,10 @@ class CognitionLoop:
             names = [str(n).strip() for n in names if str(n).strip()]
             if not names:
                 return
-            confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
             ts = _time.time() if now is None else float(now)
             for name in names:
                 self._pattern_tracker.record_origination(
-                    name, symbol, direction, confidence, ts)
+                    name, symbol, direction, ts)
             self._origination_patterns[symbol] = names
         except Exception as exc:  # noqa: BLE001 — learning must never break the loop
             logger.debug("[cognition-loop] pattern origination fault: %s", exc)
