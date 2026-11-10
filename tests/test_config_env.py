@@ -9,14 +9,14 @@ from config_env import ENV_CONFIG_FIELDS
 
 
 def test_operational_environment_overrides_are_typed(monkeypatch):
-    monkeypatch.setenv("APEX_PERFORMANCE_SCAN_INTERVAL_ACTIVE", "7.5")
+    monkeypatch.setenv("APEX_PERFORMANCE_SCAN_INTERVAL_ACTIVE", "7")
     monkeypatch.setenv("APEX_OPS_TICK_PROFILING_ENABLED", "false")
     monkeypatch.setenv("APEX_DATA_BACKUP_EXCLUDE_PATTERNS", '["*.tmp","cache/*"]')
     monkeypatch.setenv("APEX_BACKTEST_DEFAULT_SPREAD_PIPS", "1.25")
 
     config = AppConfig()
 
-    assert config.performance.scan_interval_active == 7.5
+    assert config.performance.scan_interval_active == 7
     assert config.ops.tick_profiling_enabled is False
     assert config.data_backup.exclude_patterns == ["*.tmp", "cache/*"]
     assert config.backtest.default_spread_pips == 1.25
