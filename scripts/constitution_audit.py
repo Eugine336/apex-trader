@@ -111,16 +111,17 @@ CHECKS: list[Check] = [
         clause="§XXX (a capability that is not reachable from the live path is not implemented) / §XXIX complete-cycle",
         pr="PR-A1",
         summary="Retired zone-touch / DecisionEngine ENTRY pipeline still present in source.",
-        # Only the retired entry DECIDERS are asserted gone. entry/models.py
-        # (EntryConfig / EntryZone data + config) and entry/flip_sequence_tracker.py
-        # (+ entry/m1_confirmation.py) are retained SHARED, NON-DECIDER utilities
-        # used by live analysis, so they are intentionally not listed here.
+        # Shared entry data models remain valid; the M1/M5 flip-sequence
+        # tracker and M1 confirmer are retired because the live bootstrap fed
+        # their state but no production decision consumer ever read it.
         exists=[
             "entry/zone_watcher.py",
             "entry/entry_gate.py",
             "entry/entry_orchestrator.py",
             "entry/flip_confirmer.py",
             "entry/tick_delta_analyzer.py",
+            "entry/flip_sequence_tracker.py",
+            "entry/m1_confirmation.py",
             "trigger/entry_validator.py",
         ],
         patterns=[
@@ -129,6 +130,7 @@ CHECKS: list[Check] = [
             _p("event_driven_bootstrap.py", r"def\s+_on_entry_decision\b"),
             _p("scanner/candle_close_handler.py", r"\bextract_entry_zones\b"),
             _p("scanner/candle_close_handler.py", r"\bentry_quality_(long|short)\b"),
+            _p("brain/instrument_profile.py", r"\bflip_(?:atr_move_threshold|tick_threshold_default|tick_threshold_asian|require_m15_non_opposition|volume_ratio_min|volume_ratio_asian|require_clean_break|delta_threshold|delta_tick_count|require_delta_confirmation|require_sequence|sequence_window_bars)\b"),
         ],
     ),
     Check(

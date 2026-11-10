@@ -250,13 +250,26 @@ def test_vwap_zone_enabled_defaults_on():
     assert get_profile("EURUSD").vwap_zone_enabled is True
 
 
-def test_flip_confirmation_checks_enabled_by_default():
-    # Session 16 checks 6 (order-flow delta) and 7 (temporal sequencing) are
-    # active out of the box on every profile, including the Gold override.
-    for sym in ("EURUSD", "XAUUSD"):
-        prof = get_profile(sym)
-        assert prof.flip_require_delta_confirmation is True
-        assert prof.flip_require_sequence is True
+def test_retired_flip_confirmation_settings_are_not_exposed():
+    # The old Entry/FlipConfirmer implementation and its consumers are gone.
+    # Profile settings for those dead gates must not be presented as active.
+    retired = (
+        "flip_atr_move_threshold",
+        "flip_tick_threshold_default",
+        "flip_tick_threshold_asian",
+        "flip_require_m15_non_opposition",
+        "flip_volume_ratio_min",
+        "flip_volume_ratio_asian",
+        "flip_require_clean_break",
+        "flip_delta_threshold",
+        "flip_delta_tick_count",
+        "flip_require_delta_confirmation",
+        "flip_require_sequence",
+        "flip_sequence_window_bars",
+    )
+    for symbol in ("EURUSD", "XAUUSD"):
+        profile = get_profile(symbol)
+        assert all(not hasattr(profile, name) for name in retired)
 
 
 def test_instrument_profiles_get_independent_default_dicts():
