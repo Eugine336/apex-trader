@@ -700,7 +700,7 @@ def test_compare_opportunities_does_not_use_reasoning_confidence_as_book_ev():
     assert br.compare_opportunities(opp, "EURUSD", low_confidence_position) == "unranked"
     assert br.compare_opportunities(opp, "EURUSD", high_confidence_position) == "unranked"
     # An unrelated instrument is complementary, without confidence comparison.
-    unrelated = [{"symbol": "XAUUSD", "direction": "LONG", "confidence": 0.99}]
+    unrelated = [{"symbol": "GER40", "direction": "LONG", "confidence": 0.99}]
     assert br.compare_opportunities(opp, "EURUSD", unrelated) == "complementary"
 
 
