@@ -177,3 +177,19 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     assert campaign.open_ticket_bindings == [
         {"platform": "deriv", "ticket": "shared-ticket"}
     ]
+    status = registry.get_status()
+    assert len(status["live"]) == 1
+    assert status["live"][0]["campaign_id"] == "campaign-close"
+    assert status["live"][0]["open_ticket_bindings"] == [
+        {"platform": "deriv", "ticket": "shared-ticket"}
+    ]
+    assert status["recent"] == []
+
+    # The campaign finalizes only after its last exact broker ticket closes.
+    registry.observe_close(
+        "EURUSD", "LONG", "stop_loss",
+        ticket="shared-ticket", platform="deriv",
+    )
+    final_status = registry.get_status()
+    assert final_status["live"] == []
+    assert final_status["recent"][-1]["campaign_id"] == "campaign-close"
