@@ -1111,6 +1111,8 @@ class CognitionLoop:
             }
             quote_candidates = []
             for item in fresh_items:
+                if str(getattr(item, "source_module", "") or "") != "market.live_quote":
+                    continue
                 measurements = getattr(item, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
@@ -1404,6 +1406,8 @@ class CognitionLoop:
             if not math.isfinite(cutoff) or cutoff <= 0.0:
                 return
             for evidence in market_state.fresh_evidence(now=cutoff):
+                if str(getattr(evidence, "source_module", "") or "") != "market.live_quote":
+                    continue
                 measurements = getattr(evidence, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
