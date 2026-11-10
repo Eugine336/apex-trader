@@ -939,7 +939,12 @@ def test_origination_live_births_campaign():
         origination_mode="live", campaign_registry=reg,
         position_source=lambda: [],
     )
-    loop.set_origination_sink(lambda intent: None)
+    def _submit_after_campaign_birth(intent):
+        assert reg.theses, "campaign thesis must exist before asynchronous dispatch"
+        assert reg.legs, "pending campaign leg must exist before asynchronous dispatch"
+        return True
+
+    loop.set_origination_sink(_submit_after_campaign_birth)
     loop.run_once()
     assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
     assert reg.theses[0][5] == brain.last_campaign.campaign_id
