@@ -854,10 +854,13 @@ class MT5Connector(BaseConnector):
         raw_fields.setdefault("time", getattr(tick, "time", None))
         raw_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
         raw_fields.update({
+            "source_adapter": "mt5",
             "source_timezone": "broker_server",
             "source_utc_offset_seconds": clock.offset_seconds,
             "source_utc_offset_uncertainty_seconds": clock.uncertainty_seconds,
             "source_clock_sources": list(clock.sources),
+            "provider_timestamp_epoch": tick_server_epoch,
+            "provider_timestamp_semantics": "broker_server_epoch",
             "timestamp_utc_epoch": clock.to_utc_epoch(tick_server_epoch),
         })
         return TickData(
