@@ -72,10 +72,74 @@ class MT5PortfolioAdapter:
                     errors.append(f"connector_{index}:positions_invalid")
                     continue
                 for row in raw_positions:
-                    if isinstance(row, dict):
-                        positions.append({key: row[key] for key in _POSITION_FIELDS if key in row})
-                    else:
+                    if not isinstance(row, dict):
                         errors.append(f"connector_{index}:position_invalid")
+                        continue
+                    position = {key: row[key] for key in _POSITION_FIELDS if key in row}
+                    position["source_verified"] = row.get("source_verified") is True
+                    position["source_timestamp_verified"] = False
+                    position["risk_account_ccy"] = None
+                    position["risk_calculation_source"] = None
+                    position["margin_account_ccy"] = None
+                    position["margin_calculation_source"] = None
+
+                    # Use the broker's own contract-aware profit calculator for
+                    # current-mark-to-stop risk. This is account-currency P&L,
+                    # not a pip/point approximation. Missing stops, invalid
+                    # position sides, or unavailable calculations remain unknown.
+                    direction = ""
+                    symbol = str(row.get("symbol") or "").strip()
+                    volume = 0.0
+                    current_price = 0.0
+                    try:
+                        raw_type = row.get("type")
+                        side = str(raw_type).strip().lower() if raw_type is not None else ""
+                        if side in {"0", "buy", "long"}:
+                            direction = "LONG"
+                        elif side in {"1", "sell", "short"}:
+                            direction = "SHORT"
+                        else:
+                            direction = ""
+                        volume = float(row.get("volume"))
+                        current_price = float(row.get("price_current"))
+                        stop_price = float(row.get("sl") or 0.0)
+                        calculate_profit = getattr(connector, "calculate_profit", None)
+                        if (
+                            direction and symbol and volume > 0.0
+                            and current_price > 0.0 and stop_price > 0.0
+                            and callable(calculate_profit)
+                        ):
+                            stop_pnl = float(calculate_profit(
+                                symbol, direction, volume, current_price, stop_price,
+                            ))
+                            if stop_pnl == stop_pnl and abs(stop_pnl) != float("inf"):
+                                position["risk_account_ccy"] = max(0.0, -stop_pnl)
+                                position["stop_pnl_account_ccy"] = stop_pnl
+                                position["risk_calculation_source"] = "mt5.order_calc_profit"
+                    except Exception as exc:  # SAFE-FALLBACK: keep the broker position visible with unknown stop risk.
+                        errors.append(
+                            f"connector_{index}:position_risk_{type(exc).__name__}"
+                        )
+
+                    # Margin is exposed separately; it is not mislabeled as
+                    # notional exposure or as a risk measure.
+                    try:
+                        calculate_margin = getattr(connector, "calculate_margin", None)
+                        if (
+                            direction and symbol and volume > 0.0
+                            and current_price > 0.0 and callable(calculate_margin)
+                        ):
+                            margin = float(calculate_margin(
+                                symbol, direction, volume, current_price,
+                            ))
+                            if margin == margin and abs(margin) != float("inf") and margin >= 0.0:
+                                position["margin_account_ccy"] = margin
+                                position["margin_calculation_source"] = "mt5.order_calc_margin"
+                    except Exception as exc:  # SAFE-FALLBACK: keep the broker position visible with unknown margin.
+                        errors.append(
+                            f"connector_{index}:position_margin_{type(exc).__name__}"
+                        )
+                    positions.append(position)
             except Exception as exc:  # noqa: BLE001 — partial evidence is retained with a typed error
                 errors.append(f"connector_{index}:{type(exc).__name__}")
 
@@ -92,7 +156,8 @@ class MT5PortfolioAdapter:
             "unknowns": [
                 "MT5 does not provide a verified source timestamp for this combined read",
                 "synchronized historical portfolio returns, equity curve, and pairwise correlations are unavailable",
-                "per-position account-currency risk and exposure conversions are not provided by this read path",
+                "per-position notional and currency exposure conversions are not provided by this read path",
+                "position risk-to-stop and margin are only present where the broker calculation is available; no stop or failed calculation remains unknown",
             ],
         }
         return (DataObservation(
