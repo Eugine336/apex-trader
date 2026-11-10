@@ -14,7 +14,7 @@ default, precedence, restart behavior, audit requirements and safety impact
 are defined. Do not expose a setting that can weaken Brain authority, data
 integrity, unknown-state handling, owner limits, or execution safety.
 
-The typed classes below contain **713 fields across 43 classes**.
+The typed classes below contain **701 fields across 43 classes** after retiring disconnected cross-instrument ranking, quality-sizing and displacement controls.
 Literal runtime environment reads are separately checked against `.env.example`
 by `tests/test_env_example_coverage.py`; frontend Vite reads are checked against
 their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
@@ -765,22 +765,10 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `recommendation_max_change_pct`
 - `recommendation_min_trades`
 
-## `CrossInstrumentConfig` (18 fields)
+## `CrossInstrumentConfig` (6 fields)
 
 - `queue_enabled`
 - `queue_window_ms`
-- `ranking_enabled`
-- `spread_ev_penalty_per_pip`
-- `winrate_ev_weight`
-- `quality_sizing_enabled`
-- `quality_sizing_max_boost`
-- `quality_sizing_min_cut`
-- `quality_sizing_ev_ref`
-- `displacement_enabled`
-- `displacement_ev_margin`
-- `displacement_max_per_cycle`
-- `displacement_min_profit_protect`
-- `displacement_cooldown_seconds`
 - `proactive_scan_enabled`
 - `proactive_scan_interval_seconds`
 - `proactive_scan_min_ev`
