@@ -323,7 +323,7 @@ def test_market_geometry_controls_payoff_not_reported_asymmetry():
                 ).reason(_confident_state())
     assert lo.campaign is not None and hi.campaign is not None
     assert hi.campaign.expected_value == lo.campaign.expected_value
-    assert hi.campaign.desired_exposure >= lo.campaign.desired_exposure
+    assert hi.campaign.desired_exposure == lo.campaign.desired_exposure
 
 
 def test_brain_confidence_tracks_quality():
