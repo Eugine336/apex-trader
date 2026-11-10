@@ -4,7 +4,7 @@ The language model is **not** a chatbot bolted onto the side and it is **not**
 an oracle that overrides deterministic safeguards. It is an additional reasoning
 participant that receives the same *structured evidence* every other module sees
 (the competing theses, the vote panel summary, regime, structure) and returns a
-structured opinion: a direction, a calibrated confidence, a short rationale, the
+structured opinion: a direction, an uncalibrated reasoning-strength descriptor, a short rationale, the
 competing hypotheses it considered, and the information it feels is missing.
 
 That opinion is emitted as **evidence**, exactly like any analytical module — it
