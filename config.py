@@ -4049,23 +4049,14 @@ class AdaptiveTunerConfig:
 
 @dataclass
 class CrossInstrumentConfig:
-    """Runtime plumbing for Brain-authorized cross-instrument opportunities.
+    """Observational cross-instrument watchlist; never an order authority."""
 
-    The queue batches intents only after the Brain and shared risk admission have
-    authorized them. The proactive scanner publishes an observational watchlist;
-    it never creates, ranks, sizes, displaces or authorizes a trade.
-    """
-
-    queue_enabled: bool = True
-    queue_window_ms: int = 1000
     proactive_scan_enabled: bool = True
     proactive_scan_interval_seconds: float = 60.0
     proactive_scan_min_ev: float = 0.5
     proactive_proximity_pct: float = 0.02
 
     def __post_init__(self) -> None:
-        if int(self.queue_window_ms) < 0:
-            raise ValueError("CrossInstrumentConfig.queue_window_ms must be >= 0")
         if float(self.proactive_scan_interval_seconds) <= 0:
             raise ValueError(
                 "CrossInstrumentConfig.proactive_scan_interval_seconds must be > 0"
