@@ -92,22 +92,32 @@ class MT5TickPoller:
         timestamp = getattr(quote, "time", None)
         raw = getattr(quote, "raw_fields", {})
         raw = dict(raw) if isinstance(raw, dict) else {}
-        time_msc = raw.get("time_msc")
-        if time_msc is None:
-            try:
-                time_msc = int(timestamp.timestamp() * 1000)
-            except Exception:
-                return False
-        key = self._tick_key(
-            time_msc, getattr(quote, "bid", None), getattr(quote, "ask", None),
-            raw.get("flags", 0),
-        )
-        if not self._remember_history_tick(symbol, key):
+        if not isinstance(timestamp, datetime):
             return False
+        try:
+            bid = float(getattr(quote, "bid", None))
+            ask = float(getattr(quote, "ask", None))
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (
+            math.isfinite(bid) and math.isfinite(ask)
+            and bid > 0.0 and ask > 0.0
+        ):
+            return False
+
+        time_msc = raw.get("time_msc")
+        if time_msc is None and timestamp.tzinfo is not None:
+            # Never use datetime.timestamp() on a naive broker timestamp: it
+            # interprets the value in the host machine's local timezone.
+            time_msc = int(timestamp.astimezone(timezone.utc).timestamp() * 1000)
+        if time_msc is not None:
+            key = self._tick_key(time_msc, bid, ask, raw.get("flags", 0))
+            if not self._remember_history_tick(symbol, key):
+                return False
         tick = Tick(
             symbol=symbol,
-            bid=float(quote.bid),
-            ask=float(quote.ask),
+            bid=bid,
+            ask=ask,
             timestamp=timestamp,
             source="mt5",
             source_timestamp_verified=(
@@ -140,7 +150,7 @@ class MT5TickPoller:
         start = (
             cursor - timedelta(milliseconds=1)
             if cursor is not None
-            else end - timedelta(seconds=2)
+            else end - timedelta(seconds=300)
         )
         window_seconds = (end - start).total_seconds()
         if window_seconds < 0:
@@ -260,8 +270,18 @@ class MT5TickPoller:
 
     def _poll_symbol(self, symbol: str) -> None:
         quote = self._pm.get_price(symbol)
-        if quote is None or float(getattr(quote, "bid", 0.0) or 0.0) <= 0.0:
+        if quote is None:
             raise RuntimeError("latest MT5 quote unavailable")
+        try:
+            latest_bid = float(getattr(quote, "bid", 0.0) or 0.0)
+            latest_ask = float(getattr(quote, "ask", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("latest MT5 quote contains invalid bid/ask") from exc
+        if not (
+            math.isfinite(latest_bid) and math.isfinite(latest_ask)
+            and latest_bid > 0.0 and latest_ask > 0.0
+        ):
+            raise RuntimeError("latest MT5 quote contains non-positive or non-finite bid/ask")
         reported_symbol = str(getattr(quote, "symbol", "") or "").strip().upper()
         if not reported_symbol or reported_symbol != symbol.strip().upper():
             raise RuntimeError(
