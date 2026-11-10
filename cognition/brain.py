@@ -1806,13 +1806,12 @@ class CognitiveBrain:
         """THESIS-based management decision (Part XXV Art 11) for a management
         opinion carrying a thesis_state and/or a management_action.
 
-        No direction comparison anywhere — LONG and SHORT are perfectly
-        symmetric. Defaults to HOLD on uncertainty/ambiguity. EXIT only on an
-        explicit invalidation, opportunity gone, negative EV, or a confident
-        contrary EXIT recommendation; REVERSE only on very-high-confidence
-        contrary evidence; TIGHTEN_RISK when the thesis is weakening; SCALE_IN
-        only when the thesis is strengthening, in profit and every actionability
-        dimension is strong."""
+        No direction comparison or confidence threshold authorizes management.
+        EXIT requires explicit invalidation, opportunity gone, or negative
+        verified EV. A reverse or scale-in request must originate as a separate
+        Brain opportunity with its own geometry, EV, costs and risk admission.
+        TIGHTEN_RISK is used for weakening but not invalidated theses; uncertainty
+        defaults to HOLD."""
         action_hint = str(getattr(opinion, "management_action", "") or "").strip().upper()
         thesis = str(getattr(opinion, "thesis_state", "") or "").strip().lower()
         opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip().lower()
@@ -2991,10 +2990,9 @@ class CognitiveBrain:
                 if str(getattr(item, "independence_group", "") or "").strip()
             })
 
-            # A directional hypothesis may become actionable below 0.70 confidence
-            # or above 0.50 uncertainty only when its uncertainty-adjusted,
-            # cost-adjusted expectancy still supports it. These values inform EV
-            # and sizing; they are not universal strategy-selection switches.
+            # Confidence remains uncalibrated reasoning-strength metadata. It is
+            # not a probability or a threshold; opportunity qualification depends
+            # on verified fixed-horizon return, structural geometry and costs.
             uncertainty = _clamp01(
                 (consolidation or {}).get(
                     "aggregate_uncertainty", analysis.evidence_uncertainty,
