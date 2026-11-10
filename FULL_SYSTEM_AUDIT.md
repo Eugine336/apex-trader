@@ -285,7 +285,7 @@ The ED system makes entry decisions strategically but manages open positions pur
 ### planning/ (4 files)
 | File | Status | Notes |
 |------|--------|-------|
-| trade_planner.py | CONNECTED | Auto-calibration feedback loop works |
+| planning/ | RETIRED | The no-op directional planner, plan journal and calibrator were removed; no live execution caller existed. |
 | outcome_logger.py | CONNECTED | Entry + close logging works |
 | calibrator.py | CONNECTED | Auto-calibration works |
 | models.py | CONNECTED | Data models |
