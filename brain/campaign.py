@@ -300,6 +300,24 @@ class Campaign:
                    if lg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY))
         return adds
 
+    @property
+    def open_tickets(self) -> list[str]:
+        """Exact broker tickets still represented by this live campaign.
+
+        Partial closes retain the ticket; a terminal close removes it. Empty
+        ticket metadata is never replaced with a symbol/side guess.
+        """
+        active: set[str] = set()
+        for leg in self.legs:
+            ticket = str(leg.ticket or "").strip()
+            if not ticket:
+                continue
+            if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
+                active.add(ticket)
+            elif leg.kind == LEG_CLOSE and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS:
+                active.discard(ticket)
+        return sorted(active)
+
     def staleness_seconds(self, now: Optional[float] = None) -> float:
         t = _now_epoch() if now is None else _safe_float(now)
         last = self.last_refreshed_epoch or self.opened_at_epoch
@@ -361,6 +379,7 @@ class Campaign:
             "remaining_upside_r": round(max(0.0, ev), 4),
             "refresh_count": int(self.refresh_count),
             "open_legs": int(self.open_legs),
+            "open_tickets": self.open_tickets,
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(now), 1),
