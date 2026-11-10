@@ -559,7 +559,6 @@ class CognitiveBrain:
             for name in ("thesis", "opportunity", "timing", "execution")
         }
         _quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
-        calibration_status = "observational only; no confidence adjustment is applied"
         lead_pattern_names = []
         # Article XX / XXI / V-013 — advisory-council coverage. Read how much of
         # the council actually contributed. This is a first-class health signal:
@@ -804,7 +803,6 @@ class CognitiveBrain:
             "descriptive advisor metadata only; not calibrated, aggregated, "
             "probability, qualification, action permission or sizing"
         )
-        questions["calibration_status"] = calibration_status
         questions["advisor_reasoning_quality"] = quality_note
         if lead_pattern_names:
             questions["supporting_patterns"] = list(lead_pattern_names)
