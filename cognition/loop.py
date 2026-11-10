@@ -2257,11 +2257,10 @@ class CognitionLoop:
             names = [str(n).strip() for n in names if str(n).strip()]
             if not names:
                 return
-            confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
             ts = _time.time() if now is None else float(now)
             for name in names:
                 self._pattern_tracker.record_origination(
-                    name, symbol, direction, confidence, ts)
+                    name, symbol, direction, ts)
             self._origination_patterns[symbol] = names
         except Exception as exc:  # noqa: BLE001 — learning must never break the loop
             logger.debug("[cognition-loop] pattern origination fault: %s", exc)
