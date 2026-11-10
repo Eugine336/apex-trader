@@ -298,7 +298,7 @@ def test_campaign_forms_on_quality_not_directional_consensus():
     ]
     out = _brain(_new_reply(opps, preferred="opp_1")).reason(_confident_state(polarity=-0.6))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "SHORT"
+    assert out.campaign is not None and out.campaign.direction == "SHORT"
 
 
 # ── Backward compatibility: legacy single-direction replies unaffected ──────
