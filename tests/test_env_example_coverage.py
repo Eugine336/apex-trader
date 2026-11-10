@@ -147,12 +147,13 @@ def test_operator_environment_reference_documents_every_typed_override():
     reference = (ROOT / "docs" / "OPERATOR_ENVIRONMENT_REFERENCE.md").read_text(
         encoding="utf-8"
     )
-    missing = sorted(
-        f"APEX_{section}_{field}".upper()
-        for section, names in ENV_CONFIG_FIELDS.items()
-        for field in names
-        if f"| {f'APEX_{section}_{field}'.upper()} |" not in reference
-    )
+    missing = []
+    for section, names in ENV_CONFIG_FIELDS.items():
+        for field in names:
+            key = f"APEX_{section}_{field}".upper()
+            if f"| {key} |" not in reference:
+                missing.append(key)
+    missing.sort()
     assert not missing, (
         "Operator environment reference is missing typed settings: "
         + ", ".join(missing)
