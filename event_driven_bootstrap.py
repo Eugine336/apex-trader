@@ -6554,6 +6554,13 @@ class EventDrivenSystem:
 
     def _handle_execution_result(self, intent: Intent, result: Any) -> None:
         """Feed every actual executor outcome back to the Brain action ledger."""
+        if intent.intent_type == IntentType.OPEN:
+            # Successful opens are handled by _handle_open_result after the
+            # broker-success callback. Only explicit rejections may remove a
+            # pending campaign leg here; transport ambiguity must remain visible.
+            if not bool(getattr(result, "success", False)):
+                self._attach_open_campaign_ticket(intent, result)
+            return
         action_id = str(getattr(intent, "action_id", "") or "").strip()
         if not action_id:
             return
