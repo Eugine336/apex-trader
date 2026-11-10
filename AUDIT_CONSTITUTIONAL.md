@@ -109,10 +109,11 @@ Severity rubric:
 
 ### V-008: Cognitive Brain has a live legacy direction-based management tree
 - **Severity**: HIGH
+- **Current Status**: RESOLVED. Missing management thesis/opportunity/action fields now produce HOLD. The direction/confidence-based fallback has been removed; explicit reverse and scale-in requests require separate Brain origination and shared risk admission.
 - **Philosophy Rule**: 6, 7, 17, 18, 20
 - **File(s)**: `cognition/brain.py:1088-1145`, `cognition/brain.py:1140-1169`, `cognition/brain.py:1177-1230`, `llm/reasoner.py:843-860`, `llm/reasoner.py:987-1003`, `llm/reasoner.py:1065-1080`, `cognition/loop.py:1087-1105`, `cognition/loop.py:1327-1370`
-- **Actual Code Behavior**: `CognitiveBrain.manage()` asks the reasoner for a management opinion. If the reply lacks `management_action` and `thesis_state`, it falls back to `_decide_management_legacy()`. That branch reads `opinion.direction`, compares it with the held side, and can `SCALE_IN`, `TIGHTEN_RISK`, `EXIT`, or `REVERSE` based on top-level direction/confidence/opportunity strings.
-- **Execution Path**: `CognitionLoop._manage_open_positions()` periodic backstop or `_manage_symbol()` event path -> `_manage_one()` -> `EvidenceConsolidator.build()` -> `CognitiveBrain.manage()` -> `LLMReasoner.reason_management()` -> if management fields are missing, `_decide_management_legacy()` -> management sink.
+- **Actual Code Behavior**: `CognitiveBrain.manage()` uses `_decide_management_thesis()` only when a management action, thesis state or opportunity status is present. If all are absent, it records degraded management data and returns HOLD. `_decide_management_legacy()` is not present. The thesis tree does not use confidence to authorize, veto, reverse or scale exposure; reverse and scale-in requests cannot create new exposure and require separate Brain origination.
+- **Execution Path**: `CognitionLoop._manage_open_positions()` periodic backstop or `_manage_symbol()` event path -> `_manage_one()` -> `EvidenceConsolidator.build()` -> `CognitiveBrain.manage()` -> explicit thesis/action/opportunity fields -> thesis-based management decision; missing fields -> HOLD -> shared management sink.
 - **Why It Violates**: Management is supposed to continuously re-evaluate the current opportunity and campaign thesis. The fallback still asks whether the current market opinion's direction aligns or opposes the held side.
 - **Information Lost**: Thesis evolution, opportunity replacement, expected value over flat, execution feasibility, and risk-adjusted alternatives can be bypassed when a management reply is parsed as legacy direction/confidence.
 - **Root Cause**: Backward-compatible management fallback was retained to handle older/minimal LLM replies.
@@ -329,8 +330,8 @@ Severity rubric:
 
 ## Highest-Risk Execution Chains
 
-1. `CognitionLoop._reason_over_symbol()` -> `CognitiveBrain.reason()` -> native `directional_lean` -> `_originate_independent()` can originate from pre-reasoning directional collapse when providers are unavailable.
-2. `LLMReasoner.reason()` -> legacy `LLMOpinion.direction/confidence` -> `CognitiveBrain._from_opinion()` can still open a campaign without a first-class activated opportunity object.
-3. `CognitionLoop._manage_one()` -> `CognitiveBrain.manage()` -> `_decide_management_legacy()` can scale, exit, or reverse from a direction/confidence management reply when thesis fields are absent.
+1. `CognitionLoop._reason_over_symbol()` -> `CognitiveBrain.reason()` -> native competing hypotheses -> `_originate_independent()` -> activated geometry, verified fixed-horizon return, fresh costs and shared portfolio/risk admission; no global directional-lean shortcut.
+2. `LLMReasoner.reason()` -> structured opportunity set -> `CognitiveBrain._from_opinion()` -> activated first-class opportunity, verified return/cost, evidence lineage, advisor quorum and shared risk gates; direction/confidence-only replies remain observational.
+3. `CognitionLoop._manage_one()` -> `CognitiveBrain.manage()` -> thesis-based management; missing thesis/action/opportunity fields produce HOLD, and confidence/direction fallback is absent.
 4. `PositionWorker.evaluate()` can close positions from scan `direction`/`score` when live cognition management is not enabled.
 5. Provider default configuration permits one external provider with no required quota meter, no required local baseline, and no required multi-advisor diversity.
