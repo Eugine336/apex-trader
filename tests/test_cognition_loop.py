@@ -1,6 +1,7 @@
 """Tests for the cognition loop, evidence consolidator, and Brain→action bridge."""
 
 import time
+import uuid
 from types import SimpleNamespace
 
 from cognition.brain import BrainOutput
@@ -730,12 +731,13 @@ class _ManageBrain:
         self._dt = decision_type
         self.management_plan = management_plan
         self.managed = 0
+        self._instance_id = uuid.uuid4().hex
 
     def reason(self, market_state, now=None):
         return SimpleNamespace(
             decision=SimpleNamespace(
                 symbol=market_state.symbol, authorises_action=False,
-                decision_id=f"reason-{market_state.symbol}-{self.managed}",
+                decision_id=f"reason-{self._instance_id}-{market_state.symbol}-{self.managed}",
                 identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
             )
         )
@@ -749,7 +751,7 @@ class _ManageBrain:
             }
         dec = SimpleNamespace(
             decision_type=self._dt, symbol=position.symbol,
-            confidence=0.8, thesis="mgmt", decision_id=f"d{self.managed}",
+            confidence=0.8, thesis="mgmt", decision_id=f"{self._instance_id}:d{self.managed}",
             identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
             campaign_id=getattr(position, "campaign_id", ""),
             preferred_opportunity_id=getattr(position, "opportunity_id", ""),
