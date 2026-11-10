@@ -754,7 +754,10 @@ class _ManageBrain:
 
 
 def _mgmt_pos(symbol="XAUUSD", direction="LONG"):
-    return SimpleNamespace(symbol=symbol, direction=direction)
+    return SimpleNamespace(
+        symbol=symbol, direction=direction,
+        ticket=f"ticket-{symbol}", platform="mt5",
+    )
 
 
 def test_management_shadow_records_but_does_not_call_sink():
