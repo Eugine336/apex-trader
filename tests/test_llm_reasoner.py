@@ -255,5 +255,5 @@ def test_llm_confidence_is_explicitly_uncalibrated_reasoning_strength():
     assert payload["confidence_semantics"] == (
         "uncalibrated_reasoning_strength_not_probability"
     )
-    assert "not probabilities, win rates, odds" in _SYSTEM_PROMPT
+    assert "Confidence fields are uncalibrated reasoning-strength metadata only" in _SYSTEM_PROMPT
     assert "your calibrated probability" not in _SYSTEM_PROMPT
