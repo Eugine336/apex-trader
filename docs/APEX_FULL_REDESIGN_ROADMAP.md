@@ -213,10 +213,11 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 
 ## Current baseline and immediate priority
 
-- System 2 is merged into `main` via merge commit `475ad4b0c3214d2a6a737cf6526e13ccaeeb50cd`, but the focused tests and `scripts/identity_audit.py` were not run at the time of the merge.
-- The known System 2 blockers are decision-time feature snapshots linked to trades; complete broker timezone/DST/holiday calendars; full verified constraints for each supported connector; realistic financing costs; and independent walk-forward/untouched-holdout results.
-- First task: close System 2 with source changes, focused tests and an auditable validation report. Do not start implementation work for System 3 until the System 2 acceptance gate is met.
-- No broker orders are to be sent during engineering. Do not access or change actual `.env`, runtime databases or broker settings without explicit authorization.
+- **System 2 remains IMPLEMENTED / INTEGRATED but NOT ACCEPTED.** Its open gates remain decision-time feature snapshots linked through broker close, authoritative connector specifications and calendars, verified financing costs, and independent chronological walk-forward plus untouched-holdout evidence. These must not be inferred from downstream implementation or a green unit suite.
+- **System 3 implementation is merged but NOT ACCEPTED** (PR #796, commit `94a01c793d7418357f81adf7c8989f965c2c3e5b`). **System 4 implementation is merged but NOT ACCEPTED** (PR #797, merge commit `b141881641746f9f64e94cbe246d59684bb3c3f5`). Their implementation records below retain their separate validation and data gates.
+- Later-system work may be implemented or audited in parallel only where it does not assume unaccepted upstream evidence. No downstream system may be marked accepted while System 2 and its required dependencies remain open.
+- **Active engineering increment:** PR #902, exact-ticket Brain management and campaign lineage. It is extending Systems 1, 6, 7 and 10 with exact broker identity, durable management idempotency, campaign multi-ticket lifecycle correctness, confidence isolation from management/economic ranking, and removal of the no-op breakeven re-entry path. This PR remains unmerged pending the full CI matrix and final diff review.
+- No broker orders are to be sent during engineering. Do not access or change actual `.env`, runtime databases, credentials, account selection or broker settings.
 
 ## Per-system completion record
 
