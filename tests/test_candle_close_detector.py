@@ -23,6 +23,7 @@ def _tick(symbol: str = "EURUSD", bid: float = 1.1, ask: float = 1.1002,
         symbol=symbol, bid=bid, ask=ask,
         timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
         source=source,
+        source_timestamp_verified=True,
     )
 
 
@@ -447,3 +448,50 @@ def test_unregister_raw_callback():
     router.unregister_raw_callback(callback)
     router.on_tick(_tick(ts=1700000001.0))
     assert len(received) == 1
+
+
+def test_router_keeps_unverified_tick_raw_but_does_not_drive_candle_close():
+    class Detector:
+        def __init__(self):
+            self.received = []
+
+        def on_tick(self, tick):
+            self.received.append(tick)
+
+    bus = EventBus()
+    store = TickStore(max_hz=10000.0)
+    detector = Detector()
+    router = TickRouter(store, detector, bus)
+    raw = []
+    verified = []
+    bus.subscribe("raw_tick:EURUSD", lambda tick: raw.append(tick))
+    bus.subscribe("verified_tick:EURUSD", lambda tick: verified.append(tick))
+
+    unverified = Tick(
+        symbol="EURUSD", bid=1.1, ask=1.1002,
+        timestamp=datetime(2026, 11, 10, 12, 0, 0),
+        source="mt5", source_timestamp_verified=False,
+    )
+    trusted = _tick(ts=1794312000.0)
+
+    router.on_tick(unverified)
+    router.on_tick(trusted)
+
+    assert raw == [unverified, trusted]
+    assert verified == [trusted]
+    assert detector.received == [trusted]
+
+
+def test_live_candle_aggregator_ignores_unverified_source_time():
+    from tick.live_candle_aggregator import LiveCandleAggregator
+
+    aggregator = LiveCandleAggregator()
+    unverified = Tick(
+        symbol="EURUSD", bid=1.1, ask=1.1002,
+        timestamp=datetime(2026, 11, 10, 12, 0, 0),
+        source="mt5", source_timestamp_verified=False,
+    )
+
+    aggregator.on_tick(unverified)
+
+    assert aggregator.get_dataframe("EURUSD", "M1") is None

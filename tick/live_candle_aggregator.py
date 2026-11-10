@@ -5,8 +5,9 @@ timeframes (M1, M5, M15, H1, H4, D1) without any broker fetch after the
 initial warmup seed.
 
 It hooks into the existing :class:`tick.tick_router.TickRouter` via
-``register_raw_callback`` and receives every tick delivered by the broker adapter,
-before the bounded TickStore's 15Hz coalescing.  For each (symbol, timeframe) it maintains:
+``register_raw_callback`` and receives every source-timestamp-verified tick delivered by the broker adapter,
+before the bounded TickStore's 15Hz coalescing. Unverified ticks remain on the raw
+audit channel but do not create time-bucketed candles.  For each (symbol, timeframe) it maintains:
 
 * a ring buffer (``deque`` with ``maxlen``) of **closed** candles, and
 * one **forming** candle that is updated on every tick.
@@ -85,6 +86,8 @@ class LiveCandleAggregator:
         routing for every other subscriber).
         """
         try:
+            if getattr(tick, "source_timestamp_verified", False) is not True:
+                return
             symbol = tick.symbol
             epoch = tick.epoch
             mid = tick.mid

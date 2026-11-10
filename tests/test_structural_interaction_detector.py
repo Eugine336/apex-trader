@@ -43,6 +43,7 @@ def _tick(symbol, mid, epoch, spread=0.0002):
         ask=mid + spread / 2.0,
         timestamp=datetime.fromtimestamp(epoch, tz=timezone.utc),
         source="test",
+        source_timestamp_verified=True,
     )
 
 
@@ -281,3 +282,24 @@ def test_shutdown_unsubscribes():
     det.shutdown()
     assert bus.subscriber_count("tick") == 0
     assert bus.subscriber_count("world_model_update") == 0
+
+
+def test_unverified_tick_cannot_create_structural_interaction_or_wake_brain():
+    bus = EventBus()
+    loop = _FakeLoop()
+    detector = _detector(WorldModelStore(), bus, loop)
+    detector.start()
+    try:
+        bus.publish("tick", Tick(
+            symbol="EURUSD",
+            bid=1.1000,
+            ask=1.1002,
+            timestamp=datetime(2026, 11, 10, 12, 0, 0),
+            source="test",
+            source_timestamp_verified=False,
+        ))
+        assert detector._ticks_seen == 0
+        assert detector.evidence_for("EURUSD") == []
+        assert loop.calls == []
+    finally:
+        detector.shutdown()

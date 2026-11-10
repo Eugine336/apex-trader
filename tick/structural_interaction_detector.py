@@ -277,6 +277,8 @@ class StructuralInteractionDetector:
         """Check the live tick against the cached levels (fast, fail-safe)."""
         if not self._enabled:
             return
+        if getattr(tick, "source_timestamp_verified", False) is not True:
+            return
         try:
             symbol = str(getattr(tick, "symbol", "") or "")
             mid = _f(getattr(tick, "mid", 0.0))

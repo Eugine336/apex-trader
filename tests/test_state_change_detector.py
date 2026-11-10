@@ -41,6 +41,7 @@ def _mk_tick(symbol="XAUUSD", mid=100.0, spread=0.02, ts=1_700_000_000.0,
     return Tick(
         symbol=symbol, bid=mid - half, ask=mid + half,
         timestamp=datetime.fromtimestamp(ts, tz=timezone.utc), source=source,
+        source_timestamp_verified=True,
     )
 
 
@@ -328,3 +329,21 @@ class TestRealConfigIntegration:
         # A large jump wakes with the production defaults — just assert no fault.
         det._observe("XAUUSD", 105.0, 0.02, ep)
         assert det.stats()["ticks_seen"] >= 4
+
+
+def test_unverified_tick_does_not_update_state_or_wake_brain():
+    wakes = []
+    detector = TickStateChangeDetector(
+        on_change=lambda symbol, magnitude: wakes.append((symbol, magnitude)),
+        config=_cfg(warmup_ticks=1, price_move_atr_fraction=0.0),
+    )
+    unverified = Tick(
+        symbol="EURUSD", bid=1.1, ask=1.1002,
+        timestamp=datetime(2026, 11, 10, 12, 0, 0),
+        source="mt5", source_timestamp_verified=False,
+    )
+
+    detector.on_tick(unverified)
+
+    assert "EURUSD" not in detector._states
+    assert wakes == []

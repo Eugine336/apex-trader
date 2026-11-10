@@ -154,12 +154,14 @@ class TickStateChangeDetector:
     # ------------------------------------------------------------------
 
     def on_tick(self, tick: Tick) -> None:
-        """EventBus ``"tick"`` callback — update state and maybe wake the Brain.
+        """EventBus ``"verified_tick"`` callback — update state and maybe wake the Brain.
 
         Runs on the publisher's thread; kept to a handful of float operations
         under a short lock so it never stalls tick routing.  Fully fail-safe.
         """
         try:
+            if getattr(tick, "source_timestamp_verified", False) is not True:
+                return
             symbol = getattr(tick, "symbol", "") or ""
             if not symbol:
                 return
