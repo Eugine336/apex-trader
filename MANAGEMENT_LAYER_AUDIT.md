@@ -230,13 +230,12 @@ returns and the trade is governed by the mechanical `TradeManager` alone (TP/SL/
 There is no alert, no metric, no degraded-mode flag. A recurring exception silently downgrades
 every open trade to dumb mechanical management.
 
-### G2 — Re-entry is logging-only / dead executor (HIGH for wasted capability)
-`_check_re_entry` (`main_loop.py:4839`) calls `ReEntryManager.check_re_entry`, and when
-`opp.eligible` is true it logs *"RE-ENTRY eligible"* and… **returns**. No order is placed,
-no signal is built, no entry path is invoked (`main_loop.py:4865-4870`). The entire
-`ReEntryManager`, the `re_entry_eligible` flag plumbed through `TradeManager`, and the BE-stop
-detection exist to feed an executor that does not exist. This is the post-entry twin of the
-"wired-but-inert RL" finding.
+### G2 — Breakeven re-entry shortcut (RETIRED)
+The former ReEntryManager was a logging-only capability: it checked M5/FVG/OB state after a
+breakeven close but had no order executor and did not create a Brain opportunity. PR #902
+removes the module, SystemContext/bootstrap wiring, cooldown state, RE_ENTRY_ARMED event,
+and re_entry_eligible flag. A closed campaign returns to normal Brain observation; the
+separate directional re-entry path no longer exists.
 
 ### G3 — `OQ`/`EQ` invisible to all management (HIGH)
 `TradeContext` (`decision/context.py`) has **no `oq`/`eq` fields**, and nothing recomputes them
