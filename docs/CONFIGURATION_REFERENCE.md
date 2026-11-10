@@ -32,7 +32,9 @@ this does not lock owner risk-limit controls.
 | `COGNITION_ORIGINATION_MODE` | `off`, `shadow`, `live` | Controls new campaign origination |
 | `COGNITION_MANAGEMENT_MODE` | `off`, `shadow`, `live` | Controls Brain position management |
 
-`TRADING_ENABLED=false` blocks Brain origination and is checked again at the
+The example template defaults `TRADING_ENABLED=false`; set it to `true` only when
+new exposure is intentionally enabled. The switch blocks Brain origination and
+is checked again at the
 ActionExecutor boundary, so already-queued market or pending OPEN intents are
 also rejected. It deliberately does not disable reconciliation,
 existing-position management, or risk-reducing closes.
