@@ -793,8 +793,9 @@ class CognitiveBrain:
             questions["brain_lead_hypothesis_id"] = brain_lead.hypothesis_id
         if brain_lead is not None and getattr(brain_lead, "criticism", ""):
             questions["brain_self_criticism"] = brain_lead.criticism
-        # Part XXV — record the raw scalar and the confidence PROFILE so the honest
-        # multidimensional read (and which dimension limited the trade) is auditable.
+        # Record the raw advisor scalar and any dimensions actually supplied by
+        # the producer. Missing dimensions remain missing; no effective score is
+        # synthesized from them.
         questions["advisor_confidence_raw"] = round(confidence, 4)
         questions["advisor_confidence_dimensions"] = {
             key: value for key, value in conf_dims.items() if value is not None
@@ -2013,7 +2014,7 @@ class CognitiveBrain:
         carrying the counts (the maximum ``responded`` seen), or ``(None, None,
         None)`` when no advisor metadata is present. In that case the quorum is
         unconfirmed and cannot authorize new exposure; unknown council coverage is
-        recorded as degraded but only confidence-penalized if explicitly configured.
+        recorded as degraded; the independent quorum gate controls action authority.
         Never raises.
         """
         resp: Optional[int] = None
@@ -2474,15 +2475,12 @@ class CognitiveBrain:
 
     @staticmethod
     def _evaluate_reasoning_quality(opinion: Any) -> "tuple[float, str]":
-        """Score an advisor opinion's reasoning DEPTH 0.1–1.0 (Article XIX).
+        """Describe the completeness of an advisor's reasoning payload.
 
-        The Council is weighted by reasoning quality, not merely counted for
-        quorum. Seven structural signals (a stated hypothesis, its invalidation,
-        expected favourable/adverse excursions, alternative hypotheses, the key
-        uncertainty, and what-would-change-my-mind) each contribute, plus a bonus
-        when the full multidimensional confidence profile is supplied. A bare
-        direction+confidence reply floors at 0.1; a fully reasoned opinion
-        approaches 1.0. Returns ``(score, explanation)``. Never raises.
+        This completeness score is audit metadata only. It is not a probability,
+        qualification signal, council vote or sizing input. The presence of
+        source-reported dimensions is one completeness indicator; their numeric
+        values are never combined. Returns (score, explanation). Never raises.
         """
         try:
             def _present(attr: str) -> bool:
