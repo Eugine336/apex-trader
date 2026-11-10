@@ -6163,7 +6163,10 @@ class EventDrivenSystem:
                 return
             response = getattr(result, "broker_response", None)
             response_status = str(getattr(response, "order_status", "FILLED") or "FILLED").upper()
-            if response_status in {"PENDING", "PARTIALLY_FILLED_PENDING"}:
+            if response_status in {
+                "PENDING", "PLACED", "ACCEPTED", "WORKING", "NEW",
+                "PARTIALLY_FILLED", "PARTIALLY_FILLED_PENDING",
+            }:
                 # A resting or partially filled pending order is not a completed
                 # trade. Keep its decision lineage until broker history confirms
                 # terminal disposition.
