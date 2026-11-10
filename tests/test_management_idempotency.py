@@ -205,11 +205,12 @@ def test_verified_broker_reconciliation_resolves_ambiguous_milestone_and_memory(
     store = _store()
     ledger = ManagementActionLedger(_EventStore())
     loop = _loop(store, ledger)
-    loop.set_management_sink(lambda action, position: None)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or None)
     output, position = _output(), _position()
 
     loop._realise_management(output, position)
-    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    action_id = calls[0].action_id
     assert ledger.status(action_id, "EURUSD") == "AMBIGUOUS"
 
     evidence = {
@@ -347,9 +348,10 @@ def test_gate_rejection_does_not_clear_an_earlier_ambiguous_management_action():
     store = _store()
     ledger = ManagementActionLedger(_EventStore())
     loop = _loop(store, ledger)
-    loop.set_management_sink(lambda action, position: None)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or None)
     loop._realise_management(_output(), _position())
-    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    action_id = calls[0].action_id
     intent = SimpleNamespace(
         action_id=action_id, symbol="EURUSD",
         intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
@@ -372,9 +374,10 @@ def test_explicit_broker_rejection_resolves_an_ambiguous_management_action():
     store = _store()
     ledger = ManagementActionLedger(_EventStore())
     loop = _loop(store, ledger)
-    loop.set_management_sink(lambda action, position: None)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or None)
     loop._realise_management(_output(), _position())
-    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    action_id = calls[0].action_id
     intent = SimpleNamespace(
         action_id=action_id, symbol="EURUSD",
         intent_type=SimpleNamespace(name="PARTIAL_CLOSE"),
@@ -399,9 +402,10 @@ def test_stale_broker_reconciliation_cannot_overwrite_terminal_rejection(monkeyp
     store = _store()
     ledger = ManagementActionLedger(_EventStore())
     loop = _loop(store, ledger)
-    loop.set_management_sink(lambda action, position: None)
+    calls = []
+    loop.set_management_sink(lambda action, position: calls.append(action) or None)
     loop._realise_management(_output(), _position())
-    action_id = "campaign-1:milestone:market_structure:H1:1:1.105"
+    action_id = calls[0].action_id
     pending = ledger.pending_actions("EURUSD")
     assert pending and pending[0]["action_id"] == action_id
     intent = SimpleNamespace(
