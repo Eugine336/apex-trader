@@ -733,7 +733,12 @@ class _ManageBrain:
 
     def reason(self, market_state, now=None):
         return SimpleNamespace(
-            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=False))
+            decision=SimpleNamespace(
+                symbol=market_state.symbol, authorises_action=False,
+                decision_id=f"reason-{market_state.symbol}-{self.managed}",
+                identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
+            )
+        )
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
@@ -744,7 +749,7 @@ class _ManageBrain:
             }
         dec = SimpleNamespace(
             decision_type=self._dt, symbol=position.symbol,
-            confidence=0.8, thesis="mgmt", decision_id="d1",
+            confidence=0.8, thesis="mgmt", decision_id=f"d{self.managed}",
             identity_version=IDENTITY_VERSION, identity=IDENTITY_STATEMENT,
             campaign_id=getattr(position, "campaign_id", ""),
             preferred_opportunity_id=getattr(position, "opportunity_id", ""),
@@ -905,8 +910,8 @@ class _FakeRegistry:
         ))
 
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
-                   pnl=0.0, ticket="", now=None):
-        self.legs.append((symbol, direction, kind, size))
+                   pnl=0.0, ticket="", decision_id="", now=None):
+        self.legs.append((symbol, direction, kind, size, decision_id))
 
     def record_management(self, symbol, direction, objective, *, confidence=0.0,
                           ev_over_flat=0.0, uncertainty=0.0, now=None):
