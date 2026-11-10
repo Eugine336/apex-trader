@@ -1812,6 +1812,11 @@ class CognitiveBrain:
                     questions[_k] = _v
             _raw = _clamp01(getattr(opinion, "confidence", 0.0))
             questions["advisor_confidence_raw"] = round(_raw, 4)
+            questions["advisor_confidence_dimensions"] = {
+                name: getattr(opinion, f"{name}_confidence", None)
+                for name in ("thesis", "opportunity", "timing", "execution")
+                if getattr(opinion, f"{name}_confidence", None) is not None
+            }
             questions["confidence_authority"] = (
                 "descriptive advisor metadata only; not calibrated, aggregated, "
                 "probability, qualification, action permission or sizing"
