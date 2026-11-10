@@ -884,7 +884,7 @@ class CognitiveBrain:
             f"UNVERIFIED: no fresh valid execution cost; diagnostic default {cost_r:.4f}R"
         )
         hypotheses = self._build_hypotheses(
-            direction, eff_conf, reward_r, risk_r,
+            direction, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
             supporting, contradicting,
         )
@@ -3196,7 +3196,7 @@ class CognitiveBrain:
                 + [h.statement for h in hypotheses if h is not lead][:3]
             )
             brain_hyps = self._build_hypotheses(
-                direction, lead_conf, reward_r, risk_r,
+                direction, reward_r, risk_r,
                 lead.statement, competing_statements,
                 lead.invalidation, supporting_evidence_ids, [],
             )
@@ -3368,7 +3368,7 @@ class CognitiveBrain:
 
     @staticmethod
     def _build_hypotheses(
-        direction: str, confidence: float, reward_r: float, risk_r: float,
+        direction: str, reward_r: float, risk_r: float,
         primary_statement: str, alternatives: "list", invalidation_txt: str,
         supporting: "list[str]", contradicting: "list[str]",
     ) -> "list[Hypothesis]":
@@ -3377,14 +3377,13 @@ class CognitiveBrain:
         Part V/VI: the decision must not collapse to a single direction. It
         carries the leading hypothesis (with its payoff geometry + invalidation)
         alongside the alternatives the Brain weighed, so contradictory readings
-        survive into the record instead of being voted away. The residual
-        probability mass (1 − confidence) is spread across the alternatives.
+        survive into the record instead of being voted away. Uncalibrated confidence
+        is not copied into a probability distribution.
         """
         primary = Hypothesis(
             statement=(primary_statement or (
                 f"{direction} opportunity" if direction in (LONG, SHORT)
                 else "no directional edge"))[:200],
-            probability=confidence,
             direction=direction if direction in (LONG, SHORT) else "",
             expected_reward_r=reward_r, expected_risk_r=risk_r,
             invalidation=invalidation_txt,
@@ -3393,16 +3392,13 @@ class CognitiveBrain:
         )
         hyps = [primary]
         alts = [str(a).strip() for a in (alternatives or []) if str(a).strip()]
-        if alts:
-            residual = max(0.0, 1.0 - confidence)
-            share = round(residual / len(alts), 4)
-            for a in alts:
-                # An opposing scenario's upside is the primary's downside, so its
-                # reward/risk geometry is the primary's mirrored.
-                hyps.append(Hypothesis(
-                    statement=a[:200], probability=share, direction="",
-                    expected_reward_r=risk_r, expected_risk_r=reward_r,
-                ))
+        for alternative in alts:
+            # Keep the competing explanation and mirrored payoff geometry, but
+            # do not manufacture probability from the primary's confidence.
+            hyps.append(Hypothesis(
+                statement=alternative[:200], direction="",
+                expected_reward_r=risk_r, expected_risk_r=reward_r,
+            ))
         return hyps
 
     def _observe(
