@@ -193,3 +193,34 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     final_status = registry.get_status()
     assert final_status["live"] == []
     assert final_status["recent"][-1]["campaign_id"] == "campaign-close"
+
+
+def test_terminal_close_keeps_campaign_alive_while_an_unbound_open_leg_is_pending():
+    from brain.campaign import CampaignRegistry
+
+    registry = CampaignRegistry(enabled=True)
+    registry.observe_thesis(
+        "EURUSD", "LONG", True, ev_over_flat=0.5,
+        campaign_id="campaign-pending", decision_id="decision-1",
+    )
+    registry.record_leg(
+        "EURUSD", "LONG", LEG_OPEN, ticket="ticket-1",
+        platform="mt5", decision_id="decision-1",
+    )
+    registry.record_leg(
+        "EURUSD", "LONG", LEG_OPEN,
+        decision_id="decision-2",
+    )
+
+    registry.observe_close(
+        "EURUSD", "LONG", "stop_loss",
+        ticket="ticket-1", platform="mt5",
+    )
+
+    live = registry.get_status()["live"]
+    assert len(live) == 1
+    assert live[0]["campaign_id"] == "campaign-pending"
+    assert live[0]["open_ticket_bindings"] == []
+    assert live[0]["open_legs"] == 2
+
+
