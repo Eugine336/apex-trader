@@ -71,7 +71,7 @@ def test_manage_holds_when_contrary_direction_lacks_management_fields():
                            min_confidence_to_act=0.55, reverse_confidence=0.7)
     out = brain.manage(_pos("LONG"), _state(polarity=-0.9))
     assert out.decision.decision_type == DecisionType.HOLD
-    assert out.direction == "LONG"          # never flipped
+    assert not hasattr(out, "direction")
 
 
 def test_manage_holds_when_flat_read_is_not_invalidation():
