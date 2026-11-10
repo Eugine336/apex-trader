@@ -271,9 +271,10 @@ def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
              "refs/remotes/origin/main"],
             cwd=target,
         )
-        # No --force: existing files are never overwritten. Missing LFS-tracked
-        # paths are materialized through the installed LFS smudge filter.
-        _run_git(["checkout-index", "--all"], cwd=target, timeout=900)
+        # Materialize only paths absent from the populated directory. A
+        # blanket checkout-index --all fails on existing paths; --force would
+        # overwrite live databases and is therefore forbidden here.
+        _checkout_missing_index_entries(target)
         ok, reason = verify_dedicated_data_repo(
             target, expected_repo_url=data_repo_url, require_remote=True
         )
@@ -413,3 +414,63 @@ def bootstrap_data_repo(
             f"applicable: {exc}"
         ) from exc
     return link
+
+def _checkout_missing_index_entries(target: Path) -> int:
+    """Safely materialize remote index entries without touching existing files.
+
+    Some historical data-repository commits mark ordinary Git blobs with the
+    LFS attribute even though those blobs are not LFS pointer documents. Git
+    LFS rejects those entries during smudge. For those specific entries, write
+    the exact Git blob bytes; valid LFS pointers still use checkout-index and
+    the normal LFS download/smudge path.
+    """
+    raw = subprocess.run(
+        ["git", "ls-files", "--stage", "-z"],
+        cwd=str(target), capture_output=True, check=True,
+        env=git_ceiling_env(target),
+    ).stdout
+    materialized = 0
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, encoded_path = record.split(b"\t", 1)
+            mode, object_id, stage = metadata.decode("ascii").split()
+            relative = Path(os.fsdecode(encoded_path))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise DataRepoBootstrapError(
+                f"could not parse data-repository index entry: {record[:160]!r}"
+            ) from exc
+        if stage != "0":
+            raise DataRepoBootstrapError(
+                f"unmerged data-repository index entry: {relative}"
+            )
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DataRepoBootstrapError(
+                f"unsafe data-repository index path: {relative}"
+            )
+        destination = target / relative
+        if destination.exists() or destination.is_symlink():
+            continue
+        blob = subprocess.run(
+            ["git", "cat-file", "blob", object_id],
+            cwd=str(target), capture_output=True, check=True,
+            env=git_ceiling_env(target),
+        ).stdout
+        is_lfs_pointer = blob.startswith(
+            b"version https://git-lfs.github.com/spec/v1\n"
+        )
+        attributes = _run_git(
+            ["check-attr", "filter", "--", relative.as_posix()], cwd=target
+        )
+        if "filter: lfs" in attributes and not is_lfs_pointer:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(blob)
+        else:
+            _run_git(
+                ["checkout-index", "--", relative.as_posix()],
+                cwd=target, timeout=900,
+            )
+        materialized += 1
+    return materialized
+

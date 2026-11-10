@@ -106,6 +106,7 @@ def test_fresh_clone_automatically_clones_and_links_sibling_data_repo(tmp_path, 
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(bootstrap, "_checkout_missing_index_entries", lambda _target: 0)
     monkeypatch.setattr(
         bootstrap, "verify_dedicated_data_repo",
         lambda *a, **k: (True, "eugine336/apex-trader-data"),
@@ -151,6 +152,7 @@ def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monke
             return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
         return ""
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(bootstrap, "_checkout_missing_index_entries", lambda _target: 0)
 
     result = bootstrap.bootstrap_data_repo(source_root=source)
 
@@ -209,6 +211,7 @@ def test_adoption_creates_verified_full_backup_and_configures_git_lfs(tmp_path, 
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(bootstrap, "_checkout_missing_index_entries", lambda _target: 0)
     monkeypatch.setattr(
         bootstrap, "verify_dedicated_data_repo",
         lambda *a, **k: (True, "eugine336/apex-trader-data"),
@@ -226,7 +229,34 @@ def test_adoption_creates_verified_full_backup_and_configures_git_lfs(tmp_path, 
     assert (target / ".git").is_dir()
     assert any(args[:2] == ["lfs", "install"] for args, _ in commands)
     assert any(args[:2] == ["read-tree", "origin/main"] for args, _ in commands)
-    assert any(args[:2] == ["checkout-index", "--all"] for args, _ in commands)
+    assert not any(args[:2] == ["checkout-index", "--all"] for args, _ in commands)
+
+
+def test_checkout_missing_entries_preserves_existing_files_and_writes_nonpointer_lfs_blob(tmp_path):
+    target = tmp_path / "data"
+    target.mkdir()
+    bootstrap._run_git(["init", "-q"], cwd=target)
+    bootstrap._run_git(["config", "user.email", "test@example.invalid"], cwd=target)
+    bootstrap._run_git(["config", "user.name", "test"], cwd=target)
+    (target / ".gitattributes").write_text("*.db filter=lfs\n", encoding="utf-8")
+    (target / "legacy.db").write_bytes(b"remote-legacy-database-bytes")
+    (target / "existing.db").write_bytes(b"remote-existing-version")
+    bootstrap._run_git(["add", "-A"], cwd=target)
+    # Simulate a historical ordinary Git blob despite the active LFS clean filter.
+    legacy_oid = bootstrap._run_git(
+        ["hash-object", "-w", "--no-filters", "legacy.db"], cwd=target
+    )
+    bootstrap._run_git(
+        ["update-index", "--add", "--cacheinfo", f"100644,{legacy_oid},legacy.db"],
+        cwd=target,
+    )
+    bootstrap._run_git(["commit", "-qm", "fixture"], cwd=target)
+    (target / "existing.db").write_bytes(b"local-live-database")
+    (target / "legacy.db").unlink()
+    count = bootstrap._checkout_missing_index_entries(target)
+    assert count == 1
+    assert (target / "existing.db").read_bytes() == b"local-live-database"
+    assert (target / "legacy.db").read_bytes() == b"remote-legacy-database-bytes"
 
 
 def test_adoption_backup_failure_leaves_original_directory_untouched(tmp_path, monkeypatch):
@@ -312,6 +342,7 @@ def test_junction_creation_failure_restores_complete_source_data_directory(tmp_p
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(bootstrap, "_checkout_missing_index_entries", lambda _target: 0)
     monkeypatch.setattr(
         bootstrap, "_make_directory_link",
         lambda *a, **k: (_ for _ in ()).throw(OSError("simulated junction failure")),
@@ -378,6 +409,7 @@ def test_bootstrap_adopts_populated_sibling_and_keeps_both_data_trees(tmp_path, 
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(bootstrap, "_checkout_missing_index_entries", lambda _target: 0)
     monkeypatch.setattr(
         bootstrap, "verify_dedicated_data_repo",
         lambda *a, **k: (True, "eugine336/apex-trader-data"),
