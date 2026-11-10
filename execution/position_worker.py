@@ -278,8 +278,8 @@ class PositionWorker:
         """
         if start_index >= len(intents):
             return
-        if not self.cfg.legacy_mechanical_exit_fallback_enabled:
-            return
+        # This helper is reached only inside the explicit offline discretionary
+        # fixture path. Production bootstrap never enables that path.
         for index in range(start_index, len(intents)):
             intent = intents[index]
             original_source = str(intent.source or "")
