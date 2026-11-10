@@ -6236,6 +6236,9 @@ class EventDrivenSystem:
                 "ticket": ticket,
                 "symbol": str(getattr(intent, "symbol", "") or ""),
                 "direction": str(getattr(intent, "direction", "") or "").upper(),
+                "platform": str(response.get("platform", "") or "").strip().lower()
+                    if isinstance(response, dict)
+                    else str(getattr(response, "platform", "") or "").strip().lower(),
                 "decision_id": decision_id,
                 "campaign_id": campaign_id,
                 "opportunity_id": opportunity_id,
@@ -7898,6 +7901,7 @@ class EventDrivenSystem:
                     pnl=float(pnl_dollars or 0.0),
                     won=won_flag,
                     ticket=str(ticket or ""),
+                    platform=str(info.get("platform") or "").strip().lower(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
