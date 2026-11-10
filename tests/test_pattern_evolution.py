@@ -12,7 +12,7 @@ from cognition.pattern_evolution import PatternOutcomeTracker
 
 
 def test_record_and_stats():
-    tracker = PatternOutcomeTracker(min_samples=10)
+    tracker = PatternOutcomeTracker()
     for i in range(10):
         tracker.record_origination("displacement_confirmed", "BTCUSD", "LONG", float(i))
     for _ in range(7):
