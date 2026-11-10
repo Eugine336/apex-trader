@@ -569,7 +569,7 @@ class CognitiveBrain:
             for name in ("thesis", "opportunity", "timing", "execution")
         }
         _quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
-        calib_note = "observational only; no confidence adjustment is applied"
+        calibration_status = "observational only; no confidence adjustment is applied"
         brain_synthesis = ""
         brain_adv_synthesis = ""
         lead_pattern_names = []
@@ -819,7 +819,7 @@ class CognitiveBrain:
             "descriptive advisor metadata only; not calibrated, aggregated, "
             "probability, qualification, action permission or sizing"
         )
-        questions["calibration_correction"] = calib_note
+        questions["calibration_status"] = calibration_status
         questions["advisor_reasoning_quality"] = quality_note
         if lead_pattern_names:
             questions["supporting_patterns"] = list(lead_pattern_names)
