@@ -2135,7 +2135,7 @@ class SystemContext:
             logger.warning("[SystemContext] ReEntryManager init failed: {}", exc)
 
         logger.info(
-            "[SystemContext] evolution+planning initialized — "
+            "[SystemContext] evolution subsystems initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
             "sig_disc={} virt_reg={} virt_mgr={} "
             "re_entry={}",
