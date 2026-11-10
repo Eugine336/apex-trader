@@ -51,8 +51,13 @@ _DEFAULT_EXCLUDE_PATTERNS: list[str] = ["*.csv"]
 # even when callers supply their own patterns; they prevent obvious credential
 # and private-key files from being staged by the force-add sync path.
 _PUBLIC_REPO_SECRET_EXCLUDES: tuple[str, ...] = (
+    # Credential/configuration names must never be staged into the public repo.
     ".env", ".env.*", "*.env", "*.key", "*.pem", "*.p12", "*.pfx",
     "*secret*", "*credential*", "*token*", "*private*",
+    # SQLite sidecars are transient, may be actively written, and are not
+    # independently restorable databases. Never publish them.
+    "*.db-wal", "*.db-shm", "*.sqlite-wal", "*.sqlite-shm", "*-wal", "*-shm",
+    "*.journal", "*.tmp", "*.temp", ".heartbeat", ".crash_marker",
 )
 
 
@@ -127,6 +132,34 @@ def _excluded_git_pathspecs(
                 relative = candidate.relative_to(root).as_posix()
                 exclusions.append(f":(exclude,top,literal){relative}")
     return exclusions
+
+
+def _untrack_public_excluded_files(work_tree: str) -> tuple[bool, str]:
+    """Remove already-tracked excluded filenames from the Git index only.
+
+    The working-tree files are deliberately retained. This stages deletions
+    for previously published credential-like names and transient SQLite
+    sidecars, preventing later force-add syncs from re-publishing them.
+    """
+    ok, output = _run_git(["ls-files", "-z"], work_tree)
+    if not ok:
+        return False, output
+    excluded: list[str] = []
+    for raw_path in output.split("\\0"):
+        if not raw_path:
+            continue
+        name = Path(raw_path).name.lower()
+        if any(
+            fnmatch.fnmatch(name, pattern.lower())
+            for pattern in _PUBLIC_REPO_SECRET_EXCLUDES
+        ):
+            excluded.append(f":(literal){raw_path}")
+    if not excluded:
+        return True, ""
+    return _run_git(
+        ["rm", "--cached", "--ignore-unmatch", "--", *excluded],
+        work_tree,
+    )
 
 
 # ── WAL checkpoint helper ─────────────────────────────────────────────────
@@ -387,6 +420,16 @@ def sync_data_repo(
     )
     if refusal is not None:
         return refusal
+
+    # Remove previously tracked credential-like files and SQLite sidecars
+    # from the index without deleting their local working-tree copies.
+    ok, untrack_out = _untrack_public_excluded_files(work_tree)
+    if not ok:
+        logger.warning("[data-sync] excluded-file index cleanup failed: {}", untrack_out)
+        return (
+            "exclude cleanup failed: "
+            + (untrack_out.splitlines()[0] if untrack_out else "unknown")
+        )
 
     # Flush WAL journals into the main .db files so the committed databases
     # are self-contained — git excludes the -wal/-shm sidecars.
