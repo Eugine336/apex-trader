@@ -14,14 +14,13 @@ Two pure, fail-safe learners live here (stdlib only, natively importable):
   streak cannot inflate a source. The consolidator multiplies each source's
   contribution to :meth:`MarketState.consolidation` by this weight.
 
-* :class:`CalibrationTracker` — records (predicted-confidence, realised-outcome)
-  pairs and reports how well the Brain's stated confidence matches reality
-  (reliability gap + Brier score). This surfaces *reasoning quality* so the Brain
-  can be held to its own probabilities.
+* :class:`CalibrationTracker` — retains historical reasoning-strength/outcome
+  diagnostics for governance visibility only. Its scores are not probabilities
+  and are never inputs to Brain qualification, expected return or sizing.
 
-Both are observational by default: they always *learn*, but whether their output
-is *applied* (influence weighting the live consolidation) is gated by the caller
-(default shadow), mirroring the constitution's shadow → authoritative rollout.
+Influence weights may be applied to evidence consolidation after the configured
+sample floor. CalibrationTracker output is observational only and has no
+decision, probability or sizing API.
 """
 
 from __future__ import annotations
@@ -177,23 +176,14 @@ class InfluenceLedger:
 
 
 class CalibrationTracker:
-    """Tracks how well the Brain's predicted confidence matches realised outcomes.
+    """Historical reasoning-strength/outcome diagnostics for observability only.
 
-    Reliability gap = |mean predicted confidence − realised win rate| (0 is
-    perfectly calibrated). Brier score = mean((confidence − outcome)²) (lower is
-    better). Thread-safe, fail-safe, bounded history.
-
-    The market is the only source of truth for whether a stated confidence was
-    right, so outcomes may come from any market-truth source: live closes,
-    demo/shadow results, or a hindcast replay of history (``source=``). The
-    tracker never restricts which concepts the Brain may use; it only reports how
-    far its stated confidence has been verified, which scales *risk*
-    (``sizing_scale``), never permission.
-
-    Optional persistence (``path``) keeps verified calibration across restarts.
+    This diagnostic compares source-reported uncalibrated reasoning strength
+    with realised outcomes. It does not produce a win probability, calibrated
+    forecast, eligibility signal or sizing adjustment. Thread-safe, fail-safe,
+    bounded history with optional persistence.
     """
 
-    SIZE_FLOOR = 0.25       # unverified calibration still trades, at this fraction of size
     GAP_TOLERANCE = 0.25    # reliability gap at/above which verified quality is zero
 
     def __init__(self, *, history_limit: int = 500, min_samples: int = 30,
@@ -292,32 +282,6 @@ class CalibrationTracker:
             "sources": sources,
         }
 
-    def calibration_adjustment(self) -> float:
-        """Return a multiplicative correction factor for the Brain's confidence.
-
-        If the Brain consistently over-predicts (states 0.70 confidence but
-        only wins 50% of the time), the factor is < 1.0 to attenuate.
-        If the Brain under-predicts, the factor is > 1.0 to amplify.
-        Bounded [0.7, 1.3] and requires ``min_samples`` before activating.
-        Returns 1.0 (neutral) when insufficient data. Never raises.
-        """
-        try:
-            with self._lock:
-                samples = list(self._samples)
-            n = len(samples)
-            if n < self.min_samples:
-                return 1.0
-            mean_conf = sum(c for c, _ in samples) / n
-            win_rate = sum(o for _, o in samples) / n
-            if mean_conf > 0 and win_rate > 0:
-                raw_factor = win_rate / mean_conf
-                clamped = min(1.3, max(0.7, raw_factor))
-                return round(clamped, 4)
-            return 1.0
-        except Exception as exc:  # noqa: BLE001 — calibration must never raise
-            logger.debug("[calibration] adjustment fault: %s", exc)
-            return 1.0
-
     def reliability(self) -> float:
         """How verified the stated confidence is, in [0, 1].
 
@@ -337,22 +301,9 @@ class CalibrationTracker:
             logger.debug("[calibration] reliability fault: %s", exc)
             return 0.0
 
-    def sizing_scale(self) -> float:
-        """Risk scale in [SIZE_FLOOR, 1.0] from verified calibration.
-
-        Never zero: unverified calibration reduces size, it does not forbid any
-        trade, concept or instrument. Never raises.
-        """
-        try:
-            r = self.reliability()
-            return round(self.SIZE_FLOOR + (1.0 - self.SIZE_FLOOR) * r, 4)
-        except Exception:  # noqa: BLE001
-            return self.SIZE_FLOOR
-
     def get_status(self) -> dict:
         status = self.metrics()
         status["reliability"] = round(self.reliability(), 4)
-        status["sizing_scale"] = self.sizing_scale()
         return status
 
 
