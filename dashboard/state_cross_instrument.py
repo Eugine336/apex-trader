@@ -1,7 +1,7 @@
 """APEX TRADER — Dashboard Cross-Instrument Mixin.
 
-Read-only status for the queue of already Brain-authorized intents and the
-proactive observational watchlist. It never makes or mutates a decision.
+Read-only status for the proactive observational watchlist. It never makes
+or mutates a decision.
 """
 
 from __future__ import annotations
@@ -12,24 +12,15 @@ from loguru import logger
 
 
 class CrossInstrumentMixin:
-    """Expose queue and proactive watchlist state."""
+    """Expose proactive watchlist state."""
 
     def get_cross_instrument(self) -> dict:
         ed = getattr(self, "_event_driven_system", None)
         out: dict[str, Any] = {
             "available": False,
-            "queue": {},
             "proactive_scanner": {},
             "watchlist": [],
         }
-
-        try:
-            queue = getattr(ed, "_opportunity_queue", None) if ed is not None else None
-            if queue is not None:
-                out["available"] = True
-                out["queue"] = queue.stats()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[dash-xinst] queue stats failed: {}", exc)
 
         try:
             scanner = getattr(ed, "_proactive_scanner", None) if ed is not None else None
