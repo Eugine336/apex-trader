@@ -517,7 +517,7 @@ class BrainActionBridge:
             # V-026/V-027 — describe the decision by its type + opportunity/thesis,
             # not the collapsed top-level direction. Side is kept only as
             # supplementary operator context, sourced from the campaign/opportunity
-            # (never the deprecated ``BrainOutput.direction``).
+            # (never a top-level direction field).
             dtype = getattr(getattr(decision, "decision_type", None), "value", "") or "decision"
             thesis = str(getattr(decision, "thesis", "") or "")
             camp = getattr(output, "campaign", None)
@@ -536,7 +536,7 @@ class BrainActionBridge:
                     "thesis": thesis[:280],
                     "confidence": round(float(getattr(decision, "confidence", 0.0) or 0.0), 4),
                     # Deprecated/supplementary (V-026): the collapsed side, sourced
-                    # from the campaign/opportunity rather than BrainOutput.direction.
+                    # from the campaign/opportunity rather than a collapsed BrainOutput direction.
                     "direction": side,
                 },
                 expected_outcome="operator informed of a new campaign",
