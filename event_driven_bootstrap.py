@@ -6064,7 +6064,11 @@ class EventDrivenSystem:
                             meta["position_id"] = position_id
                         fill_platform = str(getattr(position, "platform", "") or "").strip().lower()
                         campaign_registry = getattr(self._ctx, "campaign_registry", None)
-                        if campaign_registry is not None and payload["campaign_id"] and payload["decision_id"] and fill_platform:
+                        if (
+                            campaign_registry is not None
+                            and getattr(campaign_registry, "enabled", False)
+                            and payload["campaign_id"] and payload["decision_id"] and fill_platform
+                        ):
                             attached = campaign_registry.attach_ticket(
                                 payload["symbol"], payload["direction"], payload["campaign_id"],
                                 payload["decision_id"], position_id, fill_platform,
@@ -6478,7 +6482,7 @@ class EventDrivenSystem:
         """
         ctx = getattr(self, "_ctx", None)
         registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
-        if registry is None:
+        if registry is None or not getattr(registry, "enabled", False):
             return
         symbol = str(getattr(intent, "symbol", "") or "").strip()
         direction = str(getattr(intent, "direction", "") or "").strip()
