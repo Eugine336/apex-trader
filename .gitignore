@@ -31,7 +31,6 @@ pip-log.txt
 
 # Data and logs
 data/
-!data/.gitkeep
 logs/
 *.log
 *.db
