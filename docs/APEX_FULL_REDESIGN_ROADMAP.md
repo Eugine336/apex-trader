@@ -563,3 +563,11 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - Session metadata is now evaluated once per bar rather than repeatedly while selecting the active session profile.
 - **TESTS ADDED:** unchanged-history reuse, active-week append invalidation, and historical correction invalidation.
 - This complements the shared incremental swing state and liquidity-pool work. Owner-host full-universe cold/warm timing is still required to quantify production impact.
+
+
+### Validation update — 2026-11-10
+
+- APEX TRADER CI run **3841** completed successfully: lint, Python 3.11 and Python 3.12 all passed on the code head containing the MT5 clock changes, typed environment allowlist, quote provenance validation, completed-bar benchmark correction, incremental volume-profile cache and its tests.
+- Gold Desk focused run **2001** passed on Python 3.11 and 3.12.
+- A duplicate full Apex run **3842** is still running against the same code head. The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference.
+- The current PR remains draft pending final run completion and owner-host acceptance.
