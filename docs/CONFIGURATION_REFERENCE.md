@@ -107,6 +107,36 @@ Vite environment coverage is enforced by
 `tests/test_frontend_env_example_coverage.py`.
 
 
+## Typed runtime environment overrides
+
+The root template now exposes an explicit allowlist of 101 operational settings
+using the form `APEX_<SECTION>_<FIELD>`. The implementation is in
+`config_env.py`; each mapped field is validated and applied during
+`AppConfig` construction.
+
+Supported sections:
+
+- `APEX_PERFORMANCE_*`: cache, scan cadence, parallel scan and account-info cache
+- `APEX_OPS_*`: heartbeat, profiling, logs, shutdown and reconnect operations
+- `APEX_DATA_BACKUP_*`: backup cadence, size, excludes and data-repository sync
+- `APEX_BACKTEST_*`: backtest-only spread/slippage assumptions and run controls
+- `APEX_DECISION_TRACE_*`, `APEX_OUTCOME_FEEDBACK_*`
+- `APEX_SIGNAL_LEDGER_*`, `APEX_POST_CLOSE_TRACKER_*`
+- `APEX_TUNER_AGENT_*`, `APEX_COUNTERFACTUAL_*`, `APEX_INTERACTION_*`
+- `APEX_CALIBRATION_*`, `APEX_DEVELOPING_ANALYSIS_*`, `APEX_CAMPAIGN_*`
+- `APEX_ADAPTIVE_TUNER_*`, `APEX_CROSS_INSTRUMENT_*`
+
+An empty assignment means retain the typed default. Booleans accept true/false,
+1/0, yes/no and on/off. Arrays and objects require JSON. Invalid values or
+invalid operational ranges fail startup; they do not silently fall back.
+
+This is deliberately not a blanket 716-field override. Risk/OwnerLimits,
+analytical scoring cutoffs, statistical model thresholds, broker-derived facts,
+and constitutional safety invariants are not generic environment overrides.
+Owner capital limits remain in the canonical authenticated and audited
+OwnerLimits surface. The allowlist is regression-tested in
+`tests/test_config_env.py` and `tests/test_env_example_coverage.py`.
+
 ## Full typed-field inventory
 
 See [CONFIGURATION_FIELD_INVENTORY.md](CONFIGURATION_FIELD_INVENTORY.md) for the
