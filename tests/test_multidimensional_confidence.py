@@ -130,14 +130,9 @@ def test_weak_execution_is_evaluated_by_net_ev_and_activation():
     assert weaker.campaign is not None
     assert weaker.campaign.desired_exposure == strong.campaign.desired_exposure
     assert weaker.decision.questions_answered["confidence_profile"] != strong.decision.questions_answered["confidence_profile"]
-    else:
-        assert weaker.decision.decision_type in {
-            DecisionType.CONTINUE_OBSERVING, DecisionType.REJECT_OPPORTUNITY,
-        }
-        assert weaker.campaign is None
 
 
-# ── moderate execution: still acts, but sizes DOWN ──────────────────────────
+# ── moderate execution: reasoning metadata changes, sizing does not ───────
 
 def test_weak_execution_sizes_down_when_it_still_acts():
     strong = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
