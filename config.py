@@ -4265,7 +4265,7 @@ class AppConfig:
     # Gold is not a special trading identity or hard-coded execution mode.
     universe_mode: str = "all"
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex", "commodity", "index", "crypto"]
+        default_factory=lambda: ["forex", "commodity", "index", "synthetic", "crypto"]
     )
     enabled_symbols_override: list[str] = field(default_factory=list)
     # Populated by PlatformManager after a successful MT5 discovery cycle.
