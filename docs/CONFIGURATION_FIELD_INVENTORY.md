@@ -138,8 +138,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `deriv_min_stake_usd`
 - `max_risk_pct_per_trade`
 - `allow_min_lot_over_risk`
-- `scan_directional_exits_enabled`
-- `legacy_mechanical_exit_fallback_enabled`
 - `backtest_starting_balance_usd`
 - `tp3_ladder_enabled`
 - `tp3_r_multiple`
