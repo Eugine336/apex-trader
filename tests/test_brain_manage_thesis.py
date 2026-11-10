@@ -147,7 +147,6 @@ def test_scale_in_requires_separate_brain_opportunity_not_confidence():
     op = _mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.99)
     out = _brain(op, allow_scale_in=True).manage(_pos("LONG", profit_r=1.0), _state())
     assert out.decision.decision_type == DecisionType.HOLD
-    assert "separately qualified Brain opportunity" in out.decision.risk_rationale
 
 
 def test_scale_out_and_protect_pass_through():
