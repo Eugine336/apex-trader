@@ -25,18 +25,25 @@ sync (see `platforms/maintenance.py`, `platforms/clean_start.py`).
 > symlink automatically. No manual junction command or data-path environment
 > variable is required.
 >
-> If an existing plain `data/` directory is found, local files are merged into
-> the dedicated data repository. Local files take precedence for same-path
-> conflicts; the replaced remote versions are preserved under
-> `.apex-bootstrap-preserved/<timestamp>/`, and the complete original directory
-> is retained beside the source checkout as a timestamped backup. The original
-> is never deleted automatically. If provisioning or verification fails, Apex
-> logs a critical error and its existing data-topology safety gate prevents new
-> exposure.
+> If an existing sibling data directory is present but has no Git metadata,
+> bootstrap first creates and SHA-256-verifies a complete timestamped backup.
+> It then initializes Git in place, fetches `origin/main`, sets the local
+> `main` branch to track `origin/main`, installs and verifies Git LFS, and
+> loads the remote tree into the index without overwriting existing files.
+> A recovery ref retains the original remote main commit.
 >
-> Existing valid junctions are verified, not recreated. Existing sibling paths
-> that are not valid clones are left untouched and cause a clear bootstrap
-> failure. The bootstrap never edits `.env`, resets Git history, or force-pushes.
+> When the source checkout also has a plain `data/` directory, files unique to
+> that source tree are copied into the sibling data repository. If the same
+> relative path contains different bytes, the sibling file is left untouched;
+> the complete source directory is retained as a timestamped sibling backup.
+> Databases are never merged or silently replaced. The sibling's complete
+> pre-adoption copy is also retained separately. Both backups remain available
+> for manual recovery.
+>
+> Existing valid junctions are verified, not recreated. Provisioning fails
+> closed if repository identity, branch tracking, Git LFS, or junction
+> verification fails. The bootstrap never edits `.env`, resets Git history,
+> or force-pushes.
 > Multi-tenant processes with `APEX_DATA_DIR` continue using isolated per-user
 > storage and do not join the shared data repository.
 >
