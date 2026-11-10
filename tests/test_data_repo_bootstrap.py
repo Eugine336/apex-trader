@@ -77,3 +77,58 @@ def test_existing_data_link_must_target_expected_sibling_repo(tmp_path, monkeypa
     )
     with pytest.raises(bootstrap.DataRepoBootstrapError, match="expected"):
         bootstrap.bootstrap_data_repo(source_root=tmp_path / "apex-trader")
+
+def test_fresh_clone_automatically_clones_and_links_sibling_data_repo(tmp_path, monkeypatch):
+    monkeypatch.delenv("APEX_DATA_DIR", raising=False)
+    source = tmp_path / "apex-trader"
+    source.mkdir()
+    target = tmp_path / "apex-trader-data"
+    commands = []
+
+    def fake_git(args, **kwargs):
+        commands.append(args)
+        assert args[0] == "clone"
+        target.mkdir()
+        (target / ".git").mkdir()
+        return ""
+
+    monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(
+        bootstrap, "verify_dedicated_data_repo",
+        lambda *a, **k: (True, "eugine336/apex-trader-data"),
+    )
+
+    result = bootstrap.bootstrap_data_repo(source_root=source)
+
+    assert result == source / "data"
+    assert result.is_symlink()
+    assert result.resolve() == target
+    assert len(commands) == 1
+    assert "https://github.com/Eugine336/apex-trader-data.git" in commands[0]
+
+
+def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monkeypatch):
+    monkeypatch.delenv("APEX_DATA_DIR", raising=False)
+    source = tmp_path / "apex-trader"
+    local = source / "data"
+    target = tmp_path / "apex-trader-data"
+    local.mkdir(parents=True)
+    target.mkdir()
+    (target / ".git").mkdir()
+    (local / "apex_positions.db").write_bytes(b"local")
+    (target / "apex_positions.db").write_bytes(b"remote")
+
+    monkeypatch.setattr(
+        bootstrap, "verify_dedicated_data_repo",
+        lambda *a, **k: (True, "eugine336/apex-trader-data"),
+    )
+    monkeypatch.setattr(bootstrap, "_run_git", lambda *a, **k: "")
+
+    result = bootstrap.bootstrap_data_repo(source_root=source)
+
+    assert result.is_symlink()
+    assert (result / "apex_positions.db").read_bytes() == b"local"
+    assert (target / ".apex-bootstrap-preserved").is_dir()
+    backups = list(tmp_path.glob("apex-trader-data-local-backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "apex_positions.db").read_bytes() == b"local"
