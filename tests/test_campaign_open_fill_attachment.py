@@ -95,6 +95,25 @@ def test_pending_order_placement_is_not_misclassified_as_open_position():
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
 
 
+def test_dictionary_pending_order_response_is_not_misclassified_as_fill():
+    system, registry = _system(positions=[])
+    response = {
+        "success": True,
+        "order_status": "PLACED",
+        "order_id": "ticket-1",
+        "platform": "mt5",
+        "lots": 0.1,
+    }
+    result = SimpleNamespace(success=True, broker_response=response)
+
+    system._handle_open_result(_intent("LIMIT"), result)
+
+    pending = system._pending_orders["ticket-1"]
+    assert pending["status"] == "PLACED"
+    assert pending["platform"] == "mt5"
+    assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
+
+
 def test_fill_is_not_attached_without_exact_broker_snapshot_match():
     system, registry = _system(positions=[_position(ticket="other-ticket")])
 
