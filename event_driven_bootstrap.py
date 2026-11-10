@@ -5528,6 +5528,7 @@ class EventDrivenSystem:
             commission=broker_commission,
             swap=broker_swap,
             fee=broker_fee,
+            platform=str(platform or "").strip().lower(),
         )
         try:
             self._mgmt_store.remove(str(ticket))
@@ -6426,6 +6427,7 @@ class EventDrivenSystem:
             commission=broker_commission,
             swap=broker_swap,
             fee=broker_fee,
+            platform=str(platform or "").strip().lower(),
         )
 
         # Now that the broker-confirmed close is booked, drop management state.
@@ -7768,6 +7770,7 @@ class EventDrivenSystem:
         commission: Optional[float] = None,
         swap: Optional[float] = None,
         fee: Optional[float] = None,
+        platform: str = "",
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 
@@ -7780,6 +7783,8 @@ class EventDrivenSystem:
         info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            if not info.get("platform") and platform:
+                info["platform"] = str(platform).strip().lower()
             # Recover the immutable entry snapshot from the append-only event
             # ledger after process restart. Match the exact broker ticket; never
             # infer a trade link from symbol, direction, or approximate time.
@@ -7909,7 +7914,7 @@ class EventDrivenSystem:
                     pnl=float(pnl_dollars or 0.0),
                     won=won_flag,
                     ticket=str(ticket or ""),
-                    platform=str(info.get("platform") or "").strip().lower(),
+                    platform=str(info.get("platform") or platform or "").strip().lower(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
