@@ -104,3 +104,5 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
    modules, tests, SystemContext wiring, dashboard/UI status, configuration fields,
    environment switches and operator-reference rows. Retain only the observational proactive watchlist; the advertised global
    opportunity queue was never initialized and its configuration was also removed.
+   The scanner's proximity setting was also unused (no proximity callback was
+   wired) and was removed rather than presented as an effective control.
