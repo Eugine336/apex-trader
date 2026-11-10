@@ -155,8 +155,10 @@ class TestEvolutionHooksInBootstrap:
         assert "PortfolioDivision" in helper
         assert "division.evaluate(" in helper
         assert "SizingFactors(" in helper and "base_risk_pct=base_risk_pct" in helper
-        # Verified calibration of the Brain's confidence scales risk (never blocks).
-        assert "calib_mult=self._calibration_size_scale()" in helper
+        # Calibration is observability only; it cannot scale Brain-authored exposure.
+        assert "calib_mult" not in helper
+        assert "_calibration_size_scale" not in self.source
+        assert "confidence" not in helper
         assert "cap_mult" not in helper
 
     def test_execution_profiles_in_entry_path(self):
