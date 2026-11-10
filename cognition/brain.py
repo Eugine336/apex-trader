@@ -271,16 +271,9 @@ class CognitiveBrain:
         self.ev_primary_gate = True
         self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
-        self.allow_scale_in = bool(allow_scale_in)
-        # Compatibility-only. Management actions are derived from explicit thesis
-        # invalidation, opportunity state and verified economics, never a
-        # confidence threshold.
-        _ = reverse_confidence
-        # Retained for config compatibility (wired from ``manage_exit_floor``).
-        # V-008 removed the legacy direction-based management tree that consulted
-        # this to auto-TIGHTEN on a weakening aligned read; management is now
-        # thesis-based, so it no longer drives a decision on its own.
-        self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Compatibility-only inputs from older callers. Scale-in, reverse and
+        # exit decisions are not authorized by configurable confidence floors.
+        _ = (allow_scale_in, reverse_confidence, exit_floor)
         # Article XX — advisor quorum: the Council must not become fake diversity.
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
@@ -3586,7 +3579,6 @@ class CognitiveBrain:
                 "min_advisors_for_action": self.min_advisors_for_action,
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "degrade_on_unknown_council": self._degrade_on_unknown_council,
-                "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,
                 "independent_originations": self._independent_originations,
