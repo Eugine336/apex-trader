@@ -6,7 +6,7 @@ Thin wrappers that make the existing learners / tuners satisfy the
 schedule, order, validate, audit, and roll them back. The adapters add NO new
 tuning logic — each ``tune`` call delegates to the exact method the live system
 already calls (``ScoreOptimizer.optimize``, ``RegimeLearner.learn``,
-``Calibrator.calibrate``, ``SignalLedger.run_grading_cycle``
+``SignalLedger.run_grading_cycle``
 …). They only centralise *when* it runs and *whether the result is sane*.
 
 Each component's training data is supplied by an injected provider callable so
