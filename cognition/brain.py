@@ -183,7 +183,6 @@ class CognitiveBrain:
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
-        pattern_tracker: Optional[Any] = None,
         max_correlated_positions: int = 3,
         max_total_exposure: float = 3.0,
     ) -> None:
@@ -255,15 +254,6 @@ class CognitiveBrain:
         # Native-only reasoning is a first-class path. Its provisional exposure
         # derives from verified net EV and payoff geometry; the same shared
         # portfolio and owner-risk admission applies as in advisor-assisted flow.
-        # Article X — pattern EVOLUTION. An optional
-        # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
-        # detected structural patterns preceded winning vs losing campaigns and
-        # returns a bounded per-pattern confidence modifier. When wired, the Brain
-        # multiplies its effective conviction by the average modifier of the
-        # leading hypothesis's supporting patterns (Decision → Outcome →
-        # Attribution → future reasoning). None ⇒ patterns are treated as neutral
-        # (modifier 1.0), preserving prior behaviour.
-        self._pattern_tracker = pattern_tracker
         # Articles XXVII / XXVIII — portfolio-level reasoning. The Brain reasons
         # over the WHOLE book simultaneously (not only per-symbol): it caps how
         # many correlated same-direction positions it will hold in one asset
@@ -570,8 +560,6 @@ class CognitiveBrain:
         }
         _quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
         calibration_status = "observational only; no confidence adjustment is applied"
-        brain_synthesis = ""
-        brain_adv_synthesis = ""
         lead_pattern_names = []
         # Article XX / XXI / V-013 — advisory-council coverage. Read how much of
         # the council actually contributed. This is a first-class health signal:
@@ -784,8 +772,6 @@ class CognitiveBrain:
         }
         # Violation V1 — record the Brain's cross-check of the advisor against the
         # evidence picture, so the synthesis (and any attenuation) is auditable.
-        if brain_synthesis:
-            questions["brain_synthesis"] = brain_synthesis
         # Articles II / IV / IX — record the FULL native reasoning chain: the
         # Brain's own evidence analysis, the hypotheses it formed, its
         # self-criticism, and how it synthesised its view with the advisor's.
@@ -807,8 +793,6 @@ class CognitiveBrain:
             questions["brain_lead_hypothesis_id"] = brain_lead.hypothesis_id
         if brain_lead is not None and getattr(brain_lead, "criticism", ""):
             questions["brain_self_criticism"] = brain_lead.criticism
-        if brain_adv_synthesis:
-            questions["brain_advisor_synthesis"] = brain_adv_synthesis
         # Part XXV — record the raw scalar and the confidence PROFILE so the honest
         # multidimensional read (and which dimension limited the trade) is auditable.
         questions["advisor_confidence_raw"] = round(confidence, 4)
@@ -831,9 +815,8 @@ class CognitiveBrain:
             if _v:
                 questions[_k] = _v
         # Opportunity-harvesting — when the reasoner returned a SET of ranked
-        # opportunities (multi-opportunity format), the preferred one already
-        # drives this decision (it was collapsed to direction/confidence/EV
-        # upstream). Record the FULL set for auditability, name the preferred
+        # opportunities (multi-opportunity format), record the full set for
+        # auditability and name the preferred
         # opportunity, and log the non-preferred ones as CONDITIONAL ALTERNATIVES
         # (the still-live ideas that lost the ranking but would activate on their
         # own conditions). Purely additive: absent on a legacy single-direction
