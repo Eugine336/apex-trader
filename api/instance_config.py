@@ -38,7 +38,13 @@ _KNOWN_KEYS = {
 
 def _trading_mode_locked() -> bool:
     """Whether the process environment owns the instrument universe globally."""
-    raw = os.getenv("TRADING_MODE_LOCKED", "false").strip().lower()
+    raw_value = os.getenv("TRADING_MODE_LOCKED")
+    if raw_value is None:
+        # A configured process TRADING_MODE is authoritative by default. This
+        # keeps an existing deployment's Gold mode from being silently widened
+        # by saved per-user preferences when the new lock variable is absent.
+        raw_value = "true" if os.getenv("TRADING_MODE") else "false"
+    raw = raw_value.strip().lower()
     if raw in {"1", "true", "yes", "on"}:
         return True
     if raw in {"0", "false", "no", "off", ""}:
