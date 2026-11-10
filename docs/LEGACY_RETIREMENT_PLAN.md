@@ -1,93 +1,79 @@
 # Legacy Directional Stack — Retirement Plan
 
-> Status: **Track opened (increment 1).** This plan governs the physical removal
-> of the legacy directional-decision stack. It is the operational companion to
-> Part XXV of `docs/APEX_Constitution.md` (Raw-Market Reasoning & Non-Collapsed
-> Cognition). The cognition layer is already fully non-directional and the Brain
-> is the sole decider under single-path; this track physically deletes the
-> now-severed legacy decision code so `Vote.direction` and its consumers no
-> longer exist anywhere.
+> Status: **Incremental retirement; historical inventory reconciled 2026-11-10.**
+> This plan governs removal of obsolete decision authorities and no-op runtime
+> wiring. The canonical identity and Brain authority are defined by
+> cognition/identity.py and docs/APEX_Constitution.md. A historical count
+> must not be presented as a current call-site count.
 
-## Why this is a multi-step track, not one deletion
+## Current verified source-tree observations
 
-An audit of the live tree shows the legacy directional-decision code is **deeply
-entangled with still-live evidence/scanner/world-model code through shared
-modules and types**, so naive file deletion breaks the running system:
+The previous inventory recorded approximately 209 reads of
+brain.vote_evidence.Vote.direction. That count is a historical baseline, not
+the current tree: the current main directory inventory contains neither
+brain/vote_evidence.py nor brain/directional_consensus.py; the rl/ package is
+absent; and decision/ contains only __init__.py and actions.py. The old
+209-consumer figure must not be used to imply those modules are still active.
+Remaining historical documents and audit text that name those modules require
+reconciliation separately.
 
-- `brain/vote_evidence.py::Vote.direction` is read by **~209 non-test sites**
-  across `brain/`, `adaptive/`, `management/`, `backtest/`, `entry/`, `rl/`,
-  `execution/`, `decision/`, `planning/`. **Zero** are in `cognition/`.
-- `entry/__init__.py` eagerly imports **every** entry module (orchestrator,
-  gate, staging, tick detectors, flip trackers) — so any live import of a
-  *shared type* (`entry.models.EntryConfig` / `EntryZone`, used by
-  `brain/world_model.py`, `scanner/`, `brain/structure_context.py`, etc.)
-  transitively loads the decision-only modules. None are physically dead.
-- `event_driven_bootstrap.py` still **constructs and calls** `ZoneOrderStager`
-  and `FlipSequenceTracker`, and imports `EntryOrchestrator` from the package.
-- `brain/directional_consensus.py` (`form_thesis` / `decide` /
-  `decide_opportunities`, and a `Vote`) is imported by `adaptive/`, `brain/`,
-  and `event_driven_bootstrap.py`.
+The entry/ package currently contains shared models, M1 patterns, and the
+M1/M5 flip-sequence implementation. Source tracing found that
+event_driven_bootstrap.py constructed and fed FlipSequenceTracker on M1 and M5
+candle-close events, but no production caller read its is_confirmed() result.
+Its flip_require_sequence profile setting therefore advertised a gate that did
+not participate in a Brain decision. The tracker also depended on
+M1CandleConfirmer, whose only production import was the tracker itself. This
+is dead state and data-fetch work, not an active gate.
 
-The live trading stack cannot be executed in the validation sandbox
-(`numpy`/`pandas`/MetaTrader5 absent), so every deletion increment is validated
-by (a) repo-wide grep proving no remaining reference and (b) `python -m
-py_compile` syntax verification, never by a naive bulk delete.
+## Ordered retirement record
 
-## Ordered, dependency-safe demolition sequence
+1. **Extract shared non-directional types.** Completed historically:
+   EntryConfig, EntryZone, GateResult and PendingEntry remain in the shared
+   entry model surface; keep these data contracts where active callers require
+   them.
+2. **Slim entry/__init__.py.** Completed historically: package exports are
+   limited to shared data models rather than eagerly importing decision modules.
+3. **Sever bootstrap wiring.** The legacy orchestrator/stager wiring was
+   previously retired. This increment removes the unconsumed M1/M5 sequence
+   tracker construction, candle-close subscriptions, feed methods and profile
+   switches. The M1/M5 state was never read by a production decision consumer,
+   so no replacement gate is introduced. The canonical Brain and its
+   opportunity/management contracts remain the decision path.
+4. **Delete decision-only entry/ leaves.** Previously removed leaves remain
+   retired. This increment also removes entry/flip_sequence_tracker.py,
+   entry/m1_confirmation.py, and their dedicated tests. Shared entry/models.py
+   and entry/m1_patterns.py are not removed merely because they live under the
+   same package; their actual evidence/data consumers must be evaluated
+   independently.
+5. **Retire directional consensus.** The source files
+   brain/directional_consensus.py and brain/vote_evidence.py are absent from
+   the current main tree. Do not repeat historical caller counts or delete
+   unrelated current analysis modules based on obsolete file names. Search for
+   remaining executable references and keep any residual offline/replay
+   consumers explicitly non-authoritative.
+6. **Retire decision-only learning/backtest code selectively.** The former
+   rl/ package is absent. The backtest/ package is a current general
+   backtesting surface and must not be deleted wholesale. The remaining
+   decision/actions.py module must be evaluated by its actual imports and
+   runtime callers, not by its directory name.
+7. **Remove residual vote contracts.** brain/vote_evidence.py is absent from
+   the current tree. Treat any references in old documentation or audit
+   snapshots as stale until confirmed against executable source.
 
-Each step is its own PR, grep + syntax verified, keeping the live system intact:
+## Regression and acceptance gates
 
-1. **Extract shared non-directional types** (`EntryConfig`, `EntryZone`,
-   `GateResult`, `PendingEntry`) into a neutral module and make `entry/models.py`
-   re-export for back-compat, so live evidence code depends on the neutral type,
-   not the directional package.
-2. **Slim `entry/__init__.py`** to stop eagerly importing decision-only modules;
-   update the (gated) bootstrap imports to point at explicit submodules.
-   **✓ DONE** — `entry/__init__.py` now re-exports only the shared, non-directional
-   data models (`EntryConfig`/`EntryZone`/`GateResult`/`PendingEntry`); the one
-   package-level consumer (`event_driven_bootstrap.py`) now imports
-   `EntryOrchestrator`/`ZoneOrderStager` from explicit submodules. Verified:
-   importing `entry.models` loads **no** decision module; inventory 14 → 13.
-3. **Sever bootstrap wiring** — remove construction/subscription of
-   `EntryOrchestrator`, `ZoneOrderStager`, `FlipSequenceTracker` and the
-   `on_m1_close`/`on_world_model_update` legacy entry handlers.
-   **✓ DONE (orchestrator + stager)** — `EntryOrchestrator`/`ZoneOrderStager`
-   construction replaced by an inert `_RetiredEntryPipeline` null-object; all
-   ~15 dormant bootstrap call sites resolve to no-ops (grep-verified
-   dangling-free). `FlipSequenceTracker` is kept (it feeds live evidence, not
-   decisions).
-4. **Delete decision-only `entry/` leaves** — `entry_orchestrator.py`,
-   `entry_gate.py`, `zone_order_staging.py`, `tick_entry_detector.py`,
-   `tick_delta_analyzer.py`, `flip_confirmer.py`, `flip_sequence_tracker.py`,
-   `m1_confirmation.py` (keep `models.py`, `zone_watcher.py`, `m1_patterns.py`
-   only for their live evidence use, de-directionalised).
-   **✓ PARTIAL** — deleted `entry/entry_orchestrator.py` +
-   `entry/zone_order_staging.py` and their 7 coupled tests. Remaining leaves
-   (`entry_gate.py`, `flip_confirmer.py` — still used by `brain/backtest_engine.py`;
-   `tick_entry_detector.py`, `tick_delta_analyzer.py`, `m1_confirmation.py`) are
-   now unimported by the live path and will be deleted with the backtest bite.
-5. **Retire `brain/directional_consensus.py`** decision functions (`form_thesis`,
-   `decide`, `decide_opportunities`) and their now-dead callers in `adaptive/`,
-   `brain/decision_core.py`, `event_driven_bootstrap.py`.
-   **✓ PARTIAL** — the bootstrap's legacy **Consensus Division entry trigger**
-   (`_evaluate_consensus_entry`) and its two `form_thesis` candidate builders
-   (618 lines) are excised and replaced with an inert single-path no-op; bootstrap
-   no longer references the consensus engine. Also deleted orphaned
-   `entry/tick_entry_detector.py`. Remaining callers: `adaptive/counterfactual.py`
-   (`decide`), `brain/decision_core.py`, `brain/backtest_engine.py` (`form_thesis`)
-   — all offline/analysis paths pending the backtest bite + validation suite.
-6. **Retire `decision/`, `rl/`, and legacy `backtest/` directional paths** that
-   exist only to serve the removed decision funnel.
-7. **Remove `Vote.direction`** (and the `signed` property / `VoteResult` /
-   `DirectionDecision`) from `brain/vote_evidence.py` — last, once every consumer
-   above is gone.
-
-## Measurable gate
-
-`cognition/legacy_audit.py::legacy_directional_inventory()` enumerates the
-remaining legacy directional-decision surfaces (modules importing/calling
-`form_thesis` / `decide` / `decide_opportunities`, constructing `VoteResult`, or
-wiring the legacy entry pipeline). Every increment above must lower its
-`surface_count`; `cognition/` must never appear in it. The Part XXV gate
-`audit_nondirectional_cognition()` independently guarantees no directional
-reading can re-enter cognition while this track proceeds.
+- scripts/constitution_audit.py remains the executable static guard for
+  retired entry and decision surfaces. This increment adds explicit existence
+  guards for the retired M1/M5 tracker and confirmer so they cannot silently
+  return.
+- CI must compile the changed runtime modules, run focused entry/session tests,
+  run the constitutional audit and full Python 3.11/3.12 matrix.
+- A path is retired only when production imports, construction, event
+  subscriptions, configuration switches and callers are gone. Test-only
+  references are removed or converted to assertions that the retired path
+  stays absent.
+- No live broker orders, .env access, credential changes, runtime database
+  mutation or execution-setting changes are part of this work.
+- Passing CI validates repository behavior; it does not substitute for
+  owner-connected broker acceptance or full production qualification.
