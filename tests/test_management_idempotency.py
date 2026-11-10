@@ -48,6 +48,7 @@ def _position():
         opportunity_id="opportunity-1",
         lots=0.2,
         ticket="ticket-1",
+        platform="mt5",
     )
 
 
