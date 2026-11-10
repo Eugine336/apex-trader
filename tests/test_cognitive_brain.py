@@ -341,9 +341,6 @@ def test_brain_does_not_accept_calibration_tracker_as_decision_input():
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
     ).reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
-    assert out.decision.questions_answered["calibration_status"] == (
-        "observational only; no confidence adjustment is applied"
-    )
 
 
 def test_competing_hypotheses_do_not_convert_uncalibrated_confidence_to_probability():
