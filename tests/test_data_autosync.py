@@ -778,3 +778,55 @@ def test_compaction_stage_failure_restores_branch_without_overwriting_excluded_d
     assert subprocess.check_output(
         ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
     ) == original
+
+
+
+def test_public_sync_untracks_sqlite_sidecars_and_secret_named_files_without_deleting_them(
+    tmp_path, monkeypatch
+):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    database = data / "apex_positions.db"
+    sidecar = data / "apex_positions.db-wal"
+    secret = data / ".env"
+    database.write_bytes(b"database-v1")
+    sidecar.write_bytes(b"wal-v1")
+    secret.write_text("TOKEN=local-only", encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "baseline"], check=True)
+
+    database.write_bytes(b"database-v2")
+    sidecar.write_bytes(b"wal-v2")
+    secret.write_text("TOKEN=still-local-only", encoding="utf-8")
+    monkeypatch.setattr(backup_data, "_verify_data_repo_or_refuse", lambda *a, **k: None)
+
+    result = backup_data.sync_data_repo(
+        commit_message="exclude transient and secret-like files",
+        push=False,
+        data_dir=data,
+    )
+
+    assert result == "committed (push skipped)"
+    tracked = subprocess.check_output(
+        ["git", "-C", str(data), "ls-files"], text=True
+    ).splitlines()
+    assert "apex_positions.db" in tracked
+    assert "apex_positions.db-wal" not in tracked
+    assert ".env" not in tracked
+
+    # Index cleanup must not delete or rewrite local files.
+    assert database.read_bytes() == b"database-v2"
+    assert sidecar.read_bytes() == b"wal-v2"
+    assert secret.read_text(encoding="utf-8") == "TOKEN=still-local-only"
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_positions.db"]
+    ) == b"database-v2"
+    for excluded in ("apex_positions.db-wal", ".env"):
+        check = subprocess.run(
+            ["git", "-C", str(data), "cat-file", "-e", f"HEAD:{excluded}"],
+            capture_output=True,
+        )
+        assert check.returncode != 0
