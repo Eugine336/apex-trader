@@ -87,7 +87,6 @@ ENV_CONFIG_FIELDS: dict[str, tuple[str, ...]] = {
         "enabled", "periodic_interval_seconds", "scan_interval_seconds",
     ),
     "cross_instrument": (
-        "queue_enabled", "queue_window_ms",
         "proactive_scan_enabled", "proactive_scan_interval_seconds",
     ),
 }
