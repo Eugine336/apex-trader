@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,15 @@ def _run_git(args: list[str], *, cwd: Path | None = None, timeout: int = 180) ->
 
 def _is_link(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or (callable(is_junction) and is_junction())
+    if path.is_symlink() or (callable(is_junction) and is_junction()):
+        return True
+    # pathlib.Path.is_junction() was added in Python 3.12. Windows Python
+    # 3.11 still needs to recognize directory junction reparse points.
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except OSError:
+        return False
 
 
 def _make_directory_link(link: Path, target: Path) -> None:
