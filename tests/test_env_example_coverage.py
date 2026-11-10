@@ -73,7 +73,27 @@ def test_template_does_not_advertise_unconsumed_legacy_controls():
     assert not (removed & active)
 
 
+def test_every_allowlisted_operator_field_is_documented():
+    from config_env import ENV_CONFIG_FIELDS
+
+    declared = {
+        match.group(1)
+        for match in re.finditer(
+            r"^([A-Z][A-Z0-9_]*)=", ENV_TEMPLATE.read_text(encoding="utf-8"), re.M
+        )
+    }
+    missing = sorted(
+        f"APEX_{section}_{field}".upper()
+        for section, names in ENV_CONFIG_FIELDS.items()
+        for field in names
+        if f"APEX_{section}_{field}".upper() not in declared
+    )
+    assert not missing, "Allowlisted settings missing from .env.example: " + ", ".join(missing)
+
+
 def test_active_template_keys_have_a_runtime_or_external_consumer():
+    from config_env import ENV_CONFIG_FIELDS
+
     active = {
         match.group(1)
         for match in re.finditer(
@@ -104,9 +124,16 @@ def test_active_template_keys_have_a_runtime_or_external_consumer():
         except (OSError, UnicodeDecodeError):
             continue
     repository_source = "\\n".join(source)
+    dynamic_consumers = {
+        f"APEX_{section}_{field}".upper()
+        for section, names in ENV_CONFIG_FIELDS.items()
+        for field in names
+    }
     missing = sorted(
         key for key in active
-        if key not in external_consumers and key not in repository_source
+        if key not in external_consumers
+        and key not in dynamic_consumers
+        and key not in repository_source
     )
     assert not missing, (
         "Active .env.example keys have no code/config consumer: "
