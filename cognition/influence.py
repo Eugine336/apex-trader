@@ -186,14 +186,13 @@ class CalibrationTracker:
     The market is the only source of truth for whether a stated confidence was
     right, so outcomes may come from any market-truth source: live closes,
     demo/shadow results, or a hindcast replay of history (``source=``). The
-    tracker never restricts which concepts the Brain may use; it only reports how
-    far its stated confidence has been verified, which scales *risk*
-    (``sizing_scale``), never permission.
+    The tracker is observability only. It reports how well stated reasoning
+    strength aligns with realised outcomes; it never changes trade permission,
+    exposure, or position size.
 
     Optional persistence (``path``) keeps verified calibration across restarts.
     """
 
-    SIZE_FLOOR = 0.25       # unverified calibration still trades, at this fraction of size
     GAP_TOLERANCE = 0.25    # reliability gap at/above which verified quality is zero
 
     def __init__(self, *, history_limit: int = 500, min_samples: int = 30,
@@ -337,22 +336,9 @@ class CalibrationTracker:
             logger.debug("[calibration] reliability fault: %s", exc)
             return 0.0
 
-    def sizing_scale(self) -> float:
-        """Risk scale in [SIZE_FLOOR, 1.0] from verified calibration.
-
-        Never zero: unverified calibration reduces size, it does not forbid any
-        trade, concept or instrument. Never raises.
-        """
-        try:
-            r = self.reliability()
-            return round(self.SIZE_FLOOR + (1.0 - self.SIZE_FLOOR) * r, 4)
-        except Exception:  # noqa: BLE001
-            return self.SIZE_FLOOR
-
     def get_status(self) -> dict:
         status = self.metrics()
         status["reliability"] = round(self.reliability(), 4)
-        status["sizing_scale"] = self.sizing_scale()
         return status
 
 
