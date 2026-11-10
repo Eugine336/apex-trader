@@ -165,3 +165,27 @@ def test_hypothesis_probability_rejects_caller_supplied_numeric_scores():
     absent = Hypothesis(statement="candidate without calibration")
     assert absent.probability is None
     assert absent.to_dict()["probability_semantics"] == "not_calibrated"
+
+
+def test_brain_competing_hypotheses_do_not_inherit_probability_from_reasoning_strength():
+    from cognition.brain import CognitiveBrain
+
+    hypotheses = CognitiveBrain._build_hypotheses(
+        "LONG",
+        1.8,
+        1.0,
+        "Primary long explanation",
+        ["Competing short explanation", "No-trade explanation"],
+        "invalidation at structural low",
+        ["evidence-1"],
+        ["evidence-2"],
+    )
+
+    assert len(hypotheses) == 3
+    assert [item.statement for item in hypotheses] == [
+        "Primary long explanation",
+        "Competing short explanation",
+        "No-trade explanation",
+    ]
+    assert all(item.probability is None for item in hypotheses)
+    assert all(item.to_dict()["probability"] is None for item in hypotheses)
