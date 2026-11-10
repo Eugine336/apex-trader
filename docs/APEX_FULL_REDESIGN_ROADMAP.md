@@ -528,3 +528,13 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - **REGRESSION TESTS:** added typed parsing, malformed-value rejection, operational-range validation, OwnerLimits hard-ceiling checks, and template/allowlist parity.
 - **VALIDATION STATUS:** the last completed full CI run (before these changes) had 4,489 passing tests and two failures in the environment-template audit. Both causes were corrected, then the typed environment surface was added. No fresh workflow run has yet been reported for the current branch head; the current branch must not be merged until fresh Python 3.11/3.12 and lint checks pass.
 - No real `.env` was read or modified, no broker orders were sent, and no safety gate was weakened.
+
+
+### WP-B4 quote provenance hardening — 2026-11-10
+
+- **ADDED:** adapter-specific quote provenance validation in `cognition/quote_provenance.py`. A bare `source_timestamp_verified=true` no longer suffices for a calibration quote.
+- **MT5:** the quote must carry its original broker timestamp, the normalized UTC epoch, at least two independent clock-source identifiers, and offset uncertainty no greater than the clock bridge's 2.5-second acceptance ceiling.
+- **Deriv:** the quote must retain the provider's original `history.times` epoch, explicitly identify Unix-UTC semantics, and record local receipt time. Deriv's one-price response remains `mid_only`; it is not represented as an executable bid/ask spread.
+- **Pipeline:** MT5 and Deriv adapters preserve raw timestamp provenance through `Tick`, market snapshot evidence, candidate reference quotes and fixed-horizon outcome quotes. `CalibrationProducer` validates both decision-time and outcome quotes against the adapter-specific contract before issuing artifacts.
+- **TESTS ADDED:** adapter provenance validation, missing/ambiguous source-time rejection, and a calibration regression proving that deleting the raw provenance while leaving the old boolean flag true produces no artifact.
+- **LIMITATION:** this is an application-side adapter attestation, not a cryptographic signature from MetaQuotes or Deriv. It authenticates the expected in-process adapter data path and detects missing/contradictory provenance; it cannot independently prove that a broker's upstream quote is truthful. Broker-export authenticity and owner-supplied historical data acceptance remain separate WP-B4 evidence gates.
