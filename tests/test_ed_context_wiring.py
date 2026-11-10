@@ -67,7 +67,6 @@ def _snap(
         at_breakeven=at_breakeven,
         trailing=False,
         partial_closed=partial_closed,
-        re_entry_eligible=False,
         current_price=current_price,
         broker_pnl=pnl_dollars,
         broker_lots=lots,
