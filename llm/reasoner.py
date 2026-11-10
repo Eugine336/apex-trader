@@ -701,6 +701,7 @@ class LLMOpinion:
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
+            "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
             "thesis_confidence": thesis_c,
             "opportunity_confidence": opp_c,
             "timing_confidence": timing_c,
