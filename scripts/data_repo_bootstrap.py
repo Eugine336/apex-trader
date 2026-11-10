@@ -93,7 +93,7 @@ def _copy_local_data(
     With preserve_conflicts=True, destination data remains untouched when the
     same relative path contains different bytes. Bootstrap retains the complete
     source directory separately, so conflicting databases are never merged.
-    """"
+    """
     copied = 0
     for root, dirs, files in os.walk(source, followlinks=False):
         root_path = Path(root)
