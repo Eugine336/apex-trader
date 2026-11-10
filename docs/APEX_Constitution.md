@@ -2384,9 +2384,10 @@ is updated as each item lands. Ratification does not assert full compliance.
 - **Legacy entry cleanup remains incremental.** The retirement record is
   docs/LEGACY_RETIREMENT_PLAN.md. The M1/M5 flip-sequence tracker and
   M1CandleConfirmer were still constructed/fed by bootstrap but no production
-  decision consumer read the tracker's confirmation result. They are being
-  removed with their dead event subscriptions and profile switches rather
-  than preserved as a misleading inactive gate. Shared evidence/data models
+  decision consumer read the tracker's confirmation result. The old flip-
+  confirmer, tick-delta and M1/M5 sequence profile settings also had no
+  production readers. They are being removed with their dead event subscriptions
+  and configuration rather than preserved as misleading inactive gates. Shared evidence/data models
   and m1_patterns remain only where their live consumers require them. The
   constitutional audit guards against reintroducing the retired tracker files.
 
