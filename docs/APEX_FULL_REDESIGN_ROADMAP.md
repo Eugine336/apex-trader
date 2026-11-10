@@ -591,3 +591,17 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 **Validation:** on head `172a2ce`, lint passed and Gold Desk focused tests passed on Python 3.11 and 3.12. The full Python 3.11/3.12 suites were still running when this record was written. An earlier pre-correction run had two incorrect test expectations (4,514 passed); those assertions were corrected. Do not mark this increment validated until the full suite, generated concept-coverage check, identity/safety audit and import check all pass on the final PR head.
 
 **Safety boundary:** no live broker orders, .env access, credentials, runtime databases or broker settings were changed. PR #902 remains open and unmerged. Owner-connected broker acceptance and the remaining System 2 evidence gates are still separate requirements.
+
+
+## Production management and disconnected heuristic retirement — 2026-11-11
+
+PR #902 has expanded the exact-ticket management increment to close additional identity and legacy-path findings:
+
+- **V-009 production discretionary fallback:** removed `RiskConfig` fields and environment parsing for scan-directional and legacy mechanical exits. The live bootstrap hard-sets `discretionary_exits_enabled=False` and `scan_directional_exits_enabled=False`. The PositionWorker retains only the independent hard-stop, weekend/session/spread and absolute-profit safety floor in production. Explicit worker discretionary fixtures remain isolated to offline tests/backtests.
+- **V-012 disconnected cross-instrument helpers:** repository call-site audit found no runtime decision consumers for `CrossInstrumentRanker`, `OpportunityQualitySizer` or `PositionDisplacer`; the sizer also used confidence as a size multiplier. Their modules, tests, SystemContext wiring, dashboard/frontend status, config fields and env switches were removed. The remaining cross-instrument queue batches already Brain-authorized intents; the proactive scanner is observational only.
+- **Configuration reconciliation:** removed retired controls from `.env.example`, `config_env.py`, the operator environment reference and typed configuration inventory. The inventory now records 701 fields across 43 classes, including the six retained CrossInstrumentConfig fields.
+- **Runtime identity:** no re-entry manager, no production-configurable mechanical discretionary-exit fallback, no confidence-based management comparison, no confidence-based reallocation ranking, and no disconnected sizing/displacement helper remains in the live SystemContext.
+
+**Validation snapshot:** code head `7559a2ce370358db1082e600f41f59316c5b5d7d` passed 4,516 tests on Python 3.11 and 3.12, lint, generated concept-coverage verification, canonical identity/safety audit and import checks. The subsequent head `e558df33d52cdd8d1d6e083814280fa084a0f11f` contains the cross-instrument retirement and its regression guard; Gold Desk focused tests and frontend build passed, while full CI was still running when this note was added. Do not merge until full CI on the final head passes.
+
+**Still not accepted:** System 2's broker/calendar/financing and independent holdout gates; owner-connected broker execution acceptance; full ten-system acceptance. No live broker orders, .env access, runtime database changes or credential changes were made.
