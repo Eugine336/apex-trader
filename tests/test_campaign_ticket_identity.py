@@ -1,7 +1,6 @@
 from brain.campaign import (
     LEG_CLOSE,
     LEG_OPEN,
-    LEG_PARTIAL,
     LEG_RE_ENTRY,
     LEG_SCALE_IN,
     Campaign,
@@ -61,3 +60,14 @@ def test_missing_ticket_is_never_inferred_from_symbol_or_side():
     )
 
     assert campaign.open_tickets == []
+
+
+def test_system_context_enriches_campaigns_by_exact_ticket_not_symbol_side():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "system_context.py").read_text(
+        encoding="utf-8"
+    )
+    assert "camp_by_ticket" in source
+    assert 'c.get("open_tickets", [])' in source
+    assert "camp_by_key.get((sym, side))" not in source
