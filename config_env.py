@@ -88,6 +88,7 @@ ENV_CONFIG_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "cross_instrument": (
         "proactive_scan_enabled", "proactive_scan_interval_seconds",
+        "proactive_scan_min_ev", "proactive_proximity_pct",
     ),
 }
 
