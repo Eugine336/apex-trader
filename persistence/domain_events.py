@@ -51,11 +51,6 @@ TRADE_MODIFIED = "TRADE_MODIFIED"
 SHADOW_CONTRACT_CREATED = "SHADOW_CONTRACT_CREATED"
 SHADOW_RESOLVED = "SHADOW_RESOLVED"
 
-# ── Re-entry (event-driven re-arm after breakeven stop) ─────────────────────
-# Emitted when ReEntryManager confirms a stopped-at-breakeven setup is still
-# structurally valid and the entry path is re-armed (BE cooldown cleared).
-RE_ENTRY_ARMED = "RE_ENTRY_ARMED"
-
 # ── Safety events ──────────────────────────────────────────────────────────
 BALANCE_UNAVAILABLE = "BALANCE_UNAVAILABLE"
 PERSISTENCE_DEGRADED = "PERSISTENCE_DEGRADED"
