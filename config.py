@@ -4393,6 +4393,10 @@ class AppConfig:
                 raise ValueError(
                     "unsupported trading categories: " + ", ".join(invalid_categories)
                 )
+            if not any(get_instruments_by_category(category) for category in self.enabled_categories):
+                raise ValueError(
+                    "enabled trading categories contain no registered instruments"
+                )
         self.enabled_symbols_override = list(dict.fromkeys(
             str(symbol).strip().upper()
             for symbol in self.enabled_symbols_override
