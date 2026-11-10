@@ -277,14 +277,17 @@ def test_disconnected_cross_instrument_heuristics_are_retired():
         for item in cross_config.body
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
     }
-    assert not fields.intersection({
-        "queue_enabled", "queue_window_ms",
-        "ranking_enabled", "quality_sizing_enabled", "displacement_enabled",
-        "spread_ev_penalty_per_pip", "winrate_ev_weight",
-        "quality_sizing_max_boost", "quality_sizing_min_cut", "quality_sizing_ev_ref",
-        "displacement_ev_margin", "displacement_max_per_cycle",
-        "displacement_min_profit_protect", "displacement_cooldown_seconds",
-    })
+    assert fields == {
+        "proactive_scan_enabled",
+        "proactive_scan_interval_seconds",
+        "proactive_scan_min_ev",
+        "proactive_proximity_pct",
+    }
+
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for field in fields:
+        env_key = "APEX_CROSS_INSTRUMENT_" + field.upper()
+        assert env_key in env_example, f"missing environment control: {env_key}"
 
     context = _parse("core/system_context.py")
     assert not any(
