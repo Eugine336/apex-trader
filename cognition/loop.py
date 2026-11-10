@@ -1974,7 +1974,7 @@ class CognitionLoop:
                     "unknown" if _confidence is None else f"{float(_confidence):.2f}"
                 )
                 logger.info(
-                    "[cognition] %s -> %s (confidence=%s) reasoning_mode=%s external_advisor=%s%s",
+                    "[cognition] %s -> %s (reasoning_strength=%s) reasoning_mode=%s external_advisor=%s%s",
                     symbol, _summary, _confidence_label,
                     _reasoning_mode,
                     _external_advisor,
