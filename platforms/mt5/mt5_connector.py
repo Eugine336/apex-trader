@@ -959,7 +959,7 @@ class MT5Connector(BaseConnector):
             if clock is None:
                 raise RuntimeError(
                     "MT5 server clock offset unavailable; completed-bar status "
-                    "cannot be verified without scripts/mt5_clock_publisher.mq5"
+                    "cannot be verified without automatic broker-clock synchronization"
                 )
             # The DataFrame time column is a broker-server wall-clock label until
             # a historical offset series is available. Compare it to the matching
@@ -1088,7 +1088,7 @@ class MT5Connector(BaseConnector):
 
         Request bounds must be timezone-aware and are normalized to UTC. Returned
         epochs are broker-server time; only a short live window is converted to
-        UTC with a fresh publisher offset. Older history remains unnormalized.
+        UTC with a fresh automatically synchronized broker offset. Older history remains unnormalized.
         BUY/SELL aggressor flags are exposed only when the broker supplies them.
         """
         self._require_connection()
