@@ -533,7 +533,7 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 ### WP-B4 quote provenance hardening — 2026-11-10
 
 - **ADDED:** adapter-specific quote provenance validation in `cognition/quote_provenance.py`. A bare `source_timestamp_verified=true` no longer suffices for a calibration quote.
-- **MT5:** the quote must carry its original broker timestamp, the normalized UTC epoch, at least two independent clock-source identifiers, and offset uncertainty no greater than the clock bridge's 2.5-second acceptance ceiling.
+- **MT5:** the quote must carry its original broker timestamp, the normalized UTC epoch, the measured offset (which must reconcile raw broker time to normalized UTC within the uncertainty bound), at least two independent clock-source identifiers, and offset uncertainty no greater than the clock bridge's 2.5-second acceptance ceiling.
 - **Deriv:** the quote must retain the provider's original `history.times` epoch, explicitly identify Unix-UTC semantics, and record local receipt time. Deriv's one-price response remains `mid_only`; it is not represented as an executable bid/ask spread.
 - **Pipeline:** MT5 and Deriv adapters preserve raw timestamp provenance through `Tick`, market snapshot evidence, candidate reference quotes and fixed-horizon outcome quotes. `CalibrationProducer` validates both decision-time and outcome quotes against the adapter-specific contract before issuing artifacts.
 - **TESTS ADDED:** adapter provenance validation, missing/ambiguous source-time rejection, and a calibration regression proving that deleting the raw provenance while leaving the old boolean flag true produces no artifact.
