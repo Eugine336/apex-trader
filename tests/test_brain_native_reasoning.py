@@ -370,34 +370,31 @@ def test_each_pattern_rule_detects(expected, items):
     assert expected in names
 
 
-# ── Article II: agreement boosts, disagreement attenuates ─────────────────────
+# ── advisor confidence remains source metadata ──────────────────────────────
 
-def test_brain_advisor_agreement_boosts_confidence():
-    # Brain reads LONG from the evidence; advisor also says LONG (modest 0.6).
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.6)),
-                           reward_r_default=2.0, min_expected_value=0.0)
+def test_native_evidence_does_not_rewrite_advisor_confidence():
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion(LONG, 0.6)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    )
     out = brain.reason(_strong_long_state())
-    synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
-    assert "agreement" in synth
-    # Agreement lifts the effective conviction above the advisor's own 0.6.
-    assert out.decision.confidence > 0.6
+    assert out.decision.confidence == pytest.approx(0.6)
+    assert "confidence_authority" in out.decision.questions_answered
+    assert "brain_advisor_synthesis" not in out.decision.questions_answered
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
 
-def test_brain_advisor_disagreement_attenuates_confidence():
-    # Brain reads LONG from the evidence; advisor says SHORT with high conviction.
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(SHORT, 0.8)),
-                           reward_r_default=2.0, min_expected_value=0.0)
+def test_confidence_does_not_change_when_native_evidence_disagrees():
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion(SHORT, 0.8)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    )
     out = brain.reason(_strong_long_state())
-    synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
-    assert "disagreement" in synth
-    # Disagreement pulls the effective conviction below the advisor's own 0.8.
-    assert out.decision.confidence < 0.8
+    assert out.decision.confidence == pytest.approx(0.8)
+    assert "brain_advisor_synthesis" not in out.decision.questions_answered
 
 
-def test_flat_brain_defers_without_changing_confidence():
-    # Measurement-thin evidence ⇒ the Brain forms no directional view and defers
-    # to the advisor with NO confidence change (zero regression path).
+def test_flat_brain_defers_without_rewriting_confidence():
     ms = MarketState(symbol="EURUSD")
     ms.add(_ev("momentum", {}, conf=0.9))
     ms.add(_ev("structure", {}, conf=0.9))
@@ -405,70 +402,10 @@ def test_flat_brain_defers_without_changing_confidence():
     _with_verified_council(ms)
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.8)), reward_r_default=2.0)
     out = brain.reason(ms)
-    synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
-    assert "defer" in synth
     assert out.decision.confidence == pytest.approx(0.8)
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
 
-
-
-
-def test_native_fallback_qualifies_sub_070_confidence_without_named_pattern():
-    """Native reasoning discovers from context/evidence, not pattern-name gates."""
-    ms = _strong_long_state()
-    brain = CognitiveBrain(reasoner=None, reward_r_default=3.0, min_expected_value=0.0)
-    # This scenario is intended to exercise a directional hypothesis whose
-    # confidence is below the former fixed 0.70 cutoff and whose pattern names
-    # are not a qualification allowlist.
-    analysis = EvidenceAnalysis(
-        domain_coverage={
-            "structure": 0.85, "volume": 0.8, "order_flow": 0.82,
-            "momentum": 0.78, "multi_timeframe": 0.8,
-        },
-        coverage_gap=0.2,
-        observations=["completed timeframe structure and order flow align"],
-        detected_patterns=[],
-        agreement_score=0.7,
-        contradictions=[],
-        regime_indicators={
-            "structure": LONG, "order_flow": "buying",
-            "trend_context": "uptrend", "trend_timeframes": 3,
-            "momentum": "decelerating",
-        },
-        evidence_uncertainty=0.25,
-    )
-    hypothesis = BrainHypothesis(
-        statement="Completed higher-timeframe structure supports continuation with a pullback risk",
-        confidence=0.60,
-        direction_implication=LONG,
-        supporting_patterns=[],
-        contradicting_patterns=[],
-        invalidation="A completed structural close breaks below the continuation origin",
-        opportunity_implication="continuation after pullback",
-        hypothesis_kind="continuation",
-        horizon="M5",
-    )
-    brain._native_reasoning = lambda state, consolidation, symbol, *, now=None: (analysis, [hypothesis])
-    out = brain.reason(ms)
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.campaign is not None and out.campaign.direction == LONG
-    assert out.decision.confidence < 0.70
-    assert out.campaign is not None
-    assert out.campaign.initial_execution_intent.get("independent_origination") is True
-
-
-def test_native_fallback_requires_explicit_verified_execution_cost():
-    state = _strong_long_state()
-    state.evidence = [
-        item for item in state.evidence
-        if getattr(item.domain, "value", item.domain) != "execution_quality"
-    ]
-    # An unverified numeric cost cannot satisfy the execution-cost requirement.
-    state.add(_ev("execution_quality", {"estimated_total_cost_r": 0.01}))
-    out = CognitiveBrain(reasoner=None, reward_r_default=3.0).reason(state)
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    assert out.campaign is None
 
 # ── Article X: independent origination when the advisor is unavailable ────────
 
@@ -698,7 +635,8 @@ def test_full_reasoning_chain_recorded():
     q = brain.reason(_strong_long_state()).decision.questions_answered
     assert q.get("brain_evidence_analysis")
     assert q.get("brain_hypotheses")
-    assert q.get("brain_advisor_synthesis")
+    assert "brain_advisor_synthesis" not in q
+    assert q.get("confidence_authority")
     assert q.get("brain_self_criticism")
 
 
@@ -716,28 +654,14 @@ def test_compare_opportunities_ranks_against_book():
     assert br.compare_opportunities(opp, "EURUSD", weak) == "superior"
 
 
-def test_advisor_confidence_attenuation_is_continuous_and_never_promotes():
-    brain = CognitiveBrain(reasoner=None)
-
-    def adjusted(mean, uncertainty, advisor=0.85, effective=0.85):
-        value, _ = brain._synthesize_from_evidence(
-            {
-                "evidence_fresh": 4,
-                "market_mean_confidence": mean,
-                "aggregate_uncertainty": uncertainty,
-            },
-            advisor,
-            effective,
-        )
-        return value
-
-    # Crossing the old 0.15 gap boundary must not create a discontinuity.
-    below = adjusted(mean=0.70, uncertainty=0.10, advisor=0.849)
-    above = adjusted(mean=0.70, uncertainty=0.10, advisor=0.851)
-    assert abs(above - below) < 0.01
-
-    # More uncertainty continuously reduces the evidence-supported confidence.
-    lower_uncertainty = adjusted(mean=0.70, uncertainty=0.49)
-    higher_uncertainty = adjusted(mean=0.70, uncertainty=0.50)
-    assert higher_uncertainty < lower_uncertainty
-    assert higher_uncertainty <= 0.85
+def test_native_market_synthesis_does_not_create_advisor_confidence():
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion(LONG, 0.85)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    )
+    out = brain.reason(_strong_long_state())
+    assert out.decision.confidence == pytest.approx(0.85)
+    assert out.decision.questions_answered["confidence_authority"].startswith(
+        "descriptive advisor metadata"
+    )
+    assert "brain_advisor_synthesis" not in out.decision.questions_answered
