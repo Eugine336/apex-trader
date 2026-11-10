@@ -250,11 +250,26 @@ def test_vwap_zone_enabled_defaults_on():
     assert get_profile("EURUSD").vwap_zone_enabled is True
 
 
-def test_flip_delta_confirmation_setting_remains_enabled_by_default():
-    # Tick-delta observation remains configured; the unconsumed M1/M5 sequence
-    # gate has been removed rather than presented as an active decision check.
-    for sym in ("EURUSD", "XAUUSD"):
-        assert get_profile(sym).flip_require_delta_confirmation is True
+def test_retired_flip_confirmation_settings_are_not_exposed():
+    # The old Entry/FlipConfirmer implementation and its consumers are gone.
+    # Profile settings for those dead gates must not be presented as active.
+    retired = (
+        "flip_atr_move_threshold",
+        "flip_tick_threshold_default",
+        "flip_tick_threshold_asian",
+        "flip_require_m15_non_opposition",
+        "flip_volume_ratio_min",
+        "flip_volume_ratio_asian",
+        "flip_require_clean_break",
+        "flip_delta_threshold",
+        "flip_delta_tick_count",
+        "flip_require_delta_confirmation",
+        "flip_require_sequence",
+        "flip_sequence_window_bars",
+    )
+    for symbol in ("EURUSD", "XAUUSD"):
+        profile = get_profile(symbol)
+        assert all(not hasattr(profile, name) for name in retired)
 
 
 def test_instrument_profiles_get_independent_default_dicts():
