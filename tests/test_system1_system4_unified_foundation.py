@@ -500,6 +500,20 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
     events = []
     start = 1_700_000_000.0
+
+    def mt5_quote_provenance(epoch):
+        return {
+            "source_adapter": "mt5",
+            "source_timezone": "broker_server",
+            "time": int(epoch),
+            "time_msc": int(epoch * 1000),
+            "provider_timestamp_epoch": epoch,
+            "provider_timestamp_semantics": "broker_server_epoch",
+            "timestamp_utc_epoch": epoch,
+            "source_utc_offset_uncertainty_seconds": 0.1,
+            "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+        }
+
     for index in range(150):
         decision_epoch = start + index * 600.0
         decision_id = f"decision-{index}"
@@ -531,6 +545,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "timestamp_epoch": decision_epoch,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
+                "raw_fields": mt5_quote_provenance(decision_epoch),
                 "evidence_id": f"quote-{index}",
             },
             "point_in_time_complete": True,
@@ -569,6 +584,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                             "mid": 100.0,
                             "timestamp_epoch": decision_epoch,
                             "source_timestamp_verified": True,
+                            "raw_fields": mt5_quote_provenance(decision_epoch),
                         },
                     },
                 },
@@ -600,6 +616,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "timestamp_epoch": decision_epoch + 300.0,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
+                "raw_fields": mt5_quote_provenance(decision_epoch + 300.0),
                 "evidence_id": f"outcome-{index}",
             },
         }
@@ -714,6 +731,25 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
+
+    # A bare source_timestamp_verified boolean is not enough to mint an
+    # artifact. Both decision-time and horizon quotes need adapter provenance.
+    unattested_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["reference_quote"].pop("raw_fields", None)
+            payload["point_in_time_evidence"][1]["measurements"]["price"].pop(
+                "raw_fields", None
+            )
+        elif row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            payload["outcome_quote"].pop("raw_fields", None)
+        copied["payload_json"] = json.dumps(payload)
+        unattested_events.append(copied)
+    assert CalibrationProducer(
+        Store(unattested_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
 
     duplicate_snapshot_events = [dict(row) for row in events]
     duplicate_snapshot_events.append({**events[0], "seq": 10000})
