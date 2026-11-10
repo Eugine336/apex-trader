@@ -1627,7 +1627,6 @@ class SystemContext:
                                     ticket, sym, side,
                                 )
                             camp = camp_matches[0] if len(camp_matches) == 1 else {}
-                            ec = camp.get("entry_confidence") if isinstance(camp, dict) else None
                             out.append(_PositionView(
                                 symbol=sym,
                                 direction=side,
@@ -1652,9 +1651,6 @@ class SystemContext:
                                 originating_decision_id=(
                                     str(camp.get("originating_decision_id", "") or "")
                                     if isinstance(camp, dict) else ""
-                                ),
-                                entry_confidence=(
-                                    float(ec) if ec is not None else None
                                 ),
                             ))
                         return out
