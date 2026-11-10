@@ -29,7 +29,6 @@ should override the process default; this does not lock owner risk-limit control
 |---|---|---|
 | `TRADING_ENABLED` | boolean | Master switch for new Brain-originated exposure |
 | `COGNITION_ENABLED` | boolean | Enables/disables the cognition subsystem |
-| `COGNITION_GATE_MODE` | `authoritative` (production) | Keeps Brain as the decision authority |
 | `COGNITION_ORIGINATION_MODE` | `off`, `shadow`, `live` | Controls new campaign origination |
 | `COGNITION_MANAGEMENT_MODE` | `off`, `shadow`, `live` | Controls Brain position management |
 
