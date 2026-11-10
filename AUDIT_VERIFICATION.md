@@ -46,9 +46,9 @@ But the fixes are **shallower than the guard implies**:
   `scan_directional_exits_enabled=True`) — the fix code exists but is **inert on the
   default live path**.
 - Several forbidden mechanisms survive **dormant-but-one-wire-from-live**
-  (`planning/trade_planner.py` directional decider, `adaptive/signal_ledger.py` +
+  (retired `planning/` subsystem (removed in PR #891), `adaptive/signal_ledger.py` +
   `module_governor.py` directional-correctness learning,
-  `planning/trade_planner.py` directional decider and `adaptive/signal_ledger.py` + `module_governor.py` directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810.
+  retired planning subsystem removed; `adaptive/signal_ledger.py` + `module_governor.py` directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810.
 - The historical `_directional_lean` implementation is absent from the current
   `cognition/brain_reasoning.py`; the Brain forms hypotheses from structured evidence.
 - Core cognitive gates **fail OPEN** (UNKNOWN opportunity ⇒ actionable; absent
