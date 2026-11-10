@@ -145,7 +145,7 @@ def _untrack_public_excluded_files(work_tree: str) -> tuple[bool, str]:
     if not ok:
         return False, output
     excluded: list[str] = []
-    for raw_path in output.split("\\0"):
+    for raw_path in output.split("\0"):
         if not raw_path:
             continue
         name = Path(raw_path).name.lower()
