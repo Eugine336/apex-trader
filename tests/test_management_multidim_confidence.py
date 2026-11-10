@@ -61,7 +61,7 @@ def test_scale_in_requires_new_opportunity_even_when_execution_is_weak():
     out = _brain(op).manage(_pos("LONG", profit_r=1.0), _state(0.8))
     assert out.decision.decision_type == DecisionType.HOLD
     rr = out.decision.risk_rationale.lower()
-    assert "separately qualified Brain opportunity" in rr
+    assert "separately qualified brain opportunity" in rr
     assert abs(out.decision.confidence - 0.3) < 1e-9   # honest effective conviction
 
 
