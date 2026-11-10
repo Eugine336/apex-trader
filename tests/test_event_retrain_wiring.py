@@ -285,7 +285,6 @@ def _fake_ctx(ml_adapter):
         param_evolver=None,
         outcome_logger=None,
         regime_detector=None,
-        re_entry_manager=None,
         governance=None,
     )
 
@@ -304,9 +303,6 @@ def _fake_self(rec):
         _consecutive_losses=0,
         _tick_store=_Stub(get_latest=lambda _s: None),
         _closed_trade_count=0,
-        _last_close_time={},
-        _be_stop_cooldown={},
-        _be_cooldown_seconds=0,
     )
 
 
