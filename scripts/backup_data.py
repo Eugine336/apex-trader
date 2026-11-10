@@ -336,6 +336,7 @@ def sync_data_repo(
     push: bool = True,
     data_dir: Path | str | None = None,
     data_repo_url: str | None = None,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
 ) -> str:
     """Commit + push a ``data/`` git work tree to its GitHub remote.
 
@@ -357,6 +358,7 @@ def sync_data_repo(
     """
     if exclude_patterns is None:
         exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
+    max_bytes = int(max_file_size_mb * 1024 * 1024)
 
     base = Path(data_dir) if data_dir is not None else _DATA_DIR
     if not base.is_dir():
