@@ -191,3 +191,18 @@ def test_safety_degradation_trips_cognition_new_exposure_breaker():
     assert ctx.safety_degraded is True
     assert "BrokerAccountBalanceUnavailable" in ctx.safety_degraded_reason
     assert loop.broker_book_verified is False
+
+
+def test_live_risk_engine_starts_without_backtest_capital_and_reconciles_broker_truth(config):
+    """Live SystemContext must not expose the backtest balance as account capital."""
+    ctx = SystemContext.create(config, _FakePM())
+
+    assert ctx.risk_engine is not None
+    assert ctx.risk_engine.balance == 0.0
+    assert ctx.risk_engine.pnl_tracker.starting_balance == 0.0
+
+    ctx.risk_engine.reconcile_platform_balances({"mt5": 30.0})
+
+    assert ctx.risk_engine.balance == 30.0
+    assert ctx.risk_engine.pnl_tracker.starting_balance == 30.0
+    assert ctx.risk_engine._has_reconciled_broker_balance is True
