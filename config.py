@@ -3892,7 +3892,6 @@ class CognitionConfig:
         self.per_module_evidence = _llm_env_bool(
             "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
         )
-        self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
         self.memory_enabled = _llm_env_bool("COGNITION_MEMORY_ENABLED", self.memory_enabled)
         self.operations_enabled = _llm_env_bool(
             "COGNITION_OPERATIONS_ENABLED", self.operations_enabled
@@ -4026,12 +4025,6 @@ class CognitionConfig:
                 "[config] disabling opportunity cost qualification is incompatible with the Apex identity; forcing true"
             )
             self.opportunity_qualification_enabled = True
-        if self.allow_scale_in:
-            logger.warning(
-                "[config] COGNITION_ALLOW_SCALE_IN=true is not supported until scale-ins "
-                "use the first-class opportunity and whole-book admission path; forcing false"
-            )
-            self.allow_scale_in = False
         if not self.event_driven:
             logger.warning(
                 "[config] COGNITION_EVENT_DRIVEN=false disables material-change cognition; forcing true"
