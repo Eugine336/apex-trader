@@ -85,3 +85,13 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
   mutation or execution-setting changes are part of this work.
 - Passing CI validates repository behavior; it does not substitute for
   owner-connected broker acceptance or full production qualification.
+
+
+8. **Retire the no-op breakeven re-entry subsystem.** The runtime had no
+   consumer for the stored breakeven/last-close cooldowns, and ReEntryManager
+   only emitted an observational event after M5/FVG/OB checks; it did not
+   submit or authorize an order. Remove its SystemContext construction,
+   close-handler evaluation, re-entry event, snapshot/trade-model flag,
+   package export and source module. A closed campaign returns to the normal
+   Brain observation cycle; no direction-locked re-entry shortcut or dormant
+   cooldown state remains.
