@@ -393,7 +393,7 @@ class TestRealisticGraph:
                          dependencies=["pair_learner"]))
         agent.register(F("gate_tuner", frequency=TuneFrequency.PERIODIC,
                          dependencies=["ev_estimator"]))
-        agent.register(F("planner_calibrator", frequency=TuneFrequency.ON_TRADE_BATCH,
+        agent.register(F("position_sizer", frequency=TuneFrequency.ON_TRADE_BATCH,
                          dependencies=["regime_learner"]))
         agent.register(F("signal_ledger", frequency=TuneFrequency.PER_SCAN_CYCLE))
 
