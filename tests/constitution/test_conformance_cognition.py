@@ -297,7 +297,8 @@ def test_decision_preserves_competing_hypotheses():
     assert hyps is not None and len(hyps) >= 2
     primary = hyps[0]
     assert primary.direction == "LONG"
-    assert abs(primary.probability - 0.8) < 1e-9
+    assert primary.probability is None
+    assert primary.probability_semantics == "not_calibrated"
 
 
 @conformance(
