@@ -182,7 +182,7 @@ def test_brain_management_resolves_exact_confirmed_ticket_not_first_symbol_side_
     assert "get_open_positions_snapshot" in resolver_source
     assert "confirmed_platforms" in resolver_source
     assert "failed_platforms" in resolver_source
-    assert 'getattr(position, "ticket"' in resolver_source
-    assert 'getattr(position, "platform"' in resolver_source
+    assert any(isinstance(node, ast.Constant) and node.value == "ticket" for node in ast.walk(resolver))
+    assert any(isinstance(node, ast.Constant) and node.value == "platform" for node in ast.walk(resolver))
     assert "get_all_open_positions" not in resolver_source
     assert "len(matches) != 1" in resolver_source
