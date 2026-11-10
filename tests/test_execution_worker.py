@@ -101,7 +101,6 @@ def _legacy_worker(config=None):
     cfg = replace(
         cfg,
         discretionary_exits_enabled=True,
-        legacy_mechanical_exit_fallback_enabled=True,
         scan_directional_exits_enabled=True,
     )
     return PositionWorker(cfg)
@@ -234,7 +233,7 @@ class TestBreakeven:
             partial_closed=True, at_breakeven=False,
             pnl_pips=15.0, current_price=1.10150,
         )
-        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True))
+        worker = PositionWorker(WorkerConfig(breakeven_min_profit_r=0.5, discretionary_exits_enabled=True, scan_directional_exits_enabled=True))
         intents = worker.evaluate(snap, NOW)
         be_intents = [i for i in intents if (i.source == "breakeven" or "[legacy_source=breakeven]" in i.reason) or "[legacy_source=breakeven]" in i.reason]
         assert len(be_intents) == 1
