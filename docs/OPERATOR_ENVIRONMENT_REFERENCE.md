@@ -187,7 +187,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | COGNITION_EV_ACTION_THRESHOLD_R | 3. Identity, cognition, and live execution mode | 0.0 |
 | COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_MIN_ADVISORS_FOR_ACTION | 3. Identity, cognition, and live execution mode | 1 |
-| COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_PER_MODULE_EVIDENCE | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_EMIT_OPERATOR_NOTIFICATIONS | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_LOOP_INTERVAL_SECONDS | Loop cadence and live opportunity/management settings. | 30 |
