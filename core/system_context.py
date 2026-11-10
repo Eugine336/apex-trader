@@ -1583,19 +1583,25 @@ class SystemContext:
                         positions = getattr(snapshot, "positions", None)
                         if positions is None:
                             raise RuntimeError("broker positions snapshot omitted positions")
-                        # Best-effort campaign enrichment, keyed by (symbol, side).
-                        camp_by_key: dict = {}
+                        # Campaign context is joined by exact broker ticket, never
+                        # by symbol/side alone. A campaign can contain multiple
+                        # order-level legs; a same-symbol position may belong to a
+                        # different thesis or be externally/manual opened.
+                        camp_by_ticket: dict[tuple[str, str, str], list[dict]] = {}
                         reg = ctx.campaign_registry
                         if reg is not None:
                             try:
                                 for c in (reg.get_status() or {}).get("live", []) or []:
-                                    key = (
-                                        str(c.get("symbol", "") or ""),
-                                        _canon(c.get("direction", "")),
-                                    )
-                                    camp_by_key[key] = c
+                                    if not isinstance(c, dict):
+                                        continue
+                                    csym = str(c.get("symbol", "") or "")
+                                    cside = _canon(c.get("direction", ""))
+                                    for raw_ticket in c.get("open_tickets", []) or []:
+                                        ticket_key = str(raw_ticket or "").strip()
+                                        if csym and cside in ("LONG", "SHORT") and ticket_key:
+                                            camp_by_ticket.setdefault((csym, cside, ticket_key), []).append(c)
                             except Exception:  # noqa: BLE001
-                                camp_by_key = {}
+                                camp_by_ticket = {}
                         out = []
                         for p in positions:
                             side = _canon(getattr(p, "direction", ""))
@@ -1604,7 +1610,14 @@ class SystemContext:
                             sym = str(getattr(p, "symbol", "") or "")
                             if not sym:
                                 continue
-                            camp = camp_by_key.get((sym, side)) or {}
+                            ticket = str(getattr(p, "order_id", getattr(p, "ticket", "")) or "").strip()
+                            camp_matches = camp_by_ticket.get((sym, side, ticket), []) if ticket else []
+                            if len(camp_matches) > 1:
+                                logger.warning(
+                                    "[SystemContext] campaign identity ambiguous for ticket {} on {} {}; context withheld",
+                                    ticket, sym, side,
+                                )
+                            camp = camp_matches[0] if len(camp_matches) == 1 else {}
                             ec = camp.get("entry_confidence") if isinstance(camp, dict) else None
                             out.append(_PositionView(
                                 symbol=sym,
