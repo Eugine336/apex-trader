@@ -6061,9 +6061,22 @@ class EventDrivenSystem:
                             )
                             meta["fill_event_emitted"] = True
                             meta["position_id"] = position_id
+                        fill_platform = str(getattr(position, "platform", "") or "").strip().lower()
+                        campaign_registry = getattr(self._ctx, "campaign_registry", None)
+                        if campaign_registry is not None and payload["campaign_id"] and payload["decision_id"] and fill_platform:
+                            attached = campaign_registry.attach_ticket(
+                                payload["symbol"], payload["direction"], payload["campaign_id"],
+                                payload["decision_id"], position_id, fill_platform,
+                            )
+                            if not attached:
+                                logger.warning(
+                                    "[campaign] pending fill {} could not be attached to campaign {} decision {}",
+                                    position_id, payload["campaign_id"], payload["decision_id"],
+                                )
                         self._entry_context[position_id] = {
                             "ticket": position_id, "symbol": payload["symbol"],
                             "direction": payload["direction"],
+                            "platform": fill_platform,
                             "decision_id": payload["decision_id"],
                             "campaign_id": payload["campaign_id"],
                             "opportunity_id": payload["opportunity_id"],
