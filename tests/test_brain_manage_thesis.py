@@ -140,7 +140,8 @@ def test_reverse_requires_a_separately_qualified_new_opportunity():
                   reverse_confidence=0.1).manage(_pos("LONG"), _state())
     assert low.decision.decision_type == DecisionType.TIGHTEN_RISK
     assert high.decision.decision_type == DecisionType.TIGHTEN_RISK
-    assert low.direction == "LONG" and high.direction == "LONG"
+    assert low.decision.questions_answered["held_direction"] == "LONG"
+    assert high.decision.questions_answered["held_direction"] == "LONG"
 
 
 def test_scale_in_requires_separate_brain_opportunity_not_confidence():
@@ -211,7 +212,8 @@ def test_reverse_request_never_flips_without_a_new_qualified_campaign():
     short_out = _brain(_mgmt_op(action="REVERSE", conf=0.99)).manage(_pos("SHORT"), _state())
     assert long_out.decision.decision_type == DecisionType.TIGHTEN_RISK
     assert short_out.decision.decision_type == DecisionType.TIGHTEN_RISK
-    assert long_out.direction == "LONG" and short_out.direction == "SHORT"
+    assert long_out.decision.questions_answered["held_direction"] == "LONG"
+    assert short_out.decision.questions_answered["held_direction"] == "SHORT"
 
 
 # ── Flaw 2/4 — management payload carries campaign context & prefers mgmt path ─
