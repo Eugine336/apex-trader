@@ -181,6 +181,15 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
                 "source_timestamp_verified": verified,
                 "quote_kind": "bid_ask",
                 "symbol": symbol,
+                "raw_fields": {
+                    "source_adapter": "mt5",
+                    "source_timezone": "broker_server",
+                    "time": int(source_epoch),
+                    "time_msc": int(source_epoch * 1000),
+                    "timestamp_utc_epoch": source_epoch,
+                    "source_utc_offset_uncertainty_seconds": 0.1,
+                    "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+                },
             },
         }
         return Evidence(
@@ -228,6 +237,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
     payload = store.events[0][1]["payload"]
     assert payload["reference_quote"]["evidence_id"] == "valid-quote"
     assert payload["reference_quote"]["symbol"] == "EURUSD"
+    assert payload["reference_quote"]["raw_fields"]["source_adapter"] == "mt5"
     assert payload["point_in_time_complete"] is True
     point_ids = {row["evidence_id"] for row in payload["point_in_time_evidence"]}
     assert point_ids == {feature.evidence_id, "valid-quote"}
@@ -309,6 +319,15 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
             "timestamp_epoch": 1000.0, "source_timestamp_verified": True,
             "quote_kind": "bid_ask",
             "symbol": "EURUSD",
+            "raw_fields": {
+                "source_adapter": "mt5",
+                "source_timezone": "broker_server",
+                "time": 1000,
+                "time_msc": 1_000_000,
+                "timestamp_utc_epoch": 1000.0,
+                "source_utc_offset_uncertainty_seconds": 0.1,
+                "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+            },
         }},
     ))
     opportunity = Opportunity(
@@ -345,6 +364,15 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
             "quote_kind": "bid_ask",
             "symbol": "EURUSD",
+            "raw_fields": {
+                "source_adapter": "mt5",
+                "source_timezone": "broker_server",
+                "time": 1301,
+                "time_msc": 1_301_000,
+                "timestamp_utc_epoch": 1301.0,
+                "source_utc_offset_uncertainty_seconds": 0.1,
+                "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+            },
         }},
     ))
     # These newer-looking records are not valid EURUSD, point-in-time quotes.
@@ -405,6 +433,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     assert payload["directional_return_r"] > 0
     assert payload["outcome_evidence_id"] == later_market.evidence[0].evidence_id
     assert payload["outcome_quote"]["symbol"] == "EURUSD"
+    assert payload["outcome_quote"]["raw_fields"]["source_adapter"] == "mt5"
     assert payload["observed_price"] == pytest.approx(1.11)
 
 
