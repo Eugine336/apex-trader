@@ -868,7 +868,6 @@ class RiskConfig:
     # thresholds get validated/tuned against real fills; it only ever REDUCES
     # size (never increases), so it's safe to run while tuning. Set False to
     # disable.
-    execution_quality_sizing_enabled: bool = True
 
     # ── P5: per-pair cooldown after a breakeven stop-out (minutes) ────────
     # Breaks the enter→BE→stopped-at-BE→re-enter chop loop that bleeds spread.
