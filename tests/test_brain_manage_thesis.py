@@ -171,7 +171,7 @@ def test_degraded_council_blocks_exit_holds_instead():
 def test_degraded_council_blocks_reverse_and_scale_in():
     rev = _brain(_mgmt_op(action="REVERSE", conf=0.95), min_advisors_for_action=2).manage(
         _pos("LONG"), _state_with_advisors(1, 2, 3))
-    assert rev.decision.decision_type == DecisionType.HOLD
+    assert rev.decision.decision_type == DecisionType.TIGHTEN_RISK
     sin = _brain(_mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.9),
                  allow_scale_in=True, min_advisors_for_action=2).manage(
         _pos("LONG", profit_r=1.0), _state_with_advisors(1, 2, 3))
