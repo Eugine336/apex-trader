@@ -183,5 +183,6 @@ def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkey
         assert output is marker
         assert len(native_calls) == 1
         assert native_calls[0][0][0] == "BTCUSD"
-        assert native_calls[0][1]["analysis"] is analysis
+        assert native_calls[0][0][2] is analysis
+        assert native_calls[0][0][3] is hypotheses
         assert native_calls[0][1]["advisor_status"] == "available"
