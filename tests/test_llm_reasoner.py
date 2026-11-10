@@ -10,7 +10,7 @@ import json
 import pytest
 
 from llm.client import LLMClient, build_client
-from llm.reasoner import LLMOpinion, LLMReasoner, _SYSTEM_PROMPT
+from llm.reasoner import LLMOpinion, LLMReasoner, _MANAGEMENT_SYSTEM_PROMPT
 
 
 # ── Fake transport ───────────────────────────────────────────────────────────
@@ -255,5 +255,5 @@ def test_llm_confidence_is_explicitly_uncalibrated_reasoning_strength():
     assert payload["confidence_semantics"] == (
         "uncalibrated_reasoning_strength_not_probability"
     )
-    assert "Confidence fields are uncalibrated reasoning-strength metadata only" in _SYSTEM_PROMPT
-    assert "your calibrated probability" not in _SYSTEM_PROMPT
+    assert "Confidence fields are uncalibrated reasoning-strength metadata only" in _MANAGEMENT_SYSTEM_PROMPT
+    assert "your calibrated probability" not in _MANAGEMENT_SYSTEM_PROMPT
