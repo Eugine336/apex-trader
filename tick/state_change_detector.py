@@ -160,6 +160,8 @@ class TickStateChangeDetector:
         under a short lock so it never stalls tick routing.  Fully fail-safe.
         """
         try:
+            if getattr(tick, "source_timestamp_verified", False) is not True:
+                return
             symbol = getattr(tick, "symbol", "") or ""
             if not symbol:
                 return
