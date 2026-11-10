@@ -79,7 +79,7 @@ Deliverables:
 - Validate geometry directionally and against current market structure; reject missing or internally inconsistent geometry.
 - Use a producer-issued, direction/family/horizon-scoped calibration artifact for probability only when the Brain resolves and verifies its provenance against the exact symbol, side, opportunity family and horizon; otherwise probability remains unknown.
 - Qualify directional opportunities using producer-verified fixed-horizon expected return and fresh verified execution costs, plus structural geometry, liquidity, duration and portfolio context. Never substitute uncalibrated reasoning strength for win probability or expected return.
-- Do not use a configured confidence floor to authorize, veto, reverse, exit or scale a campaign. Reasoning strength remains descriptive metadata and, where explicitly defined, a conservative sizing input; it is not a probability or trade gate.
+- Do not use reasoning confidence to authorize, veto, reverse, exit or scale a campaign. Reasoning strength is descriptive metadata only: it is not a probability, expected-return input, qualification gate or position-sizing input.
 - Keep flat/no-trade as a valid decision when evidence is insufficient.
 
 Acceptance:
@@ -316,7 +316,7 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 ### Existing architecture audit
 - `cognition/opportunity_geometry.py` already derived entry/stop/target from fresh market-lens structural observations and supported breakout, trend/momentum, range rotation and sweep/reclaim activation. The audit found activation could be borrowed from any still-fresh older structure, momentum was not timeframe-aligned, missing evidence symbols inherited the state symbol, sweep-side labels could qualify without a measured reclaim, and same-time structural conflicts could be resolved by arrival order.
 - `CognitiveBrain` already built a ranked opportunity set and used market-derived geometry for the preferred directional opportunity, but conditional directional alternatives did not each receive their own geometry.
-- `expected_value_r` explicitly treats its first input as win probability, while System 3 marks native confidence as uncalibrated reasoning strength. The prior integration passed effective confidence directly as probability. That semantic mismatch is corrected by requiring separate verified calibration evidence for action.
+- The legacy `cognition.expected_value` path interpreted confidence as win probability and is retired. The execution-side `qualify_net_ev` contract now accepts producer-verified fixed-horizon expected return in R, the account-currency value of 1R for the exact size, and fresh broker-truth round-trip costs; it accepts no confidence or inferred probability.
 
 ### Implemented in PR #797
 - Geometry requires exact instrument identity, declared timeframe, `data_basis=completed_ohlc`, and the original `source_bar_epoch`. Source-bar age is checked at the decision-time cutoff independently of evidence arrival time; late-arriving stale bars and future bars are rejected. Explicitly provisional/incomplete observations are excluded.
@@ -324,9 +324,9 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 - Trend/momentum and range-response activation require matching timeframes and non-future evidence.
 - Sweep/reversal activation requires a counter-side sweep, explicit reclaim confirmation, measured swept level and a completed close back across that level.
 - Every directional opportunity receives its own independently derived entry, stop, target, risk/reward distances and supporting geometry evidence IDs.
-- Effective reasoning confidence remains a conviction/sizing input, not a win probability, in both advisor-assisted and native-only origination. EV used for action requires fresh exact-symbol, direction-specific calibration evidence with explicit source verification, walk-forward/out-of-sample and untouched-holdout controls, leakage/selection/overfit checks, calibration method/ID, at least 30 samples, Brier score and reliability gap no greater than the existing 0.25 calibration tolerance.
-- Without verified calibration, EV is marked diagnostic only, canonical `DecisionPackage.expected_value` remains zero, and directional exposure is blocked in both advisor-assisted and native-only origination. Execution-cost qualification also requires exact symbol identity and a non-fallback attributable source. Historical calibration metadata is excluded from independent market-domain coverage.
-- Sizing is bounded by effective confidence; reasoning quality can reduce exposure but cannot lift it above confidence.
+- Advisor-reported and native reasoning strength remain uncalibrated descriptive metadata only. They are not win probabilities, expected-return estimates, eligibility inputs or sizing factors. Action qualification uses a producer-verified fixed-horizon expected-return artifact with exact-symbol, direction, family and horizon provenance, verified source, walk-forward/holdout controls, leakage/selection/overfit checks, sample sufficiency and bounded development/holdout return gap.
+- Without verified fixed-horizon expected-return provenance, EV is unavailable, canonical `DecisionPackage.expected_value` remains zero, and directional exposure is blocked in both advisor-assisted and native-only origination. Fresh execution-cost qualification also requires exact symbol identity and attributable broker/source lineage. Reasoning-strength calibration diagnostics are observational and excluded from independent market-domain coverage.
+- Provisional exposure is derived from verified net expected return and payoff geometry. Final executable volume is independently constrained by shared portfolio sizing, broker economics, whole-book risk and owner limits; confidence and calibration-reliability metrics do not scale it.
 
 ### Deterministic tests added
 - Older breakout cannot activate a newer non-breakout.
@@ -334,7 +334,7 @@ No live broker orders, runtime database changes, credential changes, `.env` acce
 - Same-time structural conflicts and missing instrument identity fail closed.
 - Reversal sweep requires measured reclaim; sweep without reclaim does not activate.
 - Unfamiliar-only / low-liquidity evidence cannot manufacture geometry.
-- Uncalibrated confidence, opposite-direction calibration, unverified source, cross-symbol calibration and poor reliability gap are rejected.
+- Uncalibrated confidence is rejected as a probability, expected-return, qualification or sizing input. Wrong-symbol/direction/family/horizon artifacts, unverified source lineage, insufficient samples and invalid development/holdout return evidence are rejected.
 - Calibration metadata does not inflate market-evidence coverage.
 
 ### Outstanding acceptance gates
