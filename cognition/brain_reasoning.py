@@ -2101,16 +2101,17 @@ class BrainReasoner:
     ) -> str:
         """Rank a discovered opportunity against the book (Article XXVIII).
 
-        Returns one of ``superior`` (better than the weakest existing position),
-        ``complementary`` (diversifies the book), ``redundant`` (same exposure) or
-        ``inferior`` (an existing position is better). Never raises.
+        Returns ``superior`` when the book is empty, ``complementary`` when
+        the new instrument shares no existing exposure leg, ``redundant`` for
+        the same symbol/side, or ``unranked`` when a shared-leg comparison lacks
+        verified comparable expected-return and risk evidence. Never uses
+        reasoning confidence as an economic ranking and never raises.
         """
         try:
             positions = [p for p in list(existing_positions or []) if p is not None]
             if not positions:
                 return "superior"
             new_dir = new_opportunity.direction_implication
-            new_conf = _clamp01(new_opportunity.confidence)
 
             def _sym(p: Any) -> str:
                 return str(getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else "") or "").upper()
@@ -2118,26 +2119,20 @@ class BrainReasoner:
             def _dir(p: Any) -> str:
                 return str(getattr(p, "direction", None) or (p.get("direction") if isinstance(p, dict) else "") or "").upper()
 
-            def _score(p: Any) -> float:
-                for attr in ("entry_confidence", "confidence"):
-                    v = getattr(p, attr, None) if not isinstance(p, dict) else p.get(attr)
-                    if v is not None:
-                        return _clamp01(v)
-                return 0.5
-
             sym = str(symbol or "").upper()
             same_symbol_same_dir = any(
                 _sym(p) == sym and _dir(p) == new_dir for p in positions)
             if same_symbol_same_dir:
                 return "redundant"
 
-            weakest = min(_score(p) for p in positions)
             shares_leg = any(self._shares_leg(sym, _sym(p)) for p in positions)
-            if new_conf > weakest:
-                return "superior"
             if not shares_leg:
                 return "complementary"
-            return "inferior"
+
+            # Reasoning strength is not a comparable economic return. Without
+            # verified position-level expected-return and risk evidence, the
+            # Brain must not rank a new hypothesis against an existing holding.
+            return "unranked"
         except Exception:  # noqa: BLE001 — comparison must never break reasoning
             return "complementary"
 
