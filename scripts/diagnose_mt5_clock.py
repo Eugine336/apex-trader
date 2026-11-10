@@ -10,9 +10,16 @@ import argparse
 import os
 import time
 from pathlib import Path
+import sys
 from typing import Any, Iterable
 
-from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock, query_ntp_sources
+# Running a file under scripts/ puts that directory, not the repository root,
+# at sys.path[0]. Add the project root so package imports work from a venv.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock, query_ntp_sources  # noqa: E402
 
 
 def measure_tick_clock(
