@@ -218,8 +218,7 @@ consumes it · **DEAD** = no live caller · **SUPPORT** = infra/plumbing (not a 
 | `decision/situation.py` | LIVE | ①/② | Vectors populated; collapses panel→scalar alignment. |
 | `decision/context.py`, `decision/actions.py`, `decision/journal.py` | LIVE | — | `Action.SCALE_IN`/`PARTIAL_CLOSE` enum branches never produced by DecisionEngine. |
 | `decision/governor.py` | LIVE | ④ | RiskGovernor post-DE review. |
-| `planning/trade_planner.py` | LIVE (degraded) | ④/⑤ | Full plan computed then discarded; only SKIP/WAIT honored. |
-| `planning/calibrator.py`, `planning/outcome_logger.py`, `planning/models.py` | LIVE | ⑦ | Planner outcome learning. |
+| `planning/` | RETIRED | Disconnected planner, plan journal and calibrator physically removed; Brain campaign and shared execution path remain authoritative. |
 | `scanner/candle_close_handler.py` | LIVE | ①/② | Sole live analysis path (candle close → modules → WM → consensus → `world_model_update`). |
 | `tick/*` (`tick_router`,`candle_close_detector`,`event_bus`,`tick_store`,`models`) | LIVE | SUPPORT | Event backbone. |
 | `persistence/event_store.py`,`domain_events.py`,`event_sink.py`,`event_replayer.py`,`recovery.py`,`position_store.py`,`shadow_store.py`,`atomic_write.py` | LIVE | SUPPORT | Persistence backbone. |
