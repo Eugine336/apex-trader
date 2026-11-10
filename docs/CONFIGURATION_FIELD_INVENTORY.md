@@ -715,10 +715,9 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `knowledge_max_items`
 - `advisor_enabled`
 
-## `CognitionConfig` (49 fields)
+## `CognitionConfig` (45 fields)
 
 - `enabled`
-- `shadow_mode`
 - `per_module_evidence`
 - `ev_primary_gate`
 - `ev_action_threshold_r`
