@@ -181,8 +181,6 @@ class CognitiveBrain:
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
-        degraded_confidence_multiplier: float = 0.7,
-        degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
@@ -229,10 +227,6 @@ class CognitiveBrain:
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
         self.min_advisors_for_action = max(1, int(min_advisors_for_action))
-        # Retain the old constructor option for configuration compatibility.
-        # Council coverage is enforced by quorum and is never converted into a
-        # confidence adjustment.
-        _ = degraded_confidence_multiplier
         # ``reward_r_default`` remains an ignored constructor compatibility
         # argument for older callers. It must never synthesize payoff geometry
         # or a reward estimate; only verified market-derived opportunity
@@ -1535,7 +1529,6 @@ class CognitiveBrain:
             # This metadata cannot authorize, veto, reverse, or scale management.
             # SCALE_IN is not permitted through management; additional exposure
             # must be a separate Brain opportunity through origination admission.
-            eff_conf = conf
             # A management opinion (any of thesis_state / opportunity_status /
             # management_action present) is decided by the thesis-based tree —
             # LONG and SHORT are perfectly symmetric and nothing here compares a
@@ -1586,13 +1579,13 @@ class CognitiveBrain:
                 "[brain] MANAGE %s held=%s → %s | thesis=%s reasoning_strength=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
                 (thesis_state.lower() or mgmt_action.lower()
-                 or opp_status.lower() or "degraded"), eff_conf,
+                 or opp_status.lower() or "degraded"), conf,
                 ("?" if advisors_responded is None else advisors_responded),
                 ("?" if advisors_available is None else advisors_available),
                 reason_txt[:120],
             )
             output = self._manage_pkg(
-                symbol, want, action, eff_conf, uncertainty, reason_txt, opinion=opinion,
+                symbol, want, action, conf, uncertainty, reason_txt, opinion=opinion,
             )
             self._attach_native_management_context(
                 output, native_verdict, analysis, native_hypotheses,
