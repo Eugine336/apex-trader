@@ -538,3 +538,6 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - **Pipeline:** MT5 and Deriv adapters preserve raw timestamp provenance through `Tick`, market snapshot evidence, candidate reference quotes and fixed-horizon outcome quotes. `CalibrationProducer` validates both decision-time and outcome quotes against the adapter-specific contract before issuing artifacts.
 - **TESTS ADDED:** adapter provenance validation, missing/ambiguous source-time rejection, and a calibration regression proving that deleting the raw provenance while leaving the old boolean flag true produces no artifact.
 - **LIMITATION:** this is an application-side adapter attestation, not a cryptographic signature from MetaQuotes or Deriv. It authenticates the expected in-process adapter data path and detects missing/contradictory provenance; it cannot independently prove that a broker's upstream quote is truthful. Broker-export authenticity and owner-supplied historical data acceptance remain separate WP-B4 evidence gates.
+
+
+- **SAFE TEMPLATE DEFAULT:** `.env.example` now sets `TRADING_ENABLED=false`. The operator must explicitly set it to `true` to allow new exposure; position reconciliation and risk-reducing management remain available.
