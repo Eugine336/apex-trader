@@ -322,3 +322,11 @@ Severity rubric:
 3. `CognitionLoop._manage_one()` -> `CognitiveBrain.manage()` -> thesis-based management; missing thesis/action/opportunity fields produce HOLD, and confidence/direction fallback is absent.
 4. `PositionWorker.evaluate()` can close positions from scan `direction`/`score` when live cognition management is not enabled.
 5. Provider default configuration permits one external provider with no required quota meter, no required local baseline, and no required multi-advisor diversity.
+
+
+### V-012: Disconnected cross-instrument ranker, sizer and displacer exposed as active controls
+- **Severity**: HIGH
+- **Status**: RESOLVED in PR #902.
+- **Finding**: SystemContext instantiated a cross-instrument ranker, a confidence-weighted opportunity quality sizer and a mechanical position displacer. Repository call-site search found no runtime decision consumers; the dashboard only surfaced their status. Their configuration flags defaulted on, falsely implying active portfolio ranking, confidence-based sizing and displacement.
+- **Resolution**: Delete the three helper modules and their isolated tests; remove SystemContext construction, dashboard/frontend status, CrossInstrumentConfig fields, env allowlist entries, .env.example keys and operator-reference rows. Keep only the queue for intents already authorized by the Brain and the observational proactive watchlist. The queue cannot authorize or size a trade.
+- **Regression evidence**: `test_disconnected_cross_instrument_heuristics_are_retired` asserts that modules, config fields and SystemContext wiring remain absent.
