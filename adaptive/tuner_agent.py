@@ -58,7 +58,6 @@ EXPECTED_TUNABLES: tuple[str, ...] = (
     "signal_ledger",        # 10 — universal signal grading
     "emitter_feedback",     # 11 — per-emitter accuracy (read-side)
     "post_close_tracker",   # 12 — MFE/MAE post-close checks
-    "planner_calibrator",   # 13 — PlannerConfig calibration
     "risk_engine",          # 14 — sizing chain (consumer)
     "position_sizer",       # 15 — risk% -> lots (consumer)
     "orchestrator",         # 16 — bounded size multiplier (consumer)
