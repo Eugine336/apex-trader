@@ -345,5 +345,5 @@ def test_unverified_tick_does_not_update_state_or_wake_brain():
 
     detector.on_tick(unverified)
 
-    assert detector.get_snapshot("EURUSD") is None
+    assert "EURUSD" not in detector._states
     assert wakes == []
