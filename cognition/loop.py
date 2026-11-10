@@ -28,6 +28,7 @@ module stays natively importable/testable); fail-safe throughout.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import threading
@@ -2894,6 +2895,24 @@ class CognitionLoop:
             action = _translate_management(output, position)
             if action is None:
                 return False  # HOLD / observe — nothing to do
+            if self.management_mode == "live" and self._management_sink is not None and not action.action_id:
+                decision_id = str(getattr(action, "decision_id", "") or "").strip()
+                ticket = str(getattr(position, "ticket", "") or "").strip()
+                platform = str(getattr(position, "platform", "") or "").strip().lower()
+                if not decision_id or not ticket or not platform:
+                    self._manage_suppressed += 1
+                    logger.warning(
+                        "[cognition-loop] MANAGE-SUPPRESSED %s %s: "
+                        "cannot form a stable action identity without decision, ticket and platform provenance",
+                        action.symbol, action.kind,
+                    )
+                    return False
+                material = "|".join((
+                    "apex-management-action-v1", decision_id, platform, ticket,
+                    str(action.kind or ""), str(action.milestone_id or ""),
+                ))
+                digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+                action.action_id = f"brain-management-{digest}"
             self._manage_intended += 1
             if self.management_mode == "live" and self._management_sink is not None:
                 milestone_pending = False
