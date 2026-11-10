@@ -95,3 +95,12 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
    package export and source module. A closed campaign returns to the normal
    Brain observation cycle; no direction-locked re-entry shortcut or dormant
    cooldown state remains.
+
+
+9. **Retire disconnected cross-instrument heuristics.** Call-site audit found no
+   runtime consumers for the CrossInstrumentRanker, OpportunityQualitySizer or
+   PositionDisplacer beyond SystemContext construction and dashboard status. The
+   quality sizer also used reasoning confidence as a size multiplier. Remove the
+   modules, tests, SystemContext wiring, dashboard/UI status, configuration fields,
+   environment switches and operator-reference rows. Retain only the queue for
+   already Brain-authorized intents and the observational proactive watchlist.
