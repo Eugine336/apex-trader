@@ -682,7 +682,9 @@ def test_history_compaction_retains_previously_tracked_oversized_blob(tmp_path, 
     subprocess.run(["git", "-C", str(data), "commit", "-qm", "baseline"], check=True)
     event_db.write_bytes(changed)
     state.write_text('{"version":2}', encoding="utf-8")
-    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(data), "add", "state.json"], check=True
+    )
     subprocess.run(["git", "-C", str(data), "commit", "-qm", "update"], check=True)
 
     real_run_git = backup_data._run_git
