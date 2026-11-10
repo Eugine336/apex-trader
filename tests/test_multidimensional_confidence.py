@@ -1,10 +1,8 @@
-"""Multidimensional confidence (Part XXV) — decompose the single scalar into
-thesis / opportunity / timing / execution and let the Brain ACT on the profile.
+"""Advisor-reported confidence fields are descriptive evidence only.
 
-A great thesis with poor execution or bad timing is not an act-now trade. The
-Brain now blends to an EFFECTIVE conviction = the WEAKEST dimension, which drives
-EV, the act gate AND sizing. A legacy reply carrying only the overall scalar is
-unchanged (every dimension resolves to it) — zero regression.
+The Brain does not synthesize, calibrate, aggregate, or act on confidence.
+Expected return, execution costs, opportunity activation and risk admission own
+the origination decision.
 """
 
 from types import SimpleNamespace
