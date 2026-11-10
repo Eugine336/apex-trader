@@ -111,7 +111,6 @@ class PatternOutcomeTracker:
         max_records: int = 2000,
     ) -> None:
         self.min_samples = max(1, int(min_samples))
-        self.gain = max(0.0, float(gain))
         self.max_records = max(1, int(max_records))
         self._records: "list[_Record]" = []
         self._lock = threading.Lock()
