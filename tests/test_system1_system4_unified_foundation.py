@@ -782,6 +782,20 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         Store(unattested_events), refresh_interval_seconds=30.0,
     ).refresh("EURUSD", now=now) == []
 
+    wrong_source_module_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["point_in_time_evidence"][1]["source_module"] = "market.price_action"
+        elif row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            payload["outcome_quote"]["source_module"] = "market.price_action"
+        copied["payload_json"] = json.dumps(payload)
+        wrong_source_module_events.append(copied)
+    assert CalibrationProducer(
+        Store(wrong_source_module_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
     duplicate_snapshot_events = [dict(row) for row in events]
     duplicate_snapshot_events.append({**events[0], "seq": 10000})
     assert CalibrationProducer(
