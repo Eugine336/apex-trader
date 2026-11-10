@@ -1776,7 +1776,7 @@ class CognitiveBrain:
             if action != pre_native_action:
                 reason_txt = why
             else:
-                reason_txt = why if action != pre_quorum_action else (rationale or why)
+                reason_txt = why
             logger.info(
                 "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
