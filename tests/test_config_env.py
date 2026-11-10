@@ -62,3 +62,32 @@ def test_invalid_root_application_log_level_fails_startup(monkeypatch):
     monkeypatch.setenv("APEX_LOG_LEVEL", "VERBOSE")
     with pytest.raises(ValueError, match="APEX_LOG_LEVEL"):
         AppConfig()
+
+
+def test_owner_limits_bootstrap_uses_canonical_validation(monkeypatch):
+    monkeypatch.setenv(
+        "APEX_OWNER_LIMITS_JSON",
+        '{"risk_per_trade_pct":0.5,"max_open_positions":3,"daily_loss_limit_pct":2.0}',
+    )
+    limits = AppConfig().owner_limits
+    assert limits.risk_per_trade_pct == 0.5
+    assert limits.max_open_positions == 3
+    assert limits.daily_loss_limit_pct == 2.0
+
+
+def test_owner_limits_environment_cannot_override_internal_hard_stops(monkeypatch):
+    monkeypatch.setenv(
+        "APEX_OWNER_LIMITS_JSON",
+        '{"hard_stop_drawdown_pct":99.0}',
+    )
+    with pytest.raises(ValueError, match="internal safety/analysis"):
+        AppConfig()
+
+
+def test_owner_limits_environment_cannot_exceed_immutable_risk_ceiling(monkeypatch):
+    monkeypatch.setenv(
+        "APEX_OWNER_LIMITS_JSON",
+        '{"max_risk_pct_per_trade":9.0}',
+    )
+    with pytest.raises(ValueError, match="5% hard per-trade ceiling"):
+        AppConfig()
