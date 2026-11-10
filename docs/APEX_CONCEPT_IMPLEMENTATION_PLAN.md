@@ -328,3 +328,15 @@ Owner-host read-only commands:
     python scripts/benchmark_concept_pipeline.py --count 500 --timeframes M5 M15 H1 H4
 
 Keep raw reports on the owner host; share only sanitized acceptance summaries. Neither command sends or modifies broker orders. The .env file remains off limits. Do not promote DATA-GATED capabilities based on reader presence or fixture tests.
+
+
+## 10. PR #868 continuation work (open, not merged)
+
+This continuation is based on the current mainline and does not reopen accepted WP-B1/WP-B2 work.
+
+- **WP-B4 quote lineage:** the live-quote path now preserves MT5 broker-clock source data and Deriv provider epoch/receipt metadata through Tick, market evidence, candidate snapshots and horizon outcomes. CalibrationProducer accepts only the canonical market.live_quote evidence module and requires adapter-specific provenance for both reference and outcome quotes. This is an application-side adapter attestation, not a cryptographic broker signature. Independent broker-history source authenticity and complete owner-supplied outcome acceptance remain open.
+- **WP-B5 completed-bar measurement:** the read-only benchmark fetches one extra provider row because the analysis path excludes the final forming bar. It reports raw and completed counts separately and gates cold/warm passes on the requested completed-bar depth.
+- **WP-B5 incremental profiles:** VolumeProfileConcept caches weekly profiles per symbol/timeframe/week using an OHLCV content fingerprint. Appending a candle recomputes only the active week; a historical correction invalidates only the changed week. Cache hits/misses are visible in the concept facts. This extends the existing incremental swing/pool work.
+- **Operator environment:** root .env.example now has 293 unique active keys, including a typed allowlist of 101 operational settings, canonical OwnerLimits bootstrap, trading-universe controls and the final new-exposure switch. docs/OPERATOR_ENVIRONMENT_REFERENCE.md lists every typed override, type and default. Analytical thresholds and constitutional safety invariants remain non-overridable.
+- **Validation:** the previous full run found one invalid test assumption (crypto is a registered category); the assumption was removed. A fresh full Python 3.11/3.12 and Gold Desk matrix is running on the corrected head. Do not merge until it passes.
+- **Owner acceptance still outstanding:** read-only full-universe benchmark on the broker-connected host; independent historical source authentication; live account lifecycle/restart/reconciliation trace. No live orders are sent during this continuation.
