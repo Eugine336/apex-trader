@@ -168,7 +168,7 @@ def apply_environment_config(config: Any) -> list[str]:
 def _validate_operational_config(config: Any) -> None:
     performance = config.performance
     for name in (
-        "candle_cache_ttl", "candle_cache_default_ttl", "m1_cache_ttl",
+        "candle_cache_default_ttl", "m1_cache_ttl",
         "scan_interval_active", "scan_interval_with_positions",
     ):
         value = getattr(performance, name)
