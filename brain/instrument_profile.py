@@ -322,8 +322,6 @@ _GOLD_PROFILE = InstrumentProfile(
     pre_staging_enabled=True,
     staging_proximity_pips=300.0,       # = $3.00 — Gold-scaled staging proximity
     dxy_filter_enabled=True,            # Gold's inverse-USD correlation is core
-    # Tick-rule delta remains a contextual measurement; the retired M1/M5
-    # sequencing tracker was never consumed by the live decision path.
     vwap_zone_enabled=True,
 )
 
