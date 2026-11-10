@@ -3758,7 +3758,6 @@ class CognitionConfig:
     single_path: bool = True
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
-    min_confidence_to_act: float = 0.55
     # Identity requirement: net expected value is the default actionability gate,
     # not an optional upgrade to a raw confidence floor. A market thesis cannot
     # originate exposure without positive EV after estimated costs.
@@ -3803,12 +3802,10 @@ class CognitionConfig:
     # advisory council keep loop_interval / the global LLM min-interval, so no
     # extra cost across scanning. env COGNITION_MANAGE_MIN_INTERVAL_SECONDS.
     manage_min_interval_seconds: float = 8.0
-    # Phase F — Brain-driven management thresholds.
-    # Retained for compatibility, but live management-sink scaling is suppressed
-    # until it carries a first-class activated opportunity and whole-book review.
+    # Legacy compatibility flag. The Brain no longer allows management-time
+    # confidence-driven scale-ins; added exposure must originate as a separate
+    # qualified opportunity through the normal geometry/EV/cost/risk path.
     allow_scale_in: bool = False
-    manage_reverse_confidence: float = 0.7
-    manage_exit_floor: float = 0.3
     # Part XVIII Art 11 — portfolio capital reallocation. Concentrated,
     # correlated campaigns are candidates for Brain reassessment. The registry
     # never supplies an execution kind or reduction fraction; any live action
@@ -4002,14 +3999,6 @@ class CognitionConfig:
         if float(self.max_decision_age_seconds) < 0:
             raise ValueError(
                 f"CognitionConfig.max_decision_age_seconds must be >= 0, got {self.max_decision_age_seconds!r}"
-            )
-        for name in ("manage_reverse_confidence", "manage_exit_floor"):
-            v = getattr(self, name)
-            if not (0.0 <= float(v) <= 1.0):
-                raise ValueError(f"CognitionConfig.{name} must be in [0, 1], got {v!r}")
-        if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
-            raise ValueError(
-                f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
             )
         if int(self.min_advisors_for_action) < 0:
             raise ValueError(
