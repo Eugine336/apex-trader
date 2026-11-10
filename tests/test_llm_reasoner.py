@@ -10,7 +10,7 @@ import json
 import pytest
 
 from llm.client import LLMClient, build_client
-from llm.reasoner import LLMOpinion, LLMReasoner
+from llm.reasoner import LLMOpinion, LLMReasoner, _MANAGEMENT_SYSTEM_PROMPT
 
 
 # ── Fake transport ───────────────────────────────────────────────────────────
@@ -240,3 +240,20 @@ def test_reasoner_status_is_secret_safe():
     assert status["enabled"] is True
     assert "recent_opinions" in status
     assert "topsecret" not in json.dumps(status)
+
+
+def test_llm_confidence_is_explicitly_uncalibrated_reasoning_strength():
+    opinion = LLMOpinion(
+        symbol="EURUSD",
+        direction="LONG",
+        confidence=0.7,
+        rationale="Evidence supports the thesis but leaves execution uncertainty.",
+    )
+
+    payload = opinion.to_dict()
+    assert payload["confidence"] == 0.7
+    assert payload["confidence_semantics"] == (
+        "uncalibrated_reasoning_strength_not_probability"
+    )
+    assert "Confidence fields are uncalibrated reasoning-strength metadata only" in _MANAGEMENT_SYSTEM_PROMPT
+    assert "your calibrated probability" not in _MANAGEMENT_SYSTEM_PROMPT
