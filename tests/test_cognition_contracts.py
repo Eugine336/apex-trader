@@ -139,3 +139,17 @@ def test_campaign_specification_to_dict():
     out = c.to_dict()
     assert out["direction"] == "SHORT" and out["decision_id"] == "d1"
     assert out["invalidation_conditions"] == ["reclaim VAH"]
+
+
+def test_decision_confidence_can_be_unknown_without_changing_source_evidence_contract():
+    decision = DecisionPackage(symbol="XAUUSD", confidence=None)
+    payload = decision.to_dict()
+
+    assert decision.confidence is None
+    assert payload["confidence"] is None
+    assert payload["confidence_semantics"] == "not_assessed"
+
+    evidence = Evidence(source_module="test", confidence=0.0)
+    evidence_payload = evidence.to_dict()
+    assert evidence_payload["confidence"] == 0.0
+    assert "confidence_semantics" not in evidence_payload
