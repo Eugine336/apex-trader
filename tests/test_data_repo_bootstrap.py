@@ -99,6 +99,10 @@ def test_fresh_clone_automatically_clones_and_links_sibling_data_repo(tmp_path, 
             return "git-lfs-command"
         if args[:2] == ["lfs", "version"]:
             return "git-lfs/3.8.1"
+        if args[:1] == ["check-attr"]:
+            return "apex_events.db: filter: lfs"
+        if args[:2] == ["lfs", "env"]:
+            return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
@@ -141,6 +145,10 @@ def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monke
             return "git-lfs-command"
         if args[:2] == ["lfs", "version"]:
             return "git-lfs/3.8.1"
+        if args[:1] == ["check-attr"]:
+            return "apex_events.db: filter: lfs"
+        if args[:2] == ["lfs", "env"]:
+            return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
         return ""
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
 
@@ -194,6 +202,10 @@ def test_adoption_creates_verified_full_backup_and_configures_git_lfs(tmp_path, 
             return "git-lfs-command"
         if args[:2] == ["lfs", "version"]:
             return "git-lfs/3.8.1"
+        if args[:1] == ["check-attr"]:
+            return "apex_events.db: filter: lfs"
+        if args[:2] == ["lfs", "env"]:
+            return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
         return ""
 
     monkeypatch.setattr(bootstrap, "_run_git", fake_git)
