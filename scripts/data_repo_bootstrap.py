@@ -241,32 +241,47 @@ def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
             f"could not create verified pre-adoption backup; original untouched: {exc}"
         ) from exc
 
-    _run_git(["init"], cwd=target)
-    _run_git(["remote", "add", "origin", data_repo_url], cwd=target)
-    _run_git(["fetch", "--no-tags", "origin", "main"], cwd=target, timeout=900)
-    _run_git(["lfs", "install", "--local"], cwd=target)
-    _run_git(["read-tree", "origin/main"], cwd=target)
-    _run_git(["update-ref", "refs/heads/main", "refs/remotes/origin/main"], cwd=target)
-    _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target)
-    _run_git(["config", "branch.main.remote", "origin"], cwd=target)
-    _run_git(["config", "branch.main.merge", "refs/heads/main"], cwd=target)
-    _run_git(
-        ["update-ref", f"refs/apex-bootstrap/original-origin-main/{stamp}",
-         "refs/remotes/origin/main"],
-        cwd=target,
-    )
-    # No --force: existing files are never overwritten. Missing LFS-tracked
-    # paths are materialized through the installed LFS smudge filter.
-    _run_git(["checkout-index", "--all"], cwd=target, timeout=900)
-    ok, reason = verify_dedicated_data_repo(
-        target, expected_repo_url=data_repo_url, require_remote=True
-    )
-    if not ok:
-        raise DataRepoBootstrapError(
-            f"adopted repository identity verification failed: {reason}; "
-            f"original data backup retained at {backup}"
+    try:
+        _run_git(["init"], cwd=target)
+        _run_git(["remote", "add", "origin", data_repo_url], cwd=target)
+        _run_git(["fetch", "--no-tags", "origin", "main"], cwd=target, timeout=900)
+        _run_git(["lfs", "install", "--local"], cwd=target)
+        _run_git(["read-tree", "origin/main"], cwd=target)
+        _run_git(["update-ref", "refs/heads/main", "refs/remotes/origin/main"], cwd=target)
+        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target)
+        _run_git(["config", "branch.main.remote", "origin"], cwd=target)
+        _run_git(["config", "branch.main.merge", "refs/heads/main"], cwd=target)
+        _run_git(
+            ["update-ref", f"refs/apex-bootstrap/original-origin-main/{stamp}",
+             "refs/remotes/origin/main"],
+            cwd=target,
         )
-    _verify_git_lfs_and_tracking(target)
+        # No --force: existing files are never overwritten. Missing LFS-tracked
+        # paths are materialized through the installed LFS smudge filter.
+        _run_git(["checkout-index", "--all"], cwd=target, timeout=900)
+        ok, reason = verify_dedicated_data_repo(
+            target, expected_repo_url=data_repo_url, require_remote=True
+        )
+        if not ok:
+            raise DataRepoBootstrapError(
+                f"adopted repository identity verification failed: {reason}"
+            )
+        _verify_git_lfs_and_tracking(target)
+    except Exception as exc:
+        # Keep the original data tree in place. Move only newly-created Git
+        # metadata aside so the next startup can retry adoption from a plain
+        # directory; the verified full backup remains independently available.
+        git_metadata = target / ".git"
+        if git_metadata.exists():
+            failed_metadata = target.parent / (
+                f"{target.name}-failed-adoption-git-{stamp}"
+            )
+            if not failed_metadata.exists():
+                git_metadata.rename(failed_metadata)
+        raise DataRepoBootstrapError(
+            f"data repository adoption failed; original data remains at {target}, "
+            f"verified backup at {backup}: {exc}"
+        ) from exc
     return backup
 
 
