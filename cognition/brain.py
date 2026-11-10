@@ -754,9 +754,9 @@ class CognitiveBrain:
             )
 
         supporting, contradicting = self._split_evidence(market_state, direction)
-        # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
-        # the win-probability (confidence) and the payoff geometry, replacing the
-        # former confidence-as-EV proxy. Part V/VI — carry the
+        # Part IX Art 1/7 — expected value comes from producer-validated,
+        # fixed-horizon market outcomes and verified execution costs. Uncalibrated
+        # reasoning strength is not a win probability and cannot create EV. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         # Build the first-class opportunity set before qualifying payoff
@@ -863,12 +863,8 @@ class CognitiveBrain:
             )
             if direction in (LONG, SHORT) else (False, 0.0, "not directional")
         )
-        # Effective confidence is retained for diagnostics only. It is not a
-        # substitute for producer-validated, fixed-horizon expected return.
-        diagnostic_expected_value = expected_value_r(
-            eff_conf, reward_r, risk_r, cost_r=cost_r,
-        )
         # DecisionPackage.expected_value stores producer-validated net expected R.
+        # No diagnostic EV is manufactured from uncalibrated reasoning strength.
         # Never place an uncalibrated diagnostic estimate in that field.
         # The producer's fixed-horizon outcome is an empirical directional
         # return in R. It is not a target-hit probability, so do not multiply it
@@ -910,8 +906,8 @@ class CognitiveBrain:
                 f"{expected_value:.4f}R net (fixed-horizon expected return {expected_return_r:.4f}R "
                 f"less verified cost {cost_r:.4f}R; {return_source})"
                 if return_verified else (
-                    f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
-                    "no producer-verified fixed-horizon expected return; DecisionPackage EV is zero"
+                    "UNVERIFIED: no producer-verified fixed-horizon expected return; "
+                    "no diagnostic EV is computed from uncalibrated reasoning strength"
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
@@ -3028,18 +3024,16 @@ class CognitiveBrain:
             if not cost_verified:
                 return None
 
-            # Acknowledge uncertainty continuously rather than converting it into
-            # a universal binary cutoff. Uncertainty attenuates the probability
-            # estimate used for expectancy; it does not alone prohibit a market
-            # hypothesis from being evaluated as an opportunity.
-            # Article X — pattern history may inform calibration when available,
-            # but no specific pattern name is required for native reasoning.
-            raw_lead_conf = _clamp01(lead.confidence)
-            uncertainty_adjusted_conf = _clamp01(
-                raw_lead_conf * (1.0 - 0.5 * uncertainty)
+            # Keep the native hypothesis's uncalibrated reasoning strength
+            # separate from probability and expected return. Uncertainty and
+            # measured pattern history may reduce this strength for exposure
+            # sizing, but neither creates a win-probability estimate or an EV.
+            raw_reasoning_strength = _clamp01(lead.confidence)
+            uncertainty_adjusted_strength = _clamp01(
+                raw_reasoning_strength * (1.0 - 0.5 * uncertainty)
             )
-            lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
-                uncertainty_adjusted_conf, lead)
+            lead_strength, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
+                uncertainty_adjusted_strength, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
             expected_value = expected_return_r - cost_r
             # EV must still be positive to justify capital when acting alone.
@@ -3109,7 +3103,7 @@ class CognitiveBrain:
                     "reward_distance": geometry.reward_distance,
                     "reward_r": geometry.reward_r,
                     "geometry_evidence_ids": list(geometry.evidence_ids),
-                    "quality": lead_conf,
+                    "quality": lead_strength,
                     "asymmetry": reward_r / max(0.01, reward_r + risk_r),
                     "evidence_strength": evidence_strength,
                     "competing_opportunities": competing_statements[:6],
@@ -3136,7 +3130,7 @@ class CognitiveBrain:
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
-                    f"evaluated: native hypothesis effective confidence {lead_conf:.2f}, "
+                    f"evaluated: native hypothesis effective confidence {lead_strength:.2f}, "
                     f"uncertainty {uncertainty:.2f}, and cost-adjusted EV {expected_value:.4f}R; "
                     "final admission still requires current activation, broker and portfolio checks"),
                 "brain_independent_origination": origination_note,
@@ -3164,7 +3158,7 @@ class CognitiveBrain:
             if lead_pattern_names:
                 questions["supporting_patterns"] = list(lead_pattern_names)
             base_exposure = min(
-                lead_conf,
+                lead_strength,
                 min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
             )
             desired_exposure = round(base_exposure, 4)
@@ -3186,7 +3180,7 @@ class CognitiveBrain:
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf, uncertainty=uncertainty,
+                confidence=lead_strength, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
@@ -3202,7 +3196,7 @@ class CognitiveBrain:
                 desired_exposure=desired_exposure, expected_value=expected_value,
                 initial_execution_intent={
                     "kind": "market",
-                    "confidence": round(lead_conf, 4),
+                    "confidence": round(lead_strength, 4),
                     "independent_origination": True,
                     "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                     "entry_price": geometry.entry_price,
@@ -3212,7 +3206,7 @@ class CognitiveBrain:
                     "geometry_evidence_ids": list(geometry.evidence_ids),
                 },
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf,
+                confidence=lead_strength,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
                 opportunity_id=native_opportunity.opportunity_id,
@@ -3223,7 +3217,7 @@ class CognitiveBrain:
                 self._independent_originations += 1
             logger.info(
                 "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ conf %.2f, EV %.4fR — no advisor",
-                symbol, direction, lead.statement[:60], lead_conf, expected_value,
+                symbol, direction, lead.statement[:60], lead_strength, expected_value,
             )
             return self._record(BrainOutput(
                 decision=decision, campaign=campaign, direction=direction))
