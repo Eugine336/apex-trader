@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cognition.concepts import volume_profile
+from cognition.concepts import clear_concept_reading_cache, volume_profile
 
 
 def _bars():
@@ -103,4 +103,23 @@ def test_historical_correction_invalidates_only_its_week(monkeypatch):
     assert len(calls) == 1
     assert reading.facts["weekly_profile_cache_misses"] == 1
     assert reading.facts["weekly_profile_cache_hits"] == 2
+    volume_profile.clear_volume_profile_cache()
+
+
+def test_shared_concept_cache_clear_also_clears_weekly_profile_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        volume_profile,
+        "profile_from_bars",
+        lambda bars: calls.append(tuple(row["time"] for row in bars)) or _profile(bars),
+    )
+    volume_profile.clear_volume_profile_cache()
+    reader = volume_profile.VolumeProfileConcept()
+    bars = _bars()
+    reader.read("EURUSD", {"H1": bars})
+    assert len(calls) == 2
+
+    clear_concept_reading_cache()
+    reader.read("EURUSD", {"H1": bars})
+    assert len(calls) == 4
     volume_profile.clear_volume_profile_cache()
