@@ -56,7 +56,6 @@ class SizingFactors:
     """
 
     base_risk_pct: float = 0.0
-    de_size_mult: float = 1.0        # Decision Engine conviction scaling
     orch_mult: float = 1.0           # Orchestrator evidence fold
     vol_mult: float = 1.0            # System-wide volatility monitor
     inst_vol_mult: float = 1.0       # Per-instrument ATR regime
@@ -64,12 +63,10 @@ class SizingFactors:
     exec_mult: float = 1.0           # Execution-quality monitor
     cap_mult: float = 1.0            # Capital allocator (strategy allocation)
     adapt_mult: float = 1.0          # Adaptive optimizer learned edge
-    calib_mult: float = 1.0          # Verified calibration of the Brain's confidence
 
     def as_ordered(self) -> Sequence[tuple[str, float]]:
         """Return the factors in a stable, log-friendly order."""
         return (
-            ("DE", self.de_size_mult),
             ("ORCH", self.orch_mult),
             ("VOL", self.vol_mult),
             ("IVOL", self.inst_vol_mult),
@@ -77,7 +74,6 @@ class SizingFactors:
             ("EXEC", self.exec_mult),
             ("CAP", self.cap_mult),
             ("ADAPT", self.adapt_mult),
-            ("CALIB", self.calib_mult),
         )
 
     def product(self) -> float:
