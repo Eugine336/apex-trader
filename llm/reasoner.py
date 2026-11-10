@@ -254,14 +254,17 @@ _MANAGEMENT_SYSTEM_PROMPT = (
     "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
     "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
     "\"rationale\": \"one or two sentences tying it together\"}\n"
-    "'confidence' is your calibrated probability that the chosen action is the "
-    "correct thing to do with this campaign right now. Decompose it into "
-    "thesis_confidence (is the original read still correct?), "
-    "opportunity_confidence (does a real exploitable edge still exist?), "
-    "timing_confidence (is now the moment to take this action?) and "
-    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
-    "If unsure, default to HOLD with thesis_state THESIS_INTACT — uncertainty "
-    "resolves toward holding, never toward liquidation."
+    "Confidence fields are uncalibrated reasoning-strength metadata only, not "
+    "probabilities, win rates, odds, or estimates of the chance an action succeeds. "
+    "Never describe them as calibrated. Use them only to summarise relative "
+    "reasoning strength from the supplied evidence; if not assessable, return null "
+    "rather than zero. Decompose the assessment into thesis_confidence (is the "
+    "original read still supported?), opportunity_confidence (does a real "
+    "exploitable edge still exist?), timing_confidence (is now the moment to take "
+    "this action?) and execution_confidence (can it be realised after "
+    "spread/slippage/liquidity?). These fields must never authorize, veto, or size "
+    "a trade. The Brain alone evaluates evidence, expected value, geometry and "
+    "risk. Preserve uncertainty and explain what evidence is missing."
 )
 
 
@@ -697,6 +700,7 @@ class LLMOpinion:
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
+            "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
             "thesis_confidence": thesis_c,
             "opportunity_confidence": opp_c,
             "timing_confidence": timing_c,
@@ -757,7 +761,9 @@ class LLMOpinion:
             parts.append(self.rationale[:300])
         observation = " | ".join(parts)[:900]
 
-        measurements: dict = {}
+        measurements: dict = {
+            "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
+        }
         for k in ("thesis_confidence", "opportunity_confidence",
                   "timing_confidence", "execution_confidence"):
             v = getattr(self, k, None)
