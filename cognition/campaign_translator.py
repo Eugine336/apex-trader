@@ -52,7 +52,12 @@ class OriginationIntent:
     opportunity_id: str = ""
     identity_version: str = IDENTITY_VERSION
     identity: str = IDENTITY_STATEMENT
-    confidence: float = 0.0
+    confidence: float = 0.0  # descriptive only; never an EV probability
+    expected_return_r: Optional[float] = None
+    expected_cost_r: Optional[float] = None
+    expected_value_r: Optional[float] = None
+    expected_return_verified: bool = False
+    expected_return_source: str = ""
     meta: dict = field(default_factory=dict)
     reference_entry_price: Optional[float] = None
     payoff_geometry: dict = field(default_factory=dict)
@@ -77,6 +82,11 @@ class OriginationIntent:
             "decision_id": self.decision_id,
             "opportunity_id": self.opportunity_id,
             "confidence": round(self.confidence, 4),
+            "expected_return_r": self.expected_return_r,
+            "expected_cost_r": self.expected_cost_r,
+            "expected_value_r": self.expected_value_r,
+            "expected_return_verified": self.expected_return_verified,
+            "expected_return_source": self.expected_return_source,
             "reference_entry_price": self.reference_entry_price,
             "payoff_geometry": dict(self.payoff_geometry),
             "order_type": self.order_type,
@@ -189,6 +199,21 @@ def translate(
                not in {"ACTIVE", "CONFIRMED", "STRENGTHENING"}
         ):
             return None
+        expected_return_verified = getattr(spec, "expected_return_verified", False) is True
+        expected_return_source = str(getattr(spec, "expected_return_source", "") or "").strip()
+        try:
+            expected_return_r = float(getattr(spec, "expected_return_r", None))
+            expected_cost_r = float(getattr(spec, "expected_cost_r", None))
+            expected_value_r = float(getattr(spec, "expected_value", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not expected_return_verified or not expected_return_source
+            or not all(math.isfinite(value) for value in (expected_return_r, expected_cost_r, expected_value_r))
+            or expected_return_r <= 0.0 or expected_cost_r < 0.0 or expected_value_r <= 0.0
+            or not math.isclose(expected_return_r - expected_cost_r, expected_value_r, rel_tol=1e-5, abs_tol=1e-6)
+        ):
+            return None
         exposure = _clampf(getattr(spec, "desired_exposure", 0.0), 0.0,
                            _clampf(max_exposure, 0.0, 1.0, 1.0), 0.0)
         stake = None
@@ -296,6 +321,11 @@ def translate(
             identity_version=spec_identity_version,
             identity=spec_identity,
             confidence=_clampf(getattr(spec, "confidence", 0.0), 0.0, 1.0, 0.0),
+            expected_return_r=expected_return_r,
+            expected_cost_r=expected_cost_r,
+            expected_value_r=expected_value_r,
+            expected_return_verified=expected_return_verified,
+            expected_return_source=expected_return_source,
             meta={
                 "objectives": list(getattr(spec, "objectives", []) or []),
                 "decision_feature_snapshot": dict(
@@ -329,8 +359,8 @@ def compute_lot_size(
 ) -> float:
     """Deterministic, broker-valid lot size for a Brain-originated entry.
 
-    The Brain decides *how much conviction* to put on a trade; this converts
-    that into the actual lot a human would type — sized by risk and snapped to
+    The Brain supplies a verified expected-return-derived exposure request;
+    this converts the approved risk budget into the actual lot, snapped to
     the broker's volume ladder so the order is always valid:
 
     * ``lots = risk_usd / loss_per_lot`` where ``loss_per_lot`` = the money lost
