@@ -32,6 +32,7 @@ from config import (
     Platform,
     get_instrument,
 )
+from config_env import trading_enabled_from_env
 from brain.symbol_mapper import resolve_to_internal
 from platforms.base_connector import (
     AccountInfo,
@@ -618,6 +619,16 @@ class PlatformManager:
         decision_feature_snapshot: Optional[dict] = None,
     ) -> OrderResult:
         """Submit a Brain-authorized pending entry through the MT5 gateway only."""
+        if not trading_enabled_from_env(default=True):
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=float(entry_price or 0.0), slippage_pips=0.0,
+                lots=float(lots or 0.0), symbol=symbol,
+                direction=str(direction or "").upper(), sl=float(sl or 0.0),
+                tp=float(tp or 0.0), platform="mt5",
+                error="trading_disabled_by_TRADING_ENABLED",
+                order_status="REJECTED", order_type=str(order_type or "").upper(),
+            )
         try:
             from persistence.event_store import get_existing_event_store
             lifecycle_store = get_existing_event_store()
@@ -1029,6 +1040,15 @@ class PlatformManager:
         """
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
+        if not trading_enabled_from_env(default=True):
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=0.0, slippage_pips=0.0, lots=float(lots or 0.0),
+                symbol=symbol, direction=str(direction or "").upper(),
+                sl=float(sl or 0.0), tp=float(tp or 0.0), platform=platform,
+                error="trading_disabled_by_TRADING_ENABLED",
+                order_status="REJECTED", order_type="MARKET",
+            )
         monitor = getattr(self, "execution_monitor", None)
         attempt_quote = None
         if monitor is not None:
