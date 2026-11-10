@@ -318,7 +318,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
     @app.get("/api/cross-instrument")
     def cross_instrument():
-        """Cross-instrument opportunity layer — queue, quality sizer, displacer + proactive watchlist."""
+        """Cross-instrument observability — Brain-authorized intent queue + proactive watchlist."""
         return _state.get_cross_instrument()
 
     @app.get("/api/orchestrator")
