@@ -2199,7 +2199,7 @@ class CognitionLoop:
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
             # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
-            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            # carries one) rather than a deprecated top-level direction field.
             direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
@@ -2284,7 +2284,7 @@ class CognitionLoop:
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
             # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
-            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            # carries one) rather than a deprecated top-level direction field.
             direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
