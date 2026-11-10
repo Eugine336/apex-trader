@@ -131,3 +131,18 @@ def test_explicit_open_rejection_removes_only_the_unfilled_pending_leg():
         "EURUSD", "LONG", "campaign-fill", "decision-fill",
     ) is True
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
+
+
+def test_terminal_close_removes_ticket_only_from_the_matching_platform():
+    campaign = Campaign(
+        campaign_id="campaign-platform-close",
+        symbol="EURUSD",
+        direction="LONG",
+        legs=[
+            _leg(LEG_OPEN, "shared-ticket", platform="mt5"),
+            _leg(LEG_OPEN, "shared-ticket", platform="deriv"),
+            _leg(LEG_CLOSE, "shared-ticket", exit_cause="stop_loss", platform="mt5"),
+        ],
+    )
+
+    assert campaign.open_ticket_bindings == [{"platform": "deriv", "ticket": "shared-ticket"}]
