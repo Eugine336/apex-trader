@@ -226,7 +226,11 @@ def _verify_git_lfs_and_tracking(target: Path) -> None:
             "Git LFS is installed but the data repository does not assign "
             "the LFS filter to SQLite database files"
         )
-    _run_git(["lfs", "env"], cwd=target)
+    lfs_environment = _run_git(["lfs", "env"], cwd=target).lower()
+    if "github.com/eugine336/apex-trader-data" not in lfs_environment:
+        raise DataRepoBootstrapError(
+            "Git LFS endpoint does not resolve to Eugine336/apex-trader-data"
+        )
 
 
 def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
