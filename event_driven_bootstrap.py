@@ -6178,6 +6178,9 @@ class EventDrivenSystem:
                     "order_id": ticket,
                     "symbol": str(intent.symbol or "").upper(),
                     "direction": str(intent.direction or "").upper(),
+                    "platform": str(response.get("platform", "") or "").strip().lower()
+                        if isinstance(response, dict)
+                        else str(getattr(response, "platform", "") or "").strip().lower(),
                     "order_type": str(intent.order_type or "").upper(),
                     "lots": float(intent.lots or 0.0),
                     "entry_price": float(intent.entry_price or 0.0),
