@@ -155,11 +155,12 @@ def _tree_manifest(root: Path) -> list[tuple[str, str, int]]:
         for name in dirs:
             item = current_path / name
             relative = item.relative_to(root).as_posix()
-            if item.is_symlink():
-                entries.append((relative, "link:" + os.readlink(item), 0))
-            else:
-                entries.append((relative, "directory", 0))
-                traversable_dirs.append(name)
+            if _is_link(item):
+                raise DataRepoBootstrapError(
+                    f"nested directory link cannot be safely snapshotted: {item}"
+                )
+            entries.append((relative, "directory", 0))
+            traversable_dirs.append(name)
         dirs[:] = traversable_dirs
         for name in files:
             item = current_path / name
@@ -181,8 +182,10 @@ def _sha256_file(path: Path) -> str:
 
 def _copy_tree_verified(source: Path, destination: Path) -> None:
     """Create a complete independent backup and verify every copied file."""
-    shutil.copytree(source, destination, symlinks=True)
+    # Preflight before copying so a Windows junction inside the data tree
+    # cannot cause copytree to traverse an unrelated external directory.
     source_entries = _tree_manifest(source)
+    shutil.copytree(source, destination, symlinks=True)
     copied_entries = _tree_manifest(destination)
     if source_entries != copied_entries:
         raise DataRepoBootstrapError(
