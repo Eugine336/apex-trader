@@ -221,3 +221,18 @@ def test_position_management_context_excludes_reasoning_confidence():
     )
 
 
+
+
+def test_book_opportunity_comparison_never_uses_reasoning_confidence_as_ev():
+    module = _parse("cognition/brain_reasoning.py")
+    method = _function(module, "compare_opportunities")
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "confidence"
+        for node in ast.walk(method)
+    )
+    assert not any(
+        isinstance(node, ast.Constant) and node.value == "entry_confidence"
+        for node in ast.walk(method)
+    ), "held-position confidence is not comparable expected-return evidence"
+
+
