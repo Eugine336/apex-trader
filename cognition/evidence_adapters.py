@@ -529,7 +529,7 @@ _REASONING_LIST_FIELDS = (
 # Part XXV — the advisor's multidimensional confidence profile (each in [0,1]).
 _REASONING_NUM_FIELDS = (
     "thesis_confidence", "opportunity_confidence", "timing_confidence",
-    "execution_confidence", "effective_confidence",
+    "execution_confidence",
 )
 
 
