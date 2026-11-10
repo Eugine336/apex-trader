@@ -100,6 +100,42 @@ def test_automatic_clock_estimator_rejects_disagreeing_time_sources():
     ) is None
 
 
+def test_automatic_clock_estimator_rejects_one_outlier_when_two_sources_agree():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 0.55, "ntp:a"),
+        NTPClockSample(1_800_000_000.1, 50.1, 0.55, "ntp:b"),
+        NTPClockSample(1_800_000_015.0, 50.0, 0.55, "ntp:outlier"),
+    )
+    state = estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.2, 50.2, ntp_samples=samples,
+    )
+
+    assert state is not None
+    assert abs(state.offset_seconds - 7200.0) < 0.2
+    assert state.sources == ("ntp:a", "ntp:b")
+
+
+def test_ntp_collection_adds_https_witnesses_when_only_two_ntp_sources_answer(monkeypatch):
+    import platforms.mt5.clock as clock_module
+
+    ntp = {
+        "time.cloudflare.com": clock_module.NTPClockSample(1000.0, 10.0, 0.6, "ntp:a"),
+        "time.google.com": clock_module.NTPClockSample(1000.1, 10.1, 0.6, "ntp:b"),
+        "pool.ntp.org": None,
+    }
+    https = clock_module.NTPClockSample(1000.05, 10.05, 0.9, "https:clock")
+    monkeypatch.setattr(clock_module, "_query_ntp", lambda host: ntp[host])
+    monkeypatch.setattr(clock_module, "_query_https_time", lambda url: https)
+
+    samples = clock_module.query_ntp_sources()
+
+    assert len(samples) == 4
+    assert sum(sample.server.startswith("ntp:") for sample in samples) == 2
+    assert sum(sample.server.startswith("https:") for sample in samples) == 2
+
+
 def test_automatic_clock_estimator_requires_two_independent_sources():
     from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
 
