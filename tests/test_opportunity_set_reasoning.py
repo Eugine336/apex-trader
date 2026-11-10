@@ -315,7 +315,7 @@ def test_legacy_reply_is_observational_not_execution_authority():
     out = _brain(reply).reason(_confident_state())
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    assert not hasattr(out, "direction")
     # No opportunity-set metadata on a legacy decision.
     assert out.decision.opportunities == []
     assert out.decision.preferred_opportunity_id == ""
