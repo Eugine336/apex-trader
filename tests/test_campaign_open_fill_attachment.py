@@ -125,5 +125,4 @@ def test_explicit_broker_rejection_removes_the_pending_campaign_leg():
 
     system._handle_execution_result(_intent(), rejected)
 
-    assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
-    assert registry.get_status()["live"][0]["open_legs"] == 0
+    assert registry.get_status()["live"] == []
