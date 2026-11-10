@@ -613,3 +613,53 @@ def test_public_backup_filter_rejects_secret_like_names():
 
     for name in (".env", "broker_token.json", "private.pem", "client_secret.txt"):
         assert _should_skip(Path(name), 10_000, []) is not None
+
+
+
+def test_sync_excludes_oversized_tracked_database_without_replacing_index(tmp_path):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    event_db = data / "apex_events.db"
+    event_db.write_bytes(b"original" * 1024)
+    state = data / "state.json"
+    state.write_text('{"version":1}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(data), "commit", "-qm", "baseline"], check=True
+    )
+
+    event_db.write_bytes(b"changed" * 1024)
+    state.write_text('{"version":2}', encoding="utf-8")
+
+    result = backup_data.sync_data_repo(
+        commit_message="guard oversized file",
+        push=False,
+        data_dir=data,
+        max_file_size_mb=0.001,
+    )
+
+    assert result == "committed (push skipped)"
+    committed = subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
+    )
+    assert committed == b"original" * 1024
+    assert event_db.read_bytes() == b"changed" * 1024
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:state.json"], text=True
+    ) == '{"version":2}'
+
+
+def test_excluded_git_pathspecs_identify_oversized_files(tmp_path):
+    from scripts.backup_data import _excluded_git_pathspecs
+
+    nested = tmp_path / "journals"
+    nested.mkdir()
+    (nested / "large.db").write_bytes(b"x" * 2048)
+    (nested / "small.json").write_text("{}", encoding="utf-8")
+
+    exclusions = _excluded_git_pathspecs(tmp_path, 1024, [])
+
+    assert exclusions == [":(exclude,top,literal)journals/large.db"]
