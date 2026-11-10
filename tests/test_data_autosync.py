@@ -729,6 +729,8 @@ def test_compaction_stage_failure_restores_branch_without_overwriting_excluded_d
     data = tmp_path / "data"
     data.mkdir()
     _init_repo(data)
+    # Data repositories use main; the CI runner may default git init to master.
+    subprocess.run(["git", "-C", str(data), "branch", "-m", "main"], check=True)
     event_db = data / "apex_events.db"
     original = b"original-event-store" * 256
     changed = b"changed-event-store" * 256
