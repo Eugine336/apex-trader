@@ -1342,3 +1342,45 @@ def test_concept_cycle_snapshot_hooks_are_forwarded():
         ("begin", ("XAUUSD", "EURUSD")),
         ("end", None),
     ]
+
+
+def test_live_management_derives_stable_action_id_from_decision_and_exact_ticket():
+    action_ids = []
+    for _ in range(2):
+        calls = []
+        loop = CognitionLoop(
+            _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+            position_source=lambda: [_mgmt_pos()], management_mode="live",
+        )
+        loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
+        assert loop._manage_one(_mgmt_pos()) == 1
+        assert len(calls) == 1
+        action_ids.append(calls[0].action_id)
+
+    assert action_ids[0].startswith("brain-management-")
+    assert action_ids[0] == action_ids[1]
+
+
+def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
+    position = SimpleNamespace(symbol="XAUUSD", direction="LONG", ticket="", platform="")
+
+    assert loop._realise_management(
+        SimpleNamespace(decision=SimpleNamespace(
+            decision_type=DecisionType.EXIT,
+            symbol="XAUUSD",
+            confidence=0.8,
+            thesis="invalidated",
+            decision_id="decision-missing-ticket",
+            identity_version=IDENTITY_VERSION,
+            identity=IDENTITY_STATEMENT,
+            questions_answered={},
+        )),
+        position,
+    ) is False
+    assert calls == []
