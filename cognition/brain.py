@@ -1392,7 +1392,8 @@ class CognitiveBrain:
                 if not self._is_open_output(o):
                     continue
                 ac = self._asset_class(o.decision.symbol)
-                d = str(getattr(o, "direction", FLAT) or FLAT).upper()
+                campaign = getattr(o, "campaign", None)
+            d = str(getattr(campaign, "direction", FLAT) or FLAT).upper()
                 if not ac or d not in (LONG, SHORT):
                     continue
                 key = (ac, d)
@@ -1951,7 +1952,6 @@ class CognitiveBrain:
             questions_answered=questions,
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
-        out_dir = _opp(held_dir) if action == DecisionType.REVERSE else held_dir
         return BrainOutput(decision=decision)
 
     def _record_management(self, output: BrainOutput) -> BrainOutput:
@@ -3152,7 +3152,7 @@ class CognitiveBrain:
                 symbol, direction, lead.statement[:60], lead_conf, expected_value,
             )
             return self._record(BrainOutput(
-                decision=decision, campaign=campaign, direction=direction))
+                decision=decision, campaign=campaign))
         except Exception as exc:  # noqa: BLE001 — independent origination must never break a cycle
             logger.debug("[brain] independent origination(%s) ignored a fault: %s", symbol, exc)
             return None
