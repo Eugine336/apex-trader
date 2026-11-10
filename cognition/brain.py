@@ -280,7 +280,9 @@ class CognitiveBrain:
         # V-008 removed the legacy direction-based management tree that consulted
         # this to auto-TIGHTEN on a weakening aligned read; management is now
         # thesis-based, so it no longer drives a decision on its own.
-        self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Compatibility-only constructor input. The retired exit-confidence
+        # floor is not retained or consulted by thesis-based management.
+        _ = exit_floor
         # Article XX — advisor quorum: the Council must not become fake diversity.
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
