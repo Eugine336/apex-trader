@@ -47,6 +47,13 @@ _DATA_DIR = Path("data")
 _BRANCH = "data-backup"
 _DEFAULT_MAX_FILE_SIZE_MB: float = 95.0
 _DEFAULT_EXCLUDE_PATTERNS: list[str] = ["*.csv"]
+# The data repository is public. These path-name exclusions are unconditional,
+# even when callers supply their own patterns; they prevent obvious credential
+# and private-key files from being staged by the force-add sync path.
+_PUBLIC_REPO_SECRET_EXCLUDES: tuple[str, ...] = (
+    ".env", ".env.*", "*.env", "*.key", "*.pem", "*.p12", "*.pfx",
+    "*secret*", "*credential*", "*token*", "*private*",
+)
 
 
 # ── Filtering helpers ────────────────────────────────────────────────────
@@ -352,7 +359,10 @@ def sync_data_repo(
     # Stage everything except excluded patterns. Default git pathspec matching
     # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
     add_args = ["add", "-A", "--force", "."]
-    add_args += [f":(exclude){pat}" for pat in exclude_patterns]
+    effective_excludes = list(dict.fromkeys(
+        [*(exclude_patterns or []), *_PUBLIC_REPO_SECRET_EXCLUDES]
+    ))
+    add_args += [f":(exclude){pat}" for pat in effective_excludes]
     ok, add_out = _run_git(add_args, work_tree)
     if not ok:
         logger.warning("[data-sync] stage failed: {}", add_out)
