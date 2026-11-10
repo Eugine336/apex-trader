@@ -541,6 +541,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "time_msc": int(epoch * 1000),
             "provider_timestamp_epoch": epoch,
             "provider_timestamp_semantics": "broker_server_epoch",
+            "source_utc_offset_seconds": 0.0,
             "timestamp_utc_epoch": epoch,
             "source_utc_offset_uncertainty_seconds": 0.1,
             "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
