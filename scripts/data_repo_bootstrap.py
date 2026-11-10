@@ -301,6 +301,69 @@ def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
     return backup
 
 
+def _untrack_legacy_source_data(source: Path, link: Path, target: Path) -> int:
+    """Remove legacy source-repo data entries from its index, never its files.
+
+    Runs only after link is verified as the sibling data-repository junction.
+    Git's cached-only removal changes the source index, not the junction target.
+    """
+    if not _is_link(link):
+        raise DataRepoBootstrapError(
+            f"refusing legacy data-index cleanup without a verified link: {link}"
+        )
+    try:
+        if link.resolve(strict=True) != target.resolve(strict=True):
+            raise DataRepoBootstrapError(
+                f"refusing legacy data-index cleanup: {link} does not target {target}"
+            )
+    except OSError as exc:
+        raise DataRepoBootstrapError(
+            f"cannot resolve data link for legacy index cleanup: {exc}"
+        ) from exc
+
+    # Source archives and unit-test fixtures may not have a Git checkout.
+    if not (source / ".git").exists():
+        return 0
+    env = git_ceiling_env(source)
+    top = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, env=env,
+    )
+    if top.returncode:
+        raise DataRepoBootstrapError(
+            f"cannot identify source repository for legacy data cleanup: "
+            f"{(top.stderr or top.stdout).strip()}"
+        )
+    if Path(top.stdout.strip()).resolve() != source.resolve():
+        raise DataRepoBootstrapError(
+            f"refusing legacy data cleanup outside source repository root: {top.stdout.strip()}"
+        )
+
+    tracked = subprocess.run(
+        ["git", "-C", str(source), "ls-files", "-z", "--", "data"],
+        capture_output=True, env=env,
+    )
+    if tracked.returncode:
+        raise DataRepoBootstrapError(
+            f"cannot inspect legacy source data index: {tracked.stderr.decode(errors='replace')}"
+        )
+    paths = [item for item in tracked.stdout.split(b"\0") if item]
+    if not paths:
+        return 0
+
+    removed = subprocess.run(
+        ["git", "-C", str(source), "rm", "--cached", "--force", "-r",
+         "--ignore-unmatch", "--", "data"],
+        capture_output=True, text=True, env=env,
+    )
+    if removed.returncode:
+        raise DataRepoBootstrapError(
+            f"could not untrack legacy source data without deleting it: "
+            f"{(removed.stderr or removed.stdout).strip()}"
+        )
+    return len(paths)
+
+
 def bootstrap_data_repo(
     *,
     source_root: str | Path | None = None,
@@ -338,6 +401,7 @@ def bootstrap_data_repo(
         if not ok:
             raise DataRepoBootstrapError(f"linked data repository is unsafe: {reason}")
         _verify_git_lfs_and_tracking(resolved)
+        _untrack_legacy_source_data(source, link, target)
         return link
 
     if target.exists():
@@ -404,6 +468,10 @@ def bootstrap_data_repo(
             raise DataRepoBootstrapError(
                 f"junction resolution mismatch: {link.resolve()} != {target.resolve()}"
             )
+        # Untrack historical runtime files from the source index only. This
+        # prevents a later source checkout from deleting live files through
+        # the verified directory junction.
+        _untrack_legacy_source_data(source, link, target)
     except Exception as exc:
         if _is_link(link):
             _remove_directory_link(link)
