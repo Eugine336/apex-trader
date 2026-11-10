@@ -165,19 +165,15 @@ def test_shallow_reasoning_scores_low():
 
 
 def test_quality_weights_confidence():
-    # A shallow opinion (bare direction + confidence 0.9) is sized down: its
-    # conviction is pulled toward the act threshold, while a fully reasoned
-    # opinion at the same stated confidence keeps its sizing.
+    # A shallow opinion has lower descriptive reasoning quality, but neither
+    # quality nor uncalibrated confidence is a position-size input.
     shallow = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
     deep = _decide(_deep_opinion(confidence=0.9))
     assert shallow.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert deep.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    # Shallow reasoning is sized strictly below the deep opinion, and below its
-    # own stated confidence (pulled toward min_confidence_to_act = 0.55).
-    assert shallow.campaign.desired_exposure < deep.campaign.desired_exposure
-    assert shallow.campaign.desired_exposure < 0.9
+    assert shallow.campaign.desired_exposure == deep.campaign.desired_exposure
     assert "quality" in shallow.decision.questions_answered["advisor_reasoning_quality"].lower()
-    assert "quality-weighted confidence" in shallow.decision.questions_answered["sizing_rationale"]
+    assert "reasoning strength is excluded" in shallow.decision.questions_answered["sizing_rationale"]
 
 
 def test_influence_ledger_quality_tracking():
