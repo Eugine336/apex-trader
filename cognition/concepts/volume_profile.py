@@ -1,6 +1,7 @@
 """Session/week volume-profile readings with explicit OHLCV proxy provenance."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import threading
 from collections import OrderedDict
@@ -56,15 +57,16 @@ def _cached_week_profile(
         if cached is not None and cached[0] == fingerprint:
             _WEEK_PROFILE_CACHE.move_to_end(key)
             metrics["hits"] = metrics.get("hits", 0) + 1
-            return cached[1]
+            return copy.deepcopy(cached[1])
     profile = profile_from_bars(bars)
+    stored_profile = copy.deepcopy(profile)
     with _WEEK_PROFILE_CACHE_LOCK:
-        _WEEK_PROFILE_CACHE[key] = (fingerprint, profile)
+        _WEEK_PROFILE_CACHE[key] = (fingerprint, stored_profile)
         _WEEK_PROFILE_CACHE.move_to_end(key)
         while len(_WEEK_PROFILE_CACHE) > _WEEK_PROFILE_CACHE_MAX_ENTRIES:
             _WEEK_PROFILE_CACHE.popitem(last=False)
     metrics["misses"] = metrics.get("misses", 0) + 1
-    return profile
+    return copy.deepcopy(profile)
 
 
 class VolumeProfileConcept:
