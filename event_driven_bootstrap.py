@@ -1697,7 +1697,7 @@ class EventDrivenSystem:
                     config=_tsc_cfg,
                 )
                 self._event_bus.subscribe(
-                    "raw_tick", self._tick_state_detector.on_tick,
+                    "verified_tick", self._tick_state_detector.on_tick,
                 )
             except Exception as exc:
                 logger.warning(
