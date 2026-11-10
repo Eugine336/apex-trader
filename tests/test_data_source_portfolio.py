@@ -134,7 +134,17 @@ def test_mt5_adapter_integrates_sanitized_live_partial_evidence_without_claiming
     assert observation.provenance.source_timestamp_verified is False
     assert observation.provenance.source_timestamp_epoch is None
     assert observation.values["account_observations"] == [{"equity": 2500.0, "currency": "USD", "leverage": 100}]
-    assert observation.values["positions_observed"] == [{"symbol": "EURUSD", "volume": 0.2, "profit": 3.0}]
+    assert observation.values["positions_observed"] == [{
+        "symbol": "EURUSD",
+        "volume": 0.2,
+        "profit": 3.0,
+        "source_verified": False,
+        "source_timestamp_verified": False,
+        "risk_account_ccy": None,
+        "risk_calculation_source": None,
+        "margin_account_ccy": None,
+        "margin_calculation_source": None,
+    }]
     assert "password" not in repr(observation.values)
     assert "login" not in repr(observation.values)
     assert "ticket" not in repr(observation.values)
