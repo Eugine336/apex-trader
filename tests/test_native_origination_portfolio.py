@@ -143,6 +143,11 @@ def _origination(**overrides):
         "direction": "LONG",
         "exposure": 0.5,
         "confidence": 0.8,
+        "expected_return_r": 0.8,
+        "expected_cost_r": 0.1,
+        "expected_value_r": 0.7,
+        "expected_return_verified": True,
+        "expected_return_source": "verified-test-calibration-artifact",
         "sl": 1.0990,
         "tp": 1.1026,
         "reason": "offline test",
@@ -275,6 +280,18 @@ def test_unknown_broker_book_fails_closed_before_portfolio_evaluation(monkeypatc
     assert portfolio.calls == []
 
 
+def test_missing_or_inconsistent_return_artifact_blocks_before_portfolio(monkeypatch):
+    for overrides in (
+        {"expected_return_verified": False},
+        {"expected_return_source": ""},
+        {"expected_value_r": 0.9},
+    ):
+        system, portfolio, _risk, _pm = _system(monkeypatch)
+        assert system._make_origination_sink()(_origination(**overrides)) is False
+        assert portfolio.calls == []
+        assert system._aggregator.batches == []
+
+
 def test_portfolio_rejection_has_no_legacy_lot_size_fallback(monkeypatch):
     system, portfolio, _risk, _pm = _system(monkeypatch, approved=False)
     legacy_calls = []
@@ -307,6 +324,10 @@ def test_approved_lots_reach_the_shared_intent_aggregator(monkeypatch):
     assert intent.campaign_id == "campaign-test"
     assert intent.decision_id == "decision-test"
     assert intent.opportunity_id == "opportunity-test"
+    assert intent.expected_return_verified is True
+    assert intent.expected_return_r == 0.8
+    assert intent.expected_value_r == 0.7
+    assert intent.expected_return_source == "verified-test-calibration-artifact"
 
 
 def test_approved_stake_is_forwarded_as_stake_not_lots(monkeypatch):
