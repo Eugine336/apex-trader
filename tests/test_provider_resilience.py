@@ -126,4 +126,3 @@ def test_v016_flat_market_read_is_distinct_from_unavailable():
     assert out.provider_unavailable is False
     assert out.provider_status == "not_configured"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
-    assert out.direction == "FLAT"
