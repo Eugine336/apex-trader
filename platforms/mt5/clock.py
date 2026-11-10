@@ -224,6 +224,8 @@ def estimate_mt5_server_clock(
     for sample in raw_samples:
         endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
         endpoint = endpoint.split(":", 1)[0].strip().lower()
+        if not endpoint:
+            continue
         authority = next(
             (
                 domain for domain in ("cloudflare.com", "google.com", "ntp.org")
@@ -239,7 +241,11 @@ def estimate_mt5_server_clock(
             )
         except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(sample_quality) and sample_quality >= 0 and sample_quality < current_quality:
+        if (
+            math.isfinite(sample_quality)
+            and sample_quality >= 0
+            and sample_quality < current_quality
+        ):
             by_authority[authority] = sample
     samples = tuple(by_authority.values())
     if len(samples) < NTP_MIN_SOURCES:
