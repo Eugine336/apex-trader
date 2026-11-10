@@ -3,11 +3,12 @@
 The source checkout's data/ path is a stable runtime contract. On a fresh
 single-user clone this module provisions the sibling public data repository and
 routes that path to it before any database or trading subsystem is initialized.
-Existing data is copied without deletion; conflicting remote files are preserved
-in a timestamped backup before the local copy becomes active.
+Existing sibling data is backed up and adopted in place. Distinct source and
+sibling database files are retained independently; conflicts are not merged.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -56,6 +57,14 @@ def _is_link(path: Path) -> bool:
         return False
 
 
+def _remove_directory_link(link: Path) -> None:
+    """Remove the link object only; never recurse into its target."""
+    if os.name == "nt":
+        os.rmdir(link)
+    else:
+        link.unlink()
+
+
 def _make_directory_link(link: Path, target: Path) -> None:
     if os.name == "nt":
         result = subprocess.run(
@@ -80,8 +89,19 @@ def _files_equal(left: Path, right: Path) -> bool:
                 return True
 
 
-def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
-    """Merge local files, preserving any replaced remote file in backup_root."""
+def _copy_local_data(
+    source: Path,
+    destination: Path,
+    backup_root: Path,
+    *,
+    preserve_conflicts: bool = False,
+) -> int:
+    """Copy local-only files; optionally keep both sides of every conflict.
+
+    With preserve_conflicts=True, destination data remains untouched when the
+    same relative path contains different bytes. Bootstrap retains the complete
+    source directory separately, so conflicting databases are never merged.
+    """
     copied = 0
     for root, dirs, files in os.walk(source, followlinks=False):
         root_path = Path(root)
@@ -107,6 +127,10 @@ def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
                     same = False
                 if same:
                     continue
+                if preserve_conflicts:
+                    # The complete source tree is retained as a timestamped
+                    # sibling backup after this merge. Keep the active target.
+                    continue
                 preserved = backup_root / relative
                 preserved.parent.mkdir(parents=True, exist_ok=True)
                 if preserved.exists() or preserved.is_symlink():
@@ -120,6 +144,160 @@ def _copy_local_data(source: Path, destination: Path, backup_root: Path) -> int:
                 shutil.copy2(src, dst)
             copied += 1
     return copied
+
+
+def _tree_manifest(root: Path) -> list[tuple[str, str, int]]:
+    """Describe a directory tree without following symbolic links."""
+    entries: list[tuple[str, str, int]] = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        traversable_dirs: list[str] = []
+        for name in dirs:
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            if _is_link(item):
+                raise DataRepoBootstrapError(
+                    f"nested directory link cannot be safely snapshotted: {item}"
+                )
+            entries.append((relative, "directory", 0))
+            traversable_dirs.append(name)
+        dirs[:] = traversable_dirs
+        for name in files:
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            if item.is_symlink():
+                entries.append((relative, "link:" + os.readlink(item), 0))
+            else:
+                entries.append((relative, "file", item.stat().st_size))
+    return sorted(entries)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_tree_verified(source: Path, destination: Path) -> None:
+    """Create a complete independent backup and verify every copied file."""
+    # Preflight before copying so a Windows junction inside the data tree
+    # cannot cause copytree to traverse an unrelated external directory.
+    source_entries = _tree_manifest(source)
+    shutil.copytree(source, destination, symlinks=True)
+    copied_entries = _tree_manifest(destination)
+    if source_entries != copied_entries:
+        raise DataRepoBootstrapError(
+            f"pre-adoption backup inventory differs: {destination}"
+        )
+    for relative, kind, _size in source_entries:
+        if kind != "file":
+            continue
+        if _sha256_file(source / relative) != _sha256_file(destination / relative):
+            raise DataRepoBootstrapError(
+                f"pre-adoption backup hash mismatch: {relative}"
+            )
+
+
+def _verify_git_lfs_and_tracking(target: Path) -> None:
+    """Require main -> origin/main tracking and usable Git LFS filters."""
+    branch = _run_git(["branch", "--show-current"], cwd=target)
+    upstream = _run_git(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        cwd=target,
+    )
+    if branch != "main" or upstream != "origin/main":
+        raise DataRepoBootstrapError(
+            f"data repository branch tracking is invalid: {branch!r} -> {upstream!r}"
+        )
+    _run_git(["lfs", "version"], cwd=target)
+    for key in (
+        "filter.lfs.clean", "filter.lfs.smudge",
+        "filter.lfs.process", "filter.lfs.required",
+    ):
+        if not _run_git(["config", "--get", key], cwd=target):
+            raise DataRepoBootstrapError(f"Git LFS filter is not configured: {key}")
+    attributes = _run_git(
+        ["check-attr", "filter", "--", "apex_events.db"], cwd=target
+    )
+    if "filter: lfs" not in attributes:
+        raise DataRepoBootstrapError(
+            "Git LFS is installed but the data repository does not assign "
+            "the LFS filter to SQLite database files"
+        )
+    lfs_environment = _run_git(["lfs", "env"], cwd=target).lower()
+    if "github.com/eugine336/apex-trader-data" not in lfs_environment:
+        raise DataRepoBootstrapError(
+            "Git LFS endpoint does not resolve to Eugine336/apex-trader-data"
+        )
+
+
+def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
+    """Adopt a populated plain directory without replacing any existing data.
+
+    A byte-for-byte verified sibling backup is created first. Git metadata is
+    initialized in place; the remote tree is loaded into the index without
+    checking out over existing files. checkout-index writes only missing paths.
+    A recovery ref retains the original remote main commit.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = target.parent / f"{target.name}-pre-adoption-{stamp}"
+    staging = target.parent / f".{target.name}-pre-adoption-{stamp}.tmp"
+    if backup.exists() or staging.exists():
+        raise DataRepoBootstrapError(f"pre-adoption backup path collision: {backup}")
+    try:
+        _copy_tree_verified(target, staging)
+        staging.rename(backup)
+    except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise DataRepoBootstrapError(
+            f"could not create verified pre-adoption backup; original untouched: {exc}"
+        ) from exc
+
+    try:
+        _run_git(["init"], cwd=target)
+        _run_git(["remote", "add", "origin", data_repo_url], cwd=target)
+        _run_git(["fetch", "--no-tags", "origin", "main"], cwd=target, timeout=900)
+        _run_git(["lfs", "install", "--local"], cwd=target)
+        _run_git(["read-tree", "origin/main"], cwd=target)
+        _run_git(["update-ref", "refs/heads/main", "refs/remotes/origin/main"], cwd=target)
+        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target)
+        _run_git(["config", "branch.main.remote", "origin"], cwd=target)
+        _run_git(["config", "branch.main.merge", "refs/heads/main"], cwd=target)
+        _run_git(
+            ["update-ref", f"refs/apex-bootstrap/original-origin-main/{stamp}",
+             "refs/remotes/origin/main"],
+            cwd=target,
+        )
+        # No --force: existing files are never overwritten. Missing LFS-tracked
+        # paths are materialized through the installed LFS smudge filter.
+        _run_git(["checkout-index", "--all"], cwd=target, timeout=900)
+        ok, reason = verify_dedicated_data_repo(
+            target, expected_repo_url=data_repo_url, require_remote=True
+        )
+        if not ok:
+            raise DataRepoBootstrapError(
+                f"adopted repository identity verification failed: {reason}"
+            )
+        _verify_git_lfs_and_tracking(target)
+    except Exception as exc:
+        # Keep the original data tree in place. Move only newly-created Git
+        # metadata aside so the next startup can retry adoption from a plain
+        # directory; the verified full backup remains independently available.
+        git_metadata = target / ".git"
+        if git_metadata.exists():
+            failed_metadata = target.parent / (
+                f"{target.name}-failed-adoption-git-{stamp}"
+            )
+            if not failed_metadata.exists():
+                git_metadata.rename(failed_metadata)
+        raise DataRepoBootstrapError(
+            f"data repository adoption failed; original data remains at {target}, "
+            f"verified backup at {backup}: {exc}"
+        ) from exc
+    return backup
 
 
 def bootstrap_data_repo(
@@ -158,18 +336,18 @@ def bootstrap_data_repo(
         )
         if not ok:
             raise DataRepoBootstrapError(f"linked data repository is unsafe: {reason}")
+        _verify_git_lfs_and_tracking(resolved)
         return link
 
     if target.exists():
         if not (target / ".git").exists():
-            raise DataRepoBootstrapError(
-                f"{target} already exists but is not a Git clone; preserving it"
-            )
+            _adopt_existing_data_repo(target, data_repo_url)
         ok, reason = verify_dedicated_data_repo(
             target, expected_repo_url=data_repo_url, require_remote=True
         )
         if not ok:
             raise DataRepoBootstrapError(f"existing data repository is unsafe: {reason}")
+        _verify_git_lfs_and_tracking(target)
     else:
         if link.exists() and not link.is_dir():
             raise DataRepoBootstrapError(f"{link} exists and is not a directory")
@@ -182,34 +360,56 @@ def bootstrap_data_repo(
         )
         if not ok:
             raise DataRepoBootstrapError(f"cloned data repository failed identity check: {reason}")
+        _run_git(["lfs", "install", "--local"], cwd=target)
+        _verify_git_lfs_and_tracking(target)
 
+    source_backup: Path | None = None
     if link.exists():
         if not link.is_dir():
             raise DataRepoBootstrapError(f"{link} exists and is not a directory")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup = source.parent / f"{source.name}-data-local-backup-{stamp}"
+        source_backup = source.parent / f"{source.name}-data-local-backup-{stamp}"
         conflict_backup = target / ".apex-bootstrap-preserved" / stamp
         try:
             if any(link.iterdir()):
-                _copy_local_data(link, target, conflict_backup)
-            link.rename(backup)
+                _copy_local_data(
+                    link, target, conflict_backup, preserve_conflicts=True
+                )
+            link.rename(source_backup)
             try:
                 _make_directory_link(link, target)
             except Exception:
-                backup.rename(link)
+                source_backup.rename(link)
                 raise
         except Exception as exc:
-            if backup.exists() and not link.exists():
-                backup.rename(link)
+            if source_backup.exists() and not link.exists():
+                source_backup.rename(link)
             raise DataRepoBootstrapError(
                 f"could not safely route existing data; original preserved: {exc}"
             ) from exc
     else:
         _make_directory_link(link, target)
 
-    ok, reason = verify_dedicated_data_repo(
-        link, expected_repo_url=data_repo_url, require_remote=True
-    )
-    if not ok:
-        raise DataRepoBootstrapError(f"post-bootstrap verification failed: {reason}")
+    try:
+        ok, reason = verify_dedicated_data_repo(
+            link, expected_repo_url=data_repo_url, require_remote=True
+        )
+        if not ok:
+            raise DataRepoBootstrapError(
+                f"post-bootstrap verification failed: {reason}"
+            )
+        _verify_git_lfs_and_tracking(target)
+        if link.resolve() != target.resolve():
+            raise DataRepoBootstrapError(
+                f"junction resolution mismatch: {link.resolve()} != {target.resolve()}"
+            )
+    except Exception as exc:
+        if _is_link(link):
+            _remove_directory_link(link)
+        if source_backup is not None and source_backup.exists() and not link.exists():
+            source_backup.rename(link)
+        raise DataRepoBootstrapError(
+            f"post-bootstrap verification failed; source data restored where "
+            f"applicable: {exc}"
+        ) from exc
     return link

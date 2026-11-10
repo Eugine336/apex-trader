@@ -144,7 +144,7 @@ class TestWalCheckpoint:
             calls: list[str] = []
             real_run_git = backup_data._run_git
 
-            def _track_checkpoint(data_dir):
+            def _track_checkpoint(data_dir, **kwargs):
                 calls.append("checkpoint")
                 return 0
 
@@ -613,3 +613,168 @@ def test_public_backup_filter_rejects_secret_like_names():
 
     for name in (".env", "broker_token.json", "private.pem", "client_secret.txt"):
         assert _should_skip(Path(name), 10_000, []) is not None
+
+
+
+def test_sync_excludes_oversized_tracked_database_without_replacing_index(tmp_path):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    event_db = data / "apex_events.db"
+    event_db.write_bytes(b"original" * 1024)
+    state = data / "state.json"
+    state.write_text('{"version":1}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(data), "commit", "-qm", "baseline"], check=True
+    )
+
+    event_db.write_bytes(b"changed" * 1024)
+    state.write_text('{"version":2}', encoding="utf-8")
+
+    result = backup_data.sync_data_repo(
+        commit_message="guard oversized file",
+        push=False,
+        data_dir=data,
+        max_file_size_mb=0.001,
+    )
+
+    assert result == "committed (push skipped)"
+    committed = subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
+    )
+    assert committed == b"original" * 1024
+    assert event_db.read_bytes() == b"changed" * 1024
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:state.json"], text=True
+    ) == '{"version":2}'
+
+
+def test_excluded_git_pathspecs_identify_oversized_files(tmp_path):
+    from scripts.backup_data import _excluded_git_pathspecs
+
+    nested = tmp_path / "journals"
+    nested.mkdir()
+    (nested / "large.db").write_bytes(b"x" * 2048)
+    (nested / "small.json").write_text("{}", encoding="utf-8")
+
+    exclusions = _excluded_git_pathspecs(tmp_path, 1024, [])
+
+    assert exclusions == [":(exclude,top,literal)journals/large.db"]
+
+
+
+def test_history_compaction_retains_previously_tracked_oversized_blob(tmp_path, monkeypatch):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    event_db = data / "apex_events.db"
+    original = b"original-event-store" * 256
+    changed = b"changed-event-store" * 256
+    event_db.write_bytes(original)
+    state = data / "state.json"
+    state.write_text('{"version":1}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "baseline"], check=True)
+    event_db.write_bytes(changed)
+    state.write_text('{"version":2}', encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(data), "add", "state.json"], check=True
+    )
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "update"], check=True)
+
+    real_run_git = backup_data._run_git
+
+    def run_git(args, cwd):
+        if args[:2] == ["push", "--force"]:
+            return True, "push skipped in test"
+        return real_run_git(args, cwd)
+
+    monkeypatch.setattr(backup_data, "_run_git", run_git)
+    monkeypatch.setattr(
+        backup_data, "_verify_data_repo_or_refuse", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        backup_data, "_repo_object_size_mb", lambda _path: 600.0
+    )
+    # The post-GC size is irrelevant to the preservation assertion.
+    result = backup_data.compact_repo_history(
+        data,
+        max_repo_size_mb=500,
+        keep_commits=1,
+        max_file_size_mb=0.001,
+    )
+
+    assert result.startswith("compacted")
+    committed = subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
+    )
+    assert committed == original
+    assert event_db.read_bytes() == changed
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:state.json"], text=True
+    ) == '{"version":2}'
+
+
+
+def test_compaction_stage_failure_restores_branch_without_overwriting_excluded_db(
+    tmp_path, monkeypatch
+):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    # Data repositories use main; the CI runner may default git init to master.
+    subprocess.run(["git", "-C", str(data), "branch", "-m", "main"], check=True)
+    event_db = data / "apex_events.db"
+    original = b"original-event-store" * 256
+    changed = b"changed-event-store" * 256
+    event_db.write_bytes(original)
+    state = data / "state.json"
+    state.write_text('{"version":1}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "baseline"], check=True)
+    event_db.write_bytes(changed)
+    state.write_text('{"version":2}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "state.json"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "update"], check=True)
+
+    real_run_git = backup_data._run_git
+
+    def fail_stage(args, cwd):
+        if args[:3] == ["add", "-A", "--force"]:
+            return False, "simulated staging failure"
+        return real_run_git(args, cwd)
+
+    monkeypatch.setattr(backup_data, "_run_git", fail_stage)
+    monkeypatch.setattr(
+        backup_data, "_verify_data_repo_or_refuse", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        backup_data, "_repo_object_size_mb", lambda _path: 600.0
+    )
+
+    result = backup_data.compact_repo_history(
+        data,
+        max_repo_size_mb=500,
+        keep_commits=1,
+        max_file_size_mb=0.001,
+    )
+
+    assert result.startswith("stage failed")
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "branch", "--show-current"], text=True
+    ).strip() == "main"
+    assert not subprocess.run(
+        ["git", "-C", str(data), "show-ref", "--verify", "--quiet",
+         "refs/heads/_compact_temp"]
+    ).returncode == 0
+    assert event_db.read_bytes() == changed
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
+    ) == original

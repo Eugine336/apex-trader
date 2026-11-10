@@ -106,10 +106,38 @@ def _copy_filtered(
     return copied, skipped
 
 
+def _excluded_git_pathspecs(
+    root: Path,
+    max_bytes: int,
+    exclude_patterns: list[str],
+) -> list[str]:
+    """Build literal Git pathspec exclusions for every unsafe/oversized file.
+
+    Excluding by pathspec (rather than merely skipping a copy) is essential:
+    an already tracked large file must retain its last committed object instead
+    of being replaced by a huge working-tree version during git add -A.
+    """
+    exclusions: list[str] = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        current_path = Path(current)
+        for filename in files:
+            candidate = current_path / filename
+            if _should_skip(candidate, max_bytes, exclude_patterns):
+                relative = candidate.relative_to(root).as_posix()
+                exclusions.append(f":(exclude,top,literal){relative}")
+    return exclusions
+
+
 # ── WAL checkpoint helper ─────────────────────────────────────────────────
 
 
-def _checkpoint_wal_files(data_dir: Path) -> int:
+def _checkpoint_wal_files(
+    data_dir: Path,
+    *,
+    max_bytes: int | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> int:
     """Flush WAL journals into main .db files before a git sync.
 
     SQLite WAL mode keeps recent writes in a separate -wal file. Git
@@ -121,7 +149,11 @@ def _checkpoint_wal_files(data_dir: Path) -> int:
     Returns the number of databases successfully checkpointed.
     """
     checkpointed = 0
+    patterns = list(exclude_patterns or _DEFAULT_EXCLUDE_PATTERNS)
     for db_path in sorted(data_dir.glob("*.db")):
+        if max_bytes is not None and _should_skip(db_path, max_bytes, patterns):
+            logger.info("[data-sync] WAL checkpoint skipped for excluded database {}", db_path.name)
+            continue
         conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(str(db_path), timeout=5)
@@ -219,7 +251,9 @@ def run_backup(
         _run_git(["checkout", "--orphan", _BRANCH], tmpdir)
 
         dest = Path(tmpdir) / "data"
-        _checkpoint_wal_files(_DATA_DIR)
+        _checkpoint_wal_files(
+            _DATA_DIR, max_bytes=max_bytes, exclude_patterns=exclude_patterns
+        )
         copied, skipped = _copy_filtered(
             _DATA_DIR, dest, max_bytes, exclude_patterns,
         )
@@ -307,6 +341,7 @@ def sync_data_repo(
     push: bool = True,
     data_dir: Path | str | None = None,
     data_repo_url: str | None = None,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
 ) -> str:
     """Commit + push a ``data/`` git work tree to its GitHub remote.
 
@@ -328,6 +363,7 @@ def sync_data_repo(
     """
     if exclude_patterns is None:
         exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
+    max_bytes = int(max_file_size_mb * 1024 * 1024)
 
     base = Path(data_dir) if data_dir is not None else _DATA_DIR
     if not base.is_dir():
@@ -354,7 +390,10 @@ def sync_data_repo(
 
     # Flush WAL journals into the main .db files so the committed databases
     # are self-contained — git excludes the -wal/-shm sidecars.
-    _checkpoint_wal_files(base)
+    # Do not checkpoint a database that will be excluded from this public sync.
+    _checkpoint_wal_files(
+        base, max_bytes=max_bytes, exclude_patterns=exclude_patterns
+    )
 
     # Stage everything except excluded patterns. Default git pathspec matching
     # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
@@ -363,6 +402,7 @@ def sync_data_repo(
         [*(exclude_patterns or []), *_PUBLIC_REPO_SECRET_EXCLUDES]
     ))
     add_args += [f":(exclude){pat}" for pat in effective_excludes]
+    add_args += _excluded_git_pathspecs(base, max_bytes, effective_excludes)
     ok, add_out = _run_git(add_args, work_tree)
     if not ok:
         logger.warning("[data-sync] stage failed: {}", add_out)
@@ -427,40 +467,52 @@ def _repo_object_size_mb(work_tree: str) -> float | None:
     return total_bytes / (1024.0 * 1024.0)
 
 
+def _restore_compaction_branch(
+    work_tree: str, branch: str, temp_branch: str
+) -> bool:
+    """Restore HEAD and index without checking out or overwriting working files."""
+    ok_head, head_out = _run_git(
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], work_tree
+    )
+    if not ok_head:
+        logger.error("[repo-compact] could not restore HEAD to {}: {}", branch, head_out)
+        return False
+    ok_reset, reset_out = _run_git(["reset", "--mixed", branch], work_tree)
+    if not ok_reset:
+        logger.error(
+            "[repo-compact] could not restore index to {} without touching files: {}",
+            branch, reset_out,
+        )
+        return False
+    _run_git(["branch", "-D", temp_branch], work_tree)
+    return True
+
+
 def _recover_stranded_compaction(
     work_tree: str, branch: str, temp_branch: str
-) -> None:
-    """Undo a compaction that was interrupted while on the orphan temp branch.
-
-    A previous ``compact_repo_history`` run can be killed after
-    ``checkout --orphan _compact_temp`` (and possibly after the real branch was
-    deleted) but before the temp branch is promoted back into place. That leaves
-    HEAD stranded on ``_compact_temp`` — git then refuses to delete the branch
-    HEAD points at, so the next orphan checkout aborts with "a branch named
-    '_compact_temp' already exists", and any push of the real branch fails with
-    "src refspec <branch> does not match any" because the real ref is gone.
-
-    Best-effort recovery: if HEAD is on the temp branch, return to the real
-    branch (restoring it from the temp branch when it was already deleted), then
-    drop the stale temp branch. Never raises.
-    """
+) -> bool:
+    """Recover an interrupted orphan compaction without overwriting working files."""
     ok, cur = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], work_tree)
     on_temp = ok and cur.strip() == temp_branch
     if not on_temp:
         # Not stranded — just clear any leftover (non-current) temp branch.
         _run_git(["branch", "-D", temp_branch], work_tree)
-        return
+        return True
+
     real_ok, _ = _run_git(
         ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], work_tree
     )
     if real_ok:
-        # Real branch still exists — switch back to it and drop the orphan.
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
-    else:
-        # Real branch was already deleted mid-compaction; the temp branch holds
-        # the compacted tree — promote it into the real branch name in place.
-        _run_git(["branch", "-m", branch], work_tree)
+        # Move HEAD and index back without a forced checkout. This leaves every
+        # locally modified or oversized excluded database byte-for-byte intact.
+        return _restore_compaction_branch(work_tree, branch, temp_branch)
+
+    # The real branch ref was deleted mid-compaction. The temp branch already
+    # holds the recovery tree, so rename the current branch in place.
+    ok_rename, rename_out = _run_git(["branch", "-m", branch], work_tree)
+    if not ok_rename:
+        logger.error("[repo-compact] could not recover missing branch {}: {}", branch, rename_out)
+    return ok_rename
 
 
 def compact_repo_history(
@@ -470,6 +522,8 @@ def compact_repo_history(
     keep_commits: int = 10,
     branch: str = "main",
     data_repo_url: str | None = None,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
+    exclude_patterns: list[str] | None = None,
 ) -> str:
     """Squash the data-repo history into a single commit when it grows too big.
 
@@ -508,7 +562,8 @@ def compact_repo_history(
     # Heal a repo left stranded on the orphan temp branch by an interrupted
     # prior run before doing anything else — otherwise the size check may
     # short-circuit and leave the tree unable to push its real branch.
-    _recover_stranded_compaction(work_tree, branch, "_compact_temp")
+    if not _recover_stranded_compaction(work_tree, branch, "_compact_temp"):
+        return "could not safely recover interrupted compaction; working files preserved"
 
     size_mb = _repo_object_size_mb(work_tree)
     if size_mb is None:
@@ -537,6 +592,13 @@ def compact_repo_history(
         return refusal
 
     temp_branch = "_compact_temp"
+    # Capture the old tree before creating the orphan. The compacted index is
+    # seeded from this tree so excluded oversized tracked files retain their
+    # last committed blobs without checking them out over live working files.
+    ok_head, original_head = _run_git(["rev-parse", "HEAD"], work_tree)
+    if not ok_head:
+        return "could not resolve current data-repository HEAD"
+    original_head = original_head.strip()
     # Drop any stale temp branch left by a previous interrupted run.
     _run_git(["branch", "-D", temp_branch], work_tree)
 
@@ -544,10 +606,28 @@ def compact_repo_history(
     if not ok:
         return f"orphan checkout failed: {out.splitlines()[0] if out else 'unknown'}"
 
-    # Stage the full current tree, honouring the same CSV exclusion as sync.
+    # Restore the old tree into the orphan index without touching the
+    # working tree. This is required because checkout --orphan clears the
+    # index; otherwise pathspec-excluded tracked files would disappear from
+    # the compacted commit.
+    ok_tree, tree_out = _run_git(["read-tree", original_head], work_tree)
+    if not ok_tree:
+        _restore_compaction_branch(work_tree, branch, temp_branch)
+        return f"index seed failed: {tree_out.splitlines()[0] if tree_out else 'unknown'}"
+
+    # Stage only eligible files. Oversized tracked files retain their old blobs;
+    # oversized untracked files never enter the compacted commit.
+    max_bytes = int(max_file_size_mb * 1024 * 1024)
+    effective_excludes = list(dict.fromkeys(
+        [*(exclude_patterns or _DEFAULT_EXCLUDE_PATTERNS), *_PUBLIC_REPO_SECRET_EXCLUDES]
+    ))
     add_args = ["add", "-A", "--force", "."]
-    add_args += [f":(exclude){pat}" for pat in _DEFAULT_EXCLUDE_PATTERNS]
-    _run_git(add_args, work_tree)
+    add_args += [f":(exclude){pat}" for pat in effective_excludes]
+    add_args += _excluded_git_pathspecs(base, max_bytes, effective_excludes)
+    ok_add, add_out = _run_git(add_args, work_tree)
+    if not ok_add:
+        _restore_compaction_branch(work_tree, branch, temp_branch)
+        return f"stage failed: {add_out.splitlines()[0] if add_out else 'unknown'}"
 
     from datetime import datetime, timezone
 
@@ -562,9 +642,8 @@ def compact_repo_history(
         work_tree,
     )
     if not ok:
-        # Restore the original branch so we never strand the tree on the orphan.
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        # Restore HEAD/index only; never force-checkout over excluded files.
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"commit failed: {out.splitlines()[0] if out else 'unknown'}"
 
     # Promote the compacted commit onto the real branch WITHOUT deleting it
@@ -574,10 +653,21 @@ def compact_repo_history(
     # not match any"). We then switch onto it and drop the orphan.
     ok_move, mv_out = _run_git(["branch", "-f", branch, temp_branch], work_tree)
     if not ok_move:
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"branch update failed: {mv_out.splitlines()[0] if mv_out else 'unknown'}"
-    _run_git(["checkout", "-f", branch], work_tree)
+
+    # HEAD is still attached to the orphan branch. Switch the symbolic HEAD and
+    # reset only the index to the promoted commit; --mixed never rewrites the
+    # working tree, so oversized/excluded database files remain untouched.
+    ok_head, head_out = _run_git(
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], work_tree
+    )
+    if not ok_head:
+        _restore_compaction_branch(work_tree, branch, temp_branch)
+        return f"HEAD promotion failed: {head_out.splitlines()[0] if head_out else 'unknown'}"
+    ok_reset, reset_out = _run_git(["reset", "--mixed", branch], work_tree)
+    if not ok_reset:
+        return f"index promotion failed: {reset_out.splitlines()[0] if reset_out else 'unknown'}"
     _run_git(["branch", "-D", temp_branch], work_tree)
 
     _run_git(["gc", "--aggressive", "--prune=now"], work_tree)
@@ -646,7 +736,9 @@ def mirror_instances(
         users += 1
         dest_data = dst_base / "instances" / child.name / "data"
         dest_data.mkdir(parents=True, exist_ok=True)
-        _checkpoint_wal_files(src_data)
+        _checkpoint_wal_files(
+            src_data, max_bytes=max_bytes, exclude_patterns=exclude_patterns
+        )
         c, s = _copy_filtered(src_data, dest_data, max_bytes, exclude_patterns)
         copied += c
         skipped += s
