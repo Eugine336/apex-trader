@@ -179,7 +179,6 @@ class CognitiveBrain:
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
         manage_min_interval_seconds: Optional[float] = None,
-        calibration: Optional[Any] = None,
         min_advisors_for_action: int = 2,
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
@@ -242,13 +241,10 @@ class CognitiveBrain:
         # instead; this default applies only when no such evidence is present.
         self.default_cost_r = max(0.0, float(default_cost_r))
         # Articles II / IV / IX / X — the Brain's NATIVE reasoner. It reads the
-        # evidence into its own structured analysis, forms its own hypotheses
-        # (with counter-hypotheses), and self-criticises them WITHOUT any LLM
-        # call. Advisors INFORM this reasoning; they are not the reasoning. The
-        # Brain can even originate an opportunity from this layer alone when no
-        # advisor is available (Article X — discovery without explicit
-        # programming). ``independent_sizing_multiplier`` sizes such advisor-less
-        # originations conservatively.
+        # evidence into its own structured analysis, forms competing hypotheses,
+        # and self-criticises them without requiring an LLM. Hypothesis reasoning
+        # strength remains descriptive and uncalibrated; native origination is
+        # admitted by verified expected return, costs, activation and risk.
         self._native = BrainReasoner(
             agreement_boost=agreement_boost,
             disagreement_penalty=disagreement_penalty,
@@ -298,11 +294,6 @@ class CognitiveBrain:
         self._manage_supports_override = self._fn_supports_override(
             getattr(reasoner, "reason_management", None)
         )
-        # Part VIII / Art XXXI — the Brain's own confidence is corrected by its
-        # demonstrated calibration (Decision → Outcome → Attribution →
-        # Calibration → Future reasoning). Observational until wired; a None
-        # tracker (or one below its sample floor) leaves confidence untouched.
-        self._calibration = calibration
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
@@ -2622,10 +2613,10 @@ class CognitiveBrain:
                 if str(getattr(item, "independence_group", "") or "").strip()
             })
 
-            # A directional hypothesis may become actionable below 0.70 confidence
-            # or above 0.50 uncertainty only when its uncertainty-adjusted,
-            # cost-adjusted expectancy still supports it. These values inform EV
-            # and sizing; they are not universal strategy-selection switches.
+            # Hypothesis reasoning strength is not an eligibility threshold or
+            # probability. Native origination is qualified only by verified
+            # fixed-horizon expected return, current costs, activation geometry
+            # and shared portfolio/risk admission.
             uncertainty = _clamp01(
                 (consolidation or {}).get(
                     "aggregate_uncertainty", analysis.evidence_uncertainty,
@@ -2669,10 +2660,9 @@ class CognitiveBrain:
             if not cost_verified:
                 return None
 
-            # Native hypothesis confidence is retained exactly as supplied by
-            # the hypothesis producer. Uncertainty and pattern outcomes remain
-            # separate evidence; neither is multiplied into a synthetic score.
-            lead_conf = _clamp01(lead.confidence)
+            # Native hypothesis strength is retained as descriptive metadata only.
+            # It does not enter expected return, qualification or exposure.
+            lead_reasoning_strength = _clamp01(lead.confidence)
             lead_pattern_names = list(getattr(lead, "supporting_patterns", []) or [])
             reward_r, risk_r = geometry.reward_r, 1.0
             expected_value = expected_return_r - cost_r
@@ -2770,7 +2760,7 @@ class CognitiveBrain:
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
-                    f"evaluated: native hypothesis reasoning strength {lead_conf:.2f}, "
+                    f"evaluated: native hypothesis reasoning strength {lead_reasoning_strength:.2f}, "
                     f"uncertainty {uncertainty:.2f}, and cost-adjusted EV {expected_value:.4f}R; "
                     "final admission still requires current activation, broker and portfolio checks"),
                 "brain_independent_origination": origination_note,
@@ -2816,7 +2806,7 @@ class CognitiveBrain:
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf, uncertainty=uncertainty,
+                confidence=lead_reasoning_strength, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
@@ -2832,7 +2822,7 @@ class CognitiveBrain:
                 desired_exposure=desired_exposure, expected_value=expected_value,
                 initial_execution_intent={
                     "kind": "market",
-                    "confidence": round(lead_conf, 4),
+                    "reasoning_strength": round(lead_reasoning_strength, 4),
                     "independent_origination": True,
                     "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                     "entry_price": geometry.entry_price,
@@ -2842,7 +2832,7 @@ class CognitiveBrain:
                     "geometry_evidence_ids": list(geometry.evidence_ids),
                 },
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf,
+                confidence=lead_reasoning_strength,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
                 opportunity_id=native_opportunity.opportunity_id,
