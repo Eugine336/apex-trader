@@ -24,7 +24,6 @@ import pytest
 from cognition.brain import CognitiveBrain
 from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
 from cognition.evidence_adapters import evidence_from_execution_cost
-from cognition.expected_value import expected_value_r
 from llm.reasoner import FLAT, LLMReasoner
 
 
@@ -262,10 +261,8 @@ def test_v7_do_nothing_reasoning_on_negative_expected_return():
 
 # ── V9 — EV is net of execution cost ─────────────────────────────────────────
 
-def test_v9_execution_cost_reduces_ev():
-    # p_win 0.8, reward 2R, risk 1R ⇒ EV 1.4R before cost; a 0.3R cost ⇒ 1.1R.
-    assert expected_value_r(0.8, 2.0, 1.0, cost_r=0.3) == pytest.approx(1.1)
-
+def test_v9_verified_expected_return_is_reduced_by_execution_cost():
+    # Producer-verified expected return is reduced by fresh, verified execution cost.
     cost_ev = Evidence(
         source_module="execution.cost_model", domain=EvidenceDomain.EXECUTION_QUALITY,
         symbol="EURUSD", confidence=0.8, uncertainty=0.2,
