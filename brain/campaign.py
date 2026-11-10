@@ -395,9 +395,9 @@ class Campaign:
         peak = _safe_float(self.peak_ev_over_flat)
         conf = _clamp01(self.confidence)
         avg = _clamp01(self.avg_confidence)
-        # Opportunity strength: how much live edge remains, blended with how
-        # strongly the evidence still supports the thesis.
-        opportunity = _clamp01(0.5 * conf + 0.5 * _clamp01(ev))
+        # This descriptive read is expected-value-only. Reasoning confidence
+        # must not leak into campaign ranking or portfolio management.
+        opportunity = _clamp01(ev)
         return {
             "identity_version": self.identity_version,
             "identity": IDENTITY_STATEMENT,
@@ -1016,11 +1016,9 @@ class CampaignRegistry:
         if camp is None:
             return (0.0, 0.0, 0.0)
         h = camp.health()
-        return (
-            float(h.get("opportunity_strength", 0.0) or 0.0),
-            float(h.get("confidence", 0.0) or 0.0),
-            float(h.get("ev_over_flat", 0.0) or 0.0),
-        )
+        # Confidence is descriptive evidence metadata, never a portfolio
+        # selection or management-ranking input.
+        return (float(h.get("ev_over_flat", 0.0) or 0.0),)
 
     def is_component_saturated(self, symbol: str, max_per_component: int = 2) -> bool:
         """True when ``symbol`` shares a leg with an over-concentrated cluster.
