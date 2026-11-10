@@ -293,20 +293,39 @@ class MT5Connector(BaseConnector):
                 observations = {}
                 self._clock_tick_observations = observations
             previous = observations.get(key)
-            observations[key] = (tick_epoch, now_mono)
             if previous is None:
+                # The first observation establishes a baseline only. A second,
+                # strictly advancing broker event is required before estimating
+                # the broker clock against independent UTC authorities.
+                observations[key] = (tick_epoch, now_mono)
                 return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
 
             previous_epoch, previous_mono = previous
             elapsed = now_mono - previous_mono
             advance = tick_epoch - previous_epoch
-            tolerance = max(2.0, elapsed * 0.50)
-            if (
-                elapsed <= 0 or elapsed > 10.0 or advance <= 0
-                or advance < max(0.001, elapsed * 0.25)
-                or abs(advance - elapsed) > tolerance
-            ):
+
+            # MT5 symbol_info_tick() returns the latest quote, not a new event
+            # on every poll. Repeated polls commonly return the exact same
+            # timestamp while the market is quiet. Do not move the baseline on
+            # duplicates or out-of-order observations: doing so makes the next
+            # real tick appear to have advanced several seconds in a fraction
+            # of a second and permanently prevents clock synchronization.
+            if advance <= 0:
                 return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+
+            # Tick arrival is event-driven and irregular. Comparing broker-event
+            # time deltas to poll intervals rejects legitimate sparse/bursty
+            # markets and confuses network delivery latency with clock drift.
+            # The absolute broker offset is instead checked against independent
+            # NTP/HTTPS authorities below. Monotonic time is used only to ensure
+            # the observations are ordered in the local process.
+            if elapsed <= 0:
+                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+
+            # Advance the baseline only after observing a strictly newer broker
+            # event. This also lets the next observation recover after a stale,
+            # delayed or out-of-order quote without trusting that quote.
+            observations[key] = (tick_epoch, now_mono)
 
             state = estimate_mt5_server_clock(
                 server, tick_epoch, now_mono, ntp_samples=query_ntp_sources(),

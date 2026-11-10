@@ -234,3 +234,38 @@ def test_mql5_clock_publisher_is_read_only():
     assert "FileOpen(" in script
     for forbidden in ("OrderSend(", "OrderSendAsync(", "OrderModify(", "OrderDelete("):
         assert forbidden not in script
+
+
+def test_duplicate_quote_polls_do_not_reset_advancing_tick_clock_baseline(monkeypatch):
+    """Repeated latest-quote reads must not erase the last advancing tick."""
+    from types import SimpleNamespace
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import NTPClockSample
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    class _MT5:
+        def account_info(self):
+            return SimpleNamespace(server="JustMarkets-Demo")
+
+    # The poller reads the same latest quote repeatedly, then receives a new
+    # quote 3 seconds later only 100 ms after the previous poll.
+    times = iter((10.0, 10.1, 10.2, 13.0, 13.1))
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(connector_module, "mt5", _MT5())
+    monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
+        NTPClockSample(1003.1, 13.1, 0.55, "ntp:a"),
+        NTPClockSample(1003.2, 13.1, 0.55, "ntp:b"),
+    ))
+    connector = MT5Connector.__new__(MT5Connector)
+    first = SimpleNamespace(time=8200, time_msc=8_200_000)
+    advanced = SimpleNamespace(time=8203, time_msc=8_203_000)
+
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    state = connector._read_server_clock_state(tick=advanced, symbol="XAUUSD")
+
+    assert state is not None
+    assert state.server == "JustMarkets-Demo"
+    assert abs(state.offset_seconds - 7199.9) < 0.2
