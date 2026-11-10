@@ -567,7 +567,7 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 
 ### Validation update — 2026-11-10
 
-- APEX TRADER CI run **3841** completed successfully: lint, Python 3.11 and Python 3.12 all passed on the code head containing the MT5 clock changes, typed environment allowlist, quote provenance validation, completed-bar benchmark correction, incremental volume-profile cache and its tests.
-- Gold Desk focused run **2001** passed on Python 3.11 and 3.12.
-- A duplicate full Apex run **3842** is still running against the same code head. The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference.
+- APEX TRADER CI runs **3841** and **3842** completed successfully: lint, Python 3.11 and Python 3.12 all passed on the code head containing the MT5 clock changes, typed environment allowlist, quote provenance validation, completed-bar benchmark correction, incremental volume-profile cache and its tests.
+- Gold Desk focused runs **2001** and **2006** passed on Python 3.11 and 3.12.
+- The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference. A new full Apex run **3847** is validating the current head.
 - The current PR remains draft pending final run completion and owner-host acceptance.
