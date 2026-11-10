@@ -324,3 +324,22 @@ def test_junction_creation_failure_restores_complete_source_data_directory(tmp_p
     assert (local / "apex_events.db").read_bytes() == b"source-database"
     assert (local / "decision_journal" / "entry.jsonl").read_text() == '{"event":1}'
     assert not bootstrap._is_link(local)
+
+
+
+def test_verified_backup_refuses_nested_directory_symlink(tmp_path):
+    source = tmp_path / "source"
+    external = tmp_path / "external"
+    destination = tmp_path / "backup"
+    source.mkdir()
+    external.mkdir()
+    (external / "outside.db").write_bytes(b"external")
+    (source / "external-link").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(
+        bootstrap.DataRepoBootstrapError, match="nested directory link"
+    ):
+        bootstrap._copy_tree_verified(source, destination)
+
+    assert not destination.exists()
+    assert (external / "outside.db").read_bytes() == b"external"
