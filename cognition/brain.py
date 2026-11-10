@@ -938,9 +938,8 @@ class CognitiveBrain:
         # A FORMING (identified-but-not-yet-triggered) opportunity must WAIT — even
         # at high thesis confidence — and a LEGACY direction+confidence reply that
         # carries NO opportunity set is OBSERVATIONAL input only: direction and
-        # confidence are not, by themselves, execution authority. The Brain may let
-        # such an opinion inform its confidence, but it never opens a campaign from
-        # a pre-collapsed directional scalar.
+        # confidence are not, by themselves, execution authority. The raw advisor
+        # field remains descriptive metadata; it is not synthesized or promoted.
         has_actionable_opportunity = (
             driving_opp is not None and driving_opp.is_actionable
         )
