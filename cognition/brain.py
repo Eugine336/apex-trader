@@ -327,10 +327,9 @@ class CognitiveBrain:
         self._native_management = NativePositionManager()
         self._campaign_memory: Optional[Any] = None
         self._independent_originations = 0
-        # Native-only reasoning is a first-class path. It is sized by its own
-        # evidence-derived confidence and net EV, with the same shared portfolio
-        # and owner-risk admission as advisor-assisted opportunities. No advisor-
-        # absence discount is applied.
+        # Native-only reasoning is a first-class path. Its provisional exposure
+        # derives from verified net EV and payoff geometry; the same shared
+        # portfolio and owner-risk admission applies as in advisor-assisted flow.
         # Article X — pattern EVOLUTION. An optional
         # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
         # detected structural patterns preceded winning vs losing campaigns and
@@ -491,9 +490,9 @@ class CognitiveBrain:
                 # AI is an optional advisor, not the source of truth. The native
                 # Brain has already analysed the market and challenged its own
                 # hypotheses above, so it may originate independently only when
-                # structured patterns, confidence, uncertainty and net EV pass
-                # the same conservative native-only thresholds used on provider
-                # outage. A missing advisor must not disable deterministic trading.
+                # structured evidence, activation, geometry, verified net EV and
+                # shared risk admission pass. A missing advisor must not disable
+                # deterministic trading.
                 independent = self._originate_independent(
                     symbol, consolidation, analysis, hypotheses,
                     reason_txt="no external advisor configured — native Brain-only decision",
@@ -642,20 +641,14 @@ class CognitiveBrain:
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
-        # Part XXV — multidimensional confidence. Resolve each dimension (absent ⇒
-        # the overall confidence) and blend to an EFFECTIVE conviction = the
-        # weakest dimension. A strong thesis with poor execution/timing is not an
-        # act-now trade; this makes EV, the act gate AND sizing reflect that, while
-        # a legacy single-confidence reply is unchanged (every dim == confidence).
+        # Part XXV — retain decomposed, uncalibrated reasoning-strength metadata.
+        # The weakest dimension is reported descriptively; it is not probability,
+        # an EV input, an action gate or a position-size input. A legacy scalar
+        # resolves missing dimensions for backward-compatible observability.
         conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
 
-        # Article XIX — the Council is graded on reasoning QUALITY, not counted.
-        # A shallow advisor reply (bare direction + confidence) is trusted far
-        # less than a deep one that states its hypothesis, invalidation, expected
-        # excursions and alternatives. The quality score (0.1–1.0) pulls a shallow
-        # opinion's conviction toward the act threshold for SIZING, so a thin read
-        # cannot claim full size even if its stated confidence is high; a fully
-        # reasoned opinion keeps its stated conviction.
+        # Article XIX — retain a descriptive reasoning-quality assessment for
+        # audit. It does not become probability, qualify an action or alter size.
         quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
 
         # Art XXXI — apply the Brain's demonstrated calibration correction to the
@@ -748,10 +741,9 @@ class CognitiveBrain:
         eff_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
             eff_conf, brain_lead)
 
-        # V-013 — degraded-cognition attenuation is the FINAL conviction modifier
-        # (after synthesis / brain-integration / patterns) so the recorded
-        # confidence, the EV, the sizing and the act gate all reflect the reduced
-        # council coverage — degradation is enforced, not merely observed.
+        # V-013 — degraded-cognition attenuation affects only the descriptive
+        # reasoning-strength record. Advisor quorum is enforced independently by
+        # the action-authority checks; this metadata does not alter EV or sizing.
         degraded_note = ""
         if penalise_degraded:
             _before = eff_conf
@@ -1122,9 +1114,8 @@ class CognitiveBrain:
 
         # Apex chooses methods from the current market state. A global scalar
         # confidence floor or uncertainty ceiling must not replace that reasoning.
-        # Reasoning-strength metadata may conservatively cap sizing, but it never
-        # contributes to expected value or acts as an entry threshold. Exposure still requires a
-        # directional, activated first-class opportunity, positive cost-adjusted
+        # Reasoning-strength metadata is descriptive only. Exposure still requires
+        # a directional, activated first-class opportunity, positive cost-adjusted
         # EV, verified advisor quorum where applicable, independent market evidence,
         # fresh verified costs, adequate data quality and shared portfolio/risk review.
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
@@ -1763,7 +1754,7 @@ class CognitiveBrain:
             else:
                 reason_txt = why
             logger.info(
-                "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
+                "[brain] MANAGE %s held=%s → %s | thesis=%s reasoning_strength=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
                 (thesis_state.lower() or mgmt_action.lower()
                  or opp_status.lower() or "degraded"), eff_conf,
@@ -3216,7 +3207,7 @@ class CognitiveBrain:
             with self._lock:
                 self._independent_originations += 1
             logger.info(
-                "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ conf %.2f, EV %.4fR — no advisor",
+                "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ reasoning_strength %.2f, EV %.4fR — no advisor",
                 symbol, direction, lead.statement[:60], lead_conf, expected_value,
             )
             return self._record(BrainOutput(
