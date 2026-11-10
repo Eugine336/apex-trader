@@ -1151,6 +1151,7 @@ class CognitionLoop:
                             "source_timestamp_verified": True,
                             "symbol": target_symbol,
                             "source_module": str(getattr(item, "source_module", "") or ""),
+                            "raw_fields": dict(quote.get("raw_fields") or {}),
                             "evidence_id": evidence_id,
                         })
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed quote fields
@@ -1446,6 +1447,7 @@ class CognitionLoop:
                             ),
                             "symbol": str(getattr(evidence, "symbol", "") or ""),
                             "source_module": str(getattr(evidence, "source_module", "") or ""),
+                            "raw_fields": dict(quote.get("raw_fields") or {}),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: skip malformed candidate evidence row
