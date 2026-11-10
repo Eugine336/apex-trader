@@ -385,7 +385,7 @@ class _OpenBrain:
             },
         )
         self.last_campaign = campaign
-        return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
+        return SimpleNamespace(decision=decision, campaign=campaign)
 
     def reason_portfolio(self, outputs, existing_positions):
         # The test double models a successful Brain book-review pass.
@@ -750,8 +750,7 @@ class _ManageBrain:
 
     def reason(self, market_state, now=None):
         return SimpleNamespace(
-            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=False),
-            direction="LONG")
+            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=False))
 
     def manage(self, position, market_state, now=None):
         self.managed += 1
