@@ -184,7 +184,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
             },
         }
         return Evidence(
-            source_module="market.price_action",
+            source_module="market.live_quote",
             domain=EvidenceDomain.MULTI_TIMEFRAME,
             symbol=symbol,
             evidence_id=evidence_id,
@@ -296,7 +296,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     )
     initial_market = MarketState(symbol="EURUSD", created_epoch=1000.0)
     initial_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1000.0,
@@ -332,7 +332,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
 
     later_market = MarketState(symbol="EURUSD", created_epoch=1301.0)
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -349,7 +349,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     ))
     # These newer-looking records are not valid EURUSD, point-in-time quotes.
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="GBPUSD",
         timestamp_epoch=1301.0,
@@ -363,7 +363,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         }},
     ))
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -377,7 +377,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         }},
     ))
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -571,6 +571,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 {
                     "evidence_id": f"quote-{index}",
                     "symbol": "EURUSD",
+                    "source_module": "market.live_quote",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
                     "relevance_horizon_seconds": 90.0,
@@ -616,6 +617,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "timestamp_epoch": decision_epoch + 300.0,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
+                "source_module": "market.live_quote",
                 "raw_fields": mt5_quote_provenance(decision_epoch + 300.0),
                 "evidence_id": f"outcome-{index}",
             },
