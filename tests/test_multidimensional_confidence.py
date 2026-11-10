@@ -14,7 +14,6 @@ from cognition.brain import CognitiveBrain
 from test_support.market_geometry import add_market_geometry
 from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.evidence_adapters import evidence_from_reasoning
-from cognition.expected_value import effective_confidence
 from llm.reasoner import LLMOpinion
 from llm.reasoning_orchestrator import EngineOpinion
 
