@@ -480,3 +480,18 @@ def test_router_keeps_unverified_tick_raw_but_does_not_drive_candle_close():
     assert raw == [unverified, trusted]
     assert verified == [trusted]
     assert detector.received == [trusted]
+
+
+def test_live_candle_aggregator_ignores_unverified_source_time():
+    from tick.live_candle_aggregator import LiveCandleAggregator
+
+    aggregator = LiveCandleAggregator()
+    unverified = Tick(
+        symbol="EURUSD", bid=1.1, ask=1.1002,
+        timestamp=datetime(2026, 11, 10, 12, 0, 0),
+        source="mt5", source_timestamp_verified=False,
+    )
+
+    aggregator.on_tick(unverified)
+
+    assert aggregator.get_dataframe("EURUSD", "M1") is None
