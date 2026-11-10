@@ -975,13 +975,6 @@ class RiskConfig:
         self.allow_min_lot_over_risk = _llm_env_bool(
             "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
         )
-        self.scan_directional_exits_enabled = _llm_env_bool(
-            "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
-        )
-        self.legacy_mechanical_exit_fallback_enabled = _llm_env_bool(
-            "RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED",
-            self.legacy_mechanical_exit_fallback_enabled,
-        )
 
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
