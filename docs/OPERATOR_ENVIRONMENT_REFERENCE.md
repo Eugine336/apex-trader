@@ -102,8 +102,6 @@ This is an allowlist, not a blanket environment override of all 716 typed fields
 | APEX_ADAPTIVE_TUNER_ENABLED | AdaptiveTunerConfig.enabled | bool | True |
 | APEX_ADAPTIVE_TUNER_PERIODIC_INTERVAL_SECONDS | AdaptiveTunerConfig.periodic_interval_seconds | float | 900.0 |
 | APEX_ADAPTIVE_TUNER_SCAN_INTERVAL_SECONDS | AdaptiveTunerConfig.scan_interval_seconds | float | 3600.0 |
-| APEX_CROSS_INSTRUMENT_QUEUE_ENABLED | CrossInstrumentConfig.queue_enabled | bool | True |
-| APEX_CROSS_INSTRUMENT_QUEUE_WINDOW_MS | CrossInstrumentConfig.queue_window_ms | int | 1000 |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | CrossInstrumentConfig.proactive_scan_enabled | bool | True |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | CrossInstrumentConfig.proactive_scan_interval_seconds | float | 60.0 |
 
@@ -415,8 +413,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | APEX_ADAPTIVE_TUNER_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_ADAPTIVE_TUNER_PERIODIC_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_ADAPTIVE_TUNER_SCAN_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_QUEUE_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
-| APEX_CROSS_INSTRUMENT_QUEUE_WINDOW_MS | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_ENABLED | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_CROSS_INSTRUMENT_PROACTIVE_SCAN_INTERVAL_SECONDS | 10. Typed operator runtime controls | (blank; typed default or unset) |
 | APEX_PERFORMANCE_M1_CACHE_TTL | Additional allowlisted controls containing numeric field names. | (blank; typed default or unset) |
