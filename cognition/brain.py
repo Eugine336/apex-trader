@@ -3560,7 +3560,7 @@ class CognitiveBrain:
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="native analysis completed; no qualified opportunity met action criteria",
-            confidence=0.0, uncertainty=uncertainty,
+            confidence=None, uncertainty=uncertainty,
             campaign_recommendation="observe",
             risk_rationale=(
                 "Native-only opportunity qualification did not pass; no new exposure is authorised. "
