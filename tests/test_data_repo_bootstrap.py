@@ -112,7 +112,8 @@ def test_fresh_clone_automatically_clones_and_links_sibling_data_repo(tmp_path, 
     assert result == source / "data"
     assert result.is_symlink()
     assert result.resolve() == target
-    assert len(commands) == 1
+    assert commands[0][0] == "clone"
+    assert any(args[:2] == ["lfs", "install"] for args in commands)
     assert "https://github.com/Eugine336/apex-trader-data.git" in commands[0]
 
 
