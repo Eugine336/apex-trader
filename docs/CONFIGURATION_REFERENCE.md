@@ -17,10 +17,11 @@ startup configuration. The application must not rewrite `.env`.
 
 `gold` resolves to exactly `XAUUSD`. `full` resolves the broker-supported
 universe within the selected categories. `selected` uses every symbol in
-`TRADING_SYMBOLS`; `single` requires exactly one symbol. The example template sets `TRADING_MODE_LOCKED=true`, so the declared Gold
-universe is enforced across instances by default. Set it to `false` only when
-persisted per-user universe preferences should override the process default;
-this does not lock owner risk-limit controls.
+`TRADING_SYMBOLS`; `single` requires exactly one symbol. The example template sets `TRADING_MODE_LOCKED=true`. If `TRADING_MODE` is
+explicitly set and `TRADING_MODE_LOCKED` is absent, the process mode is also
+locked by default so saved per-user preferences cannot silently widen it. Set
+`TRADING_MODE_LOCKED=false` only when persisted per-user universe preferences
+should override the process default; this does not lock owner risk-limit controls.
 
 ### New exposure and position management
 
