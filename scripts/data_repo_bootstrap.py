@@ -458,7 +458,7 @@ def _checkout_missing_index_entries(target: Path) -> int:
             env=git_ceiling_env(target),
         ).stdout
         is_lfs_pointer = blob.startswith(
-            b"version https://git-lfs.github.com/spec/v1\\n"
+            b"version https://git-lfs.github.com/spec/v1\n"
         )
         attributes = _run_git(
             ["check-attr", "filter", "--", relative.as_posix()], cwd=target
