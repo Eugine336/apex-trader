@@ -1,12 +1,70 @@
 """Session/week volume-profile readings with explicit OHLCV proxy provenance."""
 from __future__ import annotations
 
+import hashlib
+import threading
+from collections import OrderedDict
+from typing import Any
+
 from cognition.concepts.auction_utils import (
     clean_bars, last_source_epoch, nearest_structural_level, percentile_strength,
     profile_from_bars, session_info, source_epoch, utc_week_key,
 )
 from cognition.concepts.base import LONG, SHORT, ConceptReading, Implication, reference_price
 from cognition.contracts import EvidenceDomain
+
+
+_WEEK_PROFILE_CACHE: OrderedDict[
+    tuple[str, str, tuple[int, int]], tuple[str, dict[str, Any] | None]
+] = OrderedDict()
+_WEEK_PROFILE_CACHE_LOCK = threading.RLock()
+_WEEK_PROFILE_CACHE_MAX_ENTRIES = 4096
+
+
+def clear_volume_profile_cache() -> None:
+    """Clear cached weekly profiles for deterministic tests and data reloads."""
+    with _WEEK_PROFILE_CACHE_LOCK:
+        _WEEK_PROFILE_CACHE.clear()
+
+
+def _week_fingerprint(bars: list[dict]) -> str:
+    digest = hashlib.blake2b(digest_size=20)
+    for bar in bars:
+        for key, value in sorted(bar.items(), key=lambda item: str(item[0])):
+            digest.update(str(key).encode("utf-8", errors="replace"))
+            digest.update(repr(value).encode("utf-8", errors="replace"))
+    return digest.hexdigest()
+
+
+def _cached_week_profile(
+    symbol: str,
+    timeframe: str,
+    week: tuple[int, int],
+    bars: list[dict],
+    metrics: dict[str, int],
+) -> dict[str, Any] | None:
+    """Recompute only a week whose OHLCV content changed.
+
+    Appending a new candle invalidates only the active week. Closed historical
+    week profiles are reused; any historical correction changes that week's
+    fingerprint and forces a recomputation.
+    """
+    key = (str(symbol or "").strip().upper(), str(timeframe or "").upper(), week)
+    fingerprint = _week_fingerprint(bars)
+    with _WEEK_PROFILE_CACHE_LOCK:
+        cached = _WEEK_PROFILE_CACHE.get(key)
+        if cached is not None and cached[0] == fingerprint:
+            _WEEK_PROFILE_CACHE.move_to_end(key)
+            metrics["hits"] = metrics.get("hits", 0) + 1
+            return cached[1]
+    profile = profile_from_bars(bars)
+    with _WEEK_PROFILE_CACHE_LOCK:
+        _WEEK_PROFILE_CACHE[key] = (fingerprint, profile)
+        _WEEK_PROFILE_CACHE.move_to_end(key)
+        while len(_WEEK_PROFILE_CACHE) > _WEEK_PROFILE_CACHE_MAX_ENTRIES:
+            _WEEK_PROFILE_CACHE.popitem(last=False)
+    metrics["misses"] = metrics.get("misses", 0) + 1
+    return profile
 
 
 class VolumeProfileConcept:
@@ -38,11 +96,22 @@ class VolumeProfileConcept:
             ordered_weeks = sorted(week_groups)
             current_week = week_groups.get(ordered_weeks[-1], []) if ordered_weeks else []
             previous_week = week_groups.get(ordered_weeks[-2], []) if len(ordered_weeks) > 1 else []
-            current_profile = profile_from_bars(current_week)
-            previous_profile = profile_from_bars(previous_week)
+            profile_cache_metrics = {"hits": 0, "misses": 0}
+            current_profile = (
+                _cached_week_profile(symbol, timeframe, ordered_weeks[-1],
+                                     current_week, profile_cache_metrics)
+                if ordered_weeks else None
+            )
+            previous_profile = (
+                _cached_week_profile(symbol, timeframe, ordered_weeks[-2],
+                                     previous_week, profile_cache_metrics)
+                if len(ordered_weeks) > 1 else None
+            )
             historical_concentrations = []
             for week in ordered_weeks[:-1]:
-                profile = profile_from_bars(week_groups[week])
+                profile = _cached_week_profile(
+                    symbol, timeframe, week, week_groups[week], profile_cache_metrics
+                )
                 if profile and profile["poc_concentration"] is not None:
                     historical_concentrations.append(profile["poc_concentration"])
             strength = percentile_strength(
@@ -50,13 +119,14 @@ class VolumeProfileConcept:
                 historical_concentrations,
             )
 
-            session = session_info(current)
+            session_rows = [(bar, session_info(bar)) for bar in bars]
+            session = session_rows[-1][1]
             session_profile = None
             if session["verified"]:
                 session_bars = [
-                    bar for bar in bars
-                    if session_info(bar)["verified"]
-                    and session_info(bar)["open_epoch"] == session["open_epoch"]
+                    bar for bar, bar_session in session_rows
+                    if bar_session["verified"]
+                    and bar_session["open_epoch"] == session["open_epoch"]
                 ]
                 session_profile = profile_from_bars(session_bars)
             else:
@@ -149,15 +219,20 @@ class VolumeProfileConcept:
                 "historical_profile_samples": len(historical_concentrations),
                 "poc_concentration_percentile": strength,
                 "price_assignment": current_profile["price_assignment"] if current_profile else "unavailable",
+                "weekly_profile_cache_hits": profile_cache_metrics["hits"],
+                "weekly_profile_cache_misses": profile_cache_metrics["misses"],
             }
             readings.append(ConceptReading(
                 concept=self.key, timeframe=timeframe, domain=EvidenceDomain.VOLUME,
                 applicable=current_profile is not None,
                 applicability_reason="A volume profile is applicable when completed OHLC bars have positive broker volume or an explicitly labeled tick-volume proxy.",
                 observation=f"{timeframe} weekly volume profile state={state}; session profile availability is reported separately.",
-                implications=implications, facts=facts,source_bar_epoch=epoch,
- source_timestamp_verified=epoch is not None,
+                implications=implications, facts=facts, source_bar_epoch=epoch,
+                source_timestamp_verified=epoch is not None,
                 reference_close=reference, reference_timeframe=reference_tf,
                 unknowns=tuple(dict.fromkeys(unknowns)),
             ))
         return readings
+
+
+__all__ = ["VolumeProfileConcept", "clear_volume_profile_cache"]
