@@ -3,6 +3,11 @@
 Only operational controls are exposed here. Analytical definitions, learned
 thresholds, broker-derived facts, OwnerLimits and constitutional safety gates
 are intentionally excluded from generic environment mutation.
+
+Variable names are generated as APEX_<SECTION>_<FIELD> from the explicit
+allowlist below. Empty assignments preserve dataclass defaults; invalid values
+fail AppConfig construction. Keep docs/OPERATOR_ENVIRONMENT_REFERENCE.md and
+.env.example synchronized with this registry (enforced by tests).
 """
 from __future__ import annotations
 
