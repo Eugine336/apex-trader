@@ -736,6 +736,7 @@ class CampaignRegistry:
         pnl: float = 0.0,
         won: Optional[bool] = None,
         ticket: str = "",
+        platform: str = "",
         now: Optional[float] = None,
     ) -> Optional[Campaign]:
         """Record a closed leg and, when terminal, end the campaign.
@@ -762,6 +763,7 @@ class CampaignRegistry:
                     pnl=_safe_float(pnl),
                     exit_cause=cause,
                     ticket=str(ticket or ""),
+                    platform=str(platform or "").strip().lower(),
                 ))
                 camp.realized_pnl += _safe_float(pnl)
 
