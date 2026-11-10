@@ -157,3 +157,27 @@ def test_operator_environment_reference_documents_every_typed_override():
         "Operator environment reference is missing typed settings: "
         + ", ".join(missing)
     )
+
+
+def test_all_root_and_frontend_environment_keys_are_in_operator_reference():
+    reference = (ROOT / "docs" / "OPERATOR_ENVIRONMENT_REFERENCE.md").read_text(
+        encoding="utf-8"
+    )
+    templates = (
+        ROOT / ".env.example",
+        ROOT / "frontend" / ".env.example",
+        ROOT / "dashboard" / "frontend" / ".env.example",
+    )
+    missing = []
+    for template in templates:
+        keys = re.findall(
+            r"^([A-Z][A-Z0-9_]*)=", template.read_text(encoding="utf-8"), re.M
+        )
+        missing.extend(
+            f"{template.relative_to(ROOT)}:{key}"
+            for key in keys
+            if f"| {key} |" not in reference
+        )
+    assert not missing, (
+        "Environment reference is missing variables: " + ", ".join(sorted(missing))
+    )
