@@ -208,7 +208,7 @@ def test_low_confidence_negative_ev_rejects_without_opening():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.3)))
     out = brain.reason(_confident_state(calibrated_probability=0.3, expected_return_r=0.01))
     # Negative expected value is a defensible rejection, not merely a wait.
-    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
     assert out.campaign is None
 
 
@@ -219,7 +219,7 @@ def test_high_uncertainty_blocks_action():
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
 
 
-def test_flat_high_confidence_rejects_opportunity():
+def test_flat_reports_no_opportunity_independent_of_confidence():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("FLAT", 0.9)))
     out = brain.reason(_confident_state())
     assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
