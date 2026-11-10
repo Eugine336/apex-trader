@@ -46,7 +46,6 @@ from cognition.contracts import (
     Opportunity,
     OpportunityState,
 )
-from cognition.expected_value import expected_value_r
 from cognition.opportunity_geometry import derive_opportunity_geometry
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
 from cognition.native_management import NativePositionManager
@@ -763,9 +762,9 @@ class CognitiveBrain:
             )
 
         supporting, contradicting = self._split_evidence(market_state, direction)
-        # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
-        # the win-probability (confidence) and the payoff geometry, replacing the
-        # former confidence-as-EV proxy. Part V/VI — carry the
+        # Part IX Art 1/7 — expected value comes only from producer-verified
+        # fixed-horizon return and verified execution costs. Reasoning strength
+        # is not a win probability and never enters this calculation. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         # Build the first-class opportunity set before qualifying payoff
@@ -872,11 +871,9 @@ class CognitiveBrain:
             )
             if direction in (LONG, SHORT) else (False, 0.0, "not directional")
         )
-        # Effective confidence is retained for diagnostics only. It is not a
-        # substitute for producer-validated, fixed-horizon expected return.
-        diagnostic_expected_value = expected_value_r(
-            eff_conf, reward_r, risk_r, cost_r=cost_r,
-        )
+        # No proxy EV is calculated from uncalibrated reasoning strength. When
+        # the producer-verified return is absent, expected value remains unknown
+        # and the decision package's numeric EV stays at its neutral storage value.
         # DecisionPackage.expected_value stores producer-validated net expected R.
         # Never place an uncalibrated diagnostic estimate in that field.
         # The producer's fixed-horizon outcome is an empirical directional
@@ -919,8 +916,8 @@ class CognitiveBrain:
                 f"{expected_value:.4f}R net (fixed-horizon expected return {expected_return_r:.4f}R "
                 f"less verified cost {cost_r:.4f}R; {return_source})"
                 if return_verified else (
-                    f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
-                    "no producer-verified fixed-horizon expected return; DecisionPackage EV is zero"
+                    "UNKNOWN: no producer-verified fixed-horizon expected return; "
+                    "no probability or diagnostic EV is inferred from reasoning strength"
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
@@ -1125,8 +1122,8 @@ class CognitiveBrain:
 
         # Apex chooses methods from the current market state. A global scalar
         # confidence floor or uncertainty ceiling must not replace that reasoning.
-        # Confidence profile and market uncertainty continuously shape EV and size;
-        # they are not universal binary entry recipes. Exposure still requires a
+        # Reasoning-strength metadata may conservatively cap sizing, but it never
+        # contributes to expected value or acts as an entry threshold. Exposure still requires a
         # directional, activated first-class opportunity, positive cost-adjusted
         # EV, verified advisor quorum where applicable, independent market evidence,
         # fresh verified costs, adequate data quality and shared portfolio/risk review.
@@ -3040,10 +3037,9 @@ class CognitiveBrain:
             if not cost_verified:
                 return None
 
-            # Acknowledge uncertainty continuously rather than converting it into
-            # a universal binary cutoff. Uncertainty attenuates the probability
-            # estimate used for expectancy; it does not alone prohibit a market
-            # hypothesis from being evaluated as an opportunity.
+            # Acknowledge uncertainty as an evidence-quality descriptor. It may
+            # qualify the descriptive reasoning-strength metadata, but it never
+            # converts that metadata into a probability or expected-return input.
             # Article X — pattern history may inform calibration when available,
             # but no specific pattern name is required for native reasoning.
             raw_lead_conf = _clamp01(lead.confidence)
@@ -3148,7 +3144,7 @@ class CognitiveBrain:
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
-                    f"evaluated: native hypothesis effective confidence {lead_conf:.2f}, "
+                    f"evaluated: native hypothesis reasoning strength {lead_conf:.2f}, "
                     f"uncertainty {uncertainty:.2f}, and cost-adjusted EV {expected_value:.4f}R; "
                     "final admission still requires current activation, broker and portfolio checks"),
                 "brain_independent_origination": origination_note,
@@ -3181,8 +3177,8 @@ class CognitiveBrain:
             )
             desired_exposure = round(base_exposure, 4)
             questions["sizing_rationale"] = (
-                f"native origination sized {desired_exposure:.4f} from its own "
-                "evidence-derived confidence and positive net expected value; "
+                f"native origination sized {desired_exposure:.4f} using reasoning strength "
+                "only as a conservative exposure cap alongside positive net expected value; "
                 "advisor availability does not change sizing"
             )
             invalidation_conditions = (
