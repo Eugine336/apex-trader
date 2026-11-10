@@ -430,11 +430,11 @@ def _checkout_missing_index_entries(target: Path) -> int:
         env=git_ceiling_env(target),
     ).stdout
     materialized = 0
-    for record in raw.split(b"\\0"):
+    for record in raw.split(b"\0"):
         if not record:
             continue
         try:
-            metadata, encoded_path = record.split(b"\\t", 1)
+            metadata, encoded_path = record.split(b"\t", 1)
             mode, object_id, stage = metadata.decode("ascii").split()
             relative = Path(os.fsdecode(encoded_path))
         except (ValueError, UnicodeDecodeError) as exc:
