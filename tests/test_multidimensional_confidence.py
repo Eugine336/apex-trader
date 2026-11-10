@@ -187,6 +187,7 @@ def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkey
         assert native_calls[0][0][3] is hypotheses
         assert native_calls[0][1]["advisor_status"] == "available"
 
+
 def test_unqualified_native_fallback_observes_when_advisor_quorum_is_unknown(monkeypatch):
     brain = CognitiveBrain(
         reasoner=SimpleNamespace(
