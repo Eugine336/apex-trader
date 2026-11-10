@@ -1393,7 +1393,7 @@ class CognitiveBrain:
                     continue
                 ac = self._asset_class(o.decision.symbol)
                 campaign = getattr(o, "campaign", None)
-            d = str(getattr(campaign, "direction", FLAT) or FLAT).upper()
+                d = str(getattr(campaign, "direction", FLAT) or FLAT).upper()
                 if not ac or d not in (LONG, SHORT):
                     continue
                 key = (ac, d)
