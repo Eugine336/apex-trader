@@ -1389,28 +1389,18 @@ class CognitiveBrain:
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
-        # Part XXVIII — capital is competitive: sizing reflects EXPECTED VALUE,
-        # not confidence alone. Normalise EV against the reward multiple and take
-        # the LESSER of confidence and EV-proportional sizing — a high-confidence
-        # trade with poor payoff geometry is sized down; an excellent-payoff
-        # trade is sized to (never above) its confidence, for risk control.
+        # Part XXVIII — reasoning-strength metadata is descriptive only. It is
+        # not a probability, expected return, entry gate or position-size input.
+        # The Brain's normalized opportunity economics determine the provisional
+        # exposure request; the canonical portfolio/risk authority subsequently
+        # calculates executable volume from verified account equity, stop risk,
+        # instrument economics and owner limits. Unknown EV never reaches here.
         ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, reward_r)))
-        # Article XIX — a shallow advisor reply is sized down: the effective
-        # conviction is pulled toward the act threshold in proportion to how thin
-        # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
-        # Reasoning quality may reduce exposure, never lift it above the
-        # effective confidence. In particular, weak execution confidence must
-        # not be floored back up to the global minimum action threshold.
-        weighted_confidence = _clamp01(
-            eff_conf * (0.5 + 0.5 * quality_score)
-        )
-        desired_exposure = round(min(weighted_confidence, ev_normalized), 4)
+        desired_exposure = round(ev_normalized, 4)
         questions["sizing_rationale"] = (
-            f"exposure {desired_exposure:.4f} = min(quality-weighted confidence "
-            f"{weighted_confidence:.2f}, ev_normalized {ev_normalized:.2f}) — "
-            f"effective confidence {eff_conf:.2f} x quality scale "
-            f"{(0.5 + 0.5 * quality_score):.2f}, "
-            f"EV {expected_value:.4f}R on {reward_r:.1f}R reward"
+            f"provisional exposure {desired_exposure:.4f} from verified net "
+            f"expected return {expected_value:.4f}R normalized by payoff "
+            f"geometry {reward_r:.1f}R; reasoning strength is excluded"
         )
         campaign = CampaignSpecification(
             symbol=symbol, thesis=decision.thesis, direction=direction,
