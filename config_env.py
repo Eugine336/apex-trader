@@ -177,6 +177,15 @@ def _validate_operational_config(config: Any) -> None:
     if int(performance.parallel_scan_max_workers) < 1:
         raise ValueError("APEX_PERFORMANCE_PARALLEL_SCAN_MAX_WORKERS must be >= 1")
 
+    cache_ttls = performance.candle_cache_ttl
+    if not isinstance(cache_ttls, dict) or any(
+        not isinstance(key, str)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+        for key, value in cache_ttls.items()
+    ):
+        raise ValueError("APEX_PERFORMANCE_CANDLE_CACHE_TTL must be a JSON object of positive finite TTLs")
+
     ops = config.ops
     for name in (
         "shutdown_timeout_seconds", "heartbeat_interval_seconds",
@@ -188,10 +197,20 @@ def _validate_operational_config(config: Any) -> None:
             raise ValueError(f"APEX_OPS_{name.upper()} must be positive")
     if int(ops.reconnect_max_retries) < 0:
         raise ValueError("APEX_OPS_RECONNECT_MAX_RETRIES cannot be negative")
+    if str(ops.log_format).strip().lower() not in {"json", "text"}:
+        raise ValueError("APEX_OPS_LOG_FORMAT must be json or text")
+    if str(ops.log_level).strip().upper() not in {
+        "TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"
+    }:
+        raise ValueError("APEX_OPS_LOG_LEVEL must be a supported log level")
 
     backup = config.data_backup
     if float(backup.interval_hours) <= 0 or float(backup.max_file_size_mb) <= 0:
         raise ValueError("APEX_DATA_BACKUP interval and max file size must be positive")
+    if not isinstance(backup.exclude_patterns, list) or not all(
+        isinstance(value, str) and value for value in backup.exclude_patterns
+    ):
+        raise ValueError("APEX_DATA_BACKUP_EXCLUDE_PATTERNS must be a JSON array of non-empty strings")
 
     backtest = config.backtest
     if float(backtest.default_spread_pips) < 0 or float(backtest.default_slippage_pips) < 0:
@@ -201,6 +220,26 @@ def _validate_operational_config(config: Any) -> None:
 
     if int(config.post_close_tracker.max_retries) < 1:
         raise ValueError("APEX_POST_CLOSE_TRACKER_MAX_RETRIES must be >= 1")
+    if not isinstance(config.post_close_tracker.check_intervals_minutes, list) or any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        or not math.isfinite(float(value)) or float(value) < 0.0
+        for value in config.post_close_tracker.check_intervals_minutes
+    ):
+        raise ValueError("APEX_POST_CLOSE_TRACKER_CHECK_INTERVALS_MINUTES must be a JSON array of non-negative numbers")
+    if not isinstance(config.signal_ledger.signal_grading_check_intervals, list) or any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        or not math.isfinite(float(value)) or float(value) <= 0.0
+        for value in config.signal_ledger.signal_grading_check_intervals
+    ):
+        raise ValueError("APEX_SIGNAL_LEDGER_SIGNAL_GRADING_CHECK_INTERVALS must be a JSON array of positive numbers")
+    if int(config.tuner_agent.max_tune_duration_seconds) <= 0:
+        raise ValueError("APEX_TUNER_AGENT_MAX_TUNE_DURATION_SECONDS must be positive")
+    if int(config.campaign.history_limit) < 1:
+        raise ValueError("APEX_CAMPAIGN_HISTORY_LIMIT must be >= 1")
+    if str(config.calibration.spread_sample_tf).upper() not in {
+        "M1", "M5", "M15", "M30", "H1", "H4", "D1"
+    }:
+        raise ValueError("APEX_CALIBRATION_SPREAD_SAMPLE_TF must be a supported timeframe")
     if int(config.developing_analysis.max_workers) < 1:
         raise ValueError("APEX_DEVELOPING_ANALYSIS_MAX_WORKERS must be >= 1")
     if int(config.tuner_agent.max_consecutive_failures) < 1:
