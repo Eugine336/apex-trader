@@ -7,6 +7,7 @@ Pending baselines persist to JSON so a restart inside the window keeps them.
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import math
 
 from brain.news_impact_tracker import NewsImpactTracker
@@ -121,3 +122,14 @@ def test_zero_price_is_noop(tmp_path):
     )
     trk.on_m5_close("EURUSD", 0.0, now=_T0 + timedelta(minutes=2), events=[_Event("USD", _T0)])
     assert trk._pending == {}
+
+
+
+def test_default_state_path_uses_isolated_runtime_data_directory(tmp_path, monkeypatch):
+    runtime_data = tmp_path / "runtime-data"
+    monkeypatch.setenv("APEX_DATA_DIR", str(runtime_data))
+
+    tracker = NewsImpactTracker(_FakeCalib())
+
+    assert Path(tracker.state_path) == runtime_data / "news_impact_pending.json"
+    assert not (Path(__file__).resolve().parents[1] / "data" / "news_impact_pending.json").exists()
