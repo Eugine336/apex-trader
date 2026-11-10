@@ -3,8 +3,8 @@
 The source checkout's data/ path is a stable runtime contract. On a fresh
 single-user clone this module provisions the sibling public data repository and
 routes that path to it before any database or trading subsystem is initialized.
-Existing data is copied without deletion; conflicting remote files are preserved
-in a timestamped backup before the local copy becomes active.
+Existing sibling data is backed up and adopted in place. Distinct source and
+sibling database files are retained independently; conflicts are not merged.
 """
 from __future__ import annotations
 
@@ -288,6 +288,7 @@ def bootstrap_data_repo(
         )
         if not ok:
             raise DataRepoBootstrapError(f"linked data repository is unsafe: {reason}")
+        _verify_git_lfs_and_tracking(resolved)
         return link
 
     if target.exists():
@@ -311,6 +312,8 @@ def bootstrap_data_repo(
         )
         if not ok:
             raise DataRepoBootstrapError(f"cloned data repository failed identity check: {reason}")
+        _run_git(["lfs", "install", "--local"], cwd=target)
+        _verify_git_lfs_and_tracking(target)
 
     if link.exists():
         if not link.is_dir():
@@ -343,4 +346,9 @@ def bootstrap_data_repo(
     )
     if not ok:
         raise DataRepoBootstrapError(f"post-bootstrap verification failed: {reason}")
+    _verify_git_lfs_and_tracking(target)
+    if link.resolve() != target.resolve():
+        raise DataRepoBootstrapError(
+            f"junction resolution mismatch: {link.resolve()} != {target.resolve()}"
+        )
     return link
