@@ -424,3 +424,41 @@ def test_mt5_poller_does_not_route_or_advance_unverified_history():
     assert len(router.ticks) == 1  # current broker-verified quote fallback only
     assert router.ticks[0].timestamp == stamp
     assert "EURUSD" not in poller._history_cursor
+
+
+def test_mt5_latest_quote_never_uses_host_timezone_for_naive_broker_time():
+    stamp = datetime(2026, 11, 10, 12, 0, 0)
+    quote = types.SimpleNamespace(
+        symbol="EURUSD",
+        bid=1.1000,
+        ask=1.1002,
+        time=stamp,
+        source_timestamp_verified=False,
+        quote_kind="bid_ask",
+        spread_unit="unknown",
+        raw_fields={},
+    )
+    router = _Router()
+    poller = tick_sources.MT5TickPoller(_PM(quote), router, ["EURUSD"], poll_interval=0.0)
+
+    assert poller._route_latest_quote("EURUSD", quote) is True
+    assert router.ticks[0].timestamp == stamp
+    assert router.ticks[0].source_timestamp_verified is False
+
+
+def test_mt5_latest_quote_rejects_non_finite_prices():
+    quote = types.SimpleNamespace(
+        symbol="EURUSD",
+        bid=float("nan"),
+        ask=1.1002,
+        time=datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc),
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        spread_unit="unknown",
+        raw_fields={},
+    )
+    router = _Router()
+    poller = tick_sources.MT5TickPoller(_PM(quote), router, ["EURUSD"], poll_interval=0.0)
+
+    assert poller._route_latest_quote("EURUSD", quote) is False
+    assert router.ticks == []
