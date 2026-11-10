@@ -60,6 +60,22 @@ def main() -> None:
     logger.info("=" * 60)
 
     config = AppConfig()
+
+    # Provision the dedicated public runtime-data repository before any broker,
+    # database, event-store, or trading subsystem can touch repo_root()/data.
+    # Per-user API instances retain their isolated APEX_DATA_DIR override.
+    try:
+        from scripts.data_repo_bootstrap import bootstrap_data_repo
+
+        _data_backup_cfg = getattr(config, "data_backup", None)
+        _data_repo_url = getattr(_data_backup_cfg, "data_repo_url", None)
+        _bootstrapped_data_path = bootstrap_data_repo(
+            data_repo_url=_data_repo_url or "https://github.com/Eugine336/apex-trader-data.git"
+        )
+        logger.info("[data-bootstrap] runtime data path ready: {}", _bootstrapped_data_path)
+    except Exception as exc:  # noqa: BLE001 — fail closed; later safety gate blocks new exposure
+        logger.critical("[data-bootstrap] automatic data repository setup failed: {}", exc)
+
     _apply_log_level(config.log_level)
 
     # ── Multi-tenant: apply per-user trading overrides when this instance was
