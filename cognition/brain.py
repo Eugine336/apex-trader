@@ -46,7 +46,6 @@ from cognition.contracts import (
     Opportunity,
     OpportunityState,
 )
-from cognition.expected_value import expected_value_r
 from cognition.opportunity_geometry import derive_opportunity_geometry
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION, identity_contract
 from cognition.native_management import NativePositionManager
@@ -256,7 +255,9 @@ class CognitiveBrain:
             self.identity_version, self.identity_statement,
         )
         self._reasoner = reasoner
-        self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
+        # Compatibility-only constructor input. Uncalibrated reasoning strength
+        # is metadata; it is never compared with a configured action threshold.
+        _ = min_confidence_to_act
         # Apex identity invariant: exposure is qualified by net expected value,
         # not a raw confidence-floor shortcut. Keep the argument for constructor
         # compatibility, but an explicit False cannot restore the legacy gate.
@@ -269,13 +270,9 @@ class CognitiveBrain:
         self.ev_primary_gate = True
         self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
-        self.allow_scale_in = bool(allow_scale_in)
-        self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
-        # Retained for config compatibility (wired from ``manage_exit_floor``).
-        # V-008 removed the legacy direction-based management tree that consulted
-        # this to auto-TIGHTEN on a weakening aligned read; management is now
-        # thesis-based, so it no longer drives a decision on its own.
-        self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Compatibility-only inputs from older callers. Scale-in, reverse and
+        # exit decisions are not authorized by configurable confidence floors.
+        _ = (allow_scale_in, reverse_confidence, exit_floor)
         # Article XX — advisor quorum: the Council must not become fake diversity.
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
@@ -756,9 +753,9 @@ class CognitiveBrain:
             )
 
         supporting, contradicting = self._split_evidence(market_state, direction)
-        # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
-        # the win-probability (confidence) and the payoff geometry, replacing the
-        # former confidence-as-EV proxy. Part V/VI — carry the
+        # Part IX Art 1/7 — expected value comes from producer-validated,
+        # fixed-horizon market outcomes and verified execution costs. Uncalibrated
+        # reasoning strength is not a win probability and cannot create EV. Part V/VI — carry the
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         # Build the first-class opportunity set before qualifying payoff
@@ -865,12 +862,8 @@ class CognitiveBrain:
             )
             if direction in (LONG, SHORT) else (False, 0.0, "not directional")
         )
-        # Effective confidence is retained for diagnostics only. It is not a
-        # substitute for producer-validated, fixed-horizon expected return.
-        diagnostic_expected_value = expected_value_r(
-            eff_conf, reward_r, risk_r, cost_r=cost_r,
-        )
         # DecisionPackage.expected_value stores producer-validated net expected R.
+        # No diagnostic EV is manufactured from uncalibrated reasoning strength.
         # Never place an uncalibrated diagnostic estimate in that field.
         # The producer's fixed-horizon outcome is an empirical directional
         # return in R. It is not a target-hit probability, so do not multiply it
@@ -884,7 +877,7 @@ class CognitiveBrain:
             f"UNVERIFIED: no fresh valid execution cost; diagnostic default {cost_r:.4f}R"
         )
         hypotheses = self._build_hypotheses(
-            direction, eff_conf, reward_r, risk_r,
+            direction, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
             supporting, contradicting,
         )
@@ -912,8 +905,8 @@ class CognitiveBrain:
                 f"{expected_value:.4f}R net (fixed-horizon expected return {expected_return_r:.4f}R "
                 f"less verified cost {cost_r:.4f}R; {return_source})"
                 if return_verified else (
-                    f"DIAGNOSTIC ONLY {diagnostic_expected_value:.4f}R; "
-                    "no producer-verified fixed-horizon expected return; DecisionPackage EV is zero"
+                    "UNVERIFIED: no producer-verified fixed-horizon expected return; "
+                    "no diagnostic EV is computed from uncalibrated reasoning strength"
                     if direction in (LONG, SHORT) else "not established"
                 )
             ),
@@ -1246,7 +1239,6 @@ class CognitiveBrain:
                 self.ev_primary_gate
                 and directional
                 and not ev_ok
-                and confidence >= self.min_confidence_to_act
                 and limiting_dim in ("timing", "execution")
             ):
                 # A thesis can remain valid while timing/execution conditions are
@@ -1255,8 +1247,7 @@ class CognitiveBrain:
                 # dimension lowered effective EV at this instant.
                 reason_txt = (
                     f"{limiting_dim} conditions insufficient — waiting "
-                    f"(thesis holds at {confidence:.2f}, "
-                    f"{limiting_dim} {conf_dims[limiting_dim]:.2f}); "
+                    f"({limiting_dim} evidence {conf_dims[limiting_dim]:.2f}); "
                     "reassess when execution/timing evidence improves"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
@@ -1297,12 +1288,10 @@ class CognitiveBrain:
                 # clears the bar) but a WEAK actionability dimension (timing or
                 # execution) pulled the effective conviction below it, this is a
                 # deliberate WAIT for better conditions, not a rejected thesis.
-                elif (confidence >= self.min_confidence_to_act
-                        and limiting_dim in ("timing", "execution")):
+                elif limiting_dim in ("timing", "execution"):
                     reason_txt = (
                         f"{limiting_dim} conditions insufficient — waiting "
-                        f"(thesis holds at {confidence:.2f}, "
-                        f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
+                        f"({limiting_dim} evidence {conf_dims[limiting_dim]:.2f})"
                     )
                     do_nothing_txt = (
                         f"evaluated: doing nothing is correct — {limiting_dim} "
@@ -1349,9 +1338,7 @@ class CognitiveBrain:
                 )
             else:
                 reason_txt = "no exploitable directional opportunity"
-                dtype = (DecisionType.REJECT_OPPORTUNITY
-                         if eff_conf >= self.min_confidence_to_act
-                         else DecisionType.CONTINUE_OBSERVING)
+                dtype = DecisionType.NO_OPPORTUNITY
                 do_nothing_txt = (
                     "evaluated: doing nothing is correct — no directional edge (FLAT)"
                 )
@@ -1807,24 +1794,18 @@ class CognitiveBrain:
         """THESIS-based management decision (Part XXV Art 11) for a management
         opinion carrying a thesis_state and/or a management_action.
 
-        No direction comparison anywhere — LONG and SHORT are perfectly
-        symmetric. Defaults to HOLD on uncertainty/ambiguity. EXIT only on an
-        explicit invalidation, opportunity gone, negative EV, or a confident
-        contrary EXIT recommendation; REVERSE only on very-high-confidence
-        contrary evidence; TIGHTEN_RISK when the thesis is weakening; SCALE_IN
-        only when the thesis is strengthening, in profit and every actionability
-        dimension is strong."""
+        No direction comparison or confidence threshold authorizes management.
+        EXIT requires explicit invalidation, opportunity gone, or negative
+        verified EV. A reverse or scale-in request must originate as a separate
+        Brain opportunity with its own geometry, EV, costs and risk admission.
+        TIGHTEN_RISK is used for weakening but not invalidated theses; uncertainty
+        defaults to HOLD."""
         action_hint = str(getattr(opinion, "management_action", "") or "").strip().upper()
         thesis = str(getattr(opinion, "thesis_state", "") or "").strip().lower()
         opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip().lower()
         opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
         ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
         ev_negative = ev_txt.startswith("negative")
-        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
-        # A "very high" bar for flipping the book — at least the reverse gate and
-        # never below a hard 0.7 floor, symmetric for both sides.
-        very_high = max(self.reverse_confidence, 0.7)
-
         thesis_invalidated = (thesis == "invalidated") or (opp_status in ("invalidated", "replaced"))
         opportunity_gone = (
             opp_status in ("invalidated", "replaced")
@@ -1838,27 +1819,25 @@ class CognitiveBrain:
         # 2) Honour an explicit action, cross-checked so uncertainty never
         #    liquidates a live campaign.
         if action_hint == "REVERSE":
-            if eff_conf >= very_high and conf >= self.reverse_confidence:
-                return DecisionType.REVERSE, "very high-confidence contrary evidence — reverse"
-            # Not conclusive enough to flip: de-risk, do not liquidate on doubt.
+            # A management opinion cannot authorize an immediate flip. The new
+            # side must be originated as a separate Brain opportunity with its
+            # own completed-bar evidence, geometry, net EV, costs and risk permit.
             return DecisionType.TIGHTEN_RISK, (
-                "contrary evidence not conclusive enough to reverse — tighten risk")
+                "reverse request requires a separately qualified Brain opportunity; "
+                "management cannot reverse on uncalibrated confidence")
         if action_hint == "EXIT":
-            if ev_negative or opportunity_gone or conf >= self.min_confidence_to_act:
+            if ev_negative or opportunity_gone:
                 return DecisionType.EXIT, "thesis no longer supports the position — exit"
-            # Model wants out but has not justified full liquidation → reduce risk.
+            # An uncorroborated advisor exit is not a thesis invalidation.
             return DecisionType.TIGHTEN_RISK, (
-                "exit not sufficiently justified — tighten risk instead")
+                "exit request lacks explicit invalidation or negative verified EV — tighten risk")
         if action_hint == "SCALE_IN":
-            if (self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence
-                    and thesis in ("intact", "strengthening", "")):
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            if (self.allow_scale_in and in_profit and conf >= self.reverse_confidence
-                    and eff_conf < self.reverse_confidence):
-                return DecisionType.HOLD, (
-                    f"thesis strong but {limiting_dim} weak "
-                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
-            return DecisionType.HOLD, "scale-in conditions not met — hold"
+            # Additional exposure is a new opportunity, not a confidence-driven
+            # management adjustment. Re-enter only through the Brain's full
+            # opportunity/geometry/EV/cost/risk admission path.
+            return DecisionType.HOLD, (
+                "scale-in requires a separately qualified Brain opportunity; "
+                "uncalibrated confidence cannot authorize additional exposure")
         if action_hint == "SCALE_OUT":
             return DecisionType.SCALE_OUT, "bank partial — reduce exposure while the thesis clarifies"
         if action_hint == "PROTECT_PROFIT":
@@ -1877,10 +1856,9 @@ class CognitiveBrain:
             return DecisionType.TIGHTEN_RISK, (
                 "opportunity evolving / superseded — tighten risk while reassessing")
         if thesis in ("intact", "strengthening"):
-            if (self.allow_scale_in and in_profit and thesis == "strengthening"
-                    and eff_conf >= self.reverse_confidence):
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            return DecisionType.HOLD, "thesis intact — hold"
+            return DecisionType.HOLD, (
+                "thesis remains valid — hold; any additional exposure requires "
+                "a separately qualified Brain opportunity")
 
         # 4) Uncertain / temporarily obscured / ambiguous → HOLD (never auto-exit).
         return DecisionType.HOLD, (
@@ -2999,10 +2977,9 @@ class CognitiveBrain:
                 if str(getattr(item, "independence_group", "") or "").strip()
             })
 
-            # A directional hypothesis may become actionable below 0.70 confidence
-            # or above 0.50 uncertainty only when its uncertainty-adjusted,
-            # cost-adjusted expectancy still supports it. These values inform EV
-            # and sizing; they are not universal strategy-selection switches.
+            # Confidence remains uncalibrated reasoning-strength metadata. It is
+            # not a probability or a threshold; opportunity qualification depends
+            # on verified fixed-horizon return, structural geometry and costs.
             uncertainty = _clamp01(
                 (consolidation or {}).get(
                     "aggregate_uncertainty", analysis.evidence_uncertainty,
@@ -3046,18 +3023,16 @@ class CognitiveBrain:
             if not cost_verified:
                 return None
 
-            # Acknowledge uncertainty continuously rather than converting it into
-            # a universal binary cutoff. Uncertainty attenuates the probability
-            # estimate used for expectancy; it does not alone prohibit a market
-            # hypothesis from being evaluated as an opportunity.
-            # Article X — pattern history may inform calibration when available,
-            # but no specific pattern name is required for native reasoning.
-            raw_lead_conf = _clamp01(lead.confidence)
-            uncertainty_adjusted_conf = _clamp01(
-                raw_lead_conf * (1.0 - 0.5 * uncertainty)
+            # Keep the native hypothesis's uncalibrated reasoning strength
+            # separate from probability and expected return. Uncertainty and
+            # measured pattern history may reduce this strength for exposure
+            # sizing, but neither creates a win-probability estimate or an EV.
+            raw_reasoning_strength = _clamp01(lead.confidence)
+            uncertainty_adjusted_strength = _clamp01(
+                raw_reasoning_strength * (1.0 - 0.5 * uncertainty)
             )
-            lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
-                uncertainty_adjusted_conf, lead)
+            lead_strength, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
+                uncertainty_adjusted_strength, lead)
             reward_r, risk_r = geometry.reward_r, 1.0
             expected_value = expected_return_r - cost_r
             # EV must still be positive to justify capital when acting alone.
@@ -3127,7 +3102,7 @@ class CognitiveBrain:
                     "reward_distance": geometry.reward_distance,
                     "reward_r": geometry.reward_r,
                     "geometry_evidence_ids": list(geometry.evidence_ids),
-                    "quality": lead_conf,
+                    "quality": lead_strength,
                     "asymmetry": reward_r / max(0.01, reward_r + risk_r),
                     "evidence_strength": evidence_strength,
                     "competing_opportunities": competing_statements[:6],
@@ -3154,7 +3129,7 @@ class CognitiveBrain:
                 "downside": "bounded by invalidation conditions",
                 "opportunity": lead.opportunity_implication or direction,
                 "should_i_do_nothing": (
-                    f"evaluated: native hypothesis effective confidence {lead_conf:.2f}, "
+                    f"evaluated: native hypothesis effective confidence {lead_strength:.2f}, "
                     f"uncertainty {uncertainty:.2f}, and cost-adjusted EV {expected_value:.4f}R; "
                     "final admission still requires current activation, broker and portfolio checks"),
                 "brain_independent_origination": origination_note,
@@ -3182,7 +3157,7 @@ class CognitiveBrain:
             if lead_pattern_names:
                 questions["supporting_patterns"] = list(lead_pattern_names)
             base_exposure = min(
-                lead_conf,
+                lead_strength,
                 min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
             )
             desired_exposure = round(base_exposure, 4)
@@ -3196,7 +3171,7 @@ class CognitiveBrain:
                 + [h.statement for h in hypotheses if h is not lead][:3]
             )
             brain_hyps = self._build_hypotheses(
-                direction, lead_conf, reward_r, risk_r,
+                direction, reward_r, risk_r,
                 lead.statement, competing_statements,
                 lead.invalidation, supporting_evidence_ids, [],
             )
@@ -3204,7 +3179,7 @@ class CognitiveBrain:
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf, uncertainty=uncertainty,
+                confidence=lead_strength, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
@@ -3220,7 +3195,7 @@ class CognitiveBrain:
                 desired_exposure=desired_exposure, expected_value=expected_value,
                 initial_execution_intent={
                     "kind": "market",
-                    "confidence": round(lead_conf, 4),
+                    "confidence": round(lead_strength, 4),
                     "independent_origination": True,
                     "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                     "entry_price": geometry.entry_price,
@@ -3230,7 +3205,7 @@ class CognitiveBrain:
                     "geometry_evidence_ids": list(geometry.evidence_ids),
                 },
                 supporting_evidence_ids=supporting_evidence_ids,
-                confidence=lead_conf,
+                confidence=lead_strength,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
                 opportunity_id=native_opportunity.opportunity_id,
@@ -3241,7 +3216,7 @@ class CognitiveBrain:
                 self._independent_originations += 1
             logger.info(
                 "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ conf %.2f, EV %.4fR — no advisor",
-                symbol, direction, lead.statement[:60], lead_conf, expected_value,
+                symbol, direction, lead.statement[:60], lead_strength, expected_value,
             )
             return self._record(BrainOutput(
                 decision=decision, campaign=campaign, direction=direction))
@@ -3368,7 +3343,7 @@ class CognitiveBrain:
 
     @staticmethod
     def _build_hypotheses(
-        direction: str, confidence: float, reward_r: float, risk_r: float,
+        direction: str, reward_r: float, risk_r: float,
         primary_statement: str, alternatives: "list", invalidation_txt: str,
         supporting: "list[str]", contradicting: "list[str]",
     ) -> "list[Hypothesis]":
@@ -3377,14 +3352,13 @@ class CognitiveBrain:
         Part V/VI: the decision must not collapse to a single direction. It
         carries the leading hypothesis (with its payoff geometry + invalidation)
         alongside the alternatives the Brain weighed, so contradictory readings
-        survive into the record instead of being voted away. The residual
-        probability mass (1 − confidence) is spread across the alternatives.
+        survive into the record instead of being voted away. Uncalibrated confidence
+        is not copied into a probability distribution.
         """
         primary = Hypothesis(
             statement=(primary_statement or (
                 f"{direction} opportunity" if direction in (LONG, SHORT)
                 else "no directional edge"))[:200],
-            probability=confidence,
             direction=direction if direction in (LONG, SHORT) else "",
             expected_reward_r=reward_r, expected_risk_r=risk_r,
             invalidation=invalidation_txt,
@@ -3393,16 +3367,13 @@ class CognitiveBrain:
         )
         hyps = [primary]
         alts = [str(a).strip() for a in (alternatives or []) if str(a).strip()]
-        if alts:
-            residual = max(0.0, 1.0 - confidence)
-            share = round(residual / len(alts), 4)
-            for a in alts:
-                # An opposing scenario's upside is the primary's downside, so its
-                # reward/risk geometry is the primary's mirrored.
-                hyps.append(Hypothesis(
-                    statement=a[:200], probability=share, direction="",
-                    expected_reward_r=risk_r, expected_risk_r=reward_r,
-                ))
+        for alternative in alts:
+            # Keep the competing explanation and mirrored payoff geometry, but
+            # do not manufacture probability from the primary's confidence.
+            hyps.append(Hypothesis(
+                statement=alternative[:200], direction="",
+                expected_reward_r=risk_r, expected_risk_r=reward_r,
+            ))
         return hyps
 
     def _observe(
@@ -3596,13 +3567,11 @@ class CognitiveBrain:
                 "identity": IDENTITY_STATEMENT,
                 "available": self.available,
                 "reasoner": self.reasoner_name,
-                "min_confidence_to_act": self.min_confidence_to_act,
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "degrade_on_unknown_council": self._degrade_on_unknown_council,
-                "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,
                 "independent_originations": self._independent_originations,
