@@ -164,6 +164,11 @@ _SYSTEM_PROMPT = (
     "outcome — it means there is genuinely nothing to exploit right now, NOT that "
     "the timeframes merely disagree. preferred_opportunity is the id of your "
     "highest-ranked opportunity (omit or leave empty when the list is empty)."
+    "The quality, asymmetry, urgency and evidence_strength fields are relative, "
+    "uncalibrated reasoning descriptors only. They are NOT probabilities, win "
+    "rates, odds, or estimates of expected return. Do not fabricate a probability "
+    "or expected-value estimate. The Brain independently validates evidence, "
+    "market-derived geometry, fixed-horizon outcomes, execution costs and risk."
 )
 
 
