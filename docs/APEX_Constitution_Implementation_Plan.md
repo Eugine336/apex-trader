@@ -90,7 +90,7 @@ consensus.
   - volatility → `brain/volatility_stop.py`, `brain/atr_percentile.py`, `brain/compression_detector.py`
   - volume → `brain/volume_analyzer.py`, `brain/session_vwap.py`
   - multi-timeframe → `brain/world_model.py`, `brain/session_context.py`
-  - correlation → `brain/correlation_engine.py`, `brain/currency_strength.py`, `brain/cross_instrument_ranker.py`
+  - correlation → `brain/correlation_engine.py`, `brain/currency_strength.py`
   - session/macro → `brain/session_engine.py`, `brain/news_impact_tracker.py`
   - regime → `brain/regime_detector.py`
   - portfolio → account/portfolio state via `ctx`
