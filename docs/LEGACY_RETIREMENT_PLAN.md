@@ -23,8 +23,10 @@ event_driven_bootstrap.py constructed and fed FlipSequenceTracker on M1 and M5
 candle-close events, but no production caller read its is_confirmed() result.
 Its flip_require_sequence profile setting therefore advertised a gate that did
 not participate in a Brain decision. The tracker also depended on
-M1CandleConfirmer, whose only production import was the tracker itself. This
-is dead state and data-fetch work, not an active gate.
+M1CandleConfirmer, whose only production import was the tracker itself. The
+remaining flip-confirmer, tick-delta and sequence settings in InstrumentProfile
+also had no production readers. This was dead state/configuration and redundant
+data-fetch work, not an active gate.
 
 ## Ordered retirement record
 
@@ -36,8 +38,8 @@ is dead state and data-fetch work, not an active gate.
    limited to shared data models rather than eagerly importing decision modules.
 3. **Sever bootstrap wiring.** The legacy orchestrator/stager wiring was
    previously retired. This increment removes the unconsumed M1/M5 sequence
-   tracker construction, candle-close subscriptions, feed methods and profile
-   switches. The M1/M5 state was never read by a production decision consumer,
+   tracker construction, candle-close subscriptions, feed methods and all orphaned
+   flip-confirmer/tick-delta/sequence profile switches. The M1/M5 state was never read by a production decision consumer,
    so no replacement gate is introduced. The canonical Brain and its
    opportunity/management contracts remain the decision path.
 4. **Delete decision-only entry/ leaves.** Previously removed leaves remain
