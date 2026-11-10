@@ -583,40 +583,20 @@ class CognitiveBrain:
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
-        # Part XXV — retain decomposed, uncalibrated reasoning-strength metadata.
-        # The weakest dimension is reported descriptively; it is not probability,
-        # an EV input, an action gate or a position-size input. A legacy scalar
-        # resolves missing dimensions for backward-compatible observability.
-        conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
-
-        # Article XIX — retain a descriptive reasoning-quality assessment for
-        # audit. It does not become probability, qualify an action or alter size.
+        # Confidence is retained as an advisor-supplied descriptive field only.
+        # The Brain does not aggregate dimensions, calibrate confidence, or turn
+        # it into probability, expected return, an action gate or sizing input.
+        eff_conf = confidence
+        conf_dims = {
+            name: getattr(opinion, f"{name}_confidence", None)
+            for name in ("thesis", "opportunity", "timing", "execution")
+        }
         quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
-
-        # Art XXXI — apply the Brain's demonstrated calibration correction to the
-        # effective confidence. If the Brain has been over-predicting, this
-        # attenuates conviction (factor < 1.0); if under-predicting, it amplifies
-        # (factor > 1.0). Neutral (1.0) until the tracker has enough samples.
-        calib_factor = 1.0
-        calib_note = "not active (insufficient samples or not wired)"
-        if self._calibration is not None:
-            try:
-                calib_factor = float(self._calibration.calibration_adjustment())
-            except Exception as exc:  # noqa: BLE001 — calibration must never break reasoning
-                logger.debug("[brain] calibration fault (%s): %s", symbol, exc)
-                calib_factor = 1.0
-            if calib_factor != 1.0:
-                eff_conf = _clamp01(eff_conf * calib_factor)
-                try:
-                    _m = self._calibration.metrics()
-                    calib_note = (
-                        f"applied: factor {calib_factor:.3f} "
-                        f"(development/holdout prevalence gap {_m.get('development_holdout_prevalence_gap', _m.get('reliability_gap', 0.0)):.3f}, "
-                        f"Brier {_m.get('brier', 0.0):.3f}, "
-                        f"{int(_m.get('samples', 0))} samples)"
-                    )
-                except Exception:  # noqa: BLE001
-                    calib_note = f"applied: factor {calib_factor:.3f}"
+        calib_note = "observational only; no confidence adjustment is applied"
+        brain_synthesis = ""
+        brain_adv_synthesis = ""
+        pattern_mod_note = ""
+        lead_pattern_names = []
         # Article XX / XXI / V-013 — advisory-council coverage. Read how much of
         # the council actually contributed. This is a first-class health signal:
         #  * council_unknown — NO council metadata at all (single reasoner, or a
@@ -636,14 +616,8 @@ class CognitiveBrain:
             and advisors_available > 0
             and advisors_responded < advisors_available * 0.5
         )
-        # Enforcement (V-013) — degraded cognition ATTENUATES the effective
-        # conviction below (it no longer merely "observes"). A genuine council
-        # under-response always penalises; an UNKNOWN council penalises only when
-        # the operator opted in (``degrade_on_unknown_council``) — but is ALWAYS
-        # logged and recorded so the pass is never silent.
-        penalise_degraded = council_partial or (
-            council_unknown and self._degrade_on_unknown_council
-        )
+        # Council coverage is recorded and enforced independently as an action
+        # authority check. It does not alter or manufacture a confidence score.
         if council_partial:
             logger.warning(
                 "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
@@ -658,42 +632,10 @@ class CognitiveBrain:
                 ("attenuating conviction x%.2f" % self.degraded_confidence_multiplier)
                 if self._degrade_on_unknown_council else "recorded, not penalised",
             )
-        # Violation V1 — the Brain is not a pure relay: cross-check the advisor's
-        # stated confidence against the evidence picture it synthesised, and
-        # attenuate the effective conviction when the advisor is overconfident
-        # relative to the evidence (or claims conviction under high uncertainty).
-        eff_conf, brain_synthesis = self._synthesize_from_evidence(
-            consolidation, confidence, eff_conf)
-
-        # Articles II / IV / IX — INTEGRATE the Brain's own hypotheses with the
-        # advisor opinion (not a relay). Agreement with the Brain's leading
-        # hypothesis boosts conviction; disagreement attenuates it. This runs
-        # BEFORE EV/sizing so the whole decision reflects the synthesis, and is a
-        # no-op when the Brain formed no independent structural view (so a
-        # measurement-thin evidence picture behaves exactly as before).
+        # Native hypotheses remain an independent source of market analysis.
+        # They challenge the advisor's thesis and are retained as evidence, but
+        # they do not manufacture a blended confidence score.
         brain_lead = self._native.leading(brain_hypotheses or [])
-        eff_conf, brain_adv_synthesis = self._integrate_brain(
-            direction, eff_conf, brain_lead, analysis)
-
-        # Article X — pattern EVOLUTION. When a pattern tracker is wired and the
-        # leading hypothesis rests on detected structural patterns, weight the
-        # effective conviction by those patterns' DEMONSTRATED edge: a pattern
-        # that keeps losing attenuates conviction, one that keeps winning
-        # amplifies it (bounded, and neutral until statistically meaningful).
-        eff_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
-            eff_conf, brain_lead)
-
-        # V-013 — degraded-cognition attenuation affects only the descriptive
-        # reasoning-strength record. Advisor quorum is enforced independently by
-        # the action-authority checks; this metadata does not alter EV or sizing.
-        degraded_note = ""
-        if penalise_degraded:
-            _before = eff_conf
-            eff_conf = _clamp01(eff_conf * self.degraded_confidence_multiplier)
-            degraded_note = (
-                f"attenuated {_before:.2f} -> {eff_conf:.2f} "
-                f"(x{self.degraded_confidence_multiplier:.2f})"
-            )
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — expected value comes only from producer-verified
@@ -895,21 +837,16 @@ class CognitiveBrain:
             questions["brain_advisor_synthesis"] = brain_adv_synthesis
         # Part XXV — record the raw scalar and the confidence PROFILE so the honest
         # multidimensional read (and which dimension limited the trade) is auditable.
-        questions["confidence_raw"] = round(confidence, 4)
-        questions["confidence_profile"] = (
-            f"thesis {conf_dims['thesis']:.2f} / opportunity {conf_dims['opportunity']:.2f} / "
-            f"timing {conf_dims['timing']:.2f} / execution {conf_dims['execution']:.2f} "
-            f"→ effective {eff_conf:.2f} (weakest: {limiting_dim})"
+        questions["advisor_confidence_raw"] = round(confidence, 4)
+        questions["advisor_confidence_dimensions"] = {
+            key: value for key, value in conf_dims.items() if value is not None
+        }
+        questions["confidence_authority"] = (
+            "descriptive advisor metadata only; not calibrated, aggregated, "
+            "probability, qualification, action permission or sizing"
         )
         questions["calibration_correction"] = calib_note
-        # Article XIX — record how the advisor's reasoning quality weighted its
-        # confidence contribution (observability + audit).
         questions["advisor_reasoning_quality"] = quality_note
-        # Article X — record the pattern-evolution confidence modification and the
-        # supporting pattern names (the loop uses the latter to record the
-        # origination against each pattern for outcome learning).
-        if pattern_mod_note:
-            questions["pattern_confidence_modifier"] = pattern_mod_note
         if lead_pattern_names:
             questions["supporting_patterns"] = list(lead_pattern_names)
         # Surface the remaining Part XXV context on the decision record for the
@@ -1179,27 +1116,6 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — no fresh valid spread/"
                     "slippage or total-cost evidence is available"
                 )
-            elif (
-                self.ev_primary_gate
-                and directional
-                and not ev_ok
-                and limiting_dim in ("timing", "execution")
-            ):
-                # A thesis can remain valid while timing/execution conditions are
-                # temporarily poor. Do not relabel that conditional wait as a
-                # rejected market thesis merely because the weakest execution
-                # dimension lowered effective EV at this instant.
-                reason_txt = (
-                    f"{limiting_dim} conditions insufficient — waiting "
-                    f"(thesis holds at {confidence:.2f}, "
-                    f"{limiting_dim} {conf_dims[limiting_dim]:.2f}); "
-                    "reassess when execution/timing evidence improves"
-                )
-                dtype = DecisionType.CONTINUE_OBSERVING
-                do_nothing_txt = (
-                    f"evaluated: doing nothing is correct — {limiting_dim} "
-                    "conditions are not executable now; preserve the thesis and wait"
-                )
             elif (directional_and_qualified and not ev_ok) or (
                 self.ev_primary_gate
                 and geometry_qualified
@@ -1219,30 +1135,12 @@ class CognitiveBrain:
                 )
             elif direction in (LONG, SHORT):
                 if self.ev_primary_gate:
-                    # EV-primary: EV cleared the bar (else the branch above fired)
-                    # but the opportunity is not yet actionable — a genuine WAIT,
-                    # not a confidence-floor rejection.
                     reason_txt = (
                         "positive-EV opportunity not yet actionable — awaiting conditions"
                     )
                     do_nothing_txt = (
                         "evaluated: doing nothing is correct — EV positive but the "
                         "opportunity is not yet actionable"
-                    )
-                # Part XXV — when the thesis itself is strong (raw confidence
-                # clears the bar) but a WEAK actionability dimension (timing or
-                # execution) pulled the effective conviction below it, this is a
-                # deliberate WAIT for better conditions, not a rejected thesis.
-                elif limiting_dim in ("timing", "execution"):
-                    reason_txt = (
-                        f"{limiting_dim} conditions insufficient — waiting "
-                        f"(thesis holds at {confidence:.2f}, "
-                        f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
-                    )
-                    do_nothing_txt = (
-                        f"evaluated: doing nothing is correct — {limiting_dim} "
-                        f"insufficient ({conf_dims[limiting_dim]:.2f}), thesis holds "
-                        "but timing/execution not ready"
                     )
                 elif not ev_ok:
                     reason_txt = (
@@ -1292,7 +1190,7 @@ class CognitiveBrain:
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-                confidence=eff_conf, uncertainty=uncertainty,
+                confidence=confidence, uncertainty=uncertainty,
                 expected_value=expected_value, campaign_recommendation="observe",
                 risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
                 hypotheses=hypotheses,
@@ -1315,7 +1213,7 @@ class CognitiveBrain:
             confidence=eff_conf, uncertainty=uncertainty,
             expected_value=expected_value,
             campaign_recommendation=f"open {direction}",
-            risk_rationale="expected value positive on synthesised evidence",
+            risk_rationale="producer-verified net expected return is positive",
             invalidation_conditions=invalidation_conditions or [f"{direction} thesis contradicted by dominant opposing evidence"],
             hypotheses=hypotheses,
             opportunities=opportunity_set, preferred_opportunity_id=preferred_opp_id,
@@ -1346,7 +1244,7 @@ class CognitiveBrain:
             initial_execution_intent={
                 "kind": (geometry.order_type.lower() if geometry is not None else "market"),
                 "order_type": (geometry.order_type if geometry is not None else "MARKET"),
-                "confidence": round(eff_conf, 4),
+                "advisor_confidence_raw": round(confidence, 4),
                 "decision_feature_snapshot": self._decision_feature_snapshot(market_state, decision),
                 **({
                     "entry_price": geometry.entry_price,
@@ -1360,7 +1258,7 @@ class CognitiveBrain:
                 } if geometry is not None else {}),
             },
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
+            confidence=confidence, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
             opportunity_id=(driving_opp.opportunity_id if driving_opp is not None else ""),
             opportunity_state=(driving_opp.state.value if driving_opp is not None else ""),
