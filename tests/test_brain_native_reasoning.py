@@ -442,6 +442,36 @@ def test_native_campaign_uses_the_observed_entry_stop_and_target_geometry():
     )
 
 
+def test_native_reasoning_strength_is_not_probability_or_exposure_input():
+    outputs = []
+    for strength in (0.2, 0.9):
+        brain = CognitiveBrain(reasoner=None, reward_r_default=2.0)
+        original = brain._native_reasoning
+
+        def with_strength(state, consolidation, symbol, *, now=None, _strength=strength):
+            analysis, hypotheses = original(
+                state, consolidation, symbol, now=now,
+            )
+            for hypothesis in hypotheses:
+                hypothesis.confidence = _strength
+            return analysis, hypotheses
+
+        brain._native_reasoning = with_strength
+        out = brain.reason(_strong_long_state())
+        assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+        assert out.campaign is not None
+        assert out.decision.confidence == pytest.approx(strength)
+        outputs.append(out)
+
+    # Verified return, costs, geometry and risk admission are identical.
+    assert outputs[0].decision.expected_value == pytest.approx(
+        outputs[1].decision.expected_value
+    )
+    assert outputs[0].campaign.desired_exposure == pytest.approx(
+        outputs[1].campaign.desired_exposure
+    )
+
+
 def test_brain_originates_natively_when_no_external_reasoner_is_configured():
     # No AI provider object exists at all. A strong, low-uncertainty structured
     # market read must still be reasoned over by the native Brain.
