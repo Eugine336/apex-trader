@@ -2509,7 +2509,10 @@ class CognitionLoop:
                 opportunity_id=str(getattr(campaign, "opportunity_id", "") or ""),
                 decision_id=str(getattr(decision, "decision_id", "") or ""),
             )
-            reg.record_leg(symbol, direction, "open", size=exposure)
+            reg.record_leg(
+                symbol, direction, "open", size=exposure,
+                decision_id=str(getattr(decision, "decision_id", "") or ""),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] campaign open fault (%s): %s", symbol, exc)
 
