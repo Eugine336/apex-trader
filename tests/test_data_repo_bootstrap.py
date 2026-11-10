@@ -127,8 +127,9 @@ def test_nonempty_local_data_is_retained_after_automatic_routing(tmp_path, monke
     result = bootstrap.bootstrap_data_repo(source_root=source)
 
     assert result.is_symlink()
-    assert (result / "apex_positions.db").read_bytes() == b"local"
-    assert (target / ".apex-bootstrap-preserved").is_dir()
+    # Existing sibling data remains active; the conflicting source copy is
+    # preserved intact in the timestamped source-directory backup.
+    assert (result / "apex_positions.db").read_bytes() == b"remote"
     backups = list(tmp_path.glob("apex-trader-data-local-backup-*"))
     assert len(backups) == 1
     assert (backups[0] / "apex_positions.db").read_bytes() == b"local"
