@@ -13,6 +13,7 @@ import paths) resolves identically — behaviour unchanged.
 
 from __future__ import annotations
 
+import math
 import threading
 import time as _time
 from collections import defaultdict, deque
@@ -75,9 +76,13 @@ class MT5TickPoller:
     def _tick_key(time_msc: Any, bid: Any, ask: Any, flags: Any = 0) -> tuple:
         try:
             stamp = int(time_msc)
-            bid_value = round(float(bid), 12)
-            ask_value = round(float(ask), 12)
+            bid_value = float(bid)
+            ask_value = float(ask)
             flag_value = int(flags or 0)
+            if not (math.isfinite(bid_value) and math.isfinite(ask_value)):
+                raise ValueError("non-finite MT5 quote identity")
+            bid_value = round(bid_value, 12)
+            ask_value = round(ask_value, 12)
         except (TypeError, ValueError, OverflowError):
             raise ValueError("invalid MT5 quote tick identity")
         return stamp, bid_value, ask_value, flag_value
@@ -165,7 +170,12 @@ class MT5TickPoller:
                 logger.warning("[mt5-poller] {} tick-history fetch failed: {}", symbol, exc)
             return False
         attrs = getattr(frame, "attrs", {})
-        if not isinstance(attrs, dict) or attrs.get("source_timestamp_verified") is not True:
+        if (
+            not isinstance(attrs, dict)
+            or attrs.get("source_timestamp_verified") is not True
+            or attrs.get("source_timezone") != "UTC"
+            or attrs.get("utc_normalization") != "live_server_offset"
+        ):
             now = _time.monotonic()
             if now - self._last_error_log.get(f"history-clock:{symbol}", 0.0) >= 60.0:
                 self._last_error_log[f"history-clock:{symbol}"] = now
@@ -179,19 +189,33 @@ class MT5TickPoller:
             return False
 
         newest: Optional[datetime] = None
-        for _, row in frame.iterrows():
+        ordered_rows = sorted(
+            frame.iterrows(),
+            key=lambda item: int(item[1].get("time_msc", 0) or 0),
+        )
+        for _, row in ordered_rows:
             stamp = row.get("time_msc_datetime")
             if hasattr(stamp, "to_pydatetime"):
                 stamp = stamp.to_pydatetime()
             if not isinstance(stamp, datetime) or stamp.tzinfo is None:
                 continue
             stamp = stamp.astimezone(timezone.utc)
+            if stamp < start - timedelta(milliseconds=1) or stamp > end + timedelta(milliseconds=1):
+                continue
+            time_seconds = row.get("time_server_epoch")
+            time_milliseconds = row.get("time_msc_server_epoch")
+            if time_seconds is not None and time_milliseconds is not None:
+                try:
+                    if abs(float(time_milliseconds) / 1000.0 - float(time_seconds)) > 1.5:
+                        continue
+                except (TypeError, ValueError, OverflowError):
+                    continue
             if newest is None or stamp > newest:
                 newest = stamp
             try:
                 bid = float(row.get("bid", 0.0) or 0.0)
                 ask = float(row.get("ask", 0.0) or 0.0)
-                if not (bid > 0.0 and ask > 0.0):
+                if not (math.isfinite(bid) and math.isfinite(ask) and bid > 0.0 and ask > 0.0):
                     # COPY_TICKS_ALL may include trade-only events. Preserve
                     # cursor progress but never invent a bid/ask quote from Last.
                     continue
@@ -203,7 +227,19 @@ class MT5TickPoller:
                 continue
             if not self._remember_history_tick(symbol, key):
                 continue
-            raw_fields = row.to_dict() if callable(getattr(row, "to_dict", None)) else dict(row)
+            source_fields = (
+                row.to_dict() if callable(getattr(row, "to_dict", None)) else dict(row)
+            )
+            raw_fields = {}
+            for field_name, field_value in source_fields.items():
+                if isinstance(field_value, datetime):
+                    field_value = field_value.isoformat()
+                elif callable(getattr(field_value, "item", None)):
+                    field_value = field_value.item()
+                if isinstance(field_value, float) and not math.isfinite(field_value):
+                    field_value = None
+                raw_fields[str(field_name)] = field_value
+            raw_fields["time_msc_datetime"] = stamp.isoformat()
             self._router.on_tick(Tick(
                 symbol=symbol,
                 bid=bid,
