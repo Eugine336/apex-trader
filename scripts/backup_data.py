@@ -157,7 +157,7 @@ def _untrack_public_excluded_files(work_tree: str) -> tuple[bool, str]:
     if not excluded:
         return True, ""
     return _run_git(
-        ["rm", "--cached", "--ignore-unmatch", "--", *excluded],
+        ["rm", "--cached", "--force", "--ignore-unmatch", "--", *excluded],
         work_tree,
     )
 
