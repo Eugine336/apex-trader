@@ -18,7 +18,7 @@ import threading
 import time as _time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
 
@@ -209,6 +209,7 @@ class MT5TickPoller:
                     if abs(float(time_milliseconds) / 1000.0 - float(time_seconds)) > 1.5:
                         continue
                 except (TypeError, ValueError, OverflowError):
+                    # SAFE-FALLBACK: malformed broker timestamp pairs are excluded from verified replay.
                     continue
             if newest is None or stamp > newest:
                 newest = stamp
@@ -224,6 +225,7 @@ class MT5TickPoller:
                     time_msc = int(stamp.timestamp() * 1000)
                 key = self._tick_key(time_msc, bid, ask, row.get("flags", 0))
             except (TypeError, ValueError, OverflowError):
+                # SAFE-FALLBACK: malformed quote rows are skipped; no fabricated quote is routed.
                 continue
             if not self._remember_history_tick(symbol, key):
                 continue
