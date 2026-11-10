@@ -102,7 +102,8 @@ def test_reverse_is_never_authorized_by_confidence():
     out2 = _brain(strong).manage(_pos("LONG"), _state(-0.8))
     assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
     assert out2.decision.decision_type == DecisionType.TIGHTEN_RISK
-    assert out.direction == "LONG" and out2.direction == "LONG"
+    assert out.decision.questions_answered["held_direction"] == "LONG"
+    assert out2.decision.questions_answered["held_direction"] == "LONG"
 
 
 # ── the profile is recorded on the management decision (audit) ──────────────
