@@ -107,10 +107,10 @@ def test_thesis_invalidated_exits():
     assert out.decision.decision_type == DecisionType.EXIT
 
 
-def test_action_exit_with_high_conf_exits():
-    out = _brain(_mgmt_op(action="EXIT", thesis="weakening", conf=0.8)).manage(
+def test_action_exit_requires_invalidation_or_negative_verified_ev_not_confidence():
+    out = _brain(_mgmt_op(action="EXIT", thesis="weakening", conf=0.99)).manage(
         _pos("LONG"), _state())
-    assert out.decision.decision_type == DecisionType.EXIT
+    assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
 
 
 def test_action_exit_without_justification_downgrades_to_tighten():
@@ -134,23 +134,20 @@ def test_thesis_weakening_tightens():
     assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
 
 
-def test_reverse_requires_very_high_confidence():
+def test_reverse_requires_a_separately_qualified_new_opportunity():
     low = _brain(_mgmt_op(action="REVERSE", conf=0.55)).manage(_pos("LONG"), _state())
+    high = _brain(_mgmt_op(action="REVERSE", conf=0.99),
+                  reverse_confidence=0.1).manage(_pos("LONG"), _state())
     assert low.decision.decision_type == DecisionType.TIGHTEN_RISK
-    high = _brain(_mgmt_op(action="REVERSE", conf=0.9),
-                  reverse_confidence=0.7).manage(_pos("LONG"), _state())
-    assert high.decision.decision_type == DecisionType.REVERSE
-    assert high.direction == "SHORT"
+    assert high.decision.decision_type == DecisionType.TIGHTEN_RISK
+    assert low.direction == "LONG" and high.direction == "LONG"
 
 
-def test_scale_in_only_when_strengthening_and_in_profit():
-    op = _mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.9)
+def test_scale_in_requires_separate_brain_opportunity_not_confidence():
+    op = _mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.99)
     out = _brain(op, allow_scale_in=True).manage(_pos("LONG", profit_r=1.0), _state())
-    assert out.decision.decision_type == DecisionType.SCALE_IN
-    # Not in profit → conditions not met → HOLD (never a risky add on a loser).
-    out2 = _brain(_mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.9),
-                  allow_scale_in=True).manage(_pos("LONG", profit_r=-0.5), _state())
-    assert out2.decision.decision_type == DecisionType.HOLD
+    assert out.decision.decision_type == DecisionType.HOLD
+    assert "separately qualified Brain opportunity" in out.decision.risk_rationale
 
 
 def test_scale_out_and_protect_pass_through():
@@ -174,7 +171,7 @@ def test_degraded_council_blocks_exit_holds_instead():
 def test_degraded_council_blocks_reverse_and_scale_in():
     rev = _brain(_mgmt_op(action="REVERSE", conf=0.95), min_advisors_for_action=2).manage(
         _pos("LONG"), _state_with_advisors(1, 2, 3))
-    assert rev.decision.decision_type == DecisionType.HOLD
+    assert rev.decision.decision_type == DecisionType.TIGHTEN_RISK
     sin = _brain(_mgmt_op(action="SCALE_IN", thesis="strengthening", conf=0.9),
                  allow_scale_in=True, min_advisors_for_action=2).manage(
         _pos("LONG", profit_r=1.0), _state_with_advisors(1, 2, 3))
@@ -209,12 +206,12 @@ def test_hold_is_symmetric_long_and_short():
         assert out.decision.decision_type == DecisionType.HOLD
 
 
-def test_reverse_flips_symmetrically():
-    long_out = _brain(_mgmt_op(action="REVERSE", conf=0.9)).manage(_pos("LONG"), _state())
-    short_out = _brain(_mgmt_op(action="REVERSE", conf=0.9)).manage(_pos("SHORT"), _state())
-    assert long_out.decision.decision_type == DecisionType.REVERSE
-    assert short_out.decision.decision_type == DecisionType.REVERSE
-    assert long_out.direction == "SHORT" and short_out.direction == "LONG"
+def test_reverse_request_never_flips_without_a_new_qualified_campaign():
+    long_out = _brain(_mgmt_op(action="REVERSE", conf=0.99)).manage(_pos("LONG"), _state())
+    short_out = _brain(_mgmt_op(action="REVERSE", conf=0.99)).manage(_pos("SHORT"), _state())
+    assert long_out.decision.decision_type == DecisionType.TIGHTEN_RISK
+    assert short_out.decision.decision_type == DecisionType.TIGHTEN_RISK
+    assert long_out.direction == "LONG" and short_out.direction == "SHORT"
 
 
 # ── Flaw 2/4 — management payload carries campaign context & prefers mgmt path ─
