@@ -508,6 +508,52 @@ class CognitiveBrain:
                     hypotheses=hypotheses,
                     advisor_status="available",
                 )
+            # An available but under-covered advisor council is not a market
+            # verdict and must not suppress the native Brain. When coverage is
+            # unknown or below quorum, discard the advisor opinion for origination
+            # and run the same independent native qualification path used during
+            # provider outages. Native origination still requires verified return,
+            # costs, activated geometry and shared portfolio/risk admission.
+            advisors_responded, advisors_available, advisors_total = (
+                self._extract_advisor_counts(market_state)
+            )
+            if (
+                advisors_responded is None
+                or advisors_responded < self.min_advisors_for_action
+            ):
+                quorum_state = (
+                    "unknown"
+                    if advisors_responded is None
+                    else f"{advisors_responded}/{self.min_advisors_for_action}"
+                )
+                logger.warning(
+                    "[brain] %s advisor quorum %s (available=%s total=%s); "
+                    "using native-only qualification",
+                    symbol, quorum_state, advisors_available, advisors_total,
+                )
+                independent = self._originate_independent(
+                    symbol, consolidation, analysis, hypotheses,
+                    reason_txt=(
+                        f"advisor quorum {quorum_state}; native Brain-only "
+                        "qualification required"
+                    ),
+                    market_state=market_state,
+                    advisor_status="available",
+                    now=now,
+                )
+                if independent is not None:
+                    return independent
+                return self._native_fallback_observe(
+                    symbol,
+                    (
+                        f"advisor quorum {quorum_state}; native analysis completed "
+                        "but no independent campaign qualified"
+                    ),
+                    consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
+                    advisor_status="available",
+                )
             return self._from_opinion(
                 symbol, market_state, consolidation, opinion, now,
                 analysis=analysis, brain_hypotheses=hypotheses,
