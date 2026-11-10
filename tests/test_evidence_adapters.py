@@ -4,7 +4,6 @@ from cognition.contracts import EvidenceDomain
 from cognition.evidence_adapters import (
     classify_domain,
     evidence_from_analogues,
-    evidence_from_developing_bias,
     evidence_from_knowledge,
     evidence_from_reasoning,
     evidence_from_thesis_status,
@@ -96,62 +95,6 @@ def test_vote_source_adapter_api_is_removed():
     # not be wireable into the MarketState as evidence. The adapter is gone.
     import cognition.evidence_adapters as ea
     assert not hasattr(ea, "evidence_from_votes")
-
-
-# ── evidence_from_developing_bias (forming-bar read) ──────────────────────────
-
-def test_developing_bias_confidence_is_structural_not_directional():
-    # V-004 — the Evidence confidence must come ONLY from the non-directional
-    # structural clarity (alignment / trend strength, eroded by conflict), NEVER
-    # from a directional conviction. Here a high directional conviction rides
-    # alongside a moderate structural clarity: the evidence weight tracks the
-    # structure, not the conviction.
-    ev = evidence_from_developing_bias("XAUUSD", {
-        "direction": "LONG", "confidence": 0.9, "conflict_score": 0.2,
-        "long_probability": 0.9, "short_probability": 0.1, "score": 0.8,
-        "alignment_degree": 0.6, "trend_strength": 0.5,
-        "strength": "STRONG", "tradeable": True,
-    })
-    assert len(ev) == 1
-    e = ev[0]
-    assert e.domain == EvidenceDomain.MULTI_TIMEFRAME
-    assert e.source_module == "world_model.developing"
-    # Part XXV / V-004 — the developing read is non-directional: no lean.
-    assert e.polarity == 0.0
-    # confidence = clarity * (1 - conflict) = max(0.6, 0.5) * (1 - 0.2) = 0.48,
-    # derived from structure — NOT from the 0.9 directional conviction.
-    assert abs(e.confidence - 0.48) < 1e-6
-    assert e.measurements["developing"] is True
-    assert e.measurements["tradeable"] is True
-    # Directional keys never ride along as measurements.
-    assert "long_probability" not in e.measurements
-    assert "direction" not in e.measurements and "score" not in e.measurements
-    assert e.relevance_horizon_seconds == 60.0
-    assert "developing-candle structural reading" in e.observation
-    assert "votes" not in e.observation and "LONG" not in e.observation
-
-
-def test_developing_bias_short_is_non_directional():
-    ev = evidence_from_developing_bias("XAUUSD", {"direction": "SHORT", "confidence": 0.6})
-    assert ev[0].polarity == 0.0
-
-
-def test_developing_bias_directional_conviction_does_not_leak():
-    # V-004 — a read carrying ONLY a directional conviction (no structural
-    # clarity) must NOT let that conviction become the evidence weight.
-    ev = evidence_from_developing_bias("XAUUSD", {
-        "direction": "LONG", "confidence": 0.9,
-        "long_probability": 0.7, "short_probability": 0.3,
-    })
-    assert len(ev) == 1
-    assert ev[0].confidence == 0.0  # no structural clarity ⇒ no evidence weight
-    assert ev[0].polarity == 0.0
-
-
-def test_developing_bias_empty_and_fault_safe():
-    assert evidence_from_developing_bias("XAUUSD", None) == []
-    assert evidence_from_developing_bias("XAUUSD", {}) == []
-    assert evidence_from_developing_bias("XAUUSD", "not-a-dict") == []
 
 
 # ── evidence_from_knowledge (Composio Operational Intelligence, Part IX v3.0) ──
