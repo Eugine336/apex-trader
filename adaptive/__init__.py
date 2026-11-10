@@ -30,7 +30,6 @@ from adaptive.tunable_adapters import (
     PairLearnerTunable,
     SessionLearnerTunable,
     EVEstimatorTunable,
-    PlannerCalibratorTunable,
     SignalLedgerTunable,
     CapitalAllocatorTunable,
 )
@@ -50,6 +49,6 @@ __all__ = [
     "TunerAgent",
     "ScoreOptimizerTunable", "RegimeLearnerTunable", "PairLearnerTunable",
     "SessionLearnerTunable", "EVEstimatorTunable",
-    "PlannerCalibratorTunable", "SignalLedgerTunable",
+    "SignalLedgerTunable",
     "CapitalAllocatorTunable",
 ]
