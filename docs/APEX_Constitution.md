@@ -2371,28 +2371,24 @@ is updated as each item lands. Ratification does not assert full compliance.
   audit_nondirectional_cognition()` fails if any cognition Evidence producer
   reintroduces a directional reading (a non-zero `polarity=`, a `_sign` /
   `_sentiment_polarity` lean, or a `directional_lean` measurement) (Article 14).
-- **Upstream `Vote.direction` (retained by design, severed from cognition).** The
-  legacy `brain/vote_evidence.py::Vote.direction` field still exists and the
-  WorldModel still computes it, but it is read by ~209 sites in the *legacy*
-  layer only (backtest, execution safety, adaptive, rl, entry, decision) — all
-  severed from the Brain under single-path — and by **zero** code in
-  `cognition/`. The cognition vote adapter (`evidence_from_votes`) never reads
-  it and emits `polarity = 0`. Physically deleting the field is a demolition of
-  the dormant legacy stack (209 consumers + ~119 tests) with no benefit to the
-  Brain, so it is deferred to the legacy-retirement track, not done destructively
-  here. The audit gate above guarantees no directional reading can re-enter
-  cognition regardless.
-- **Legacy-retirement track (opened).** The physical removal of the legacy
-  directional-decision stack is governed by `docs/LEGACY_RETIREMENT_PLAN.md` — an
-  ordered, dependency-safe demolition sequence (extract shared types → slim the
-  `entry` package → sever bootstrap wiring → delete decision-only leaves → retire
-  `directional_consensus`/`decision`/`rl`/legacy `backtest` → remove
-  `Vote.direction` last). Progress is measured by
-  `legacy_audit.legacy_directional_inventory()` (`surface_count` must fall each
-  increment; `cognition/` must never appear). Naive bulk deletion is forbidden:
-  the dead decision code shares modules and types with the live evidence /
-  scanner / world-model layer, and the live stack cannot execute in the
-  validation sandbox, so every increment is grep + `py_compile` verified.
+- **Historical directional-vote stack retirement.** Earlier revisions
+  recorded approximately 209 non-test reads of
+  brain.vote_evidence.Vote.direction and deferred physical deletion because
+  those consumers shared code with live evidence and backtesting. That is a
+  historical inventory, not the current source state: the current main tree
+  no longer contains brain/vote_evidence.py or
+  brain/directional_consensus.py, and the rl/ package is absent. Do not
+  describe those removed modules as active or repeat the old consumer count as
+  current. Residual mentions in historical audit documents are not runtime
+  call paths and must be reconciled separately.
+- **Legacy entry cleanup remains incremental.** The retirement record is
+  docs/LEGACY_RETIREMENT_PLAN.md. The M1/M5 flip-sequence tracker and
+  M1CandleConfirmer were still constructed/fed by bootstrap but no production
+  decision consumer read the tracker's confirmation result. They are being
+  removed with their dead event subscriptions and profile switches rather
+  than preserved as a misleading inactive gate. Shared evidence/data models
+  and m1_patterns remain only where their live consumers require them. The
+  constitutional audit guards against reintroducing the retired tracker files.
 
 ## Remediation roadmap (✓ = landed)
 
