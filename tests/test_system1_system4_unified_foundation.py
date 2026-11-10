@@ -187,6 +187,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
                     "time": int(source_epoch),
                     "time_msc": int(source_epoch * 1000),
                     "timestamp_utc_epoch": source_epoch,
+                    "source_utc_offset_seconds": 0.0,
                     "source_utc_offset_uncertainty_seconds": 0.1,
                     "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
                 },
