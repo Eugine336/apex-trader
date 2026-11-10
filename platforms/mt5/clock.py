@@ -10,14 +10,15 @@ inconsistent evidence. A chart-attached MQL5 publisher is not required.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-import time
-import secrets
 import math
+import secrets
 import socket
 import struct
+import time
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
+from itertools import combinations
+from pathlib import Path
 from urllib.request import Request, urlopen
 from typing import Iterable, Mapping
 
@@ -245,8 +246,6 @@ def estimate_mt5_server_clock(
     # Build source clusters whose uncertainty intervals have a common
     # intersection. A single slow or misbehaving NTP endpoint is excluded only
     # when the remaining independent sources uniquely corroborate one another.
-    from itertools import combinations
-
     clusters = []
     for size in range(len(estimates), NTP_MIN_SOURCES - 1, -1):
         for cluster in combinations(estimates, size):
