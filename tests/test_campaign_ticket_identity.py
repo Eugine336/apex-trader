@@ -71,7 +71,7 @@ def test_system_context_enriches_campaigns_by_exact_ticket_not_symbol_side():
         encoding="utf-8"
     )
     assert "camp_by_ticket" in source
-    assert 'c.get("open_tickets", [])' in source
+    assert 'c.get("open_ticket_bindings", [])' in source
     assert "camp_by_key.get((sym, side))" not in source
 
 
@@ -166,7 +166,7 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     )
 
     campaign = registry.observe_close(
-        "EURUSD", "LONG", "tp1_partial",
+        "EURUSD", "LONG", "stop_loss",
         ticket="shared-ticket", platform="mt5",
     )
 
