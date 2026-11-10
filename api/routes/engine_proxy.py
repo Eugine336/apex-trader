@@ -139,7 +139,7 @@ async def cross_instrument(
     user: dict[str, Any] = Depends(get_current_user),
     pm: ProcessManager = Depends(get_process_manager),
 ) -> Any:
-    """Cross-instrument opportunity layer — queue, quality sizer, displacer + proactive watchlist."""
+    """Cross-instrument observability — Brain-authorized intent queue + proactive watchlist."""
     return await _proxy(user=user, pm=pm, path="/api/cross-instrument")
 
 
