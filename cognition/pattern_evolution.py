@@ -6,10 +6,9 @@ patterns, causal sequences ..." AND evolve: the 15 deterministic rules in
 closes that gap. :class:`PatternOutcomeTracker` observes which detected patterns
 preceded winning versus losing campaigns and:
 
-* grades each pattern's demonstrated edge (win rate + average R), turning it into
-  a bounded *confidence modifier* the Brain multiplies into its conviction —
-  patterns that keep losing are attenuated, patterns that keep winning are
-  amplified (both bounded, and only once statistically meaningful);
+* reports each pattern's demonstrated outcome history (win rate + average R).
+  These statistics are observational; they never modify hypothesis strength,
+  probability, qualification or exposure;
 * proposes brand-new structural rules by mining evidence-domain combinations
   that co-occur in winning trades but are not yet expressed by any existing rule
   (Article X — discovering relationships that were never explicitly programmed).
@@ -85,15 +84,14 @@ def _existing_domain_signatures() -> "set[frozenset]":
 class _Record:
     """One pattern origination and its (eventual) realised outcome."""
 
-    __slots__ = ("pattern_name", "symbol", "direction", "confidence",
+    __slots__ = ("pattern_name", "symbol", "direction",
                  "outcome_won", "pnl_r", "timestamp")
 
     def __init__(self, pattern_name: str, symbol: str, direction: str,
-                 confidence: float, timestamp: float) -> None:
+                 timestamp: float) -> None:
         self.pattern_name = pattern_name
         self.symbol = symbol
         self.direction = direction
-        self.confidence = confidence
         self.outcome_won: Optional[bool] = None
         self.pnl_r: Optional[float] = None
         self.timestamp = timestamp
@@ -102,24 +100,18 @@ class _Record:
 class PatternOutcomeTracker:
     """Learns each structural pattern's demonstrated edge from campaign outcomes.
 
-    Thread-safe, fail-safe, bounded. Neutral (modifier 1.0) until a pattern has
-    at least ``min_samples`` resolved outcomes, so a lucky handful cannot move
-    the Brain's conviction.
+    Thread-safe, fail-safe, bounded. It reports observed outcomes only and
+    cannot modify the Brain's reasoning or decision authority.
     """
 
     def __init__(
         self,
         *,
         min_samples: int = 10,
-        gain: float = 1.0,
-        min_modifier: float = 0.7,
-        max_modifier: float = 1.3,
         max_records: int = 2000,
     ) -> None:
         self.min_samples = max(1, int(min_samples))
         self.gain = max(0.0, float(gain))
-        self.min_modifier = _clampf(min_modifier, 0.0, 1.0, 0.7)
-        self.max_modifier = max(1.0, _clampf(max_modifier, 1.0, 100.0, 1.3))
         self.max_records = max(1, int(max_records))
         self._records: "list[_Record]" = []
         self._lock = threading.Lock()
@@ -128,7 +120,7 @@ class PatternOutcomeTracker:
 
     def record_origination(
         self, pattern_name: str, symbol: str, direction: str,
-        confidence: float, timestamp: float,
+        timestamp: float,
     ) -> None:
         """Record that a campaign was opened while ``pattern_name`` was detected.
 
@@ -142,7 +134,6 @@ class PatternOutcomeTracker:
                 pattern_name=name,
                 symbol=str(symbol or "").strip(),
                 direction=str(direction or "").strip().upper(),
-                confidence=_clampf(confidence, 0.0, 1.0, 0.0),
                 timestamp=float(timestamp) if timestamp is not None else 0.0,
             )
             with self._lock:
@@ -180,7 +171,7 @@ class PatternOutcomeTracker:
         """Demonstrated edge for one pattern (fail-safe, always returns a dict)."""
         empty = {
             "attempts": 0, "wins": 0, "losses": 0, "pending": 0,
-            "win_rate": 0.0, "avg_pnl_r": 0.0, "confidence_modifier": 1.0,
+            "win_rate": 0.0, "avg_pnl_r": 0.0,
         }
         try:
             name = str(pattern_name or "").strip()
@@ -195,7 +186,6 @@ class PatternOutcomeTracker:
             win_rate = (wins / attempts) if attempts > 0 else 0.0
             pnls = [r.pnl_r for r in recs if r.outcome_won is not None and r.pnl_r is not None]
             avg_pnl_r = (sum(pnls) / len(pnls)) if pnls else 0.0
-            modifier = self._modifier(attempts, win_rate)
             return {
                 "attempts": attempts,
                 "wins": wins,
@@ -203,25 +193,10 @@ class PatternOutcomeTracker:
                 "pending": pending,
                 "win_rate": round(win_rate, 4),
                 "avg_pnl_r": round(avg_pnl_r, 4),
-                "confidence_modifier": modifier,
             }
         except Exception as exc:  # noqa: BLE001 — stats must never raise
             logger.debug("[pattern-evolution] pattern_stats fault: %s", exc)
             return empty
-
-    def confidence_modifier(self, pattern_name: str) -> float:
-        """Bounded multiplicative modifier for a pattern (1.0 until significant)."""
-        try:
-            return float(self.pattern_stats(pattern_name)["confidence_modifier"])
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[pattern-evolution] confidence_modifier fault: %s", exc)
-            return 1.0
-
-    def _modifier(self, attempts: int, win_rate: float) -> float:
-        if attempts < self.min_samples:
-            return 1.0
-        raw = 1.0 + self.gain * (win_rate - 0.5)
-        return round(min(self.max_modifier, max(self.min_modifier, raw)), 4)
 
     # ── rule discovery (Article X) ─────────────────────────────────────────
 
