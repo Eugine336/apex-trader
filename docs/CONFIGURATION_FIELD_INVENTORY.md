@@ -1,6 +1,6 @@
 # Configuration field inventory
 
-Source: `config.py` on branch `fix/brain-probability-and-confidence-governance` at commit `861cd7487fbaa360adfe27407534bc418d2ac39e` plus the three retired cognition controls removed in this change.
+Source: `config.py` on the current engineering branch, including the exact-ticket Brain-management and retired-control changes recorded in `APEX_FULL_REDESIGN_ROADMAP.md`.
 
 This is a complete field-name inventory of the typed configuration dataclasses
 declared in `config.py`. It is **not** a declaration that every field should
