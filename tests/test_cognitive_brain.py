@@ -332,37 +332,16 @@ def test_campaign_carries_expected_value_field():
     assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)
 
 
-# ── Calibration is observational; it never adjusts advisor confidence ───────
+# ── calibration trackers are not part of Brain decision authority ───────────
 
-class _StubCalibration:
-    def __init__(self, factor):
-        self._factor = factor
-
-    def calibration_adjustment(self):
-        raise AssertionError("Brain must not apply calibration as confidence correction")
-
-    def metrics(self):
-        return {"samples": 100, "mean_confidence": 0.9,
-                "win_rate": 0.63, "reliability_gap": 0.27, "brier": 0.24}
-
-
-def test_calibration_does_not_modify_advisor_confidence():
-    brain = CognitiveBrain(
+def test_brain_does_not_accept_calibration_tracker_as_decision_input():
+    import inspect
+    assert "calibration" not in inspect.signature(CognitiveBrain).parameters
+    out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-        calibration=_StubCalibration(0.7),
-    )
-    out = brain.reason(_confident_state(polarity=0.8))
+    ).reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
-    assert out.decision.questions_answered["calibration_correction"] == (
-        "observational only; no confidence adjustment is applied"
-    )
-
-
-def test_calibration_absence_does_not_change_confidence_semantics():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
-    out = brain.reason(_confident_state(polarity=0.8))
-    assert out.decision.confidence == pytest.approx(0.8)
-    assert out.decision.questions_answered["calibration_correction"] == (
+    assert out.decision.questions_answered["calibration_status"] == (
         "observational only; no confidence adjustment is applied"
     )
 
