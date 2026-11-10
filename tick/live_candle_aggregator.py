@@ -85,6 +85,8 @@ class LiveCandleAggregator:
         routing for every other subscriber).
         """
         try:
+            if getattr(tick, "source_timestamp_verified", False) is not True:
+                return
             symbol = tick.symbol
             epoch = tick.epoch
             mid = tick.mid
