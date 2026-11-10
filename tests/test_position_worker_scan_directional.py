@@ -62,7 +62,7 @@ def _has_original_source(intents, source):
 def test_invalidation_low_score_fires_when_legacy_fallback_is_enabled_and_defers_when_disabled():
     snap = _snap(pnl_pips=-5.0)
     scan = ScanContext(direction="SHORT", score=30)
-    on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
+    on = PositionWorker(WorkerConfig(invalidation_score_threshold=40, discretionary_exits_enabled=True, scan_directional_exits_enabled=True)).evaluate(snap, NOW, scan=scan)
     assert _has_original_source(on, "invalidation_low_score")
     off = PositionWorker(WorkerConfig(
         invalidation_score_threshold=40, discretionary_exits_enabled=True, legacy_mechanical_exit_fallback_enabled=True, scan_directional_exits_enabled=False,
