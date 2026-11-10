@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import threading
 
 from brain.campaign import CampaignRegistry, LEG_OPEN
 from event_driven_bootstrap import EventDrivenSystem
@@ -30,6 +31,8 @@ def _system(*, positions, confirmed=("mt5",), failed=()):
     system._ctx = SimpleNamespace(campaign_registry=registry)
     system._pm = _PlatformManager(positions, confirmed=confirmed, failed=failed)
     system._entry_context = {}
+    system._pending_orders = {}
+    system._pending_orders_lock = threading.Lock()
     return system, registry
 
 
@@ -88,6 +91,7 @@ def test_pending_order_placement_is_not_misclassified_as_open_position():
 
     system._handle_open_result(_intent("LIMIT"), _result(order_status="PLACED"))
 
+    assert system._pending_orders["ticket-1"]["status"] == "PLACED"
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
 
 
