@@ -128,25 +128,16 @@ Severity rubric:
 - **Information Lost**: Original thesis, current opportunity set, counter-opportunities, EV of holding versus exiting, and execution/risk context are compressed to "scan still supports direction" or "opposing signal".
 - **Root Cause**: Legacy deterministic TradeManager/ExitChecks behavior was preserved in `PositionWorker` as the non-cognition management suite.
 
-### V-010: Re-entry manager re-arms same-direction trades from M5 trend and zone kind
+### V-010: Breakeven re-entry shortcut
 - **Severity**: HIGH
-- **Philosophy Rule**: 4, 6, 9, 17, 18, 20
-- **File(s)**: `management/re_entry.py:46-109`, `management/re_entry.py:113-138`, `event_driven_bootstrap.py:6534-6574`, `core/system_context.py:2074-2080`
-- **Actual Code Behavior**: After a breakeven exit, `ReEntryManager.check_re_entry()` reads the closed trade's `direction`, checks whether M5 trend still matches that direction, then looks for a same-side FVG or order block. If found, it returns `ReEntryOpportunity(direction=direction, eligible=True)`. The bootstrap calls this on breakeven exits and arms a re-entry zone with the same direction.
-- **Execution Path**: Trade close handling detects `is_breakeven_exit` -> builds a `closed` namespace with `direction` -> `ctx.re_entry_manager.check_re_entry(closed, m5_df, m1_df)` -> M5 trend/zone filters -> `_arm_re_entry_zone(symbol, direction, opp)`.
-- **Why It Violates**: Re-entry should ask whether a fresh opportunity exists after the campaign closed. This path assumes the original direction remains the candidate and uses M5 trend/zone agreement as the command filter.
-- **Information Lost**: Whether the breakeven exit invalidated the original thesis, whether the best new opportunity is opposite-side or no-trade, whether EV still exists, and whether the original horizon has changed.
-- **Root Cause**: Legacy re-entry automation preserved as setup-validation logic rather than converted into Brain-managed opportunity re-evaluation.
+- **Status**: RESOLVED in the exact-ticket Brain-management increment.
+- **Resolution**: The no-op ReEntryManager and its M5/FVG/OB re-arm logic were removed. The manager never submitted an order; it only emitted an observational event after checking a separate directional setup. The SystemContext field/wiring, close-handler invocation, dormant cooldown state, RE_ENTRY_ARMED event, re_entry_eligible snapshot/trade-model flag, package export and `management/re_entry.py` module are deleted. A closed campaign returns to the normal CognitiveBrain observation cycle. No re-entry-specific direction or zone can authorize or suppress a new opportunity.
+- **Regression evidence**: The SystemContext test now asserts that ReEntryManager wiring is absent; full CI remains required on the final PR head.
 
-### V-011: Portfolio reallocation fails open to mechanical trim when Brain is unavailable
+### V-011: Portfolio reallocation fails open when Brain is unavailable
 - **Severity**: MEDIUM
-- **Philosophy Rule**: 17, 18, 30, 31
-- **File(s)**: `cognition/loop.py:1129-1217`, `cognition/loop.py:1218-1250`
-- **Actual Code Behavior**: `_maybe_reallocate()` receives mechanical trim candidates from the campaign registry. `_reason_reallocation()` is intended to ask the Brain for veto/approval, but if the Brain is missing or unavailable it returns `(True, "unavailable", 0.0)`, causing the deterministic concentration trim to proceed.
-- **Execution Path**: `CognitionLoop._manage_open_positions()` -> `_maybe_reallocate(positions)` -> registry `reallocation_targets()` -> `_reason_reallocation()` -> if no Brain or unavailable, approve -> `_management_sink(action, pos)` emits trim.
-- **Why It Violates**: The fallback turns lack of cognition into permission for a mechanical capital action. Risk protections must remain alive when cognition is down, but opportunity/capital reallocation should not pretend a provider outage is a reasoned portfolio decision.
-- **Information Lost**: The Brain's comparison of current campaign EV against alternative opportunities, timing, thesis state, and whether the "weakest" campaign is actually about to improve.
-- **Root Cause**: Fail-open safety fallback for de-risking was reused for portfolio opportunity reallocation.
+- **Status**: RESOLVED in the current mainline implementation.
+- **Resolution**: `_reason_reallocation()` returns no output with verdict `unavailable` when the Brain or its management entrypoint is absent. Exceptions return `fault` and no output. `_maybe_reallocate()` skips any candidate without a Brain-authored, translatable management action. The registry cannot synthesize a trim or fraction. Keep this fail-closed contract under regression coverage.
 
 ### V-012: Legacy TradeManager still embodies mechanical management
 - **Severity**: MEDIUM
