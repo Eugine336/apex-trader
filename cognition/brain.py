@@ -1725,7 +1725,6 @@ class CognitiveBrain:
             # actions keep using the raw scalar — a poor execution read must never
             # make it HARDER to cut/reduce a position.
             conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
-            rationale = str(getattr(opinion, "rationale", "") or "")
             # A management opinion (any of thesis_state / opportunity_status /
             # management_action present) is decided by the thesis-based tree —
             # LONG and SHORT are perfectly symmetric and nothing here compares a
@@ -1762,7 +1761,6 @@ class CognitiveBrain:
             # Flaw 4 — council quorum guard: below quorum, state-changing actions
             # degrade to HOLD; risk-reducing actions (TIGHTEN_RISK / PROTECT_PROFIT
             # / SCALE_OUT) are always permitted.
-            pre_quorum_action = action
             action, why = self._apply_management_quorum(
                 symbol, action, why, advisors_responded, advisors_available)
             pre_native_action = action
