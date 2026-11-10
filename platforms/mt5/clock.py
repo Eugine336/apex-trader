@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from itertools import combinations
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable
 from urllib.request import Request, urlopen
 
 
