@@ -13,11 +13,12 @@ import paths) resolves identically — behaviour unchanged.
 
 from __future__ import annotations
 
+import math
 import threading
 import time as _time
-from collections import defaultdict
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
 
@@ -52,6 +53,245 @@ class MT5TickPoller:
         self._thread: Optional[threading.Thread] = None
         self._error_counts: dict[str, int] = {}
         self._last_error_log: dict[str, float] = {}
+        # Per-symbol UTC cursor and bounded event fingerprints prevent overlap
+        # duplicates when replaying the broker's historical quote tape.
+        self._history_cursor: dict[str, datetime] = {}
+        self._history_seen: dict[str, set[tuple]] = {}
+        self._history_seen_order: dict[str, deque] = {}
+        self._history_seen_limit = 20_000
+        self._history_gap_count: dict[str, int] = {}
+
+    def _remember_history_tick(self, symbol: str, key: tuple) -> bool:
+        seen = self._history_seen.setdefault(symbol, set())
+        order = self._history_seen_order.setdefault(symbol, deque())
+        if key in seen:
+            return False
+        if len(order) >= self._history_seen_limit:
+            seen.discard(order.popleft())
+        order.append(key)
+        seen.add(key)
+        return True
+
+    @staticmethod
+    def _tick_key(time_msc: Any, bid: Any, ask: Any, flags: Any = 0) -> tuple:
+        try:
+            stamp = int(time_msc)
+            bid_value = float(bid)
+            ask_value = float(ask)
+            flag_value = int(flags or 0)
+            if not (math.isfinite(bid_value) and math.isfinite(ask_value)):
+                raise ValueError("non-finite MT5 quote identity")
+            bid_value = round(bid_value, 12)
+            ask_value = round(ask_value, 12)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("invalid MT5 quote tick identity")
+        return stamp, bid_value, ask_value, flag_value
+
+    def _route_latest_quote(self, symbol: str, quote: Any) -> bool:
+        """Route the verified latest quote as a continuity fallback."""
+        timestamp = getattr(quote, "time", None)
+        raw = getattr(quote, "raw_fields", {})
+        raw = dict(raw) if isinstance(raw, dict) else {}
+        if not isinstance(timestamp, datetime):
+            return False
+        try:
+            bid = float(getattr(quote, "bid", None))
+            ask = float(getattr(quote, "ask", None))
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (
+            math.isfinite(bid) and math.isfinite(ask)
+            and bid > 0.0 and ask > 0.0
+        ):
+            return False
+
+        time_msc = raw.get("time_msc")
+        if time_msc is None and timestamp.tzinfo is not None:
+            # Never use datetime.timestamp() on a naive broker timestamp: it
+            # interprets the value in the host machine's local timezone.
+            time_msc = int(timestamp.astimezone(timezone.utc).timestamp() * 1000)
+        if time_msc is not None:
+            key = self._tick_key(time_msc, bid, ask, raw.get("flags", 0))
+            if not self._remember_history_tick(symbol, key):
+                return False
+        tick = Tick(
+            symbol=symbol,
+            bid=bid,
+            ask=ask,
+            timestamp=timestamp,
+            source="mt5",
+            source_timestamp_verified=(
+                getattr(quote, "source_timestamp_verified", False) is True
+            ),
+            quote_kind=getattr(quote, "quote_kind", "unknown"),
+            spread_unit=getattr(quote, "spread_unit", "unknown"),
+            raw_fields=raw,
+        )
+        self._router.on_tick(tick)
+        return True
+
+    def _route_history_quotes(self, symbol: str, latest_quote: Any) -> bool:
+        """Replay all verified bid/ask ticks since the last broker-time cursor.
+
+        MT5's latest-quote polling can skip intermediate updates. The history
+        API returns the broker's available quote tape, so the poller requests an
+        overlapping range, validates the adapter's UTC attestation, deduplicates
+        boundary repeats and routes every usable bid/ask event. Trade-only rows
+        are not converted into synthetic bid/ask quotes.
+        """
+        fetch = getattr(self._pm, "get_tick_history", None)
+        if not callable(fetch):
+            return False
+        end = getattr(latest_quote, "time", None)
+        if not isinstance(end, datetime) or end.tzinfo is None:
+            return False
+        end = end.astimezone(timezone.utc)
+        cursor = self._history_cursor.get(symbol)
+        start = (
+            cursor - timedelta(milliseconds=1)
+            if cursor is not None
+            else end - timedelta(seconds=300)
+        )
+        window_seconds = (end - start).total_seconds()
+        if window_seconds < 0:
+            return False
+        if window_seconds > 300.0:
+            # get_ticks only attests UTC normalization for a recent live window.
+            # Do not relabel a long outage/weekend replay with today's offset:
+            # record the gap, re-anchor at the current verified quote, and resume
+            # live capture without fabricating timestamps for the missing span.
+            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+            self._history_cursor[symbol] = end
+            now = _time.monotonic()
+            if now - self._last_error_log.get(f"history-gap:{symbol}", 0.0) >= 60.0:
+                self._last_error_log[f"history-gap:{symbol}"] = now
+                logger.error(
+                    "[mt5-poller] {} tick-history gap {:.1f}s — cannot verify historical "
+                    "UTC offset; re-anchoring at current broker quote (gap_count={})",
+                    symbol, window_seconds, self._history_gap_count[symbol],
+                )
+            return False
+        try:
+            frame = fetch(symbol, start, end)
+        except Exception as exc:
+            now = _time.monotonic()
+            if now - self._last_error_log.get(f"history:{symbol}", 0.0) >= 60.0:
+                self._last_error_log[f"history:{symbol}"] = now
+                logger.warning("[mt5-poller] {} tick-history fetch failed: {}", symbol, exc)
+            return False
+        attrs = getattr(frame, "attrs", {})
+        if (
+            not isinstance(attrs, dict)
+            or attrs.get("source_timestamp_verified") is not True
+            or attrs.get("source_timezone") != "UTC"
+            or attrs.get("utc_normalization") != "live_server_offset"
+        ):
+            now = _time.monotonic()
+            if now - self._last_error_log.get(f"history-clock:{symbol}", 0.0) >= 60.0:
+                self._last_error_log[f"history-clock:{symbol}"] = now
+                logger.warning(
+                    "[mt5-poller] {} tick-history timestamps are not verified UTC; "
+                    "history is not routed and cursor is not advanced",
+                    symbol,
+                )
+            return False
+        if bool(getattr(frame, "empty", True)):
+            return False
+
+        newest: Optional[datetime] = None
+        ordered_rows = sorted(
+            frame.iterrows(),
+            key=lambda item: int(item[1].get("time_msc", 0) or 0),
+        )
+        for _, row in ordered_rows:
+            stamp = row.get("time_msc_datetime")
+            if hasattr(stamp, "to_pydatetime"):
+                stamp = stamp.to_pydatetime()
+            if not isinstance(stamp, datetime) or stamp.tzinfo is None:
+                continue
+            stamp = stamp.astimezone(timezone.utc)
+            if stamp < start - timedelta(milliseconds=1) or stamp > end + timedelta(milliseconds=1):
+                continue
+            time_seconds = row.get("time_server_epoch")
+            time_milliseconds = row.get("time_msc_server_epoch")
+            if time_seconds is not None and time_milliseconds is not None:
+                try:
+                    if abs(float(time_milliseconds) / 1000.0 - float(time_seconds)) > 1.5:
+                        continue
+                # SAFE-FALLBACK: malformed broker timestamp pairs are excluded from verified replay.
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            if newest is None or stamp > newest:
+                newest = stamp
+            try:
+                bid = float(row.get("bid", 0.0) or 0.0)
+                ask = float(row.get("ask", 0.0) or 0.0)
+                if not (math.isfinite(bid) and math.isfinite(ask) and bid > 0.0 and ask > 0.0):
+                    # COPY_TICKS_ALL may include trade-only events. Preserve
+                    # cursor progress but never invent a bid/ask quote from Last.
+                    continue
+                time_msc = row.get("time_msc")
+                if time_msc is None:
+                    time_msc = int(stamp.timestamp() * 1000)
+                key = self._tick_key(time_msc, bid, ask, row.get("flags", 0))
+            # SAFE-FALLBACK: malformed quote rows are skipped; no fabricated quote is routed.
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not self._remember_history_tick(symbol, key):
+                continue
+            source_fields = (
+                row.to_dict() if callable(getattr(row, "to_dict", None)) else dict(row)
+            )
+            raw_fields = {}
+            for field_name, field_value in source_fields.items():
+                if isinstance(field_value, datetime):
+                    field_value = field_value.isoformat()
+                elif callable(getattr(field_value, "item", None)):
+                    field_value = field_value.item()
+                if isinstance(field_value, float) and not math.isfinite(field_value):
+                    field_value = None
+                raw_fields[str(field_name)] = field_value
+            raw_fields["time_msc_datetime"] = stamp.isoformat()
+            self._router.on_tick(Tick(
+                symbol=symbol,
+                bid=bid,
+                ask=ask,
+                timestamp=stamp,
+                source="mt5",
+                source_timestamp_verified=True,
+                quote_kind="bid_ask",
+                spread_unit="unknown",
+                raw_fields=raw_fields,
+            ))
+        if newest is not None:
+            self._history_cursor[symbol] = newest
+            return True
+        return False
+
+    def _poll_symbol(self, symbol: str) -> None:
+        quote = self._pm.get_price(symbol)
+        if quote is None:
+            raise RuntimeError("latest MT5 quote unavailable")
+        try:
+            latest_bid = float(getattr(quote, "bid", 0.0) or 0.0)
+            latest_ask = float(getattr(quote, "ask", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("latest MT5 quote contains invalid bid/ask") from exc
+        if not (
+            math.isfinite(latest_bid) and math.isfinite(latest_ask)
+            and latest_bid > 0.0 and latest_ask > 0.0
+        ):
+            raise RuntimeError("latest MT5 quote contains non-positive or non-finite bid/ask")
+        reported_symbol = str(getattr(quote, "symbol", "") or "").strip().upper()
+        if not reported_symbol or reported_symbol != symbol.strip().upper():
+            raise RuntimeError(
+                f"MT5 tick symbol mismatch: requested={symbol}, received={reported_symbol}"
+            )
+        self._route_history_quotes(symbol, quote)
+        # Always retain the current verified quote, including when the history
+        # endpoint is temporarily unavailable or returns no rows. Fingerprints
+        # suppress the overlap duplicate when history already delivered it.
+        self._route_latest_quote(symbol, quote)
 
     def start(self) -> None:
         if self._running or not self._symbols:
@@ -105,30 +345,8 @@ class MT5TickPoller:
                     cooldown_until.pop(sym, None)
                     error_counts[sym] = 0
                 try:
-                    td = self._pm.get_price(sym)
-                    if td is not None and td.bid > 0:
-                        reported_symbol = str(getattr(td, "symbol", "") or "").strip().upper()
-                        if not reported_symbol or reported_symbol != sym.strip().upper():
-                            raise RuntimeError(
-                                f"MT5 tick symbol mismatch: requested={sym}, received={reported_symbol}"
-                            )
-                        tick = Tick(
-                            symbol=sym,
-                            bid=td.bid,
-                            ask=td.ask,
-                            timestamp=td.time,
-                            source="mt5",
-                            source_timestamp_verified=(
-                                getattr(td, "source_timestamp_verified", False) is True
-                            ),
-                            quote_kind=getattr(td, "quote_kind", "unknown"),
-                            spread_unit=getattr(td, "spread_unit", "unknown"),
-                            raw_fields=getattr(td, "raw_fields", {}),
-                        )
-                        self._router.on_tick(tick)
-                        error_counts[sym] = 0
-                    else:
-                        error_counts[sym] += 1
+                    self._poll_symbol(sym)
+                    error_counts[sym] = 0
                 except Exception as exc:
                     error_counts[sym] += 1
                     now = _time.monotonic()
