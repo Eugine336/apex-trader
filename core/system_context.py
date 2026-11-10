@@ -1678,10 +1678,6 @@ class SystemContext:
                         getattr(cog_cfg, "max_symbols_per_cycle", 12)
                         if cog_cfg is not None else 12
                     ),
-                    shadow_mode=bool(
-                        getattr(cog_cfg, "shadow_mode", True)
-                        if cog_cfg is not None else True
-                    ),
                     action_bridge=_bridge,
                     position_source=_cognition_positions,
                     origination_mode=str(
@@ -1750,9 +1746,8 @@ class SystemContext:
                     logger.warning("[SystemContext] CognitionObservability init failed: {}", exc)
                     ctx.cognition_observability = None
                 logger.info(
-                    "[SystemContext] Cognitive Brain ready — reasoner_available={} shadow={}",
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={}",
                     ctx.cognitive_brain.available,
-                    getattr(cog_cfg, "shadow_mode", False) if cog_cfg else False,
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
