@@ -2663,24 +2663,66 @@ class EventDrivenSystem:
         Stop moves are one-directional-safe: a tighten/protect only ever moves
         the stop to REDUCE risk, never widens it.
         """
-        def _open_position_for(symbol: str, direction: str):
-            try:
-                positions = self._pm.get_all_open_positions() if self._pm is not None else []
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[mgmt-sink] positions fetch failed for {}: {}", symbol, exc)
+        def _open_position_for(symbol: str, direction: str, position: Any):
+            """Resolve exactly the broker position the Brain evaluated.
+
+            Symbol + side is not a position identity: multiple tickets can share
+            both, and MT5 ticket numbers may collide across broker namespaces.
+            Require the ticket and platform carried by PositionView, then match
+            exactly one record in a confirmation-aware broker snapshot.
+            """
+            expected_ticket = str(getattr(position, "ticket", "") or "").strip()
+            expected_platform = str(getattr(position, "platform", "") or "").strip().lower()
+            if not expected_ticket or not expected_platform:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — Brain position lacks exact broker ticket/platform",
+                    symbol, direction,
+                )
                 return None
-            # Broker positions report BUY/SELL; the Brain verdict carries
-            # LONG/SHORT. Compare on the canonical axis or the match ALWAYS fails
-            # and every EXIT/PARTIAL/PROTECT/TIGHTEN is silently dropped.
+            try:
+                snapshot = self._pm.get_open_positions_snapshot() if self._pm is not None else None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[mgmt-sink] broker snapshot failed for {}: {}", symbol, exc)
+                return None
+            if snapshot is None:
+                return None
+            confirmed = {
+                str(item or "").strip().lower()
+                for item in (getattr(snapshot, "confirmed_platforms", set()) or set())
+            }
+            failed = {
+                str(item or "").strip().lower()
+                for item in (getattr(snapshot, "failed_platforms", set()) or set())
+            }
+            if expected_platform in failed or expected_platform not in confirmed:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — platform {} is not confirmed in broker snapshot",
+                    symbol, direction, expected_platform,
+                )
+                return None
+            positions = getattr(snapshot, "positions", None)
+            if positions is None:
+                return None
             from cognition.position_adapter import canonical_side as _canon
             want = _canon(direction)
-            for p in positions or []:
-                if str(getattr(p, "symbol", "") or "") != symbol:
+            matches = []
+            for candidate in positions:
+                ticket = str(getattr(candidate, "order_id", getattr(candidate, "ticket", "")) or "").strip()
+                platform = str(getattr(candidate, "platform", "") or "").strip().lower()
+                if ticket != expected_ticket or platform != expected_platform:
                     continue
-                if want and _canon(getattr(p, "direction", "")) != want:
+                if str(getattr(candidate, "symbol", "") or "") != symbol:
                     continue
-                return p
-            return None
+                if not want or _canon(getattr(candidate, "direction", "")) != want:
+                    continue
+                matches.append(candidate)
+            if len(matches) != 1:
+                logger.warning(
+                    "[mgmt-sink] {} {} suppressed — exact position identity matched {} broker records",
+                    symbol, direction, len(matches),
+                )
+                return None
+            return matches[0]
 
         def _protective_sl(pos, action: Any):
             # A management stop must come from the Brain's explicit concept or
@@ -2722,6 +2764,18 @@ class EventDrivenSystem:
                 reason = str(getattr(action, "reason", "") or "brain_management")[:200]
                 if not symbol or not kind:
                     return False
+                from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
+                if (
+                    str(getattr(action, "identity_version", "") or "") != IDENTITY_VERSION
+                    or str(getattr(action, "identity", "") or "") != IDENTITY_STATEMENT
+                    or not str(getattr(action, "decision_id", "") or "").strip()
+                    or not str(getattr(action, "action_id", "") or "").strip()
+                ):
+                    logger.warning(
+                        "[mgmt-sink] {} {} suppressed — canonical identity, decision ID, or action ID missing",
+                        symbol, kind,
+                    )
+                    return False
                 intents: list = []
 
                 if kind == "scale_in":
@@ -2738,7 +2792,7 @@ class EventDrivenSystem:
                     )
                     return False
 
-                pos = _open_position_for(symbol, held)
+                pos = _open_position_for(symbol, held, position)
                 if pos is None:
                     logger.info("[mgmt-sink] {} {} skipped — no matching open position",
                                 symbol, kind)
