@@ -58,73 +58,18 @@ SHORT = "SHORT"
 FLAT = "FLAT"
 
 
-_direction_deprecation_logged = False
-
-
-def _warn_direction_deprecated() -> None:
-    """Log a deprecation notice when ``BrainOutput.direction`` is read (V-026).
-
-    Emitted once at WARNING (then DEBUG thereafter) so the notice is visible
-    without spamming the hot loop. The collapsed top-level direction is retained
-    only for backward compatibility; consumers should reason in the
-    constitutional vocabulary — ``decision.decision_type`` plus the
-    opportunity/thesis (see :meth:`BrainOutput.decision_summary` /
-    :attr:`~cognition.contracts.DecisionPackage.summary`).
-    """
-    global _direction_deprecation_logged
-    if not _direction_deprecation_logged:
-        _direction_deprecation_logged = True
-        logger.warning(
-            "BrainOutput.direction is deprecated (V-026): reason with "
-            "decision.decision_type + opportunity/thesis (decision_summary()) "
-            "instead of the collapsed direction. Logged once per process."
-        )
-    else:
-        logger.debug("BrainOutput.direction accessed — deprecated (V-026)")
-
-
 @dataclass
 class BrainOutput:
     """The Brain's complete output for one reasoning pass.
 
-    .. deprecated:: V-026
-        ``direction`` — the collapsed top-level LONG/SHORT/FLAT — is retained
-        only for backward compatibility and logs a deprecation notice when read.
-        Reason instead in the constitutional vocabulary: ``decision.decision_type``
-        plus the opportunity/thesis fields (``decision.preferred_opportunity`` /
-        ``decision.opportunities`` / ``decision.thesis``), or the ready-made
-        :meth:`decision_summary`. The goal is to remove ``direction`` once every
-        consumer thinks in decisions/opportunities rather than a bare direction.
+    The decision package and optional campaign are the only decision surfaces.
+    Market side is carried by the campaign or its preferred opportunity, never
+    as a collapsed top-level output field.
     """
 
     decision: DecisionPackage
     campaign: Optional[CampaignSpecification] = None
-    direction: Optional[str] = FLAT
     decided_at_epoch: float = 0.0
-
-    # ``direction`` is declared twice on purpose: the field annotation above gives
-    # the dataclass its ``direction=`` init parameter (so existing call sites keep
-    # working), and this property overlays the V-026 deprecation getter. Ruff's
-    # F811 "redefinition" is expected and suppressed for exactly this recipe.
-    @property
-    def direction(self) -> Optional[str]:  # noqa: F811
-        """DEPRECATED (V-026) — the collapsed top-level trade side.
-
-        Kept for backward compatibility only; logs a deprecation notice on
-        access. Prefer ``decision.decision_type`` + opportunity/thesis (or
-        :meth:`decision_summary`).
-        """
-        _warn_direction_deprecated()
-        return self._direction
-
-    @direction.setter
-    def direction(self, value: Any) -> None:
-        # During dataclass ``__init__`` the class-level default resolves to the
-        # ``property`` object itself when no ``direction=`` was passed; normalise
-        # that (and ``None``) to FLAT so the stored value stays a plain string.
-        if isinstance(value, property):
-            value = FLAT
-        self._direction = None if value is None else str(value)
 
     @property
     def decision_type(self) -> str:
@@ -197,9 +142,6 @@ class BrainOutput:
             "provider_unavailable": self.provider_unavailable,
             "internal_fault": self.internal_fault,
             "decision_summary": self.decision_summary(),
-            # Deprecated (V-026): retained for back-compat. Read the backing field
-            # directly so serialisation does not self-trip the deprecation notice.
-            "direction": self._direction,
             "decided_at_epoch": round(self.decided_at_epoch, 3),
         }
 
@@ -1358,7 +1300,7 @@ class CognitiveBrain:
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
-            return self._record(BrainOutput(decision=decision, direction=FLAT))
+            return self._record(BrainOutput(decision=decision))
 
         # Violation V7 — doing nothing was a real candidate action that lost to a
         # justified opportunity: record the EV it would forfeit.
@@ -1420,7 +1362,7 @@ class CognitiveBrain:
             opportunity_state=(driving_opp.state.value if driving_opp is not None else ""),
             decision_id=decision.decision_id,
         )
-        return self._record(BrainOutput(decision=decision, campaign=campaign, direction=direction))
+        return self._record(BrainOutput(decision=decision, campaign=campaign))
 
     # ── Portfolio-level reasoning (Articles XXVII / XXVIII) ───────────────
 
@@ -1554,7 +1496,6 @@ class CognitiveBrain:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[brain] decision rationale annotation failed: %s", exc)
             output.campaign = None
-            output.direction = FLAT
         except Exception as exc:  # noqa: BLE001
             logger.debug("[brain] demote_output fault: %s", exc)
 
