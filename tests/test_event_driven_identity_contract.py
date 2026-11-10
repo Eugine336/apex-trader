@@ -281,7 +281,6 @@ def test_disconnected_cross_instrument_heuristics_are_retired():
         "proactive_scan_enabled",
         "proactive_scan_interval_seconds",
         "proactive_scan_min_ev",
-        "proactive_proximity_pct",
     }
 
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
