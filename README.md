@@ -208,8 +208,9 @@ docker-compose up -d
 | `APEX_ED_POSEVAL_PARALLEL` | Parallel position evaluation; serial rollback switch |
 | `APEX_ED_EVENT_REACTIVE_MGMT` | Event-reactive management; periodic-sweep rollback switch |
 
-See [the full configuration reference](docs/CONFIGURATION_REFERENCE.md) and
-[typed configuration field inventory](docs/CONFIGURATION_FIELD_INVENTORY.md).
+See [the full configuration reference](docs/CONFIGURATION_REFERENCE.md),
+[field-by-field operator environment reference](docs/OPERATOR_ENVIRONMENT_REFERENCE.md),
+and [typed configuration field inventory](docs/CONFIGURATION_FIELD_INVENTORY.md).
 
 ### Cognition and origination controls
 
