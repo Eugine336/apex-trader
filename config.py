@@ -4377,6 +4377,22 @@ class AppConfig:
         if mode not in {"all", "selected", "single"}:
             raise ValueError("universe_mode must be all, selected, or single")
         self.universe_mode = mode
+        self.enabled_categories = list(dict.fromkeys(
+            str(category).strip().lower()
+            for category in self.enabled_categories
+            if str(category).strip()
+        ))
+        if mode == "all":
+            if not self.enabled_categories:
+                raise ValueError("all-symbol universe requires at least one enabled category")
+            invalid_categories = [
+                category for category in self.enabled_categories
+                if category not in {item.value for item in InstrumentCategory}
+            ]
+            if invalid_categories:
+                raise ValueError(
+                    "unsupported trading categories: " + ", ".join(invalid_categories)
+                )
         self.enabled_symbols_override = list(dict.fromkeys(
             str(symbol).strip().upper()
             for symbol in self.enabled_symbols_override
