@@ -186,3 +186,38 @@ def test_brain_management_resolves_exact_confirmed_ticket_not_first_symbol_side_
     assert any(isinstance(node, ast.Constant) and node.value == "platform" for node in ast.walk(resolver))
     assert "get_all_open_positions" not in resolver_source
     assert "len(matches) != 1" in resolver_source
+
+
+def test_position_management_context_excludes_reasoning_confidence():
+    brain_module = _parse("cognition/brain.py")
+    position_view = next(
+        node for node in brain_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "PositionView"
+    )
+    position_fields = {
+        item.target.id
+        for item in position_view.body
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+    }
+    assert "entry_confidence" not in position_fields
+
+    payload = _function(brain_module, "_management_evidence_payload")
+    assert not any(
+        isinstance(node, ast.Constant) and node.value == "entry_confidence"
+        for node in ast.walk(payload)
+    ), "the Brain must reassess positions from current evidence, not entry confidence"
+
+    context_module = _parse("core/system_context.py")
+    position_builders = [
+        node for node in ast.walk(context_module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_PositionView"
+    ]
+    assert position_builders
+    assert not any(
+        keyword.arg == "entry_confidence"
+        for call in position_builders for keyword in call.keywords
+    )
+
+
