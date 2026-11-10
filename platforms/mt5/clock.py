@@ -239,6 +239,7 @@ def estimate_mt5_server_clock(
             current_quality = (
                 float(current.uncertainty_seconds) if current is not None else float("inf")
             )
+        # safe-fallback: malformed source uncertainty cannot corroborate the clock.
         except (TypeError, ValueError, OverflowError):
             continue
         if (
@@ -258,6 +259,7 @@ def estimate_mt5_server_clock(
                 float(sample.utc_epoch) + tick_mono - float(sample.monotonic_epoch)
             )
             sample_uncertainty = float(sample.uncertainty_seconds)
+        # safe-fallback: malformed UTC observations are excluded from consensus.
         except (TypeError, ValueError, OverflowError):
             continue
         if (
