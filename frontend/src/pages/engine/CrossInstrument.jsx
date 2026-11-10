@@ -1,7 +1,6 @@
 import { getCrossInstrument } from "../../api/engine";
 import { EngineHeader, EngineNotice } from "../../components/engine/EngineNotice";
 import Panel from "../../components/engine/Panel";
-import StatTile from "../../components/engine/StatTile";
 import { useEnginePoll } from "../../hooks/useEnginePoll";
 
 export default function CrossInstrument() {
