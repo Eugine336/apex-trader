@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from itertools import combinations
 from pathlib import Path
-from urllib.request import Request, urlopen
 from typing import Iterable, Mapping
+from urllib.request import Request, urlopen
 
 
 CLOCK_FILENAME = "apex_mt5_clock_offset.txt"
