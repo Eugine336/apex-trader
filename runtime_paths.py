@@ -171,7 +171,7 @@ def data_dir_is_safe(path: Path | None = None) -> tuple[bool, str]:
         is_reparse_point = bool(
             attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         )
-    except OSError:
+    except OSError:  # SAFE-FALLBACK: inaccessible/missing paths are not junctions.
         pass
     if d.is_symlink() or (callable(is_junction) and is_junction()) or is_reparse_point:
         return True, "symlink/junction"
