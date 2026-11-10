@@ -299,10 +299,25 @@ class Campaign:
     # ── Derived reads ────────────────────────────────────────────────────
     @property
     def open_legs(self) -> int:
-        """Net exposure-adding legs (open/scale/re-entry) minus full closes."""
-        adds = sum(1 for lg in self.legs
-                   if lg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY))
-        return adds
+        """Count active broker legs plus unresolved unbound open intentions."""
+        active: dict[tuple[str, str], int] = {}
+        unresolved = 0
+        for leg in self.legs:
+            ticket = str(leg.ticket or "").strip()
+            platform = str(leg.platform or "").strip().lower()
+            if leg.kind in (LEG_OPEN, LEG_SCALE_IN, LEG_RE_ENTRY):
+                if ticket and platform:
+                    key = (platform, ticket)
+                    active[key] = active.get(key, 0) + 1
+                else:
+                    unresolved += 1
+            elif (
+                leg.kind == LEG_CLOSE
+                and leg.exit_cause not in _PARTIAL_CLOSE_TOKENS
+                and ticket and platform
+            ):
+                active.pop((platform, ticket), None)
+        return sum(active.values()) + unresolved
 
     @property
     def open_ticket_bindings(self) -> list[dict[str, str]]:
