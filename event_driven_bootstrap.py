@@ -6442,8 +6442,101 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.warning("[management] failed to clear rollback snapshots for {}: {}", ticket, exc)
 
+    def _attach_open_campaign_ticket(self, intent: Intent, result: Any) -> None:
+        """Attach a Brain open leg only after a confirmed broker fill.
+
+        A submitted order is not a position. Pending/ambiguous outcomes remain
+        unbound until broker truth proves the exact platform and position ticket.
+        """
+        ctx = getattr(self, "_ctx", None)
+        registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+        if registry is None:
+            return
+        symbol = str(getattr(intent, "symbol", "") or "").strip()
+        direction = str(getattr(intent, "direction", "") or "").strip()
+        campaign_id = str(getattr(intent, "campaign_id", "") or "").strip()
+        decision_id = str(getattr(intent, "decision_id", "") or "").strip()
+        if not all((symbol, direction, campaign_id, decision_id)):
+            return
+        broker_response = getattr(result, "broker_response", None)
+        response_success = getattr(broker_response, "success", None)
+        if isinstance(broker_response, dict):
+            response_success = broker_response.get("success")
+        explicit_rejection = (
+            getattr(result, "rejected_by_gate", False) is True
+            or response_success is False
+            or broker_response is False
+        )
+        if explicit_rejection:
+            registry.reject_pending_leg(symbol, direction, campaign_id, decision_id)
+            return
+        if getattr(result, "success", False) is not True or response_success is not True:
+            logger.warning(
+                "[campaign] open outcome for {} remains unresolved; no broker-confirmed ticket",
+                symbol,
+            )
+            return
+        def response_value(name: str) -> Any:
+            if isinstance(broker_response, dict):
+                return broker_response.get(name)
+            return getattr(broker_response, name, None)
+        status = str(response_value("order_status") or "").strip().upper()
+        if status not in {"FILLED", "EXECUTED", "OPEN"}:
+            # PLACED/ACCEPTED pending orders are not live positions.
+            return
+        ticket = str(
+            response_value("position_ticket")
+            or response_value("ticket")
+            or response_value("order_id")
+            or response_value("contract_id")
+            or ""
+        ).strip()
+        platform = str(response_value("platform") or "").strip().lower()
+        if not ticket or not platform or self._pm is None:
+            return
+        try:
+            snapshot = self._pm.get_open_positions_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[campaign] fill snapshot failed for {}: {}", symbol, exc)
+            return
+        if snapshot is None:
+            return
+        confirmed = {
+            str(value or "").strip().lower()
+            for value in (getattr(snapshot, "confirmed_platforms", set()) or set())
+        }
+        failed = {
+            str(value or "").strip().lower()
+            for value in (getattr(snapshot, "failed_platforms", set()) or set())
+        }
+        if platform in failed or platform not in confirmed:
+            return
+        from cognition.position_adapter import canonical_side as _canon
+        want = _canon(direction)
+        matches = [
+            position for position in (getattr(snapshot, "positions", None) or [])
+            if str(getattr(position, "order_id", getattr(position, "ticket", "")) or "").strip() == ticket
+            and str(getattr(position, "platform", "") or "").strip().lower() == platform
+            and str(getattr(position, "symbol", "") or "") == symbol
+            and _canon(getattr(position, "direction", "")) == want
+        ]
+        if len(matches) != 1:
+            logger.warning(
+                "[campaign] open fill {} {} {} matched {} broker positions; ticket not attached",
+                platform, ticket, symbol, len(matches),
+            )
+            return
+        if not registry.attach_ticket(symbol, direction, campaign_id, decision_id, ticket, platform):
+            logger.warning(
+                "[campaign] confirmed fill {} could not be attached to campaign {} decision {}",
+                ticket, campaign_id, decision_id,
+            )
+
     def _handle_execution_result(self, intent: Intent, result: Any) -> None:
         """Feed every actual executor outcome back to the Brain action ledger."""
+        if getattr(intent, "intent_type", None) == IntentType.OPEN:
+            self._attach_open_campaign_ticket(intent, result)
+            return
         action_id = str(getattr(intent, "action_id", "") or "").strip()
         if not action_id:
             return
