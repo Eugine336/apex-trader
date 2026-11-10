@@ -3584,7 +3584,7 @@ class CognitiveBrain:
                 "identity": IDENTITY_STATEMENT,
                 "available": self.available,
                 "reasoner": self.reasoner_name,
-                "min_confidence_to_act": self.min_confidence_to_act,
+                "min_confidence_to_act": None,  # retired: confidence never authorizes/vetoes action
                 "ev_primary_gate": self.ev_primary_gate,
                 "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
