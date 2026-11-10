@@ -274,6 +274,8 @@ def test_adoption_git_failure_keeps_original_data_and_verified_backup(tmp_path, 
     assert len(backups) == 1
     assert (backups[0] / "apex_events.db").read_bytes() == b"original-database"
     assert database.read_bytes() == b"original-database"
+    assert not (target / ".git").exists()
+    assert len(list(tmp_path.glob("apex-trader-data-failed-adoption-git-*"))) == 1
 
 
 
