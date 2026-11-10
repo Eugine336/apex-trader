@@ -166,7 +166,7 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     )
 
     campaign = registry.observe_close(
-        "EURUSD", "LONG", "partial_take_profit",
+        "EURUSD", "LONG", "tp1_partial",
         ticket="shared-ticket", platform="mt5",
     )
 
