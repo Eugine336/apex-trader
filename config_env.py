@@ -94,6 +94,19 @@ ENV_CONFIG_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def trading_enabled_from_env(*, default: bool = True) -> bool:
+    """Return the process-wide permission for creating new broker exposure."""
+    raw = os.getenv("TRADING_ENABLED")
+    if raw is None:
+        return bool(default)
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("TRADING_ENABLED must be a boolean")
+
+
 def _finite_positive(value: Any) -> bool:
     if isinstance(value, bool):
         return False
