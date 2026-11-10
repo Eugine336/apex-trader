@@ -585,7 +585,7 @@ class CognitiveBrain:
             name: getattr(opinion, f"{name}_confidence", None)
             for name in ("thesis", "opportunity", "timing", "execution")
         }
-        quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
+        _quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
         calib_note = "observational only; no confidence adjustment is applied"
         brain_synthesis = ""
         brain_adv_synthesis = ""
@@ -862,14 +862,12 @@ class CognitiveBrain:
         if council_partial:
             questions["cognitive_degradation"] = (
                 f"OBSERVED: {advisors_responded}/{advisors_available} advisors — "
-                "partial council coverage"
-                + (f"; {degraded_note}" if degraded_note else "")
+                "partial council coverage; action quorum is enforced independently"
             )
         elif council_unknown:
             questions["cognitive_degradation"] = (
-                "OBSERVED: council coverage unknown (no council metadata) — "
-                + (degraded_note if degraded_note
-                   else "recorded as degraded; conviction not penalised (opt-in)")
+                "OBSERVED: council coverage unknown (no council metadata); "
+                "no confidence adjustment is applied"
             )
         elif advisors_available is not None:
             questions["cognitive_degradation"] = (
@@ -1541,7 +1539,6 @@ class CognitiveBrain:
             # SCALE_IN is not permitted through management; additional exposure
             # must be a separate Brain opportunity through origination admission.
             eff_conf = conf
-            conf_dims = {}
             # A management opinion (any of thesis_state / opportunity_status /
             # management_action present) is decided by the thesis-based tree —
             # LONG and SHORT are perfectly symmetric and nothing here compares a
