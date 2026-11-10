@@ -309,7 +309,11 @@ class SystemContext:
 
         # ── RiskEngine ───────────────────────────────────────────────
         try:
-            ctx.risk_engine = RiskEngine(config=config)
+            # This is the live runtime context, not a backtest. Until broker
+            # account truth is reconciled after connection, zero capital is the
+            # only honest starting state; the $10k backtest default must never
+            # appear as live account capital or a sizing denominator.
+            ctx.risk_engine = RiskEngine(config=config, starting_balance=0.0)
         except Exception as exc:
             logger.critical("[SystemContext] RiskEngine init failed — SAFETY DEGRADED: {}", exc)
             ctx._mark_safety_degraded("RiskEngine")
