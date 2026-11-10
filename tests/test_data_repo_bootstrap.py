@@ -431,3 +431,65 @@ def test_bootstrap_adopts_populated_sibling_and_keeps_both_data_trees(tmp_path, 
     assert (source_backups[0] / "apex_events.db").read_bytes() == b"source-event-store"
     assert (source_backups[0] / "source-only.json").read_text() == '{"owner":"source"}'
     assert any(args[:2] == ["read-tree", "origin/main"] for args in commands)
+
+
+
+def test_legacy_source_data_cleanup_untracks_index_without_touching_junction_target(tmp_path):
+    import subprocess
+
+    source = tmp_path / "apex-trader"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "test"],
+        check=True,
+    )
+
+    legacy = source / "data"
+    legacy.mkdir()
+    (legacy / "calibration_state.json").write_text('{"legacy":true}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "data/calibration_state.json"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "legacy runtime data"], check=True)
+
+    target = tmp_path / "apex-trader-data"
+    target.mkdir()
+    active = target / "calibration_state.json"
+    active.write_text('{"active":"must survive"}', encoding="utf-8")
+    legacy.rename(source / "data-source-backup")
+    legacy.symlink_to(target, target_is_directory=True)
+
+    removed = bootstrap._untrack_legacy_source_data(source, legacy, target)
+
+    assert removed == 1
+    assert active.read_text(encoding="utf-8") == '{"active":"must survive"}'
+    assert (source / "data-source-backup" / "calibration_state.json").read_text(
+        encoding="utf-8"
+    ) == '{"legacy":true}'
+    tracked = subprocess.check_output(
+        ["git", "-C", str(source), "ls-files", "--", "data"], text=True
+    )
+    assert tracked == ""
+    status = subprocess.check_output(
+        ["git", "-C", str(source), "status", "--porcelain"], text=True
+    )
+    assert "D  data/calibration_state.json" in status
+
+
+def test_legacy_source_data_cleanup_is_noop_when_index_has_no_data_entries(tmp_path):
+    import subprocess
+
+    source = tmp_path / "apex-trader"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    target = tmp_path / "apex-trader-data"
+    target.mkdir()
+    link = source / "data"
+    link.symlink_to(target, target_is_directory=True)
+
+    assert bootstrap._untrack_legacy_source_data(source, link, target) == 0
+    assert target.is_dir()
+
