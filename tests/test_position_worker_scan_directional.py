@@ -44,7 +44,7 @@ def _snap(
         entry_timeframe=entry_timeframe, score_history=tuple(score_history),
         stake_usd=stake_usd, multiplier=multiplier, broker_pnl=broker_pnl,
         broker_lots=lots, candles_since_entry=0, highest_since_entry=current_price,
-        lowest_since_entry=entry_price, trailing=False, re_entry_eligible=False,
+        lowest_since_entry=entry_price, trailing=False,
         tm_trade_id="tm1", confluences=(), scale_in_count=0, **kw,
     )
 
