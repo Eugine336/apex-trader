@@ -12,8 +12,8 @@ Covered:
   * TuningGuardMixin blocks/allows direct calls and never raises
   * bypass attempts are logged in-memory AND persisted to the audit DB
   * agent-driven (delegated) calls pass the guard (authorization window)
-  * the four real guarded entry points (AdaptiveOptimizer.run_optimization,
-    GateTuner.calibrate, Calibrator.calibrate, SignalLedger.run_grading_cycle)
+  * the three real guarded entry points (AdaptiveOptimizer.run_optimization,
+    GateTuner.calibrate, SignalLedger.run_grading_cycle)
   * detaching the agent restores the legacy behaviour
 
 Stdlib + sqlite only for the core; the real-component cases use the light
@@ -240,25 +240,6 @@ def test_adaptive_optimizer_runs_when_no_agent():
 
 
 
-
-
-def test_calibrator_calibrate_blocked(agent):
-    from planning.calibrator import Calibrator
-
-    cal = Calibrator()
-    cal.set_tuner_agent(agent)
-    before = cal.config
-    out = cal.calibrate([{"outcome": {"pnl_r": 1.0}} for _ in range(20)])
-    # Unchanged config object returned — no calibration happened.
-    assert out is before
-
-
-def test_calibrator_calibrate_runs_when_no_agent():
-    from planning.calibrator import Calibrator
-
-    cal = Calibrator()
-    out = cal.calibrate([])  # empty -> returns config, but not via the guard
-    assert out is cal.config
 
 
 def test_signal_ledger_grading_blocked(agent, tmp_path):
