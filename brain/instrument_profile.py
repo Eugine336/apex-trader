@@ -193,17 +193,11 @@ class InstrumentProfile:
     #    in [-1, +1] must clear ``flip_delta_threshold`` (LONG needs ≥ +thr,
     #    SHORT ≤ −thr). Gated by ``flip_require_delta_confirmation`` — ON by
     #    default; a graceful skip when fewer than 10 usable ticks are available.
-    # 7. Fast-then-slow temporal sequencing (entry/flip_sequence_tracker.py) —
-    #    M1 momentum must shift into the flip direction FIRST and M5 must confirm
-    #    on a LATER bar within ``flip_sequence_window_bars`` M5 bars (default 3 =
-    #    15 minutes). Simultaneous M1+M5 flips are treated as noise. Gated by
-    #    ``flip_require_sequence`` — ON by default (the tracker is fed M1/M5
-    #    closes via bootstrap wiring; a graceful skip when it is not wired).
+    # Fast-then-slow M1/M5 sequencing was retired: its state was never read
+    # by a live decision consumer and therefore could not qualify any action.
     flip_delta_threshold: float = 0.2
     flip_delta_tick_count: int = 30
     flip_require_delta_confirmation: bool = True
-    flip_require_sequence: bool = True
-    flip_sequence_window_bars: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -372,12 +366,9 @@ _GOLD_PROFILE = InstrumentProfile(
     pre_staging_enabled=True,
     staging_proximity_pips=300.0,       # = $3.00 — Gold-scaled staging proximity
     dxy_filter_enabled=True,            # Gold's inverse-USD correlation is core
-    # Session 16: the tick-rule delta and fast-then-slow sequence gates are ON
-    # for Gold — the M1/M5 tracker feed and tick store are warmed via bootstrap
-    # wiring, so both checks gate real flips out of the box. Listed explicitly so
-    # the intent is visible. VWAP-as-zone is likewise on for Gold.
+    # Tick-rule delta remains a contextual measurement; the retired M1/M5
+    # sequencing tracker was never consumed by the live decision path.
     flip_require_delta_confirmation=True,
-    flip_require_sequence=True,
     vwap_zone_enabled=True,
 )
 
