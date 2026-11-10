@@ -1027,7 +1027,8 @@ def test_portfolio_evidence_reaches_market_state():
 def _pos_r(symbol, direction="LONG", profit_r=0.0):
     return SimpleNamespace(
         symbol=symbol, direction=direction, profit_r=profit_r, size=0.01,
-        lots=0.01, campaign_id=f"campaign-{symbol}", opportunity_id=f"opportunity-{symbol}",
+        lots=0.01, ticket=f"ticket-{symbol}", platform="mt5",
+        campaign_id=f"campaign-{symbol}", opportunity_id=f"opportunity-{symbol}",
     )
 
 
