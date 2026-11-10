@@ -462,3 +462,22 @@ def test_mt5_latest_quote_rejects_non_finite_prices():
 
     assert poller._route_latest_quote("EURUSD", quote) is False
     assert router.ticks == []
+
+
+def test_mt5_poller_skips_malformed_history_timestamp_without_losing_valid_ticks_or_latest_quote():
+    from datetime import timedelta
+
+    t0 = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(milliseconds=100)
+    malformed = _history_row(t0, 1.1000, 1.1002)
+    malformed["time_msc"] = float("nan")
+    valid = _history_row(t1, 1.1001, 1.1003)
+    latest = _history_quote(t1, 1.1001, 1.1003)
+    pm = _HistoryPM(latest, [_HistoryFrame([malformed, valid])])
+    router = _Router()
+    poller = tick_sources.MT5TickPoller(pm, router, ["EURUSD"], poll_interval=0.0)
+
+    poller._poll_symbol("EURUSD")
+
+    assert [tick.timestamp for tick in router.ticks] == [t1]
+    assert poller._history_cursor["EURUSD"] == t1
