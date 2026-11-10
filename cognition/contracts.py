@@ -638,8 +638,6 @@ class Hypothesis:
     statement: str
     probability: Optional[float] = None
     probability_semantics: str = "not_calibrated"
-    probability_calibration_artifact_id: str = ""
-    probability_calibration_verified: bool = False
     direction: str = ""               # LONG | SHORT | FLAT | "" (unknown)
     expected_reward_r: float = 0.0    # favorable excursion, in units of risk (R)
     expected_risk_r: float = 1.0      # adverse excursion, in units of risk (R)
@@ -653,20 +651,13 @@ class Hypothesis:
         self.identity_version = IDENTITY_VERSION
         if self.probability is None:
             self.probability_semantics = "not_calibrated"
-            self.probability_calibration_verified = False
-        elif (
-            not str(self.probability_calibration_artifact_id or "").strip()
-            or self.probability_calibration_verified is not True
-        ):
-            # A numeric score is not a probability without a verified
-            # calibration artifact. Preserve the competing hypothesis while
-            # rejecting the unsupported probability claim.
+        else:
+            # No currently accepted producer artifact establishes a calibrated
+            # hypothesis probability. A caller-supplied number or artifact ID is
+            # not producer attestation, so retain the hypothesis and mark its
+            # probability unknown until a trusted calibration contract exists.
             self.probability = None
             self.probability_semantics = "unverified_probability_rejected"
-            self.probability_calibration_verified = False
-        else:
-            self.probability = _clamp01(self.probability)
-            self.probability_semantics = "calibrated_probability"
         d = str(self.direction or "").upper()
         self.direction = d if d in ("LONG", "SHORT", "FLAT") else ""
 
@@ -676,8 +667,6 @@ class Hypothesis:
             "statement": self.statement,
             "probability": round(self.probability, 4) if self.probability is not None else None,
             "probability_semantics": self.probability_semantics,
-            "probability_calibration_artifact_id": self.probability_calibration_artifact_id or None,
-            "probability_calibration_verified": self.probability_calibration_verified,
             "direction": self.direction,
             "expected_reward_r": round(self.expected_reward_r, 4),
             "expected_risk_r": round(self.expected_risk_r, 4),
