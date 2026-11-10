@@ -75,9 +75,9 @@ Severity rubric:
 ### V-005: Planning layer recreates weighted directional agreement and emits BUY/SELL plans
 - **Severity**: HIGH
 - **Philosophy Rule**: 1, 3, 4, 6, 10, 16, 19, 20
-- **Historical files**: `planning/models.py`, `planning/trade_planner.py`, `planning/calibrator.py`, `planning/outcome_logger.py`, and `core/system_context.py` planner wiring (all removed in PR #891).
+- **Historical files**: `planning/models.py`, `planning/trade_planner.py`, `planning/calibrator.py`, `planning/outcome_logger.py`, and `core/system_context.py` planner wiring (all removed in PR #892).
 - **Historical behavior**: the retired implementation used scanner direction, signed timeframe alignment and weighted directional agreement to produce BUY/SELL plans.
-- **Current disposition (PR #891, pending CI)**: the entire `planning/` package, `TradePlanner`, `PlannerConfig`, planner calibrator/outcome journal, `SystemContext` fields and initialization, `AppConfig.planner`, tuning adapter and expected-tunable registration were deleted. The constitutional guard now fails if any retired planning module is reintroduced and no longer excludes the planner from call scanning. No active execution route depended on the no-op planner. The shared Brain campaign and execution/portfolio/broker safety path remains.
+- **Current disposition (PR #892, pending CI)**: the entire `planning/` package, `TradePlanner`, `PlannerConfig`, planner calibrator/outcome journal, `SystemContext` fields and initialization, `AppConfig.planner`, tuning adapter and expected-tunable registration were deleted. The constitutional guard now fails if any retired planning module is reintroduced and no longer excludes the planner from call scanning. No active execution route depended on the no-op planner. The shared Brain campaign and execution/portfolio/broker safety path remains.
 - **Why It Violates**: This is a directional voting/weighted-agreement architecture. It asks whether scanner, decision engine, RL, and adaptive layers agree with a preselected side rather than asking what opportunities exist and whether any are actionable.
 - **Information Lost**: The planner collapses separate market observations, RL state, and adaptive evidence into one directional agreement scalar and one confidence scalar, losing disagreement shape and alternative opportunity candidates.
 - **Root Cause**: Pre-cognition trade-planning architecture remains instantiated for compatibility/shadow use after the Cognitive Brain became the intended authority.
@@ -273,7 +273,7 @@ Severity rubric:
 ### V-024: Retired legacy components remain exported and importable
 - **Severity**: LOW
 - **Philosophy Rule**: 16, 17, 20
-- **File(s)**: `management/__init__.py`, `management/trade_manager.py`, `scanner/cycle_selection.py:1-10` (the `planning/` package was deleted in PR #891; the remaining management package export is handled by the management-retirement work package).
+- **File(s)**: `management/__init__.py`, `management/trade_manager.py`, `scanner/cycle_selection.py:1-10` (the `planning/` package was deleted in PR #892; the remaining management package export is handled by the management-retirement work package).
 - **Actual Code Behavior**: Mechanical management, directional planning, and direction-lock selection remain importable package surfaces even when some are no longer default production paths.
 - **Execution Path**: External or legacy internal imports can still instantiate and invoke these components without going through the Cognitive Brain.
 - **Why It Violates**: The constitution requires one cognitive authority and downstream execution/risk constraints. Exported legacy authorities make it easy to reintroduce forbidden paths.
