@@ -467,40 +467,52 @@ def _repo_object_size_mb(work_tree: str) -> float | None:
     return total_bytes / (1024.0 * 1024.0)
 
 
+def _restore_compaction_branch(
+    work_tree: str, branch: str, temp_branch: str
+) -> bool:
+    """Restore HEAD and index without checking out or overwriting working files."""
+    ok_head, head_out = _run_git(
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], work_tree
+    )
+    if not ok_head:
+        logger.error("[repo-compact] could not restore HEAD to {}: {}", branch, head_out)
+        return False
+    ok_reset, reset_out = _run_git(["reset", "--mixed", branch], work_tree)
+    if not ok_reset:
+        logger.error(
+            "[repo-compact] could not restore index to {} without touching files: {}",
+            branch, reset_out,
+        )
+        return False
+    _run_git(["branch", "-D", temp_branch], work_tree)
+    return True
+
+
 def _recover_stranded_compaction(
     work_tree: str, branch: str, temp_branch: str
-) -> None:
-    """Undo a compaction that was interrupted while on the orphan temp branch.
-
-    A previous ``compact_repo_history`` run can be killed after
-    ``checkout --orphan _compact_temp`` (and possibly after the real branch was
-    deleted) but before the temp branch is promoted back into place. That leaves
-    HEAD stranded on ``_compact_temp`` — git then refuses to delete the branch
-    HEAD points at, so the next orphan checkout aborts with "a branch named
-    '_compact_temp' already exists", and any push of the real branch fails with
-    "src refspec <branch> does not match any" because the real ref is gone.
-
-    Best-effort recovery: if HEAD is on the temp branch, return to the real
-    branch (restoring it from the temp branch when it was already deleted), then
-    drop the stale temp branch. Never raises.
-    """
+) -> bool:
+    """Recover an interrupted orphan compaction without overwriting working files."""
     ok, cur = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], work_tree)
     on_temp = ok and cur.strip() == temp_branch
     if not on_temp:
         # Not stranded — just clear any leftover (non-current) temp branch.
         _run_git(["branch", "-D", temp_branch], work_tree)
-        return
+        return True
+
     real_ok, _ = _run_git(
         ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], work_tree
     )
     if real_ok:
-        # Real branch still exists — switch back to it and drop the orphan.
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
-    else:
-        # Real branch was already deleted mid-compaction; the temp branch holds
-        # the compacted tree — promote it into the real branch name in place.
-        _run_git(["branch", "-m", branch], work_tree)
+        # Move HEAD and index back without a forced checkout. This leaves every
+        # locally modified or oversized excluded database byte-for-byte intact.
+        return _restore_compaction_branch(work_tree, branch, temp_branch)
+
+    # The real branch ref was deleted mid-compaction. The temp branch already
+    # holds the recovery tree, so rename the current branch in place.
+    ok_rename, rename_out = _run_git(["branch", "-m", branch], work_tree)
+    if not ok_rename:
+        logger.error("[repo-compact] could not recover missing branch {}: {}", branch, rename_out)
+    return ok_rename
 
 
 def compact_repo_history(
@@ -550,7 +562,8 @@ def compact_repo_history(
     # Heal a repo left stranded on the orphan temp branch by an interrupted
     # prior run before doing anything else — otherwise the size check may
     # short-circuit and leave the tree unable to push its real branch.
-    _recover_stranded_compaction(work_tree, branch, "_compact_temp")
+    if not _recover_stranded_compaction(work_tree, branch, "_compact_temp"):
+        return "could not safely recover interrupted compaction; working files preserved"
 
     size_mb = _repo_object_size_mb(work_tree)
     if size_mb is None:
@@ -599,8 +612,7 @@ def compact_repo_history(
     # the compacted commit.
     ok_tree, tree_out = _run_git(["read-tree", original_head], work_tree)
     if not ok_tree:
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"index seed failed: {tree_out.splitlines()[0] if tree_out else 'unknown'}"
 
     # Stage only eligible files. Oversized tracked files retain their old blobs;
@@ -614,8 +626,7 @@ def compact_repo_history(
     add_args += _excluded_git_pathspecs(base, max_bytes, effective_excludes)
     ok_add, add_out = _run_git(add_args, work_tree)
     if not ok_add:
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"stage failed: {add_out.splitlines()[0] if add_out else 'unknown'}"
 
     from datetime import datetime, timezone
@@ -631,9 +642,8 @@ def compact_repo_history(
         work_tree,
     )
     if not ok:
-        # Restore the original branch so we never strand the tree on the orphan.
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        # Restore HEAD/index only; never force-checkout over excluded files.
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"commit failed: {out.splitlines()[0] if out else 'unknown'}"
 
     # Promote the compacted commit onto the real branch WITHOUT deleting it
@@ -643,10 +653,21 @@ def compact_repo_history(
     # not match any"). We then switch onto it and drop the orphan.
     ok_move, mv_out = _run_git(["branch", "-f", branch, temp_branch], work_tree)
     if not ok_move:
-        _run_git(["checkout", "-f", branch], work_tree)
-        _run_git(["branch", "-D", temp_branch], work_tree)
+        _restore_compaction_branch(work_tree, branch, temp_branch)
         return f"branch update failed: {mv_out.splitlines()[0] if mv_out else 'unknown'}"
-    _run_git(["checkout", "-f", branch], work_tree)
+
+    # HEAD is still attached to the orphan branch. Switch the symbolic HEAD and
+    # reset only the index to the promoted commit; --mixed never rewrites the
+    # working tree, so oversized/excluded database files remain untouched.
+    ok_head, head_out = _run_git(
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], work_tree
+    )
+    if not ok_head:
+        _restore_compaction_branch(work_tree, branch, temp_branch)
+        return f"HEAD promotion failed: {head_out.splitlines()[0] if head_out else 'unknown'}"
+    ok_reset, reset_out = _run_git(["reset", "--mixed", branch], work_tree)
+    if not ok_reset:
+        return f"index promotion failed: {reset_out.splitlines()[0] if reset_out else 'unknown'}"
     _run_git(["branch", "-D", temp_branch], work_tree)
 
     _run_git(["gc", "--aggressive", "--prune=now"], work_tree)
