@@ -74,7 +74,7 @@ def _position(ticket="ticket-1", platform="mt5"):
 def test_successful_market_fill_attaches_exact_confirmed_ticket_to_campaign():
     system, registry = _system(positions=[_position()])
 
-    system._handle_execution_result(_intent(), _result())
+    system._handle_open_result(_intent(), _result())
 
     live = registry.get_status()["live"]
     assert live[0]["open_ticket_bindings"] == [
@@ -93,7 +93,7 @@ def test_pending_order_placement_is_not_misclassified_as_open_position():
 def test_fill_is_not_attached_without_exact_broker_snapshot_match():
     system, registry = _system(positions=[_position(ticket="other-ticket")])
 
-    system._handle_execution_result(_intent(), _result(ticket="ticket-1"))
+    system._handle_open_result(_intent(), _result(ticket="ticket-1"))
 
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
 
@@ -105,7 +105,7 @@ def test_fill_is_not_attached_when_platform_is_not_confirmed():
         failed=("mt5",),
     )
 
-    system._handle_execution_result(_intent(), _result())
+    system._handle_open_result(_intent(), _result())
 
     assert registry.get_status()["live"][0]["open_ticket_bindings"] == []
 
