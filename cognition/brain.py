@@ -2336,9 +2336,10 @@ class CognitiveBrain:
                     or not artifact.dataset_digest
                 ):
                     continue
-                # Brier score, favourable base rate and reliability gap describe
-                # forecast calibration. They are deliberately not eligibility
-                # gates: CalibrationTracker scales risk; it cannot veto a thesis.
+                # Brier score, favourable base rate and reliability gap are
+                # diagnostic metadata only. Fixed-horizon expected return is
+                # admitted from its own verified artifact; reasoning strength and
+                # CalibrationTracker metrics never qualify or scale exposure.
                 expected_return = min(development_return, holdout_return)
                 stamp = self._cost_value(source_epoch) or 0.0
                 candidates.append((
