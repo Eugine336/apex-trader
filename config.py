@@ -4404,6 +4404,11 @@ class AppConfig:
         elif not isinstance(self.owner_limits, OwnerLimits):
             raise TypeError("owner_limits must be an OwnerLimits instance")
         self.sync_owner_limit_views()
+        # Apply only the explicit operator/deployment allowlist. OwnerLimits,
+        # analytical thresholds, broker-derived facts and safety invariants are
+        # intentionally excluded from generic environment overrides.
+        from config_env import apply_environment_config
+        apply_environment_config(self)
 
     def apply_owner_limit_updates(self, updates: dict[str, object]) -> None:
         """Validate and atomically apply owner limits, then refresh legacy views."""
