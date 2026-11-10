@@ -17,15 +17,15 @@ from typing import Any, Optional, Sequence
 class PortfolioCandidate:
     """A single trade the organisation wants to size.
 
-    Direction/conviction come from Consensus; the trade has already passed
-    Compliance by the time it reaches Portfolio.
+    Direction comes from the canonical Brain campaign. The legacy conviction
+    field is retained for compatibility only and is not used to size capital.
     """
 
     symbol: str
     direction: str
     entry_price: float
     stop_loss: float
-    conviction: float = 0.0          # 0..100 (consensus score)
+    conviction: float = 0.0          # deprecated metadata; never a sizing input
     context: Any = None              # PlatformContext (duck-typed: .uses_stake)
     pip_size: float = 0.0
     pip_value_per_lot: float = 10.0
@@ -56,7 +56,6 @@ class SizingFactors:
     """
 
     base_risk_pct: float = 0.0
-    de_size_mult: float = 1.0        # Decision Engine conviction scaling
     orch_mult: float = 1.0           # Orchestrator evidence fold
     vol_mult: float = 1.0            # System-wide volatility monitor
     inst_vol_mult: float = 1.0       # Per-instrument ATR regime
@@ -64,12 +63,10 @@ class SizingFactors:
     exec_mult: float = 1.0           # Execution-quality monitor
     cap_mult: float = 1.0            # Capital allocator (strategy allocation)
     adapt_mult: float = 1.0          # Adaptive optimizer learned edge
-    calib_mult: float = 1.0          # Verified calibration of the Brain's confidence
 
     def as_ordered(self) -> Sequence[tuple[str, float]]:
         """Return the factors in a stable, log-friendly order."""
         return (
-            ("DE", self.de_size_mult),
             ("ORCH", self.orch_mult),
             ("VOL", self.vol_mult),
             ("IVOL", self.inst_vol_mult),
@@ -77,7 +74,6 @@ class SizingFactors:
             ("EXEC", self.exec_mult),
             ("CAP", self.cap_mult),
             ("ADAPT", self.adapt_mult),
-            ("CALIB", self.calib_mult),
         )
 
     def product(self) -> float:
