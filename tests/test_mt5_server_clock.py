@@ -140,6 +140,19 @@ def test_ntp_collection_adds_https_witnesses_when_only_two_ntp_sources_answer(mo
     assert sum(sample.server.startswith("https:") for sample in samples) == 2
 
 
+def test_automatic_clock_estimator_preserves_uncertainty_ceiling():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 1.5, "ntp:a"),
+        NTPClockSample(1_800_000_000.0, 50.0, 1.5, "ntp:b"),
+    )
+    assert estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.0, 50.0, ntp_samples=samples,
+        tick_precision_seconds=0.001, tick_transport_uncertainty_seconds=1.0,
+    ) is None
+
+
 def test_automatic_clock_estimator_does_not_count_two_protocols_from_one_provider():
     from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
 
