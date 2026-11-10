@@ -255,7 +255,7 @@ def test_uncalibrated_directional_opinion_cannot_create_campaign_or_claim_positi
     assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
     assert out.campaign is None
     assert out.decision.expected_value == 0.0
-    assert "DIAGNOSTIC ONLY" in out.decision.questions_answered["expected_value"]
+    assert "no diagnostic EV is computed from uncalibrated reasoning strength" in out.decision.questions_answered["expected_value"]
     assert "confidence is not expected return" in out.decision.questions_answered[
         "expected_return_verification"
     ]
