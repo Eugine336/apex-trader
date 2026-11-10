@@ -125,9 +125,13 @@ def test_ntp_collection_adds_https_witnesses_when_only_two_ntp_sources_answer(mo
         "time.google.com": clock_module.NTPClockSample(1000.1, 10.1, 0.6, "ntp:b"),
         "pool.ntp.org": None,
     }
-    https = clock_module.NTPClockSample(1000.05, 10.05, 0.9, "https:clock")
     monkeypatch.setattr(clock_module, "_query_ntp", lambda host: ntp[host])
-    monkeypatch.setattr(clock_module, "_query_https_time", lambda url: https)
+    monkeypatch.setattr(
+        clock_module, "_query_https_time",
+        lambda url: clock_module.NTPClockSample(
+            1000.05, 10.05, 0.9, f"https:{url.split('/')[2]}",
+        ),
+    )
 
     samples = clock_module.query_ntp_sources()
 
