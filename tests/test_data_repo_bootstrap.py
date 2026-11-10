@@ -242,6 +242,14 @@ def test_checkout_missing_entries_preserves_existing_files_and_writes_nonpointer
     (target / "legacy.db").write_bytes(b"remote-legacy-database-bytes")
     (target / "existing.db").write_bytes(b"remote-existing-version")
     bootstrap._run_git(["add", "-A"], cwd=target)
+    # Simulate a historical ordinary Git blob despite the active LFS clean filter.
+    legacy_oid = bootstrap._run_git(
+        ["hash-object", "-w", "--no-filters", "legacy.db"], cwd=target
+    )
+    bootstrap._run_git(
+        ["update-index", "--add", "--cacheinfo", f"100644,{legacy_oid},legacy.db"],
+        cwd=target,
+    )
     bootstrap._run_git(["commit", "-qm", "fixture"], cwd=target)
     (target / "existing.db").write_bytes(b"local-live-database")
     (target / "legacy.db").unlink()
