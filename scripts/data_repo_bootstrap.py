@@ -207,6 +207,15 @@ def _verify_git_lfs_and_tracking(target: Path) -> None:
     ):
         if not _run_git(["config", "--get", key], cwd=target):
             raise DataRepoBootstrapError(f"Git LFS filter is not configured: {key}")
+    attributes = _run_git(
+        ["check-attr", "filter", "--", "apex_events.db"], cwd=target
+    )
+    if "filter: lfs" not in attributes:
+        raise DataRepoBootstrapError(
+            "Git LFS is installed but the data repository does not assign "
+            "the LFS filter to SQLite database files"
+        )
+    _run_git(["lfs", "env"], cwd=target)
 
 
 def _adopt_existing_data_repo(target: Path, data_repo_url: str) -> Path:
