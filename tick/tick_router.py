@@ -66,13 +66,16 @@ class TickRouter:
         Called by MT5 poll thread or Deriv WS subscription handler.
         Thread-safe.
         """
-        # Boundary detection and raw consumers run BEFORE the bounded store's
-        # coalescing gate. This preserves the complete tick sequence delivered
-        # by broker adapters for candle construction and market-state tracking.
-        self._detector.on_tick(tick)
+        # Preserve every broker-delivered tick on the raw channel, including
+        # observations whose source time is not yet verified. Unverified ticks
+        # must never drive time-bucketed candles or time-based cognition wakes.
         self._ticks_routed += 1
         self._bus.publish("raw_tick", tick)
         self._bus.publish(f"raw_tick:{tick.symbol}", tick)
+        if tick.source_timestamp_verified is True:
+            self._detector.on_tick(tick)
+            self._bus.publish("verified_tick", tick)
+            self._bus.publish(f"verified_tick:{tick.symbol}", tick)
 
         with self._lock:
             raw_cbs = list(self._raw_callbacks)
