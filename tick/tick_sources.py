@@ -275,6 +275,8 @@ class DerivTickAdapter:
                                 getattr(td, "source_timestamp_verified", False) is True
                             ),
                             quote_kind=getattr(td, "quote_kind", "unknown"),
+                            spread_unit=getattr(td, "spread_unit", "unknown"),
+                            raw_fields=getattr(td, "raw_fields", {}),
                         )
                         # Route immediately — ticks must keep flowing regardless
                         # of connection-state bookkeeping.
