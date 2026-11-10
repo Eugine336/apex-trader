@@ -912,6 +912,10 @@ class _FakeRegistry:
     def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
                    pnl=0.0, ticket="", decision_id="", now=None):
         self.legs.append((symbol, direction, kind, size, decision_id))
+    def reject_pending_leg(self, symbol, direction, campaign_id, decision_id):
+        self.legs = [leg for leg in self.legs if leg[4] != decision_id]
+        self.theses = [thesis for thesis in self.theses if thesis[7] != decision_id]
+        return True
 
     def record_management(self, symbol, direction, objective, *, confidence=0.0,
                           ev_over_flat=0.0, uncertainty=0.0, now=None):
