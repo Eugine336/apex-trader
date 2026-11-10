@@ -192,8 +192,7 @@ def test_v4_partial_council_records_degradation_without_rewriting_confidence():
     # V-013 — partial council coverage is explicit metadata. The independent
     # action quorum controls authority; confidence is not multiplied.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.9)),
-                           min_advisors_for_action=1,
-                           degraded_confidence_multiplier=0.7)
+                           min_advisors_for_action=1)
     out = brain.reason(_state_with_advisors(1, 4, 15))
     deg = out.decision.questions_answered.get("cognitive_degradation", "")
     assert deg.startswith("OBSERVED")
