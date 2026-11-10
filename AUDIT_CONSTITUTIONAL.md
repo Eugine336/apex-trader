@@ -75,7 +75,7 @@ Severity rubric:
 ### V-005: Planning layer recreates weighted directional agreement and emits BUY/SELL plans
 - **Severity**: HIGH
 - **Philosophy Rule**: 1, 3, 4, 6, 10, 16, 19, 20
-- **File(s)**: `planning/models.py:25-32`, `planning/models.py:42-65`, `planning/models.py:76-79`, `planning/models.py:135-137`, `planning/trade_planner.py:223-235`, `planning/trade_planner.py:243-273`, `planning/trade_planner.py:374-438`, `planning/trade_planner.py:481-486`, `planning/trade_planner.py:581-583`, `planning/trade_planner.py:633-650`, `core/system_context.py:2053-2058`
+- **Historical files**: `planning/models.py`, `planning/trade_planner.py`, `planning/calibrator.py`, `planning/outcome_logger.py`, and `core/system_context.py` planner wiring (all removed in PR #891).
 - **Historical behavior**: the retired implementation used scanner direction, signed timeframe alignment and weighted directional agreement to produce BUY/SELL plans.
 - **Current disposition (PR #891, pending CI)**: the entire `planning/` package, `TradePlanner`, `PlannerConfig`, planner calibrator/outcome journal, `SystemContext` fields and initialization, `AppConfig.planner`, tuning adapter and expected-tunable registration were deleted. The constitutional guard now fails if any retired planning module is reintroduced and no longer excludes the planner from call scanning. No active execution route depended on the no-op planner. The shared Brain campaign and execution/portfolio/broker safety path remains.
 - **Why It Violates**: This is a directional voting/weighted-agreement architecture. It asks whether scanner, decision engine, RL, and adaptive layers agree with a preselected side rather than asking what opportunities exist and whether any are actionable.
