@@ -295,7 +295,6 @@ class ScoringConfig:
 @dataclass
 class ConfirmationPenaltyConfig:
     enabled: bool = True
-    shadow_mode: bool = False
     vwap_wrong_side_penalty: int = 15
     divergence_both_tf_penalty: int = 15
     divergence_single_tf_penalty: int = 7
@@ -3737,7 +3736,7 @@ class CognitionConfig:
     authoritative cognition gate, candidate-specific evidence lineage and net-EV qualification;
     deterministic risk + broker feasibility (Parts IX/X) still constrain every
     order. Env overrides:
-    COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
+    COGNITION_ENABLED, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
     COGNITION_MEMORY_ENABLED (default true),
     COGNITION_OPERATIONS_ENABLED (default false),
@@ -3873,7 +3872,6 @@ class CognitionConfig:
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
-        self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
         )
