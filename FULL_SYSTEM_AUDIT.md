@@ -282,13 +282,10 @@ The ED system makes entry decisions strategically but manages open positions pur
 | ALL 7 shims | DEAD CODE | Backward-compat re-exports from adaptive/ |
 | __init__.py | DEAD CODE | Package init for dead shims |
 
-### planning/ (4 files)
-| File | Status | Notes |
+### planning/ (retired in PR #892)
+| Scope | Status | Notes |
 |------|--------|-------|
-| trade_planner.py | CONNECTED | Auto-calibration feedback loop works |
-| outcome_logger.py | CONNECTED | Entry + close logging works |
-| calibrator.py | CONNECTED | Auto-calibration works |
-| models.py | CONNECTED | Data models |
+| Entire package | RETIRED | `planning/` was physically deleted: TradePlanner, plan/outcome models, OutcomeLogger and Calibrator. No production caller existed for the no-op directional planner. Do not describe the deleted package's former components as connected. The separate `brain/outcome_feedback.py` and evolution/learning systems are not this retired package. |
 
 ### persistence/ (11 files)
 | File | Status | Notes |

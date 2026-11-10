@@ -46,9 +46,9 @@ But the fixes are **shallower than the guard implies**:
   `scan_directional_exits_enabled=True`) — the fix code exists but is **inert on the
   default live path**.
 - Several forbidden mechanisms survive **dormant-but-one-wire-from-live**
-  (`planning/trade_planner.py` directional decider, `adaptive/signal_ledger.py` +
+  (retired `planning/` subsystem (removed in PR #892), `adaptive/signal_ledger.py` +
   `module_governor.py` directional-correctness learning,
-  `planning/trade_planner.py` directional decider and `adaptive/signal_ledger.py` + `module_governor.py` directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810.
+  retired planning subsystem removed; `adaptive/signal_ledger.py` + `module_governor.py` directional-correctness learning. The adaptive timeframe-weight provider and its Brain registration were removed in PR #810.
 - The historical `_directional_lean` implementation is absent from the current
   `cognition/brain_reasoning.py`; the Brain forms hypotheses from structured evidence.
 - Core cognitive gates **fail OPEN** (UNKNOWN opportunity ⇒ actionable; absent
@@ -129,7 +129,7 @@ Same format as the register (ID | severity | live/dormant | evidence).
 | **V-NEW-005** | HIGH | **LIVE (deployed)** | **No enforced provider diversity / local failsafe.** Shipped `.env` roster carries no Tier-3 local model and no quota limits; `tests/test_env_local_classification.py` FAILS (missing local failsafe / deep reasoner). Runtime never detects the missing local foundation. (Deployment-level manifestation of V-015/V-014.) |
 | **V-NEW-006** | MEDIUM | **LIVE** | **Operator surfaces still speak dir/conf/votes/consensus.** Live endpoints `/api/module-votes` and `/api/ranker` (`dashboard/api.py:288-296`) and the "② Consensus" nav department billed as "the active entry trigger" (`dashboard/state_departments.py:129-132`). Even rendering empty, the operator-facing *contract* is the retired model, not the cognitive one. |
 | **V-NEW-007** | LOW | debt | **Regressions / rot introduced by the removals.** Broken test imports of deleted modules: At the historical audit base, `tests/test_developing_analysis.py:18` imported `compute_bias` (deleted → ImportError on collection); the identity migration branch later removed the obsolete directional-bias assertions and replaced them with raw, non-directional `WorldModel` contract tests. `dashboard/tests/test_brain_dashboard.py:16-17` still references retired `brain.directional_consensus.Vote` + `brain.opportunity_ranker.rank_opportunities` and needs a fresh current-head check. Stale docstrings claim live wiring (`adaptive/module_governor.py` "the single hook the scanner calls"; `llm/reasoner.py:10-15` vote-panel comments) — an invitation to re-wire a directional path. Orphaned config `VoteCalibratorConfig`/`OpportunityRankerConfig`/`single_path`. |
-| **V-NEW-008** | MEDIUM | tooling | **The guard overstates compliance.** `scripts/constitution_audit.py` is a hardcoded file/pattern/call allow-list: it never scans `cognition/brain_reasoning.py`, `brain_output_collapse` greps only the literal `expected_value = confidence` (`:126-128`), and it excludes `planning/trade_planner.py` from the call-scan without banning `plan_trade`. Its exit-0 "clean" verdict cannot see V-NEW-001, V-005's dormant decider, or the fail-open gates. |
+| **V-NEW-008** | MEDIUM | tooling | **The guard overstates compliance.** `scripts/constitution_audit.py` is a hardcoded file/pattern/call allow-list: it never scans `cognition/brain_reasoning.py`, `brain_output_collapse` greps only the literal `expected_value = confidence` (`:126-128`), and it excludes `planning/trade_planner.py` from the call-scan without banning `plan_trade`. Its exit-0 "clean" verdict cannot see V-NEW-001, V-005's dormant decider, or the fail-open gates. |  **Current disposition (PR #892, CI passed; PR remains draft):** the planner exclusion is removed and deleted planning files are guarded by explicit absence checks. The wider audit remains a static regression guard, not a complete runtime call-graph proof; other legacy surfaces remain under audit.
 
 ---
 
@@ -249,3 +249,8 @@ gates.
   `risk/`, `planning/`, and `dashboard/` (incl. `dashboard/state_brain.py`).
 
 *End of verification audit. No trading logic was modified — only this document was added.*
+
+
+## Current branch delta — 2026-11-10
+
+The table above is the historical forensic snapshot at base `e11be71`; its line references and status counts are not a current-main verdict. On branch `redesign/retire-noop-trade-planner-mainline`, PR #892 removes the disconnected `planning/` package, planner configuration/runtime wiring, and planner tuner adapter/registration. It also removes the former planner exclusion from the constitutional call scan and adds explicit retired-file checks. A further regression test checks that production modules do not import the deleted package and that the associated configuration/runtime/tuner surfaces remain absent. PR #892 is still a draft; the latest head is `92f867019adf633d86b5a1ae61be1a04861e0087`. On head `c507f98d50ab5d43f269cd073a4181e50b9d95c8`, Python 3.11, Python 3.12, lint, and Gold Desk focused checks all completed successfully. PR #892 remains open pending review/merge. This branch delta closes only the disconnected planner finding; it does not close V-002/V-003 or establish full repository identity compliance.

@@ -2,7 +2,7 @@
 
 Tests:
 - SystemContext creates evolution engine subsystems
-- SystemContext creates planning/shadow subsystems
+- SystemContext has no retired planning/shadow subsystems
 - main.py no longer imports TradingLoop or checks USE_EVENT_DRIVEN
 - EventDrivenSystem uses evolution engines in entry/close paths
 - Shutdown closes evolution engine DB connections
@@ -61,26 +61,15 @@ class TestSystemContextEvolutionFields:
         assert ctx.virtual_signal_manager is None
 
 
-class TestSystemContextPlanningFields:
-    """Verify Phase 6 planning/shadow fields exist on SystemContext."""
+class TestSystemContextRetiredPlanningFields:
+    """The disconnected planner stack is absent from the live context."""
 
-    def test_trade_planner_field(self):
+    def test_no_retired_planning_fields(self):
         from core.system_context import SystemContext
-        ctx = SystemContext()
-        assert hasattr(ctx, "trade_planner")
-        assert ctx.trade_planner is None
-
-    def test_outcome_logger_field(self):
-        from core.system_context import SystemContext
-        ctx = SystemContext()
-        assert hasattr(ctx, "outcome_logger")
-        assert ctx.outcome_logger is None
-
-    def test_calibrator_field(self):
-        from core.system_context import SystemContext
-        ctx = SystemContext()
-        assert hasattr(ctx, "calibrator")
-        assert ctx.calibrator is None
+        fields = SystemContext.__dataclass_fields__
+        assert "trade_planner" not in fields
+        assert "outcome_logger" not in fields
+        assert "calibrator" not in fields
 
     def test_re_entry_manager_field(self):
         from core.system_context import SystemContext

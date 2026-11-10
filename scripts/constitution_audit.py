@@ -231,6 +231,11 @@ CHECKS: list[Check] = [
             "trigger/entry_patterns.py",
             "adaptive/gate_tuner.py",
             "adaptive/gate_attribution.py",
+            "planning/__init__.py",
+            "planning/trade_planner.py",
+            "planning/calibrator.py",
+            "planning/outcome_logger.py",
+            "planning/models.py",
         ],
         patterns=[],
         banned_calls=[
@@ -242,7 +247,6 @@ CHECKS: list[Check] = [
         ],
         scan_excludes=[
             "decision/",                  # (now only actions.py) — no deciders
-            "planning/trade_planner.py",  # retired plan_trade may cross-call assess_*
         ],
     ),
 ]

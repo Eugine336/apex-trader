@@ -3,15 +3,15 @@ Tests for dormant-component wiring + system-wide tuning visibility (Parts 2 & 3)
 
 Verifies that the components the audit flagged as dormant/dead-wired are now
 properly reachable through the TunerAgent, and that the agent can report the
-whole 18-component system and validate its registry at startup.
+whole 17-component system and validate its registry at startup.
 
 Covered:
-  * PostCloseTrackerConfig defaults OFF; tracker honours the flag
+  * PostCloseTrackerConfig defaults ON; tracker honours the flag
   * PostCloseTracker.record_close + process_pending_checks round-trip
   * PostCloseTrackerTunable drives the tracker only when there is work
   * SignalLedger.attach_trade_outcome links a closed trade's result to its signals
   * ConsumerTunable reports config and is never auto-tuned
-  * get_system_tuning_status reports all 18 expected components + the missing set
+  * get_system_tuning_status reports all 17 expected components + the missing set
   * validate_registry warns about missing components and reports them
   * dormant components are reported with role=dormant
 """
@@ -54,7 +54,7 @@ def test_post_close_tracker_disabled_is_noop(tmp_path):
         trade_id="t1", pair="EURUSD", direction="LONG",
         entry_price=1.10, exit_price=1.11,
     )
-    assert tracker.pending_count == 0  # nothing scheduled when disabled
+    assert tracker.pending_count == 0
 
 
 def test_post_close_tracker_records_close_when_enabled(tmp_path):
@@ -71,7 +71,7 @@ def test_post_close_tracker_records_close_when_enabled(tmp_path):
     assert tracker.pending_count == 1
 
 
-# ── PostCloseTrackerTunable adapter ──────────────────────────────────────────
+# ── PostCloseTrackerTunable adapter ─────────────────────────────────────────
 
 
 class _FakeTracker:
@@ -114,7 +114,7 @@ def test_post_close_adapter_processes_when_due():
     assert t.frequency == TuneFrequency.PER_SCAN_CYCLE
 
 
-# ── SignalLedger.attach_trade_outcome (close-path wiring target) ─────────────
+# ── SignalLedger.attach_trade_outcome (close-path wiring target) ────────────
 
 
 def test_attach_trade_outcome_links_result_to_signals(tmp_path):
@@ -140,7 +140,7 @@ def test_attach_trade_outcome_no_trade_is_noop(tmp_path):
     assert ledger.attach_trade_outcome("missing", {"outcome": "WIN"}) == 0
 
 
-# ── ConsumerTunable (components 14-19 visibility) ────────────────────────────
+# ── ConsumerTunable visibility ──────────────────────────────────────────────
 
 
 def test_consumer_tunable_never_auto_tunes():
@@ -169,17 +169,18 @@ def test_consumer_tunable_faulty_provider_safe():
         raise ValueError("nope")
 
     c = ConsumerTunable("x", boom)
-    # Must not raise — falls back to the base role/note.
     assert c.get_current_params()["role"] == "consumer"
 
 
-# ── System status + startup validation (Part 3) ─────────────────────────────
+# ── System status + startup validation ──────────────────────────────────────
 
 
-def test_expected_tunables_is_eighteen():
-    # GateTuner was removed with the legacy entry stack (19 -> 18).
-    assert len(EXPECTED_TUNABLES) == 18
+def test_expected_tunables_matches_registry():
+    # The current registry has 17 entries; retired planner calibration is not
+    # an active tunable and must not be counted as a registered component.
+    assert len(EXPECTED_TUNABLES) == 17
     assert "gate_tuner" not in EXPECTED_TUNABLES
+    assert "planner_calibrator" not in EXPECTED_TUNABLES
 
 
 def test_system_status_reports_missing_components(agent):
@@ -187,7 +188,6 @@ def test_system_status_reports_missing_components(agent):
     assert status["agent_enabled"] is True
     assert status["is_sole_authority"] is True
     assert status["expected_count"] == len(EXPECTED_TUNABLES)
-    # Nothing registered yet -> every expected component is missing.
     assert len(status["unregistered_expected"]) == len(EXPECTED_TUNABLES)
 
 
@@ -197,7 +197,6 @@ def test_system_status_full_registry_has_no_missing(agent):
     status = agent.get_system_tuning_status()
     assert status["registered_count"] == len(EXPECTED_TUNABLES)
     assert status["unregistered_expected"] == []
-    # Every expected component shows up with its reported params.
     for name in EXPECTED_TUNABLES:
         assert name in status["registered_tunables"]
 

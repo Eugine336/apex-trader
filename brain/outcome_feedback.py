@@ -16,8 +16,8 @@ win rate) that the dashboard surfaces and a future phase can use to weight votes
 by track record.
 
 It is purely observational — it never changes a live decision.  Storage mirrors
-the proven ``planning.outcome_logger`` pattern: append-only JSONL (one record
-per line) joined by id, for cheap streaming and crash safety.
+an append-only JSONL journal (one record per line) joined by id, for cheap
+streaming and crash safety.
 
 Leaf module — standard library + loguru only.
 """

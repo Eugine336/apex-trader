@@ -1213,16 +1213,7 @@ class PerformanceConfig:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Trade Planner — the coordinator between advisors and execution.
-# The tunable parameters themselves live in planning.trade_planner.PlannerConfig
-# (self-contained + serialisable so calibration persists). It is imported here
-# so the planner is configured through the single AppConfig like everything else.
-# ---------------------------------------------------------------------------
-
-from planning.trade_planner import PlannerConfig  # noqa: E402  (leaf import, no cycle)
-
-# ---------------------------------------------------------------------------
-# Portfolio Governor — portfolio-level risk limits (advisory to the planner).
+# Portfolio Governor — portfolio-level risk limits used by shared risk admission.
 # The dataclass lives in governor.models (leaf, no config import) so it is
 # imported here to keep all configuration under the single AppConfig.
 # ---------------------------------------------------------------------------
@@ -4266,7 +4257,6 @@ class AppConfig:
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
-    planner: PlannerConfig = field(default_factory=PlannerConfig)
     governor: GovernorConfig = field(default_factory=GovernorConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
