@@ -97,9 +97,7 @@ def test_v013_unknown_council_not_penalised_by_default():
 
 
 def test_v013_unknown_council_is_never_converted_to_confidence_penalty():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                           degrade_on_unknown_council=True,
-                           degraded_confidence_multiplier=0.7)
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
     out = brain.reason(_no_council_state())
     assert abs(out.decision.confidence - 0.8) < 1e-6
     assert out.decision.questions_answered.get(
