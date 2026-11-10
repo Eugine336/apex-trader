@@ -205,8 +205,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | COGNITION_FINANCING_PER_LOT_ROUND_TRIP_JSON | Per-symbol round-trip financing estimate per 1 lot in account currency, for the expected holding horizon. Example: {"XAUUSD": 4.5, "EURUSD": 1.2}. Empty/missing symbols fail net-EV | {} |
 | COGNITION_FINANCING_MODEL_VERIFIED | 3. Identity, cognition, and live execution mode | false |
 | RISK_ALLOW_MIN_LOT_OVER_RISK | Explicitly retain the conservative risk configuration: do not inflate a minimum lot beyond the risk budget and do not silently restore legacy exits. | false |
-| RISK_SCAN_DIRECTIONAL_EXITS_ENABLED | 3. Identity, cognition, and live execution mode | false |
-| RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED | 3. Identity, cognition, and live execution mode | false |
 | LLM_PROVIDER | ============================================================================= 4. Primary LLM adviser and provider resilience ======================================================= | gemini |
 | LLM_MODEL | 4. Primary LLM adviser and provider resilience | gemini-3.8-flash |
 | LLM_API_KEY | 4. Primary LLM adviser and provider resilience | (blank secret) |
