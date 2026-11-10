@@ -626,10 +626,10 @@ class Hypothesis:
 
     The constitution forbids collapsing cognition prematurely into a single
     LONG/SHORT/FLAT verdict. A :class:`DecisionPackage` therefore carries the
-    Brain's *competing* hypotheses simultaneously — each with its own
-    probability only when linked to a verified calibration artifact, directional
-    interpretation, payoff geometry (in units of risk, R) and invalidation — so
-    richer reasoning survives without turning uncalibrated confidence into a probability. The
+    Brain's *competing* hypotheses simultaneously — each with a directional
+    interpretation, payoff geometry (in units of risk, R) and invalidation.
+    Probability remains unknown until a trusted producer can supply a genuinely
+    calibrated probability artifact. The
     ``direction`` here is an execution hint for a hypothesis, never an authority
     of its own; only a :class:`DecisionPackage` / :class:`CampaignSpecification`
     authorises action.
