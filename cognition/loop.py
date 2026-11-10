@@ -2911,7 +2911,10 @@ class CognitionLoop:
             action = _translate_management(output, position)
             if action is None:
                 return False  # HOLD / observe — nothing to do
-            if self.management_mode == "live" and self._management_sink is not None and not action.action_id:
+            if self.management_mode == "live" and self._management_sink is not None:
+                # Translator-provided action IDs may be campaign-scoped and can
+                # collide when a campaign contains multiple broker tickets. The
+                # execution identity is always Brain-decision + exact ticket.
                 decision_id = str(getattr(action, "decision_id", "") or "").strip()
                 ticket = str(getattr(position, "ticket", "") or "").strip()
                 platform = str(getattr(position, "platform", "") or "").strip().lower()
