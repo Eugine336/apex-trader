@@ -222,7 +222,6 @@ The effective values depend on config.py plus environment overrides. Review runt
 | `COGNITION_EV_PRIMARY_GATE` | Default `true`: requires positive net expected value after estimated costs, not only confidence |
 | `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes can wake native cognition once per second per symbol; provider calls have separate throttles |
 | `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
-| `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled; verify its effective runtime value before relying on it |
 | `APEX_GOLD_DESK_SHADOW_ENABLED` | Enables/disables the Gold-specific observation layer; the observer itself cannot place orders |
 
 A live origination setting does not prove that the advisor, feed, broker or strategy is healthy and does not establish profitability. Follow the rollout runbook and identity audit.
