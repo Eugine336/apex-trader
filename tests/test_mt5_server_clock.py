@@ -100,6 +100,71 @@ def test_automatic_clock_estimator_rejects_disagreeing_time_sources():
     ) is None
 
 
+def test_automatic_clock_estimator_rejects_one_outlier_when_two_sources_agree():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 0.55, "ntp:a"),
+        NTPClockSample(1_800_000_000.1, 50.1, 0.55, "ntp:b"),
+        NTPClockSample(1_800_000_015.0, 50.0, 0.55, "ntp:outlier"),
+    )
+    state = estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.2, 50.2, ntp_samples=samples,
+    )
+
+    assert state is not None
+    assert abs(state.offset_seconds - 7200.0) < 0.2
+    assert state.sources == ("ntp:a", "ntp:b")
+
+
+def test_ntp_collection_adds_https_witnesses_when_only_two_ntp_sources_answer(monkeypatch):
+    import platforms.mt5.clock as clock_module
+
+    ntp = {
+        "time.cloudflare.com": clock_module.NTPClockSample(1000.0, 10.0, 0.6, "ntp:a"),
+        "time.google.com": clock_module.NTPClockSample(1000.1, 10.1, 0.6, "ntp:b"),
+        "pool.ntp.org": None,
+    }
+    monkeypatch.setattr(clock_module, "_query_ntp", lambda host: ntp[host])
+    monkeypatch.setattr(
+        clock_module, "_query_https_time",
+        lambda url: clock_module.NTPClockSample(
+            1000.05, 10.05, 0.9, f"https:{url.split('/')[2]}",
+        ),
+    )
+
+    samples = clock_module.query_ntp_sources()
+
+    assert len(samples) == 4
+    assert sum(sample.server.startswith("ntp:") for sample in samples) == 2
+    assert sum(sample.server.startswith("https:") for sample in samples) == 2
+
+
+def test_automatic_clock_estimator_preserves_uncertainty_ceiling():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 1.5, "ntp:a"),
+        NTPClockSample(1_800_000_000.0, 50.0, 1.5, "ntp:b"),
+    )
+    assert estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.0, 50.0, ntp_samples=samples,
+        tick_precision_seconds=0.001, tick_transport_uncertainty_seconds=1.0,
+    ) is None
+
+
+def test_automatic_clock_estimator_does_not_count_two_protocols_from_one_provider():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 0.2, "ntp:time.cloudflare.com"),
+        NTPClockSample(1_800_000_000.0, 50.0, 0.2, "https:www.cloudflare.com"),
+    )
+    assert estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.0, 50.0, ntp_samples=samples,
+    ) is None
+
+
 def test_automatic_clock_estimator_requires_two_independent_sources():
     from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
 

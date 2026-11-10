@@ -10,15 +10,17 @@ inconsistent evidence. A chart-attached MQL5 publisher is not required.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-import time
+import math
 import secrets
 import socket
 import struct
+import time
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
+from itertools import combinations
+from pathlib import Path
+from typing import Iterable
 from urllib.request import Request, urlopen
-from typing import Iterable, Mapping
 
 
 CLOCK_FILENAME = "apex_mt5_clock_offset.txt"
@@ -183,12 +185,14 @@ def query_ntp_sources() -> tuple[NTPClockSample, ...]:
     jobs = [(_query_ntp, host) for host in NTP_SERVERS]
     with ThreadPoolExecutor(max_workers=5) as pool:
         ntp = tuple(x for x in pool.map(lambda pair: pair[0](pair[1]), jobs) if x is not None)
-        if len(ntp) >= NTP_MIN_SOURCES:
+        # When fewer than three NTP servers answer, collect HTTPS Date
+        # observations as additional independent witnesses. Two NTP replies
+        # alone cannot identify which one is the outlier if they disagree.
+        if len(ntp) >= 3:
             return ntp
         https_jobs = [(_query_https_time, url) for url in HTTPS_TIME_URLS]
         https = tuple(x for x in pool.map(lambda pair: pair[0](pair[1]), https_jobs) if x is not None)
-    combined = ntp + https
-    return combined
+    return ntp + https
 
 
 def estimate_mt5_server_clock(
@@ -200,43 +204,115 @@ def estimate_mt5_server_clock(
     tick_precision_seconds: float = 0.5,
     tick_transport_uncertainty_seconds: float = 1.0,
 ) -> MT5ServerClockState | None:
-    """Estimate the broker offset from an advancing terminal tick and NTP UTC."""
+    """Estimate broker offset using a uniquely corroborated UTC sample cluster."""
     if not str(server or "").strip():
         return None
     try:
         tick_epoch = float(tick_server_epoch)
         tick_mono = float(tick_observed_monotonic)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if tick_epoch <= 0:
-        return None
-    raw_samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
-    samples = tuple({sample.server: sample for sample in raw_samples}.values())
-    if len(samples) < NTP_MIN_SOURCES:
-        return None
-    estimates = [
-        (tick_epoch - (sample.utc_epoch + tick_mono - sample.monotonic_epoch), sample)
-        for sample in samples
-    ]
-    if len(estimates) < NTP_MIN_SOURCES:
-        return None
-    ordered = sorted(value for value, _ in estimates)
-    middle = len(ordered) // 2
-    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
-    spread = max(abs(value - median) for value in ordered)
-    try:
         tick_precision = max(0.0, float(tick_precision_seconds))
         tick_transport_uncertainty = max(0.0, float(tick_transport_uncertainty_seconds))
     except (TypeError, ValueError, OverflowError):
         return None
+    if tick_epoch <= 0:
+        return None
+
+    raw_samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
+    # Count one observation per clock operator. NTP and HTTPS endpoints
+    # operated by the same provider are not independent witnesses.
+    by_authority: dict[str, NTPClockSample] = {}
+    for sample in raw_samples:
+        endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
+        endpoint = endpoint.split(":", 1)[0].strip().lower()
+        if not endpoint:
+            continue
+        authority = next(
+            (
+                domain for domain in ("cloudflare.com", "google.com", "ntp.org")
+                if endpoint == domain or endpoint.endswith("." + domain)
+            ),
+            endpoint,
+        )
+        current = by_authority.get(authority)
+        try:
+            sample_quality = float(sample.uncertainty_seconds)
+            current_quality = (
+                float(current.uncertainty_seconds) if current is not None else float("inf")
+            )
+        # safe-fallback: malformed source uncertainty cannot corroborate the clock.
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            math.isfinite(sample_quality)
+            and sample_quality >= 0
+            and sample_quality < current_quality
+        ):
+            by_authority[authority] = sample
+    samples = tuple(by_authority.values())
+    if len(samples) < NTP_MIN_SOURCES:
+        return None
+
+    estimates = []
+    for sample in samples:
+        try:
+            value = tick_epoch - (
+                float(sample.utc_epoch) + tick_mono - float(sample.monotonic_epoch)
+            )
+            sample_uncertainty = float(sample.uncertainty_seconds)
+        # safe-fallback: malformed UTC observations are excluded from consensus.
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            not math.isfinite(value)
+            or not math.isfinite(sample_uncertainty)
+            or sample_uncertainty < 0
+        ):
+            continue
+        estimates.append((value, sample, sample_uncertainty))
+    if len(estimates) < NTP_MIN_SOURCES:
+        return None
+
+    # Build source clusters whose uncertainty intervals have a common
+    # intersection. A single slow or misbehaving NTP endpoint is excluded only
+    # when the remaining independent sources uniquely corroborate one another.
+    clusters = []
+    for size in range(len(estimates), NTP_MIN_SOURCES - 1, -1):
+        for cluster in combinations(estimates, size):
+            lower = max(value - uncertainty for value, _, uncertainty in cluster)
+            upper = min(value + uncertainty for value, _, uncertainty in cluster)
+            if lower <= upper:
+                clusters.append(cluster)
+        if clusters:
+            break
+    if not clusters:
+        return None
+
+    # Multiple equally large but materially different clusters are ambiguous.
+    # Do not choose whichever source happens to sort first.
+    cluster_medians = []
+    for cluster in clusters:
+        values = sorted(value for value, _, _ in cluster)
+        mid = len(values) // 2
+        median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
+        cluster_medians.append(median)
+    if max(cluster_medians) - min(cluster_medians) > 0.25:
+        return None
+
+    selected = clusters[0]
+    ordered = sorted(value for value, _, _ in selected)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
+    spread = max(abs(value - median) for value in ordered)
     uncertainty = (
-        max(sample.uncertainty_seconds for _, sample in estimates)
-        + spread + tick_precision / 2.0 + tick_transport_uncertainty + 0.15
+        max(sample_uncertainty for _, _, sample_uncertainty in selected)
+        + spread + tick_precision / 2.0
+        + tick_transport_uncertainty + 0.15
     )
     if not (MIN_OFFSET_SECONDS <= median <= MAX_OFFSET_SECONDS):
         return None
-    if spread > 1.25 or uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
+    if uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
         return None
+
     return MT5ServerClockState(
         server=str(server),
         offset_seconds=median,
@@ -245,9 +321,8 @@ def estimate_mt5_server_clock(
         file_age_seconds=0.0,
         observed_monotonic=tick_mono,
         uncertainty_seconds=uncertainty,
-        sources=tuple(sample.server for _, sample in estimates),
+        sources=tuple(sample.server for _, sample, _ in selected),
     )
-
 
 __all__ = [
     "CLOCK_FILENAME",
