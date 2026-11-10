@@ -282,17 +282,21 @@ class _RichOpinion:
         self.preferred_opportunity_id = "auto"
 
 
-def test_sizing_is_lesser_of_confidence_and_ev_normalized():
-    # Market geometry supplies the reward distance. Sizing takes the lesser of
-    # EV-normalized payoff and quality-weighted confidence. This bare opinion has
-    # quality 0.1, so 0.8 effective confidence is scaled by 0.55 to 0.44.
+def test_sizing_uses_verified_ev_not_uncalibrated_reasoning_strength():
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == pytest.approx(0.44)
-    assert out.campaign.desired_exposure < out.campaign.confidence
-    assert "sizing_rationale" in out.decision.questions_answered
+    assert out.campaign.desired_exposure == pytest.approx(0.675)
+    assert "reasoning strength is excluded" in out.decision.questions_answered["sizing_rationale"]
 
+
+def test_sizing_is_invariant_to_uncalibrated_reasoning_strength():
+    low = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.15)), reward_r_default=2.0)
+    high = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.99)), reward_r_default=2.0)
+    low_out = low.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
+    high_out = high.reason(_confident_state(polarity=0.8, expected_return_r=1.4))
+    assert low_out.campaign is not None and high_out.campaign is not None
+    assert low_out.campaign.desired_exposure == pytest.approx(high_out.campaign.desired_exposure)
 
 
 def test_high_confidence_without_producer_verified_return_stands_down():
