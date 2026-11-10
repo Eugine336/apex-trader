@@ -156,7 +156,7 @@ def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
     # conf 0.30 → EV negative → REJECT_OPPORTUNITY (a real EV verdict, not a
     # confidence-floor "observe").
     out = _brain(0.30, ev_primary=True).reason(_state(expected_return_r=-0.30))
-    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
+    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
 
@@ -164,7 +164,7 @@ def test_ev_primary_rejects_negative_ev_as_genuine_ev_verdict():
 def test_ev_primary_threshold_declines_thin_edge():
     # EV +0.35R at conf 0.45; a 0.4R action threshold declines it …
     thin = _brain(0.45, ev_primary=True, threshold=0.4).reason(_state(expected_return_r=0.40))
-    assert thin.decision.decision_type == DecisionType.NO_OPPORTUNITY
+    assert thin.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     # … while a fatter +0.50R edge (conf 0.50) clears it.
     fat = _brain(0.50, ev_primary=True, threshold=0.4).reason(_state(expected_return_r=0.55))
     assert fat.decision.decision_type == DecisionType.OPEN_CAMPAIGN
@@ -178,7 +178,7 @@ def test_legacy_high_confidence_opens():
 
 def test_negative_net_ev_is_rejected_even_without_a_confidence_floor():
     out = _brain(0.30, ev_primary=False).reason(_state(expected_return_r=-0.30))
-    assert out.decision.decision_type == DecisionType.NO_OPPORTUNITY
+    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert out.decision.expected_value < 0.0
     assert out.campaign is None
 
@@ -245,8 +245,8 @@ def test_long_and_short_have_mirrored_negative_ev_rejection():
     short_out = _brain(0.80, direction="SHORT").reason(
         _state(polarity=-0.8, expected_return_r=-0.30)
     )
-    assert long_out.decision.decision_type == DecisionType.NO_OPPORTUNITY
-    assert short_out.decision.decision_type == DecisionType.NO_OPPORTUNITY
+    assert long_out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert short_out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
     assert long_out.campaign is None
     assert short_out.campaign is None
     assert long_out.decision.expected_value == short_out.decision.expected_value
