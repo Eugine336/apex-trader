@@ -575,3 +575,19 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - Gold Desk focused runs **2001** and **2006** passed on Python 3.11 and 3.12.
 - The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference. A new full Apex run **3847** is validating the current head.
 - The current PR remains draft pending final run completion and owner-host acceptance.
+
+
+## Exact-ticket Brain management and campaign lifecycle — 2026-11-11
+
+**PR #902:** `engineering/exact-ticket-brain-management-final`; validation snapshot head `172a2ce6e6cabceb9d024b95a375780b06be2544`. This is implementation evidence, not system acceptance.
+
+- **Exact management identity:** live management action IDs are deterministic over Brain decision ID, broker platform, exact position ticket, action kind and milestone. Missing decision/ticket/platform provenance suppresses dispatch. Management joins use exact confirmed broker identity; ambiguous matches fail closed.
+- **Durable execution lifecycle:** write-ahead milestone state is persisted before dispatch. Queue acceptance is not broker acknowledgement. Ambiguous outcomes remain non-replayable until verified broker reconciliation; explicit rejection is distinct from timeout/unknown.
+- **Campaign lineage:** campaign tickets are bound only after an exact confirmed broker snapshot. Terminal close removes only the matching platform/ticket. A campaign remains live while any other confirmed ticket or unresolved unbound open leg remains; open-leg counts now reflect remaining active/unresolved legs.
+- **Unknown broker status:** dictionary-shaped pending-order responses are handled explicitly and remain pending; they are not treated as filled positions.
+- **Confidence isolation:** entry confidence is no longer included in the Brain's position-management context. Campaign reallocation ranking uses expected-value metadata only, and opportunity-vs-book comparison returns `unranked` when comparable expected-return/risk evidence is absent. The uncalibrated hypothesis reasoning-strength field remains descriptive as permitted by System 3; it is not an economic probability, expected-value substitute, management input or sizing input.
+- **Legacy cleanup:** removed the no-op breakeven ReEntryManager, dormant cooldown state, `re_entry_eligible` plumbing, `RE_ENTRY_ARMED` event and runtime/package wiring. A closed campaign returns to ordinary Brain observation.
+
+**Validation:** on head `172a2ce`, lint passed and Gold Desk focused tests passed on Python 3.11 and 3.12. The full Python 3.11/3.12 suites were still running when this record was written. An earlier pre-correction run had two incorrect test expectations (4,514 passed); those assertions were corrected. Do not mark this increment validated until the full suite, generated concept-coverage check, identity/safety audit and import check all pass on the final PR head.
+
+**Safety boundary:** no live broker orders, .env access, credentials, runtime databases or broker settings were changed. PR #902 remains open and unmerged. Owner-connected broker acceptance and the remaining System 2 evidence gates are still separate requirements.
