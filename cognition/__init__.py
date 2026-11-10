@@ -66,13 +66,6 @@ def __getattr__(name: str):
                 "evidence_from_analogues", "evidence_from_reasoning"):
         from cognition import evidence_adapters as _ea
         return getattr(_ea, name)
-    if name in ("CognitionGate", "GateVerdict", "normalise_mode",
-                "MODE_OFF", "MODE_SHADOW", "MODE_VETO", "MODE_AUTHORITATIVE"):
-        from cognition import gate as _gate
-        return getattr(_gate, name)
-    if name in ("ManagementGate", "classify_action"):
-        from cognition import management_gate as _mg
-        return getattr(_mg, name)
     if name in ("OriginationIntent", "translate"):
         from cognition import campaign_translator as _ct
         return getattr(_ct, name)
