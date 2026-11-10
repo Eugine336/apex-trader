@@ -19,7 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock, query_ntp_sources
+from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock, query_ntp_sources  # noqa: E402
 
 
 def measure_tick_clock(
