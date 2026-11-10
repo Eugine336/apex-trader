@@ -203,10 +203,6 @@ class SystemContext:
     virtual_module_registry: Optional[Any] = None
     virtual_signal_manager: Optional[Any] = None
 
-    # ── Planning + shadow (Phase 6) ──────────────────────────────────
-    trade_planner: Optional[Any] = None
-    outcome_logger: Optional[Any] = None
-    calibrator: Optional[Any] = None
     re_entry_manager: Optional[Any] = None
 
     # ── Account key cache (symbol → broker:account_id) ───────────────
@@ -2131,34 +2127,6 @@ class SystemContext:
         # Signal discovery / parameter evolution / virtual-module engines
         # RETIRED - severed from the live path; the Cognitive Brain decides.
 
-        # ── Planning + Shadow (Phase 6) ──────────────────────────────
-
-        # ── TradePlanner ───────────────────────────────────────────
-        # DIRECTIONAL_AUTHORITY (V-005): TradePlanner is deprecated and has no
-        # directional authority — plan_trade() is a non-actionable no-op and
-        # emits a DeprecationWarning on init. It is retained only so the
-        # PlannerCalibrator tunable can carry a config target; direction and
-        # opportunity discovery are the Brain's authority.
-        try:
-            from planning.trade_planner import TradePlanner as _TradePlanner
-            ctx.trade_planner = _TradePlanner(governor=ctx.portfolio_governor)
-        except Exception as exc:
-            logger.warning("[SystemContext] TradePlanner init failed: {}", exc)
-
-        # ── OutcomeLogger ──────────────────────────────────────────
-        try:
-            from planning.outcome_logger import OutcomeLogger as _OutcomeLogger
-            ctx.outcome_logger = _OutcomeLogger()
-        except Exception as exc:
-            logger.warning("[SystemContext] OutcomeLogger init failed: {}", exc)
-
-        # ── Calibrator ─────────────────────────────────────────────
-        try:
-            from planning.calibrator import Calibrator as _Calibrator
-            ctx.calibrator = _Calibrator()
-        except Exception as exc:
-            logger.warning("[SystemContext] Calibrator init failed: {}", exc)
-
         # ── ReEntryManager ─────────────────────────────────────────
         try:
             from management.re_entry import ReEntryManager as _ReEntry
@@ -2167,10 +2135,10 @@ class SystemContext:
             logger.warning("[SystemContext] ReEntryManager init failed: {}", exc)
 
         logger.info(
-            "[SystemContext] evolution+planning initialized — "
+            "[SystemContext] evolution subsystems initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
             "sig_disc={} virt_reg={} virt_mgr={} "
-            "planner={} outcome_log={} calibrator={} re_entry={}",
+            "re_entry={}",
             ctx.capital_allocator is not None,
             ctx.execution_profiles is not None,
             ctx.regime_detector is not None,
@@ -2178,9 +2146,6 @@ class SystemContext:
             ctx.signal_discovery is not None,
             ctx.virtual_module_registry is not None,
             ctx.virtual_signal_manager is not None,
-            ctx.trade_planner is not None,
-            ctx.outcome_logger is not None,
-            ctx.calibrator is not None,
             ctx.re_entry_manager is not None,
         )
 
