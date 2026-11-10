@@ -118,16 +118,12 @@ Severity rubric:
 - **Information Lost**: Thesis evolution, opportunity replacement, expected value over flat, execution feasibility, and risk-adjusted alternatives can be bypassed when a management reply is parsed as legacy direction/confidence.
 - **Root Cause**: Backward-compatible management fallback was retained to handle older/minimal LLM replies.
 
-### V-009: PositionWorker can close positions from compressed scan direction and score
+### V-009: PositionWorker discretionary scan-direction and score exits
 - **Severity**: HIGH
-- **Philosophy Rule**: 6, 10, 17, 18, 20, 31
-- **File(s)**: `execution/position_worker.py:57-88`, `execution/position_worker.py:212-223`, `execution/position_worker.py:259-340`, `execution/position_worker.py:494-582`, `execution/position_worker.py:780-830`, `execution/position_worker.py:858-874`, `event_driven_bootstrap.py:446-450`, `event_driven_bootstrap.py:5073-5116`, `config.py:659-666`
-- **Actual Code Behavior**: `WorkerConfig.discretionary_exits_enabled` defaults true and `scan_directional_exits_enabled` defaults true. When discretionary exits are enabled, `PositionWorker.evaluate()` uses `ScanContext.direction`, `score`, and `opposing_score_boost` to trigger stall, invalidation, and conviction-collapse exits. It also closes on an H1 candle against the held side if PnL is not sufficiently positive. The bootstrap disables discretionary worker exits only when cognition is enabled and `management_mode` is exactly `live`; otherwise these deterministic exits remain available.
-- **Execution Path**: `event_driven_bootstrap.PositionEvaluator` builds a `PositionSnapshot` and calls `PositionWorker.evaluate(snap, now, scan=scan_ctx, market=market_ctx)` -> discretionary checks -> `_check_stall()` / `_stall_structure_lost()` / `_check_invalidation()` / `_check_conviction_collapse()` / `_check_htf_candle_close()` -> close intents.
-- **Why It Violates**: Outside live cognition management, management can still be reduced to a re-derived scan direction/score and candle color instead of a current opportunity/thesis re-evaluation.
-- **Information Lost**: Original thesis, current opportunity set, counter-opportunities, EV of holding versus exiting, and execution/risk context are compressed to "scan still supports direction" or "opposing signal".
-- **Root Cause**: Legacy deterministic TradeManager/ExitChecks behavior was preserved in `PositionWorker` as the non-cognition management suite.
-
+- **Status**: PARTIALLY RESOLVED — production defaults are fail-closed, but the explicit legacy fallback remains available.
+- **Current Code Behavior**: `WorkerConfig.discretionary_exits_enabled`, `legacy_mechanical_exit_fallback_enabled` and `scan_directional_exits_enabled` default false. The event-driven Brain-managed path leaves discretionary TP/BE/trailing/stall/invalidation/conviction/HTF exits disabled. Hard stop-loss, weekend/session/spread protection and the absolute-profit safety backstop remain active. The old discretionary suite can still be invoked by explicitly enabling its fallback configuration, including in isolated tests/backtests.
+- **Execution Path**: `PositionEvaluator` -> `PositionWorker.evaluate()`. With discretionary fallback disabled, only the independent safety-floor checks run; with explicit fallback enabled, legacy mechanical intents are tagged and warning-logged.
+- **Remaining Work**: Remove the production-configurable legacy fallback and its environment keys after verifying no owner workflow depends on it. Retain only deterministic capital-protection mechanics and Brain-authored discretionary management. Do not mark this finding resolved until the fallback cannot be activated in a live runtime.
 ### V-010: Breakeven re-entry shortcut
 - **Severity**: HIGH
 - **Status**: RESOLVED in the exact-ticket Brain-management increment.
