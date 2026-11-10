@@ -89,6 +89,16 @@ ENV_CONFIG_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _finite_positive(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(number) and number > 0.0
+
+
 def _parse_value(raw: str, current: Any, key: str) -> Any:
     value = raw.strip()
     if isinstance(current, bool):
@@ -178,13 +188,20 @@ def _validate_operational_config(config: Any) -> None:
         raise ValueError("APEX_PERFORMANCE_PARALLEL_SCAN_MAX_WORKERS must be >= 1")
 
     cache_ttls = performance.candle_cache_ttl
-    if not isinstance(cache_ttls, dict) or any(
-        not isinstance(key, str)
-        or not math.isfinite(float(value))
-        or float(value) <= 0.0
-        for key, value in cache_ttls.items()
+    valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+    if (
+        not isinstance(cache_ttls, dict)
+        or any(
+            not isinstance(key, str)
+            or key.strip().upper() not in valid_timeframes
+            or not _finite_positive(value)
+            for key, value in cache_ttls.items()
+        )
     ):
-        raise ValueError("APEX_PERFORMANCE_CANDLE_CACHE_TTL must be a JSON object of positive finite TTLs")
+        raise ValueError(
+            "APEX_PERFORMANCE_CANDLE_CACHE_TTL must be a JSON object "
+            "of supported timeframes with positive finite TTLs"
+        )
 
     ops = config.ops
     for name in (
