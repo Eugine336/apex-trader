@@ -257,3 +257,40 @@ def test_breakeven_reentry_subsystem_is_fully_retired():
     )
 
 
+
+
+def test_disconnected_cross_instrument_heuristics_are_retired():
+    for relative in (
+        "brain/cross_instrument_ranker.py",
+        "brain/opportunity_sizer.py",
+        "management/position_displacer.py",
+    ):
+        assert not (ROOT / relative).exists()
+
+    config_module = _parse("config.py")
+    cross_config = next(
+        node for node in config_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "CrossInstrumentConfig"
+    )
+    fields = {
+        item.target.id
+        for item in cross_config.body
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+    }
+    assert not fields.intersection({
+        "ranking_enabled", "quality_sizing_enabled", "displacement_enabled",
+        "spread_ev_penalty_per_pip", "winrate_ev_weight",
+        "quality_sizing_max_boost", "quality_sizing_min_cut", "quality_sizing_ev_ref",
+        "displacement_ev_margin", "displacement_max_per_cycle",
+        "displacement_min_profit_protect", "displacement_cooldown_seconds",
+    })
+
+    context = _parse("core/system_context.py")
+    assert not any(
+        isinstance(node, ast.Name) and node.id in {
+            "CrossInstrumentRanker", "OpportunityQualitySizer", "PositionDisplacer",
+        }
+        for node in ast.walk(context)
+    )
+
+
