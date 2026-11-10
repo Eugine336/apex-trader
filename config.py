@@ -657,17 +657,6 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
-    # V-009 — scan-direction/score and opposing-HTF exits are mechanical legacy
-    # behavior, not thesis-based management. The default is disabled. They may only
-    # run when the separate explicit fallback flag below is enabled; this setting
-    # chooses whether the directional subset of that fallback is allowed.
-    # env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
-    scan_directional_exits_enabled: bool = False
-    # Explicit opt-in for the legacy fixed-level/time-based exit suite.
-    # Default false: native thesis-based management remains the default even
-    # when every external reasoning provider is unavailable.
-    # env RISK_LEGACY_MECHANICAL_EXIT_FALLBACK_ENABLED.
-    legacy_mechanical_exit_fallback_enabled: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
