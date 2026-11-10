@@ -663,3 +663,56 @@ def test_excluded_git_pathspecs_identify_oversized_files(tmp_path):
     exclusions = _excluded_git_pathspecs(tmp_path, 1024, [])
 
     assert exclusions == [":(exclude,top,literal)journals/large.db"]
+
+
+
+def test_history_compaction_retains_previously_tracked_oversized_blob(tmp_path, monkeypatch):
+    from scripts import backup_data
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _init_repo(data)
+    event_db = data / "apex_events.db"
+    original = b"original-event-store" * 256
+    changed = b"changed-event-store" * 256
+    event_db.write_bytes(original)
+    state = data / "state.json"
+    state.write_text('{"version":1}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "baseline"], check=True)
+    event_db.write_bytes(changed)
+    state.write_text('{"version":2}', encoding="utf-8")
+    subprocess.run(["git", "-C", str(data), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data), "commit", "-qm", "update"], check=True)
+
+    real_run_git = backup_data._run_git
+
+    def run_git(args, cwd):
+        if args[:2] == ["push", "--force"]:
+            return True, "push skipped in test"
+        return real_run_git(args, cwd)
+
+    monkeypatch.setattr(backup_data, "_run_git", run_git)
+    monkeypatch.setattr(
+        backup_data, "_verify_data_repo_or_refuse", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        backup_data, "_repo_object_size_mb", lambda _path: 600.0
+    )
+    # The post-GC size is irrelevant to the preservation assertion.
+    result = backup_data.compact_repo_history(
+        data,
+        max_repo_size_mb=500,
+        keep_commits=1,
+        max_file_size_mb=0.001,
+    )
+
+    assert result.startswith("compacted")
+    committed = subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:apex_events.db"]
+    )
+    assert committed == original
+    assert event_db.read_bytes() == changed
+    assert subprocess.check_output(
+        ["git", "-C", str(data), "show", "HEAD:state.json"], text=True
+    ) == '{"version":2}'
