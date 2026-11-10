@@ -203,8 +203,6 @@ class SystemContext:
     virtual_module_registry: Optional[Any] = None
     virtual_signal_manager: Optional[Any] = None
 
-    re_entry_manager: Optional[Any] = None
-
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
 
@@ -2131,18 +2129,10 @@ class SystemContext:
         # Signal discovery / parameter evolution / virtual-module engines
         # RETIRED - severed from the live path; the Cognitive Brain decides.
 
-        # ── ReEntryManager ─────────────────────────────────────────
-        try:
-            from management.re_entry import ReEntryManager as _ReEntry
-            ctx.re_entry_manager = _ReEntry()
-        except Exception as exc:
-            logger.warning("[SystemContext] ReEntryManager init failed: {}", exc)
-
         logger.info(
             "[SystemContext] evolution subsystems initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
-            "sig_disc={} virt_reg={} virt_mgr={} "
-            "re_entry={}",
+            "sig_disc={} virt_reg={} virt_mgr={}",
             ctx.capital_allocator is not None,
             ctx.execution_profiles is not None,
             ctx.regime_detector is not None,
@@ -2150,7 +2140,6 @@ class SystemContext:
             ctx.signal_discovery is not None,
             ctx.virtual_module_registry is not None,
             ctx.virtual_signal_manager is not None,
-            ctx.re_entry_manager is not None,
         )
 
         return ctx
