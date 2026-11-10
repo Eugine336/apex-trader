@@ -543,16 +543,13 @@ class CognitiveBrain:
                 )
                 if independent is not None:
                     return independent
-                return self._native_fallback_observe(
-                    symbol,
-                    (
-                        f"advisor quorum {quorum_state}; native analysis completed "
-                        "but no independent campaign qualified"
-                    ),
-                    consolidation,
-                    analysis=analysis,
-                    hypotheses=hypotheses,
-                    advisor_status="available",
+                # Native qualification has first authority. If it cannot
+                # originate, retain the advisor's raw report in the normal
+                # decision record for observability; _from_opinion independently
+                # enforces the unmet/unknown quorum and therefore cannot open.
+                return self._from_opinion(
+                    symbol, market_state, consolidation, opinion, now,
+                    analysis=analysis, brain_hypotheses=hypotheses,
                 )
             return self._from_opinion(
                 symbol, market_state, consolidation, opinion, now,
