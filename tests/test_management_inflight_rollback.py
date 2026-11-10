@@ -42,7 +42,7 @@ def _position(order_id: str = "T1", direction: str = "BUY", sl: float = 1.0950):
         remaining_lots=0.1, open_time=datetime.now(timezone.utc),
         score=85, sl=sl, tp1=1.1050, tp2=1.1100,
         at_breakeven=False, trailing=False, tp1_hit=False,
-        re_entry_eligible=False, broker_pnl=0.0, broker_lots=0.1,
+        broker_pnl=0.0, broker_lots=0.1,
         confluences=[], scale_in_count=0, stake_usd=0.0, multiplier=100,
     )
 
