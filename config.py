@@ -295,6 +295,7 @@ class ScoringConfig:
 @dataclass
 class ConfirmationPenaltyConfig:
     enabled: bool = True
+    shadow_mode: bool = False
     vwap_wrong_side_penalty: int = 15
     divergence_both_tf_penalty: int = 15
     divergence_single_tf_penalty: int = 7
@@ -3745,7 +3746,6 @@ class CognitionConfig:
     """
 
     enabled: bool = True
-    shadow_mode: bool = False
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     # Identity requirement: net expected value is the actionability gate. A market
     # thesis cannot originate exposure without producer-verified positive EV after
