@@ -2462,63 +2462,6 @@ class CognitiveBrain:
         """True only when a fresh, finite, non-negative cost measurement exists."""
         return self._execution_cost_estimate(market_state, now=now)[0]
 
-    def _synthesize_from_evidence(
-        self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
-    ) -> "tuple[float, str]":
-        """Cross-check the advisor opinion against the evidence picture (V1).
-
-        Structural strengthening of the Brain toward a native reasoner: before
-        trusting the LLM advisor's stated confidence, the Brain inspects the
-        consolidated evidence it synthesised (how much fresh evidence exists, its
-        mean confidence, the aggregate uncertainty) and compares the advisor's
-        conviction against it. When the advisor is markedly more confident than
-        the evidence supports ("advisor overconfidence"), or claims conviction
-        while evidence uncertainty is high ("confidence-evidence mismatch"), the
-        effective conviction is ATTENUATED toward the evidence's own mean. This
-        keeps the Brain from being a pure relay of the advisor's output. Returns
-        the (possibly attenuated) effective confidence and a synthesis note.
-        Never raises; when there is no fresh evidence to cross-check against, the
-        effective confidence is returned unchanged.
-        """
-        try:
-            n_fresh = int(consolidation.get("evidence_fresh", 0) or 0)
-            if n_fresh <= 0:
-                return effective_confidence, "no fresh evidence to cross-check advisor against"
-            ev_mean = _clamp01(consolidation.get(
-                "market_mean_confidence",
-                consolidation.get("mean_confidence", 0.0),
-            ))
-            ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
-            # Compare the advisor with the evidence's uncertainty-adjusted support
-            # continuously. There is no binary "large gap" or "high uncertainty"
-            # cutoff: greater disagreement or uncertainty increases attenuation.
-            # Attenuation is proportional to the advisor's overstatement
-            # relative to the market evidence mean, amplified continuously by
-            # uncertainty. If the advisor is not more confident than the market
-            # evidence, this cross-check does not penalize it.
-            disagreement = max(0.0, advisor_confidence - ev_mean)
-            attenuation_weight = _clamp01(disagreement * (1.0 + ev_unc))
-            blended = (
-                effective_confidence * (1.0 - attenuation_weight)
-                + ev_mean * attenuation_weight
-            )
-            # Evidence cross-check may attenuate an advisor, never promote it.
-            attenuated = min(effective_confidence, _clamp01(blended))
-            if attenuated < effective_confidence:
-                return attenuated, (
-                    f"advisor confidence {advisor_confidence:.2f} was continuously "
-                    f"attenuated against evidence mean {ev_mean:.2f} "
-                    f"(uncertainty {ev_unc:.2f}) to {attenuated:.2f}"
-                )
-            return effective_confidence, (
-                f"advisor confidence {advisor_confidence:.2f} does not exceed "
-                f"market evidence mean {ev_mean:.2f}; confidence unchanged"
-            )
-        except Exception:  # noqa: BLE001 — synthesis must never break reasoning
-            return effective_confidence, ""
-
-    # ── Native reasoning (Articles II / IV / IX / X) ──────────────────────
-
     def _analyze_evidence(
         self, market_state: MarketState, consolidation: Optional[dict] = None,
     ) -> EvidenceAnalysis:
@@ -2562,64 +2505,6 @@ class CognitiveBrain:
         except Exception as exc:  # noqa: BLE001 — native reasoning must never break a cycle
             logger.debug("[brain] native reasoning(%s) ignored a fault: %s", symbol, exc)
             return EvidenceAnalysis(), []
-
-    def _integrate_brain(
-        self, llm_direction: str, eff_conf: float,
-        brain_lead: Optional[BrainHypothesis], analysis: Optional[EvidenceAnalysis],
-    ) -> "tuple[float, str]":
-        """Integrate the Brain's leading hypothesis with the advisor's direction.
-
-        Agreement boosts the effective conviction, disagreement attenuates it,
-        and when the Brain formed no directional view it defers to the advisor.
-        A no-op (returns ``eff_conf`` unchanged, empty note) when the Brain has
-        no leading hypothesis or no analysis — so a measurement-thin evidence
-        picture behaves exactly as before. Never raises.
-        """
-        if brain_lead is None or analysis is None:
-            return eff_conf, ""
-        try:
-            brain_dir = brain_lead.direction_implication or FLAT
-            brain_conf = _clamp01(brain_lead.confidence)
-            if brain_dir in (LONG, SHORT) and llm_direction in (LONG, SHORT):
-                if brain_dir == llm_direction:
-                    new_conf = _clamp01(max(brain_conf, eff_conf) * self._native.agreement_boost)
-                    outcome, note = "agreement", (
-                        f"agreement (both {brain_dir}) → confidence "
-                        f"{eff_conf:.2f}→{new_conf:.2f}")
-                    eff_conf = new_conf
-                else:
-                    new_conf = _clamp01(min(brain_conf, eff_conf) * self._native.disagreement_penalty)
-                    outcome, note = "disagreement", (
-                        f"disagreement (brain {brain_dir} vs advisor {llm_direction}) → "
-                        f"confidence {eff_conf:.2f}→{new_conf:.2f}")
-                    eff_conf = new_conf
-            elif brain_dir not in (LONG, SHORT):
-                if analysis.detected_patterns:
-                    # The Brain saw non-directional structure (e.g. compression,
-                    # degraded execution): defer to the advisor but attenuate by
-                    # the Brain's own evidence uncertainty.
-                    new_conf = _clamp01(eff_conf * (1.0 - 0.5 * analysis.evidence_uncertainty))
-                    outcome, note = "defer_attenuated", (
-                        f"brain saw non-directional structure — deferring to advisor, "
-                        f"attenuated by evidence uncertainty {analysis.evidence_uncertainty:.2f} "
-                        f"→ {new_conf:.2f}")
-                    eff_conf = new_conf
-                else:
-                    outcome, note = "defer", (
-                        "brain formed no independent directional hypothesis — "
-                        "deferring to advisor")
-            else:
-                outcome, note = "brain_only", (
-                    f"brain holds a {brain_dir} view but the advisor is FLAT — "
-                    "no confidence change")
-            synthesis = (
-                f"Brain hypothesis [{brain_dir} @ {brain_conf:.2f}: "
-                f"{brain_lead.statement[:80]}] + advisor opinion [{llm_direction}] → "
-                f"[{outcome}] → {note}"
-            )
-            return eff_conf, synthesis
-        except Exception:  # noqa: BLE001 — integration must never break reasoning
-            return eff_conf, ""
 
     @staticmethod
     def _evaluate_reasoning_quality(opinion: Any) -> "tuple[float, str]":
@@ -2681,35 +2566,6 @@ class CognitiveBrain:
             return score, note
         except Exception:  # noqa: BLE001 — quality scoring must never break reasoning
             return 1.0, "reasoning quality not evaluated (fault)"
-
-    def _apply_pattern_modifier(
-        self, eff_conf: float, brain_lead: Optional[BrainHypothesis],
-    ) -> "tuple[float, str, list[str]]":
-        """Weight conviction by the leading hypothesis's patterns' demonstrated
-        edge (Article X). No-op (returns ``eff_conf`` unchanged) when no tracker
-        is wired or the hypothesis rests on no detected pattern. Never raises."""
-        names: list[str] = []
-        try:
-            if brain_lead is not None:
-                from cognition.pattern_rules import pattern_name
-                names = [pattern_name(p)
-                         for p in (getattr(brain_lead, "supporting_patterns", []) or [])]
-                names = [n for n in names if n]
-        except Exception:  # noqa: BLE001
-            names = []
-        if self._pattern_tracker is None or not names:
-            return eff_conf, "", names
-        try:
-            mods = [float(self._pattern_tracker.confidence_modifier(n)) for n in names]
-            avg = (sum(mods) / len(mods)) if mods else 1.0
-            new_conf = _clamp01(eff_conf * avg)
-            note = (
-                f"pattern edge modifier {avg:.3f} (avg over {len(mods)} pattern(s): "
-                f"{', '.join(names)}) → confidence {eff_conf:.2f}→{new_conf:.2f}"
-            )
-            return new_conf, note, names
-        except Exception:  # noqa: BLE001 — pattern weighting must never break reasoning
-            return eff_conf, "", names
 
     def _originate_independent(
         self, symbol: str, consolidation: dict,
