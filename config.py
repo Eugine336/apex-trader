@@ -3747,16 +3747,6 @@ class CognitionConfig:
 
     enabled: bool = True
     shadow_mode: bool = False
-    # The production default is authoritative: absent/stale cognition cannot
-    # silently permit a legacy exposure-increasing path.
-    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
-    # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
-    # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
-    # at runtime — the AI Cognitive Brain, via its origination path, is the sole
-    # authority that may open trades. Deterministic safety/feasibility mechanics
-    # (Part X) and position-closing/de-risking are unaffected. env COGNITION_SINGLE_PATH.
-    single_path: bool = True
-    max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     # Identity requirement: net expected value is the actionability gate. A market
     # thesis cannot originate exposure without producer-verified positive EV after
@@ -3884,10 +3874,6 @@ class CognitionConfig:
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
         self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
-        self.gate_mode = (
-            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "off"
-        ).strip().lower()
-        self.single_path = _llm_env_bool("COGNITION_SINGLE_PATH", self.single_path)
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
         )
@@ -3925,7 +3911,6 @@ class CognitionConfig:
         )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
-            ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
             ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
             ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
             ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
@@ -3979,28 +3964,6 @@ class CognitionConfig:
                     setattr(self, attr, int(raw))
                 except (TypeError, ValueError):
                     logger.warning("[config] bad {} '{}' — keeping default", env_name, raw)
-        if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
-            raise ValueError(
-                "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
-                f"{self.gate_mode!r}"
-            )
-        # V-017 — provider/cognition resilience: the CognitionGate is only fail-
-        # CLOSED (Brain = sole decider) in 'authoritative' mode. off/shadow/veto
-        # are TRANSITIONAL and fail-OPEN on absent cognition, so a legacy entry
-        # surface can trade without Brain backing. Warn loudly at startup so an
-        # operator is aware they are running without full Brain authority.
-        if self.gate_mode != "authoritative":
-            logger.warning(
-                "[config] CognitionGate mode is '{}', not 'authoritative' — the "
-                "Brain is NOT the sole decider; non-authoritative modes (off/shadow/"
-                "veto) are TRANSITIONAL and fail-open on absent cognition. Set "
-                "COGNITION_GATE_MODE=authoritative for full Brain authority.",
-                self.gate_mode,
-            )
-        if float(self.max_decision_age_seconds) < 0:
-            raise ValueError(
-                f"CognitionConfig.max_decision_age_seconds must be >= 0, got {self.max_decision_age_seconds!r}"
-            )
         if int(self.min_advisors_for_action) < 0:
             raise ValueError(
                 "CognitionConfig.min_advisors_for_action must be >= 0, got "
@@ -4009,15 +3972,10 @@ class CognitionConfig:
 
         # These are product-identity invariants, not tuning preferences. Keep the
         # .env file operator-owned, but do not let an old/permissive env override
-        # silently disable the sole-Brain path, net-EV gate, source-cost
-        # qualification, continuous event waking, or minimum evidence breadth.
+        # silently disable the net-EV gate, source-cost qualification, continuous
+        # event waking, or minimum evidence breadth.
         # Operators can still adjust thresholds upward; these safety floors are
         # deliberately one-way.
-        if not self.single_path:
-            logger.warning(
-                "[config] COGNITION_SINGLE_PATH=false is incompatible with the Apex identity; forcing true"
-            )
-            self.single_path = True
         if not self.ev_primary_gate:
             logger.warning(
                 "[config] COGNITION_EV_PRIMARY_GATE=false is incompatible with the Apex identity; forcing true"
