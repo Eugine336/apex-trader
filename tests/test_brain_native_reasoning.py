@@ -449,12 +449,26 @@ def test_native_reasoning_strength_is_not_probability_or_exposure_input():
         original = brain._native_reasoning
 
         def with_strength(state, consolidation, symbol, *, now=None, _strength=strength):
-            analysis, hypotheses = original(
+            analysis, _hypotheses = original(
                 state, consolidation, symbol, now=now,
             )
-            for hypothesis in hypotheses:
-                hypothesis.confidence = _strength
-            return analysis, hypotheses
+            support_ids = [
+                item["evidence_id"] for item in analysis.evidence_index
+                if isinstance(item, dict) and item.get("measurement_keys")
+            ]
+            hypothesis = BrainHypothesis(
+                statement="Completed structural continuation hypothesis",
+                confidence=_strength,
+                direction_implication=LONG,
+                supporting_patterns=[],
+                contradicting_patterns=[],
+                supporting_evidence_ids=support_ids,
+                invalidation="Completed structural close breaks below the origin",
+                opportunity_implication="continuation",
+                hypothesis_kind="continuation",
+                horizon="M5",
+            )
+            return analysis, [hypothesis]
 
         brain._native_reasoning = with_strength
         out = brain.reason(_strong_long_state())
