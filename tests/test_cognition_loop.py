@@ -1365,7 +1365,8 @@ def test_live_management_derives_stable_action_id_from_decision_and_exact_ticket
 
     calls = []
     loop = CognitionLoop(
-        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        _ManageBrain(DecisionType.EXIT, management_plan={"action_id": "shared-translator-id"}),
+        _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="live",
     )
     loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
@@ -1378,6 +1379,7 @@ def test_live_management_derives_stable_action_id_from_decision_and_exact_ticket
     ))
     expected = "brain-management-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
     assert action.action_id == expected
+    assert action.action_id != "shared-translator-id"
 
 
 def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
