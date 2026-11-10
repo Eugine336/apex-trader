@@ -408,6 +408,7 @@ class Campaign:
             "ended_reason": self.ended_reason,
             "refresh_count": int(self.refresh_count),
             "open_legs": int(self.open_legs),
+            "open_tickets": self.open_tickets,
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(), 1),
