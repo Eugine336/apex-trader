@@ -34,7 +34,7 @@ from cognition.concepts.tick_microstructure_readings import TickMicrostructureRe
 from cognition.concepts.session_calendar import SessionCalendar
 from cognition.concepts.opening_range import OpeningRange
 from cognition.concepts.vwap import VWAPConcept
-from cognition.concepts.volume_profile import VolumeProfileConcept
+from cognition.concepts.volume_profile import VolumeProfileConcept, clear_volume_profile_cache
 from cognition.concepts.seasonality import SeasonalityConcept
 from cognition.concepts.range_rotation import RangeRotation
 from cognition.concepts.quantitative_state_readings import QuantitativeStateReadings
@@ -113,6 +113,7 @@ def clear_concept_reading_cache() -> None:
     """Clear completed-bar readings, primarily for deterministic tests/reloads."""
     with _READING_CACHE_LOCK:
         _READING_CACHE.clear()
+    clear_volume_profile_cache()
 
 
 def read_concept_readings(
