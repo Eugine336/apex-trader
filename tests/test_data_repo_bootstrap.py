@@ -274,3 +274,51 @@ def test_adoption_git_failure_keeps_original_data_and_verified_backup(tmp_path, 
     assert len(backups) == 1
     assert (backups[0] / "apex_events.db").read_bytes() == b"original-database"
     assert database.read_bytes() == b"original-database"
+
+
+
+def test_junction_creation_failure_restores_complete_source_data_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("APEX_DATA_DIR", raising=False)
+    source = tmp_path / "apex-trader"
+    local = source / "data"
+    target = tmp_path / "apex-trader-data"
+    local.mkdir(parents=True)
+    target.mkdir()
+    (target / ".git").mkdir()
+    (local / "apex_events.db").write_bytes(b"source-database")
+    (local / "decision_journal").mkdir()
+    (local / "decision_journal" / "entry.jsonl").write_text('{"event":1}')
+
+    monkeypatch.setattr(
+        bootstrap, "verify_dedicated_data_repo",
+        lambda *a, **k: (True, "eugine336/apex-trader-data"),
+    )
+
+    def fake_git(args, **kwargs):
+        if args[:2] == ["branch", "--show-current"]:
+            return "main"
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return "origin/main"
+        if args[:2] == ["config", "--get"]:
+            return "git-lfs-command"
+        if args[:2] == ["lfs", "version"]:
+            return "git-lfs/3.8.1"
+        if args[:1] == ["check-attr"]:
+            return "apex_events.db: filter: lfs"
+        if args[:2] == ["lfs", "env"]:
+            return "Endpoint=https://github.com/Eugine336/apex-trader-data.git/info/lfs"
+        return ""
+
+    monkeypatch.setattr(bootstrap, "_run_git", fake_git)
+    monkeypatch.setattr(
+        bootstrap, "_make_directory_link",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("simulated junction failure")),
+    )
+
+    with pytest.raises(bootstrap.DataRepoBootstrapError, match="could not safely route"):
+        bootstrap.bootstrap_data_repo(source_root=source)
+
+    assert local.is_dir()
+    assert (local / "apex_events.db").read_bytes() == b"source-database"
+    assert (local / "decision_journal" / "entry.jsonl").read_text() == '{"event":1}'
+    assert not bootstrap._is_link(local)
