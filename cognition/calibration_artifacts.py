@@ -482,6 +482,7 @@ class CalibrationProducer:
                             break
                     quote_lineage_valid = (
                         str(quote_row.get("symbol", "") or "").strip().upper() == sym
+                        and str(quote_row.get("source_module", "") or "") == "market.live_quote"
                         and quote_row.get("source_timestamp_verified") is True
                         and quote_row.get("provisional") is not True
                         and abs(float(quote_row.get("source_timestamp_epoch")) - reference_epoch) <= 1e-6
@@ -643,6 +644,7 @@ class CalibrationProducer:
                                     break
                                 if (
                                     outcome_quote.get("source_timestamp_verified") is not True
+                                    or str(outcome_quote.get("source_module", "") or "") != "market.live_quote"
                                     or not verify_quote_source_provenance(
                                         outcome_quote.get("raw_fields"),
                                         symbol=sym,
