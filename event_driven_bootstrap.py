@@ -6513,7 +6513,7 @@ class EventDrivenSystem:
                 return broker_response.get(name)
             return getattr(broker_response, name, None)
         status = str(response_value("order_status") or "").strip().upper()
-        if status not in {"FILLED", "EXECUTED", "OPEN"}:
+        if status not in {"FILLED", "EXECUTED", "OPEN", "PARTIALLY_FILLED_TERMINAL"}:
             # PLACED/ACCEPTED pending orders are not live positions.
             return
         ticket = str(
