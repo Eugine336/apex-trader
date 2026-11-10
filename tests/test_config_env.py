@@ -51,3 +51,14 @@ def test_all_environment_allowlist_sections_exist_on_app_config():
         target = getattr(config, section)
         for name in names:
             assert hasattr(target, name), f"{section}.{name} is not a config field"
+
+
+def test_root_application_log_level_is_environment_configurable(monkeypatch):
+    monkeypatch.setenv("APEX_LOG_LEVEL", "debug")
+    assert AppConfig().log_level == "DEBUG"
+
+
+def test_invalid_root_application_log_level_fails_startup(monkeypatch):
+    monkeypatch.setenv("APEX_LOG_LEVEL", "VERBOSE")
+    with pytest.raises(ValueError, match="APEX_LOG_LEVEL"):
+        AppConfig()
