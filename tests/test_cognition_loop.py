@@ -161,7 +161,6 @@ class _StubBrain:
         self.calls.append(market_state.symbol)
         return SimpleNamespace(
             decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=True),
-            direction="LONG",
         )
 
 
@@ -281,12 +280,12 @@ class _StubOrchestrator:
         return SimpleNamespace(objective=objective)
 
 
-def _brain_output(symbol="EURUSD", direction="LONG", authorises=True, confidence=0.8):
+def _brain_output(symbol="EURUSD", authorises=True, confidence=0.8):
     decision = SimpleNamespace(
         symbol=symbol, authorises_action=authorises, confidence=confidence,
         thesis="t", decision_id="d1",
     )
-    return SimpleNamespace(decision=decision, direction=direction)
+    return SimpleNamespace(decision=decision)
 
 
 def test_bridge_emits_on_campaign_open():
@@ -523,7 +522,7 @@ def test_origination_flat_decision_never_originates():
                 symbol=market_state.symbol,
                 decision_type=DecisionType.CONTINUE_OBSERVING,
             )
-            return SimpleNamespace(decision=decision, campaign=None, direction="FLAT")
+            return SimpleNamespace(decision=decision, campaign=None)
 
     loop = CognitionLoop(
         _FlatBrain(), _StubConsolidator(), lambda: ["EURUSD"],
@@ -575,7 +574,7 @@ def test_memory_preserves_provider_status_separately_from_native_verdict():
             "external_advisor_status": "unavailable",
         },
     )
-    output = BrainOutput(decision=decision, campaign=campaign, direction="LONG")
+    output = BrainOutput(decision=decision, campaign=campaign)
     loop = CognitionLoop(
         _OpenBrain(), _StubConsolidator(), lambda: [],
         origination_mode="off", memory=store,
