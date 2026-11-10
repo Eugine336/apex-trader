@@ -179,3 +179,18 @@ def test_full_trading_mode_rejects_categories_without_registered_instruments(mon
     monkeypatch.setenv("TRADING_ENABLED_CATEGORIES", "crypto")
     with pytest.raises(ValueError, match="no registered instruments"):
         AppConfig()
+
+
+def test_process_trading_mode_is_locked_by_default_when_explicitly_set(monkeypatch):
+    from api.instance_config import apply_user_overrides
+
+    monkeypatch.setenv("TRADING_MODE", "gold")
+    monkeypatch.delenv("TRADING_MODE_LOCKED", raising=False)
+    config = AppConfig()
+    apply_user_overrides(config, {
+        "universe_mode": "all",
+        "enabled_categories": ["forex", "commodity", "index", "synthetic"],
+        "enabled_symbols_override": [],
+    })
+    assert config.universe_mode == "single"
+    assert config.enabled_symbols_override == ["XAUUSD"]
