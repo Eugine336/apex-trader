@@ -36,6 +36,22 @@ _KNOWN_KEYS = {
 }
 
 
+def _trading_mode_locked() -> bool:
+    """Whether the process environment owns the instrument universe globally."""
+    raw_value = os.getenv("TRADING_MODE_LOCKED")
+    if raw_value is None:
+        # A configured process TRADING_MODE is authoritative by default. This
+        # keeps an existing deployment's Gold mode from being silently widened
+        # by saved per-user preferences when the new lock variable is absent.
+        raw_value = "true" if os.getenv("TRADING_MODE") else "false"
+    raw = raw_value.strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("TRADING_MODE_LOCKED must be a boolean")
+
+
 def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
     """Apply a user's saved trading preferences onto *config* in place.
 
@@ -46,20 +62,24 @@ def apply_user_overrides(config: Any, overrides: dict[str, Any]) -> Any:
     if not overrides:
         return config
 
-    if isinstance(overrides.get("universe_mode"), str):
-        config.universe_mode = overrides["universe_mode"].strip().lower()
-    elif isinstance(overrides.get("enabled_symbols_override"), list) and overrides["enabled_symbols_override"]:
-        config.universe_mode = "selected"
+    # Process-level TRADING_MODE normally supplies the instance default.
+    # Operators can lock it globally so persisted per-user preferences cannot
+    # silently expand or otherwise change the configured instrument universe.
+    if not _trading_mode_locked():
+        if isinstance(overrides.get("universe_mode"), str):
+            config.universe_mode = overrides["universe_mode"].strip().lower()
+        elif isinstance(overrides.get("enabled_symbols_override"), list) and overrides["enabled_symbols_override"]:
+            config.universe_mode = "selected"
 
-    if isinstance(overrides.get("enabled_categories"), list):
-        config.enabled_categories = [str(c) for c in overrides["enabled_categories"]]
+        if isinstance(overrides.get("enabled_categories"), list):
+            config.enabled_categories = [str(c) for c in overrides["enabled_categories"]]
 
-    if isinstance(overrides.get("enabled_symbols_override"), list):
-        config.enabled_symbols_override = list(dict.fromkeys(
-            str(symbol).strip().upper()
-            for symbol in overrides["enabled_symbols_override"]
-            if str(symbol).strip()
-        ))
+        if isinstance(overrides.get("enabled_symbols_override"), list):
+            config.enabled_symbols_override = list(dict.fromkeys(
+                str(symbol).strip().upper()
+                for symbol in overrides["enabled_symbols_override"]
+                if str(symbol).strip()
+            ))
 
     owner_updates = dict(overrides.get("owner_limits") or {})
     if not isinstance(overrides.get("owner_limits", {}), dict):

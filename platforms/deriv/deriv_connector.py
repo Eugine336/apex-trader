@@ -17,6 +17,7 @@ from loguru import logger
 
 from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from config import get_pip_size
+from config_env import trading_enabled_from_env
 from ops.redaction import mask_account_id, redact_account_in_url
 from persistence.deriv_position_store import DerivPositionStore
 from platforms.base_connector import (
@@ -1205,6 +1206,14 @@ class DerivConnector(BaseConnector):
             source_timestamp_verified=True,
             quote_kind="mid_only",
             symbol=str(symbol or "").strip().upper(),
+            raw_fields={
+                "source_adapter": "deriv",
+                "provider_timestamp_epoch": epoch,
+                "provider_timestamp_field": "history.times",
+                "provider_timestamp_semantics": "unix_utc_seconds",
+                "received_at_epoch": datetime.now(timezone.utc).timestamp(),
+                "timestamp_utc_epoch": epoch,
+            },
         )
 
     def get_tick(self, symbol: str) -> TickData:
@@ -1456,6 +1465,16 @@ class DerivConnector(BaseConnector):
         stake_usd: Optional[float] = None,
         multiplier: Optional[int] = None,
     ) -> OrderResult:
+        if not trading_enabled_from_env(default=True):
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=0.0, slippage_pips=0.0,
+                lots=float(lots or 0.0), symbol=symbol,
+                direction=str(direction or "").upper(), sl=float(sl or 0.0),
+                tp=float(tp or 0.0), platform="deriv",
+                error="trading_disabled_by_TRADING_ENABLED",
+                order_status="REJECTED", order_type="MARKET",
+            )
         self._require_connection()
         mapped = self.symbol_map(symbol)
         is_buy = direction.upper() in ("BUY", "LONG")

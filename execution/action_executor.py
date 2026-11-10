@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional, Protocol
 from loguru import logger
 
 from execution.intents import Intent, IntentType
+from config_env import trading_enabled_from_env
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from execution.risk_gate import GateConfig, RiskGate
 from platforms.circuit_breaker import CircuitBreaker
@@ -175,6 +176,10 @@ class ActionExecutor:
     ) -> None:
         self._broker = broker
         self._cfg = config or ExecutorConfig()
+        # Defense in depth: CognitionConfig stops new Brain origination, while
+        # this last-mile gate also rejects any already-queued OPEN intent.
+        # Management/close intents remain available for risk reduction.
+        self._trading_enabled = trading_enabled_from_env(default=True)
         self._gate = RiskGate(self._cfg.gate_config)
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
@@ -683,6 +688,19 @@ class ActionExecutor:
             Current account drawdown percentage.
         """
         self._inc("intents_received")
+
+        # A disabled trading switch must reject every new exposure at the
+        # execution boundary, including pending OPEN orders already queued
+        # before the operator disabled origination. It must not block closes
+        # or existing-position management.
+        if intent.intent_type == IntentType.OPEN and not self._trading_enabled:
+            reason = "trading_disabled_by_TRADING_ENABLED"
+            self._inc("intents_rejected")
+            logger.warning("EXECUTOR REJECTED | OPEN {} | {}", intent.symbol, reason)
+            return ExecutionResult(
+                intent=intent, success=False, rejected_by_gate=True,
+                gate_reason=reason, error=reason,
+            )
 
         # The canonical identity is versioned and carried with Brain-originated
         # intent provenance. Reject a malformed/mismatched OPEN before it can

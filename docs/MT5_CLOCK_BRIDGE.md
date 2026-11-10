@@ -1,47 +1,60 @@
-# MT5 broker-server clock bridge
+# MT5 automatic broker-clock synchronization
 
-## Why this exists
+## Production design
 
-The runtime log showed MT5 tick epochs approximately 7,200 seconds ahead of the host UTC clock across many symbols. This is consistent with a broker server running at UTC+2, not dozens of bad instrument timestamps.
+Apex no longer requires a chart-attached Expert Advisor or a terminal-local
+clock publisher file. The production connector estimates the broker timestamp
+basis automatically from:
 
-MetaQuotes' Python integration pages contain a UTC statement, but recent MQL5 moderator discussions explicitly clarify that returned MT5 tick/bar data use broker-server time and acknowledge the documentation wording is misleading. JustMarkets publishes MT5 market schedules in GMT+2/GMT+3. Apex must therefore use a live, broker-specific offset rather than hard-code +2 or +3.
+- A live MT5 tick whose timestamp has advanced consistently with monotonic
+  elapsed time.
+- Independent network UTC observations from multiple NTP servers.
+- Authenticated HTTPS Date-header observations when outbound UDP/123 is blocked.
 
-References:
-- [MQL5 moderator clarification: returned data use broker server time](https://www.mql5.com/en/forum/516958)
-- [MQL5 moderator thread: approximately 2-hour offset on MetaQuotes-Demo](https://www.mql5.com/en/forum/519552)
-- [JustMarkets market hours: schedules use server time GMT+3](https://justmarkets.com/markets/commodities)
-- [MQL5 TimeTradeServer reference](https://www.mql5.com/en/docs/dateandtime/timetradeserver)
-- [MQL5 TimeGMT reference](https://www.mql5.com/en/docs/dateandtime/timegmt)
+The estimate is associated with the exact MT5 account server. It is accepted
+only when at least two independent time sources agree, the inferred offset is
+within the plausible UTC-offset range, and estimated uncertainty remains below
+the configured safety ceiling. The resulting clock is anchored to monotonic
+time, not the workstation wall clock, and is refreshed while the tick stream
+advances.
 
-## Install the publisher
+## Runtime guarantees
 
-1. Open MetaEditor from the exact MT5 terminal Apex connects to.
-2. Open scripts/mt5_clock_publisher.mq5 from this repository.
-3. Compile it as an Expert Advisor.
-4. In that same terminal, attach APEX MT5 Server Clock Publisher to one chart. This EA contains no order functions and does not place, modify, or cancel orders.
-5. Keep it running. It writes MQL5/Files/apex_mt5_clock_offset.txt every five seconds.
-6. If Apex uses multiple independent MT5 terminals/accounts, attach the publisher to each terminal. The file is terminal-local and the Python reader checks the exact broker server name.
+- No fixed GMT+2/GMT+3 offset is configured or assumed.
+- No workstation local-time value is substituted for broker time.
+- Broker timestamps remain the source of market-data ordering.
+- Tick freshness and completed-bar checks use the synchronized broker clock.
+- The clock is refreshed after reconnects and can detect a verified offset
+  change, including seasonal broker-time changes.
+- If live ticks do not advance, network time sources are unavailable, sources
+  disagree, or uncertainty is excessive, the clock remains unavailable and
+  market data requiring verified time plus new exposure fail closed.
+- Existing-position management and observation remain subject to their
+  independent data and safety requirements; clock failure never authorizes a
+  trade.
 
-## Runtime behavior
+## Important limitation
 
-- Python reads the publisher file under the connected terminal's data_path.
-- The reader requires schema version 1, exact account server match, plausible offset, internally consistent server/GMT epochs, and a fresh file (20-second maximum).
-- MT5 tick freshness is calculated in broker-server time using the publisher's TimeTradeServer()-TimeGMT() offset.
-- TickData.time is normalized to UTC before it enters Apex cognition.
-- Short live tick-history windows (up to five minutes, ending within two minutes of now) are normalized with the same fresh offset so tick microstructure can use them. Older tick history is left in broker-server time and marked unnormalized.
-- Completed-bar filtering compares bar close times with the broker-server clock, not the host UTC clock. Historical bar timestamps retain their raw server epoch and are labelled broker-server time until an offset history is available. Raw broker time, offset, and normalized epoch are preserved in raw_fields.
-- Market and pending order preflights also require a fresh valid publisher sample. If the bridge is missing, stale, or belongs to another server, MT5 quotes are rejected and order entry fails closed.
-- No fixed GMT+2/GMT+3 value is stored in .env; daylight-saving changes are read from the connected terminal.
-- The Windows host clock must be synchronized for the normalized timestamps to be true UTC. MQL5 TimeGMT() is calculated from the terminal host clock and timezone. Run the Python diagnostic and verify Windows Time reports a successful recent synchronization before treating normalized timestamps as canonical UTC.
+The MetaTrader5 Python API does not expose the terminal's TimeTradeServer()
+function. Tick timestamps plus independent UTC observations provide an
+automatic estimate, but the estimate's uncertainty includes network delay and
+tick timestamp precision. This is why Apex requires multiple agreeing time
+sources and an advancing tick stream. It must not claim a verified clock when
+those conditions are not met. If the broker changes timestamp semantics or
+network timing becomes ambiguous, the system fails closed rather than guessing.
+
+The MQL5 publisher in `scripts/mt5_clock_publisher.mq5` is retained only as an
+optional diagnostic/reference utility. It is not part of production startup
+and does not need to be compiled or attached.
 
 ## Diagnostic
+
+Run the existing read-only diagnostic:
 
 ```powershell
 python scripts/diagnose_mt5_clock.py --symbols XAUUSD.ecn EURUSD.ecn
 ```
 
-The Python diagnostic reports host clock state, MT5 server/company/build, and raw tick seconds/milliseconds. The EA publishes the live broker-server offset consumed by Apex.
-
-## Scope limitation
-
-This bridge normalizes live tick timestamps and short live tick-history windows, and validates the tick-time basis used by market/pending order preflights and completed-bar filtering. Historical OHLCV, older historical ticks, deal, and order-history timestamps require a historical broker-offset series to normalize across daylight-saving transitions. They must not be relabelled as UTC using today's offset. That historical mapping remains a separate data-quality gate.
+For runtime diagnosis, inspect the MT5 connector log for
+`broker server clock synchronized`, the selected time sources, inferred
+offset, uncertainty, and any explicit synchronization failure.

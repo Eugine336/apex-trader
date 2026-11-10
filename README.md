@@ -195,7 +195,22 @@ docker-compose up -d
 | `DERIV_APP_ID` | Deriv only | App ID from app.deriv.com |
 | `DD_DASHBOARD_API_KEY` | No | API key for dashboard authentication |
 | `DD_API_KEY` | No | Datadog API key for APM |
-| `APP_ENV` | No | development or production (default: development) |
+
+### Runtime and execution controls
+
+| Variable | Purpose |
+|---|---|
+| `TRADING_MODE` | Gold-only, full configured universe, selected symbols, or one symbol |
+| `TRADING_MODE_LOCKED` | Enforce the process-level instrument universe over saved per-user preferences |
+| `TRADING_ENABLED` | Reject new OPEN intents at cognition and execution boundaries |
+| `APEX_OWNER_LIMITS_JSON` | Bootstrap canonical owner-editable capital limits with immutable hard ceilings |
+| `APEX_<SECTION>_<FIELD>` | Typed operational settings listed in `.env.example` and `config_env.py` |
+| `APEX_ED_POSEVAL_PARALLEL` | Parallel position evaluation; serial rollback switch |
+| `APEX_ED_EVENT_REACTIVE_MGMT` | Event-reactive management; periodic-sweep rollback switch |
+
+See [the full configuration reference](docs/CONFIGURATION_REFERENCE.md),
+[field-by-field operator environment reference](docs/OPERATOR_ENVIRONMENT_REFERENCE.md),
+and [typed configuration field inventory](docs/CONFIGURATION_FIELD_INVENTORY.md).
 
 ### Cognition and origination controls
 

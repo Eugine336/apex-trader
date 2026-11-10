@@ -500,11 +500,74 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - **IMPLEMENTED:** removed the obsolete ctx.adaptive_weight_provider argument from AdaptiveSchedulerLoop construction; the current scheduler does not expose or consume that provider. Corrected Loguru formatting in execution-cost source diagnostics.
 - **VALIDATION ADDED:** regression coverage for explicit Deriv routing, offline Deriv behavior, initial/zero broker-balance reconciliation, and a read-only MT5 clock diagnostic (python scripts/diagnose_mt5_clock.py).
 - **CLOCK BASIS FINDING:** the consistent +7,200-second offset is consistent with JustMarkets broker-server time (JustMarkets documents GMT+2/GMT+3 schedules). Recent MQL5 moderator clarifications say returned market-data timestamps are broker-server time despite conflicting UTC wording in parts of the Python documentation. A fixed offset is unsafe because the broker changes between GMT+2/GMT+3.
-- **IMPLEMENTED:** a read-only MQL5 publisher emits TimeTradeServer()-TimeGMT() for its exact account server every five seconds. Python accepts only a fresh, internally consistent, server-matched sample, calculates tick age in server time, converts live TickData and short live tick-history windows to UTC, and checks recent completed bars against broker-server time. Market/pending-order entry preflights and recent completed-bar reads fail closed if the publisher is absent or stale. Historical bar/tick rows retain raw broker-server epochs and explicit timezone provenance. See docs/MT5_CLOCK_BRIDGE.md.
-- **OWNER-HOST ACTION REQUIRED:** compile and attach scripts/mt5_clock_publisher.mq5 to every MT5 terminal Apex uses. Until the file is published and verified, MT5 quotes and new MT5 market/pending entries fail closed. No fixed +7,200 correction is used.
+- **IMPLEMENTED IN PR #868 — VALIDATION PENDING:** production MT5 clock acquisition no longer reads the terminal-local MQL5 publisher file. It estimates the broker timestamp offset from an advancing live tick and at least two agreeing independent network UTC sources (NTP, with HTTPS Date-header fallback), binds state to the exact account server, anchors it to monotonic time, and includes source/tick uncertainty. Tick freshness and completed-bar checks apply conservative uncertainty margins; market and pending entry preflights remain fail-closed. No fixed GMT+2/GMT+3 or workstation wall-clock substitution is used.
+- **OWNER ACTION REMOVED:** no EA compilation, chart attachment, or publisher file is required. The existing MQL5 publisher remains an optional diagnostic/reference utility only. PR #868 still requires MT5 regression, Python 3.11/3.12, lint, Gold desk, and integrated safety validation before merge.
 - **STILL BLOCKED BY OWNER SETUP:** the dedicated apex-trader-data repository is absent or not mounted as the required separate Git repository. Clean-start correctly refuses synchronization and purge. Provision the expected data repository; do not weaken the topology guard.
 - **CONFIGURATION DEPENDENCIES:** Deriv remains offline without DERIV_ACCESS_TOKEN. Local Ollama/vLLM advisor connection refusals do not disable native Brain reasoning. Gemini budget limits require owner-selected provider quotas and are not guessed.
-- **HISTORICAL DATA-GATED:** live ticks and short live tick-history windows are normalized using the current verified broker offset; completed-bar filtering uses the matching server clock. Historical OHLCV, older tick history, deals and order-history timestamps still need a historical offset series to normalize across DST changes; today's offset is not applied retroactively. No broker order or position mutation was issued.
+- **HISTORICAL DATA-GATED:** live ticks and short live tick-history windows use the current network-anchored broker-offset estimate with explicit uncertainty; completed-bar filtering uses a conservative lower bound of the synchronized broker clock. Historical OHLCV, older tick history, deals and order-history timestamps still need a historical offset series to normalize across DST changes; today's offset is not applied retroactively. No broker order or position mutation was issued.
 
 - **SAFETY ENFORCEMENT CORRECTION:** a critical SystemContext degradation now trips CognitionLoop.broker_book_verified=False, both when the failure occurs before the loop is constructed and when it occurs afterward. This is the actual new-exposure admission breaker; market observation and existing-position management remain available. The previous status-only flag was insufficient.
 - **ACCOUNT DATA VALIDATION:** non-finite broker balances (NaN/Infinity) are excluded from PlatformManager account snapshots and RiskEngine reconciliation. A malformed account value cannot poison pooled capital or PnL denominators.
+
+
+### Trading controls and configuration coverage — 2026-11-10
+
+- **FIXED:** `TRADING_MODE` was present in `.env.example` but was not consumed by `AppConfig`; the application therefore retained the default full universe. It now resolves `gold` to exactly XAUUSD, `full` to the configured categories, and `selected`/`single` to the explicit `TRADING_SYMBOLS` list. Persisted per-user universe preferences retain precedence by default; `TRADING_MODE_LOCKED=true` makes the process-level universe authoritative. `TRADING_ENABLED=false` disables new Brain origination and is rechecked at the ActionExecutor boundary to reject already-queued market/pending OPEN intents, without disabling existing-position management or risk-reducing closes.
+- **DOCUMENTED:** the root server `.env.example` now documents the active universe and new-exposure controls. `docs/CONFIGURATION_REFERENCE.md` identifies the settings, precedence and security boundary. Frontend Vite build variables remain in their own `frontend/.env.example` and `dashboard/frontend/.env.example`; private credentials must not be placed in `VITE_*` variables.
+- **REGRESSION GUARDS ADDED:** literal Python runtime environment reads are checked against the root `.env.example`; Vite build-time reads are checked against each frontend's own template. This prevents future literal environment reads from silently bypassing the documented template.
+- **CONFIGURATION INVENTORY STILL OPEN:** the field inventory records 716 typed fields across 43 configuration dataclasses. These are not automatically 711 operator settings: analytical definitions, data-quality rules, derived values, internal scheduling, owner limits and non-overridable safety invariants must be classified before exposure. The remaining task is a source-backed field-by-field inventory and migration of legitimate operator controls, without making analytical thresholds or constitutional safety rules arbitrary environment overrides.
+- **VALIDATION:** full APEX Python 3.11/3.12 CI and focused Gold Desk CI for the latest PR #868 head are running; no result is claimed until they complete. No `.env` file was read or modified, and no broker order or position mutation was issued.
+
+
+### Environment configuration expansion — 2026-11-10
+
+- **FIXED:** the environment coverage CI failure was caused by removing two still-consumed event-driven switches. `APEX_ED_POSEVAL_PARALLEL` and `APEX_ED_EVENT_REACTIVE_MGMT` are restored; unused `APP_ENV` was removed from the template and README.
+- **ADDED:** `config_env.py` provides an explicit typed allowlist of 101 operational settings across performance/cache, ops/logging/reconnect, backup, backtest, decision trace, outcome feedback, signal ledger, post-close tracking, tuning, counterfactual, interaction, calibration, developing analysis, campaign, adaptive tuner and cross-instrument runtime sections. Empty values retain typed defaults; malformed values and invalid operational ranges fail startup.
+- **ADDED:** `APEX_LOG_LEVEL` controls the root console log level. `APEX_OWNER_LIMITS_JSON` bootstraps the canonical OwnerLimits object through its existing editable-field allowlist and immutable hard ceilings. It cannot modify internal-only hard stops.
+- **EXPLICITLY NOT EXPOSED:** legacy duplicate RiskConfig/ScoringConfig fields, analytical cutoffs, statistical model thresholds, broker-derived facts, data-purge switches, and constitutional safety invariants. They are classified separately rather than turned into ungoverned environment variables.
+- **REGRESSION TESTS:** added typed parsing, malformed-value rejection, operational-range validation, OwnerLimits hard-ceiling checks, and template/allowlist parity.
+- **VALIDATION STATUS:** the last completed full CI run (before these changes) had 4,489 passing tests and two failures in the environment-template audit. Both causes were corrected, then the typed environment surface was added. No fresh workflow run has yet been reported for the current branch head; the current branch must not be merged until fresh Python 3.11/3.12 and lint checks pass.
+- No real `.env` was read or modified, no broker orders were sent, and no safety gate was weakened.
+
+
+### WP-B4 quote provenance hardening — 2026-11-10
+
+- **ADDED:** adapter-specific quote provenance validation in `cognition/quote_provenance.py`. A bare `source_timestamp_verified=true` no longer suffices for a calibration quote.
+- **MT5:** the quote must carry its original broker timestamp, the normalized UTC epoch, the measured offset (which must reconcile raw broker time to normalized UTC within the uncertainty bound), at least two independent clock-source identifiers, and offset uncertainty no greater than the clock bridge's 2.5-second acceptance ceiling.
+- **Deriv:** the quote must retain the provider's original `history.times` epoch, explicitly identify Unix-UTC semantics, and record local receipt time. Deriv's one-price response remains `mid_only`; it is not represented as an executable bid/ask spread.
+- **Pipeline:** MT5 and Deriv adapters preserve raw timestamp provenance through `Tick`, market snapshot evidence, candidate reference quotes and fixed-horizon outcome quotes. `CalibrationProducer` validates both decision-time and outcome quotes against the adapter-specific contract before issuing artifacts.
+- **TESTS ADDED:** adapter provenance validation, missing/ambiguous source-time rejection, and a calibration regression proving that deleting the raw provenance while leaving the old boolean flag true produces no artifact.
+- **LIMITATION:** this is an application-side adapter attestation, not a cryptographic signature from MetaQuotes or Deriv. It authenticates the expected in-process adapter data path and detects missing/contradictory provenance; it cannot independently prove that a broker's upstream quote is truthful. Broker-export authenticity and owner-supplied historical data acceptance remain separate WP-B4 evidence gates.
+
+
+- **SAFE TEMPLATE DEFAULT:** `.env.example` now sets `TRADING_ENABLED=false`. The operator must explicitly set it to `true` to allow new exposure; position reconciliation and risk-reducing management remain available.
+
+
+### WP-B5 benchmark correctness — 2026-11-10
+
+- **FIXED:** the live concept benchmark requested `count` rows and then called `analyze_market_frames(source_includes_forming_bar=True)`, which deliberately excludes the final forming bar. It therefore reported raw rows as though they were completed bars and could claim the requested depth with one fewer completed candle.
+- The benchmark now fetches `count + 1` raw rows, reports both `raw_timeframes` and completed `timeframes`, and makes the requested bar depth refer to completed candles. The pass gate requires the full requested completed-bar count across every requested symbol/timeframe in both cold and warm passes.
+- **TESTS ADDED:** exact fetch depth, raw-versus-completed counts, and complete cold/warm coverage.
+- Actual broker-universe timing remains an owner-host, read-only measurement. CI validates the benchmark logic; it cannot substitute synthetic data for the broker-connected performance acceptance.
+
+
+### Full-universe category correction — 2026-11-10
+
+- **FIXED:** the default full-universe category list omitted `synthetic`, even though the instrument registry classifies Deriv synthetic instruments under that category. The default `AppConfig.enabled_categories` and `.env.example` now include `synthetic` alongside forex, commodity, index and crypto. Gold mode remains XAUUSD-only. Full mode still requires a non-empty list of valid registered category names.
+
+
+### WP-B5 incremental volume-profile computation — 2026-11-10
+
+- **ADDED:** `VolumeProfileConcept` now caches weekly OHLCV profiles by symbol, timeframe, ISO week and a content fingerprint. On a new candle, unchanged closed weeks reuse their prior profiles while only the changed active week is recomputed. A historical correction invalidates only the affected week.
+- The cache is bounded (4,096 entries), thread-safe, and reports per-reading weekly-profile cache hits/misses. A public clear function supports deterministic tests and explicit data reloads.
+- Session metadata is now evaluated once per bar rather than repeatedly while selecting the active session profile.
+- **TESTS ADDED:** unchanged-history reuse, active-week append invalidation, and historical correction invalidation.
+- This complements the shared incremental swing state and liquidity-pool work. Owner-host full-universe cold/warm timing is still required to quantify production impact.
+
+
+### Validation update — 2026-11-10
+
+- APEX TRADER CI runs **3841** and **3842** completed successfully: lint, Python 3.11 and Python 3.12 all passed on the code head containing the MT5 clock changes, typed environment allowlist, quote provenance validation, completed-bar benchmark correction, incremental volume-profile cache and its tests.
+- Gold Desk focused runs **2001** and **2006** passed on Python 3.11 and 3.12.
+- The subsequent documentation-only environment inventory/test-parity change was manually checked against all 293 root keys and all frontend keys; every key is present in the reference. A new full Apex run **3847** is validating the current head.
+- The current PR remains draft pending final run completion and owner-host acceptance.

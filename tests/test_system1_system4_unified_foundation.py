@@ -181,10 +181,20 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
                 "source_timestamp_verified": verified,
                 "quote_kind": "bid_ask",
                 "symbol": symbol,
+                "raw_fields": {
+                    "source_adapter": "mt5",
+                    "source_timezone": "broker_server",
+                    "time": int(source_epoch),
+                    "time_msc": int(source_epoch * 1000),
+                    "timestamp_utc_epoch": source_epoch,
+                    "source_utc_offset_seconds": 0.0,
+                    "source_utc_offset_uncertainty_seconds": 0.1,
+                    "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+                },
             },
         }
         return Evidence(
-            source_module="market.price_action",
+            source_module="market.live_quote",
             domain=EvidenceDomain.MULTI_TIMEFRAME,
             symbol=symbol,
             evidence_id=evidence_id,
@@ -228,6 +238,7 @@ def test_candidate_snapshot_rejects_cross_symbol_future_and_provisional_quote_so
     payload = store.events[0][1]["payload"]
     assert payload["reference_quote"]["evidence_id"] == "valid-quote"
     assert payload["reference_quote"]["symbol"] == "EURUSD"
+    assert payload["reference_quote"]["raw_fields"]["source_adapter"] == "mt5"
     assert payload["point_in_time_complete"] is True
     point_ids = {row["evidence_id"] for row in payload["point_in_time_evidence"]}
     assert point_ids == {feature.evidence_id, "valid-quote"}
@@ -296,7 +307,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     )
     initial_market = MarketState(symbol="EURUSD", created_epoch=1000.0)
     initial_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1000.0,
@@ -309,6 +320,16 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
             "timestamp_epoch": 1000.0, "source_timestamp_verified": True,
             "quote_kind": "bid_ask",
             "symbol": "EURUSD",
+            "raw_fields": {
+                "source_adapter": "mt5",
+                "source_timezone": "broker_server",
+                "time": 1000,
+                "time_msc": 1_000_000,
+                "timestamp_utc_epoch": 1000.0,
+                "source_utc_offset_seconds": 0.0,
+                "source_utc_offset_uncertainty_seconds": 0.1,
+                "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+            },
         }},
     ))
     opportunity = Opportunity(
@@ -332,7 +353,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
 
     later_market = MarketState(symbol="EURUSD", created_epoch=1301.0)
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -345,11 +366,21 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
             "timestamp_epoch": 1301.0, "source_timestamp_verified": True,
             "quote_kind": "bid_ask",
             "symbol": "EURUSD",
+            "raw_fields": {
+                "source_adapter": "mt5",
+                "source_timezone": "broker_server",
+                "time": 1301,
+                "time_msc": 1_301_000,
+                "timestamp_utc_epoch": 1301.0,
+                "source_utc_offset_seconds": 0.0,
+                "source_utc_offset_uncertainty_seconds": 0.1,
+                "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+            },
         }},
     ))
     # These newer-looking records are not valid EURUSD, point-in-time quotes.
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="GBPUSD",
         timestamp_epoch=1301.0,
@@ -363,7 +394,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         }},
     ))
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -377,7 +408,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
         }},
     ))
     later_market.add(Evidence(
-        source_module="market.price_action",
+        source_module="market.live_quote",
         domain=EvidenceDomain.MULTI_TIMEFRAME,
         symbol="EURUSD",
         timestamp_epoch=1301.0,
@@ -405,6 +436,7 @@ def test_fixed_horizon_outcomes_label_unselected_candidates_without_claiming_cal
     assert payload["directional_return_r"] > 0
     assert payload["outcome_evidence_id"] == later_market.evidence[0].evidence_id
     assert payload["outcome_quote"]["symbol"] == "EURUSD"
+    assert payload["outcome_quote"]["raw_fields"]["source_adapter"] == "mt5"
     assert payload["observed_price"] == pytest.approx(1.11)
 
 
@@ -500,6 +532,21 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
     events = []
     start = 1_700_000_000.0
+
+    def mt5_quote_provenance(epoch):
+        return {
+            "source_adapter": "mt5",
+            "source_timezone": "broker_server",
+            "time": int(epoch),
+            "time_msc": int(epoch * 1000),
+            "provider_timestamp_epoch": epoch,
+            "provider_timestamp_semantics": "broker_server_epoch",
+            "source_utc_offset_seconds": 0.0,
+            "timestamp_utc_epoch": epoch,
+            "source_utc_offset_uncertainty_seconds": 0.1,
+            "source_clock_sources": ["ntp:source-a", "ntp:source-b"],
+        }
+
     for index in range(150):
         decision_epoch = start + index * 600.0
         decision_id = f"decision-{index}"
@@ -531,6 +578,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "timestamp_epoch": decision_epoch,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
+                "raw_fields": mt5_quote_provenance(decision_epoch),
                 "evidence_id": f"quote-{index}",
             },
             "point_in_time_complete": True,
@@ -556,6 +604,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 {
                     "evidence_id": f"quote-{index}",
                     "symbol": "EURUSD",
+                    "source_module": "market.live_quote",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
                     "relevance_horizon_seconds": 90.0,
@@ -569,6 +618,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                             "mid": 100.0,
                             "timestamp_epoch": decision_epoch,
                             "source_timestamp_verified": True,
+                            "raw_fields": mt5_quote_provenance(decision_epoch),
                         },
                     },
                 },
@@ -600,6 +650,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 "timestamp_epoch": decision_epoch + 300.0,
                 "source_timestamp_verified": True,
                 "symbol": "EURUSD",
+                "source_module": "market.live_quote",
+                "raw_fields": mt5_quote_provenance(decision_epoch + 300.0),
                 "evidence_id": f"outcome-{index}",
             },
         }
@@ -714,6 +766,39 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
+
+    # A bare source_timestamp_verified boolean is not enough to mint an
+    # artifact. Both decision-time and horizon quotes need adapter provenance.
+    unattested_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["reference_quote"].pop("raw_fields", None)
+            payload["point_in_time_evidence"][1]["measurements"]["price"].pop(
+                "raw_fields", None
+            )
+        elif row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            payload["outcome_quote"].pop("raw_fields", None)
+        copied["payload_json"] = json.dumps(payload)
+        unattested_events.append(copied)
+    assert CalibrationProducer(
+        Store(unattested_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    wrong_source_module_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["point_in_time_evidence"][1]["source_module"] = "market.price_action"
+        elif row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME":
+            payload["outcome_quote"]["source_module"] = "market.price_action"
+        copied["payload_json"] = json.dumps(payload)
+        wrong_source_module_events.append(copied)
+    assert CalibrationProducer(
+        Store(wrong_source_module_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
 
     duplicate_snapshot_events = [dict(row) for row in events]
     duplicate_snapshot_events.append({**events[0], "seq": 10000})

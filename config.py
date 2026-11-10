@@ -3910,6 +3910,11 @@ class CognitionConfig:
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "live"
         ).strip().lower()
+        # Global operator kill switch for NEW exposure. It does not disable
+        # existing-position management, reconciliation, or risk-reducing closes.
+        # Default preserves the pre-existing origination-mode behaviour.
+        if not _llm_env_bool("TRADING_ENABLED", True):
+            self.origination_mode = "off"
         self.management_mode = (
             os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
@@ -4260,7 +4265,7 @@ class AppConfig:
     # Gold is not a special trading identity or hard-coded execution mode.
     universe_mode: str = "all"
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex", "commodity", "index", "crypto"]
+        default_factory=lambda: ["forex", "commodity", "index", "synthetic", "crypto"]
     )
     enabled_symbols_override: list[str] = field(default_factory=list)
     # Populated by PlatformManager after a successful MT5 discovery cycle.
@@ -4327,11 +4332,67 @@ class AppConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
+        # TRADING_MODE is the operator-facing universe selector documented in
+        # .env.example. Resolve it here so the documented value reaches the live
+        # AppConfig used by PlatformManager and the scan pipeline. Explicit
+        # API/user overrides are applied after construction and retain precedence.
+        env_mode = os.getenv("TRADING_MODE")
+        if env_mode is not None and env_mode.strip():
+            requested_mode = env_mode.strip().lower()
+            if requested_mode in {"gold", "xauusd"}:
+                self.universe_mode = "single"
+                self.enabled_symbols_override = ["XAUUSD"]
+            elif requested_mode in {"full", "all"}:
+                self.universe_mode = "all"
+                raw_categories = os.getenv("TRADING_ENABLED_CATEGORIES")
+                if raw_categories is not None:
+                    self.enabled_categories = [
+                        value.strip().lower()
+                        for value in raw_categories.split(",")
+                        if value.strip()
+                    ]
+            elif requested_mode in {"selected", "custom"}:
+                raw_symbols = os.getenv("TRADING_SYMBOLS", "")
+                self.universe_mode = "selected"
+                self.enabled_symbols_override = [
+                    value.strip().upper()
+                    for value in raw_symbols.split(",")
+                    if value.strip()
+                ]
+            elif requested_mode == "single":
+                raw_symbols = os.getenv("TRADING_SYMBOLS", "")
+                self.universe_mode = "single"
+                self.enabled_symbols_override = [
+                    value.strip().upper()
+                    for value in raw_symbols.split(",")
+                    if value.strip()
+                ]
+            else:
+                raise ValueError(
+                    "TRADING_MODE must be gold, full, selected, or single"
+                )
+
         mode = str(self.universe_mode or "all").strip().lower()
         mode = {"full": "all", "custom": "selected", "one": "single"}.get(mode, mode)
         if mode not in {"all", "selected", "single"}:
             raise ValueError("universe_mode must be all, selected, or single")
         self.universe_mode = mode
+        self.enabled_categories = list(dict.fromkeys(
+            str(category).strip().lower()
+            for category in self.enabled_categories
+            if str(category).strip()
+        ))
+        if mode == "all":
+            if not self.enabled_categories:
+                raise ValueError("all-symbol universe requires at least one enabled category")
+            invalid_categories = [
+                category for category in self.enabled_categories
+                if category not in {item.value for item in InstrumentCategory}
+            ]
+            if invalid_categories:
+                raise ValueError(
+                    "unsupported trading categories: " + ", ".join(invalid_categories)
+                )
         self.enabled_symbols_override = list(dict.fromkeys(
             str(symbol).strip().upper()
             for symbol in self.enabled_symbols_override
@@ -4358,7 +4419,30 @@ class AppConfig:
             )
         elif not isinstance(self.owner_limits, OwnerLimits):
             raise TypeError("owner_limits must be an OwnerLimits instance")
+        raw_owner_limits = os.getenv("APEX_OWNER_LIMITS_JSON")
+        if raw_owner_limits is not None and raw_owner_limits.strip():
+            try:
+                owner_updates = json.loads(raw_owner_limits)
+            except json.JSONDecodeError as exc:
+                raise ValueError("APEX_OWNER_LIMITS_JSON must be a valid JSON object") from exc
+            if not isinstance(owner_updates, dict):
+                raise ValueError("APEX_OWNER_LIMITS_JSON must be a JSON object")
+            # OwnerLimits enforces its editable-field allowlist and immutable
+            # hard safety ceilings before mutating the canonical contract.
+            self.owner_limits.apply_updates(owner_updates)
+
         self.sync_owner_limit_views()
+        raw_log_level = os.getenv("APEX_LOG_LEVEL")
+        if raw_log_level is not None and raw_log_level.strip():
+            level = raw_log_level.strip().upper()
+            if level not in {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}:
+                raise ValueError("APEX_LOG_LEVEL must be TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR or CRITICAL")
+            self.log_level = level
+        # Apply only the explicit operator/deployment allowlist. OwnerLimits,
+        # analytical thresholds, broker-derived facts and safety invariants are
+        # intentionally excluded from generic environment overrides.
+        from config_env import apply_environment_config
+        apply_environment_config(self)
 
     def apply_owner_limit_updates(self, updates: dict[str, object]) -> None:
         """Validate and atomically apply owner limits, then refresh legacy views."""

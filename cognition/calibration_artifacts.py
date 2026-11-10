@@ -21,6 +21,7 @@ from typing import Any, Optional
 from cognition.contracts import (
     CANDIDATE_FAMILIES, Evidence, EvidenceDomain, candidate_family_from,
 )
+from cognition.quote_provenance import verify_quote_source_provenance
 
 _REGISTRY: dict[str, "CalibrationArtifact"] = {}
 _REGISTRY_LOCK = threading.RLock()
@@ -481,6 +482,7 @@ class CalibrationProducer:
                             break
                     quote_lineage_valid = (
                         str(quote_row.get("symbol", "") or "").strip().upper() == sym
+                        and str(quote_row.get("source_module", "") or "") == "market.live_quote"
                         and quote_row.get("source_timestamp_verified") is True
                         and quote_row.get("provisional") is not True
                         and abs(float(quote_row.get("source_timestamp_epoch")) - reference_epoch) <= 1e-6
@@ -495,6 +497,12 @@ class CalibrationProducer:
                             == str(quote.get("quote_kind", "unknown") or "unknown").strip().lower()
                         and quote_source.get("source_timestamp_verified") is True
                         and abs(float(quote_source.get("timestamp_epoch")) - reference_epoch) <= 1e-6
+                        and verify_quote_source_provenance(
+                            quote_source.get("raw_fields"),
+                            symbol=sym,
+                            quote_kind=quote.get("quote_kind", "unknown"),
+                            timestamp_epoch=quote_source.get("timestamp_epoch"),
+                        )
                         and abs(float(quote_source.get("mid")) - reference_price)
                             <= max(1e-10, reference_price * 1e-8)
                         and abs(float(quote_source.get("bid")) - bid) <= max(1e-10, bid * 1e-8)
@@ -636,6 +644,13 @@ class CalibrationProducer:
                                     break
                                 if (
                                     outcome_quote.get("source_timestamp_verified") is not True
+                                    or str(outcome_quote.get("source_module", "") or "") != "market.live_quote"
+                                    or not verify_quote_source_provenance(
+                                        outcome_quote.get("raw_fields"),
+                                        symbol=sym,
+                                        quote_kind=outcome_quote.get("quote_kind", "unknown"),
+                                        timestamp_epoch=outcome_quote.get("source_timestamp_epoch"),
+                                    )
                                     or str(outcome_quote.get("quote_kind", "unknown") or "unknown").strip().lower()
                                         not in {"bid_ask", "mid_only"}
                                     or (

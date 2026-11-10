@@ -100,7 +100,7 @@ def _connector(monkeypatch):
     connector._connected = True
     connector.symbol_map = lambda symbol: symbol
     connector._deviation_points = lambda symbol, point: 10
-    connector._read_server_clock_state = lambda: SimpleNamespace(
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         age_seconds=lambda epoch: datetime.now(timezone.utc).timestamp() - float(epoch),
         to_utc_epoch=lambda epoch: float(epoch),
     )
@@ -109,7 +109,7 @@ def _connector(monkeypatch):
 
 def test_pending_entry_fails_closed_without_verified_server_clock(monkeypatch):
     connector, fake = _connector(monkeypatch)
-    connector._read_server_clock_state = lambda: None
+    connector._read_server_clock_state = lambda *args, **kwargs: None
 
     result = connector.place_pending_order(
         symbol="EURUSD", direction="BUY", order_type="LIMIT",
@@ -117,7 +117,7 @@ def test_pending_entry_fails_closed_without_verified_server_clock(monkeypatch):
     )
 
     assert result.success is False
-    assert result.error == "mt5_server_clock_offset_unavailable"
+    assert result.error == "mt5_server_clock_unavailable"
     assert fake.requests == []
 
 

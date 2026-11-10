@@ -67,40 +67,94 @@ def test_clock_reader_rejects_missing_or_implausible_clock(tmp_path):
     ) is None
 
 
-def test_connector_caches_clock_terminal_ipc_for_one_second(monkeypatch):
-    from types import SimpleNamespace
+def test_automatic_clock_estimator_uses_independent_ntp_and_monotonic_anchor():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
 
+    samples = (
+        NTPClockSample(utc_epoch=1_800_000_001.0, monotonic_epoch=50.0,
+                       uncertainty_seconds=0.55, server="ntp:a"),
+        NTPClockSample(utc_epoch=1_800_000_001.1, monotonic_epoch=50.1,
+                       uncertainty_seconds=0.55, server="ntp:b"),
+    )
+    state = estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_201.2, 50.2, ntp_samples=samples,
+    )
+
+    assert state is not None
+    assert abs(state.offset_seconds - 7200.0) < 0.2
+    assert state.uncertainty_seconds <= 2.5
+    assert state.sources == ("ntp:a", "ntp:b")
+
+
+def test_automatic_clock_estimator_rejects_disagreeing_time_sources():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    samples = (
+        NTPClockSample(utc_epoch=1_800_000_000.0, monotonic_epoch=50.0,
+                       uncertainty_seconds=0.55, server="ntp:a"),
+        NTPClockSample(utc_epoch=1_800_000_010.0, monotonic_epoch=50.0,
+                       uncertainty_seconds=0.55, server="ntp:b"),
+    )
+    assert estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.0, 50.0, ntp_samples=samples,
+    ) is None
+
+
+def test_automatic_clock_estimator_requires_two_independent_sources():
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+
+    sample = NTPClockSample(
+        utc_epoch=1_800_000_000.0, monotonic_epoch=50.0,
+        uncertainty_seconds=0.55, server="ntp:a",
+    )
+    assert estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.0, 50.0, ntp_samples=(sample,),
+    ) is None
+
+
+def test_automatic_clock_uses_monotonic_time_after_synchronization(monkeypatch):
+    from platforms.mt5.clock import NTPClockSample, estimate_mt5_server_clock
+    import platforms.mt5.clock as clock_module
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 50.0, 0.55, "ntp:a"),
+        NTPClockSample(1_800_000_000.1, 50.1, 0.55, "ntp:b"),
+    )
+    state = estimate_mt5_server_clock(
+        "JustMarkets-Demo", 1_800_007_200.2, 50.2, ntp_samples=samples,
+    )
+    assert state is not None
+    monkeypatch.setattr(clock_module.time, "monotonic", lambda: 55.2)
+    assert abs(state.server_now_epoch() - 1_800_007_205.2) < 0.01
+
+
+def test_connector_automatically_synchronizes_after_advancing_tick(monkeypatch):
+    from types import SimpleNamespace
     import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import NTPClockSample
     from platforms.mt5.mt5_connector import MT5Connector
 
-    class _Terminal:
-        data_path = "C:/mt5-data"
-
-    class _Account:
-        server = "JustMarkets-Demo"
-
     class _MT5:
-        terminal_calls = 0
-        account_calls = 0
-
-        def terminal_info(self):
-            self.terminal_calls += 1
-            return _Terminal()
-
         def account_info(self):
-            self.account_calls += 1
-            return _Account()
+            return SimpleNamespace(server="JustMarkets-Demo")
 
-    fake = _MT5()
-    state = SimpleNamespace(file_age_seconds=0.0, offset_seconds=7200)
-    monkeypatch.setattr(connector_module, "mt5", fake)
-    monkeypatch.setattr(connector_module, "load_mt5_server_clock", lambda *a, **k: state)
+    times = iter((10.0, 11.1))
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(connector_module, "mt5", _MT5())
+    monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
+        NTPClockSample(1001.0, 11.1, 0.55, "ntp:a"),
+        NTPClockSample(1001.1, 11.1, 0.55, "ntp:b"),
+    ))
     connector = MT5Connector.__new__(MT5Connector)
+    first = SimpleNamespace(time=8200, time_msc=8_200_000)
+    second = SimpleNamespace(time=8201, time_msc=8_201_000)
 
-    assert connector._read_server_clock_state() is state
-    assert connector._read_server_clock_state() is state
-    assert fake.terminal_calls == 1
-    assert fake.account_calls == 1
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    state = connector._read_server_clock_state(tick=second, symbol="XAUUSD")
+
+    assert state is not None
+    assert state.server == "JustMarkets-Demo"
+    assert abs(state.offset_seconds - 7199.9) < 0.2
 
 
 def test_mql5_clock_publisher_is_read_only():

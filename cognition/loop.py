@@ -1111,6 +1111,8 @@ class CognitionLoop:
             }
             quote_candidates = []
             for item in fresh_items:
+                if str(getattr(item, "source_module", "") or "") != "market.live_quote":
+                    continue
                 measurements = getattr(item, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
@@ -1151,6 +1153,7 @@ class CognitionLoop:
                             "source_timestamp_verified": True,
                             "symbol": target_symbol,
                             "source_module": str(getattr(item, "source_module", "") or ""),
+                            "raw_fields": dict(quote.get("raw_fields") or {}),
                             "evidence_id": evidence_id,
                         })
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: discard malformed quote fields
@@ -1403,6 +1406,8 @@ class CognitionLoop:
             if not math.isfinite(cutoff) or cutoff <= 0.0:
                 return
             for evidence in market_state.fresh_evidence(now=cutoff):
+                if str(getattr(evidence, "source_module", "") or "") != "market.live_quote":
+                    continue
                 measurements = getattr(evidence, "measurements", {})
                 quote = measurements.get("price") if isinstance(measurements, dict) else None
                 if not isinstance(quote, dict):
@@ -1446,6 +1451,7 @@ class CognitionLoop:
                             ),
                             "symbol": str(getattr(evidence, "symbol", "") or ""),
                             "source_module": str(getattr(evidence, "source_module", "") or ""),
+                            "raw_fields": dict(quote.get("raw_fields") or {}),
                             "evidence_id": str(getattr(evidence, "evidence_id", "") or ""),
                         })
                 except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: skip malformed candidate evidence row
