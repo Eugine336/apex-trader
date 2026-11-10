@@ -709,7 +709,9 @@ def mirror_instances(
         users += 1
         dest_data = dst_base / "instances" / child.name / "data"
         dest_data.mkdir(parents=True, exist_ok=True)
-        _checkpoint_wal_files(src_data)
+        _checkpoint_wal_files(
+            src_data, max_bytes=max_bytes, exclude_patterns=exclude_patterns
+        )
         c, s = _copy_filtered(src_data, dest_data, max_bytes, exclude_patterns)
         copied += c
         skipped += s
