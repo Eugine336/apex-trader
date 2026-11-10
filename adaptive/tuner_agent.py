@@ -43,7 +43,7 @@ from runtime_paths import data_dir as _data_dir
 
 
 # Canonical names of every component that should be visible to the agent when
-# it owns tuning — the 19 from the learning-layer audit. Used by
+# it owns tuning — the 18 active entries from the learning-layer audit. Used by
 # get_system_tuning_status() to flag any expected component that did not
 # register (e.g. because its own config flag is off, or wiring is missing).
 EXPECTED_TUNABLES: tuple[str, ...] = (
