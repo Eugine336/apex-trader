@@ -67,9 +67,9 @@ def _f(v: Any, default: float = 0.0) -> float:
 class EvidenceConsolidator:
     """Builds a consolidated :class:`MarketState` from live subsystem readings.
 
-    Phase E: converts the live subsystem readings (the ThesisEngine's
-    supporting/opposing modules, the developing forming-bar structural read, the
-    portfolio/price/structural-interaction sources) into domain-classified
+    Phase E: converts completed market observations (ThesisEngine's
+    supporting/opposing modules, portfolio/price/structural-interaction sources)
+    into domain-classified
     :class:`~cognition.contracts.Evidence`, plus an aggregate read. Read-only and
     fail-safe. Every source is a non-directional OBSERVATION feed — the Brain, not
     a pre-collapsed vote panel, forms direction (V-004).
