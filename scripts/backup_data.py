@@ -585,6 +585,7 @@ def compact_repo_history(
     ok_head, original_head = _run_git(["rev-parse", "HEAD"], work_tree)
     if not ok_head:
         return "could not resolve current data-repository HEAD"
+    original_head = original_head.strip()
     # Drop any stale temp branch left by a previous interrupted run.
     _run_git(["branch", "-D", temp_branch], work_tree)
 
