@@ -127,8 +127,12 @@ def run_benchmark(
     *,
     analyze: Any,
 ) -> dict[str, Any]:
+    # analyze_market_frames is explicitly told that provider frames include
+    # a forming bar and excludes the final row. Fetch one extra row so the
+    # requested count refers to completed bars, not raw provider rows.
+    fetched_count = count + 1
     market_data = manager.fetch_all_market_data(
-        symbols=symbols, timeframes=timeframes, count=count,
+        symbols=symbols, timeframes=timeframes, count=fetched_count,
     )
     passes: dict[str, list[dict[str, Any]]] = {"cold": [], "warm": []}
     failures: dict[str, list[dict[str, str]]] = {"cold": [], "warm": []}
@@ -157,8 +161,15 @@ def run_benchmark(
             passes[pass_name].append({
                 "symbol": symbol,
                 "elapsed_ms": round(elapsed_ms, 3),
-                "timeframes": {
+                # Raw provider rows include the final forming bar. The
+                # analyzer excludes that row from completed-bar calculations.
+                "raw_timeframes": {
                     tf: int(len(frame)) for tf, frame in frames.items()
+                    if frame is not None
+                },
+                "timeframes": {
+                    tf: max(0, int(len(frame)) - 1)
+                    for tf, frame in frames.items()
                     if frame is not None
                 },
                 "evidence_count": len(evidence),
@@ -167,6 +178,8 @@ def run_benchmark(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "timeframes": list(timeframes),
         "bars_requested_per_timeframe": count,
+        "bars_fetched_per_timeframe": fetched_count,
+        "forming_bar_excluded_from_completed_counts": True,
         "market_data_symbol_count": len(market_data),
         "cold": summarize(passes["cold"], symbols, timeframes, failures["cold"]),
         "warm": summarize(passes["warm"], symbols, timeframes, failures["warm"]),
