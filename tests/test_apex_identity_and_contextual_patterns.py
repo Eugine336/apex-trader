@@ -67,13 +67,11 @@ def test_identity_is_one_exact_machine_readable_contract():
 
 def test_identity_safe_configuration_uses_candidate_evidence_not_domain_floor(monkeypatch):
     for name in (
-        "COGNITION_GATE_MODE",
         "COGNITION_EV_PRIMARY_GATE",
         "COGNITION_EVENT_MIN_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     cfg = CognitionConfig()
-    assert cfg.gate_mode == "authoritative"
     assert cfg.ev_primary_gate is True
     assert not hasattr(cfg, "min_evidence_domains")
     assert cfg.event_min_interval_seconds == 1.0
@@ -83,14 +81,12 @@ def test_identity_safe_configuration_uses_candidate_evidence_not_domain_floor(mo
 def test_identity_hard_floors_cannot_be_disabled_by_environment(monkeypatch):
     # Runtime .env remains operator-owned; config code enforces the product
     # identity even if a stale env file contains permissive legacy values.
-    monkeypatch.setenv("COGNITION_SINGLE_PATH", "false")
     monkeypatch.setenv("COGNITION_EV_PRIMARY_GATE", "false")
     monkeypatch.setenv("COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED", "false")
     monkeypatch.setenv("COGNITION_EVENT_DRIVEN", "false")
     monkeypatch.setenv("COGNITION_MIN_ADVISORS_FOR_ACTION", "0")
 
     cfg = CognitionConfig()
-    assert cfg.single_path is True
     assert cfg.ev_primary_gate is True
     assert cfg.opportunity_qualification_enabled is True
     assert cfg.event_driven is True
