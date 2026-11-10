@@ -163,3 +163,11 @@ def test_full_trading_mode_rejects_unknown_categories(monkeypatch):
     monkeypatch.setenv("TRADING_ENABLED_CATEGORIES", "forex,unobtainium")
     with pytest.raises(ValueError, match="unsupported trading categories"):
         AppConfig()
+
+
+def test_example_environment_defaults_new_trading_exposure_to_disabled():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert "TRADING_ENABLED=false" in lines
