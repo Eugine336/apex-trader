@@ -1205,6 +1205,14 @@ class DerivConnector(BaseConnector):
             source_timestamp_verified=True,
             quote_kind="mid_only",
             symbol=str(symbol or "").strip().upper(),
+            raw_fields={
+                "source_adapter": "deriv",
+                "provider_timestamp_epoch": epoch,
+                "provider_timestamp_field": "history.times",
+                "provider_timestamp_semantics": "unix_utc_seconds",
+                "received_at_epoch": datetime.now(timezone.utc).timestamp(),
+                "timestamp_utc_epoch": epoch,
+            },
         )
 
     def get_tick(self, symbol: str) -> TickData:
