@@ -1994,7 +1994,7 @@ class EventDrivenSystem:
         Missing broker-book confirmation, account risk state, instrument economics,
         or the initialized portfolio division fails closed. The Brain's normalized
         exposure scales the configured per-trade risk budget; it is not replaced by
-        a second confidence multiplier or a separate inline lot-size algorithm.
+        a second multiplier or a separate inline lot-size algorithm.
         """
         try:
             import math
@@ -2105,7 +2105,7 @@ class EventDrivenSystem:
             exposure = min(1.0, max(0.0, exposure))
             # Brain exposure is already a normalized decision from the single
             # CognitiveBrain. Apply it to the configured per-trade risk fraction
-            # exactly once; do not multiply by confidence a second time.
+            # exactly once; do not apply a second decision multiplier.
             base_risk_pct = base_risk_fraction * exposure
             if base_risk_pct <= 0.0:
                 return None
