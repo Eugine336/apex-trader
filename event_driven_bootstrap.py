@@ -1188,7 +1188,7 @@ class EventDrivenSystem:
         # (CandleCloseHandler → broker fetch on close) is untouched.
         from tick.live_candle_aggregator import LiveCandleAggregator
         self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
-        self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
+        self._tick_router.register_raw_callback(self._live_candle_aggregator.on_tick)
 
         # ── Market observer (factual evidence for every instrument, shadow-only) ──
         # This observes only the explicitly selected venue and publishes
@@ -1697,7 +1697,7 @@ class EventDrivenSystem:
                     config=_tsc_cfg,
                 )
                 self._event_bus.subscribe(
-                    "tick", self._tick_state_detector.on_tick,
+                    "raw_tick", self._tick_state_detector.on_tick,
                 )
             except Exception as exc:
                 logger.warning(
@@ -4364,7 +4364,7 @@ class EventDrivenSystem:
         # Detach the live candle aggregator from the tick router so it stops
         # receiving ticks once the router is down.
         try:
-            self._tick_router.unregister_callback(
+            self._tick_router.unregister_raw_callback(
                 self._live_candle_aggregator.on_tick
             )
         # safe-fallback: optional listener detachment must not prevent remaining shutdown work.
