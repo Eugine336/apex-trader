@@ -1609,6 +1609,8 @@ class SystemContext:
                             out.append(_PositionView(
                                 symbol=sym,
                                 direction=side,
+                                ticket=str(getattr(p, "order_id", getattr(p, "ticket", "")) or ""),
+                                platform=str(getattr(p, "platform", "") or "").strip().lower(),
                                 profit_r=_profit_r(
                                     side,
                                     getattr(p, "open_price", 0.0),
