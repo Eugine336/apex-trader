@@ -199,7 +199,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | COGNITION_EVENT_DRIVEN | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_EVENT_MIN_INTERVAL_SECONDS | 3. Identity, cognition, and live execution mode | 1 |
 | COGNITION_MANAGE_MIN_INTERVAL_SECONDS | 3. Identity, cognition, and live execution mode | 8 |
-| COGNITION_ALLOW_SCALE_IN | 3. Identity, cognition, and live execution mode | false |
 | COGNITION_ORIGINATION_RISK_FRACTION | Risk fraction is fractional account risk (0.005 = 0.5%); keep it within the independently enforced Layer-2 per-trade and whole-book risk budget. | 0.005 |
 | COGNITION_ORIGINATION_MAX_EXPOSURE | 3. Identity, cognition, and live execution mode | 1.0 |
 | COGNITION_ORIGINATION_MAX_LOTS | 3. Identity, cognition, and live execution mode | 0.0 |
