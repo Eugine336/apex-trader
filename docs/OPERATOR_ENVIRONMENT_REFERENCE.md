@@ -178,8 +178,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | DERIV_TOKEN_EXPIRES_IN | Access-token lifetime in seconds. Blank or invalid values also fall back safely to 3600. | (redacted secret placeholder) |
 | COGNITION_ENABLED | ============================================================================= 3. Identity, cognition, and live execution mode ====================================================== | true |
 | COGNITION_SHADOW_MODE | 3. Identity, cognition, and live execution mode | false |
-| COGNITION_GATE_MODE | 3. Identity, cognition, and live execution mode | authoritative |
-| COGNITION_SINGLE_PATH | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_ORIGINATION_MODE | 3. Identity, cognition, and live execution mode | live |
 | COGNITION_MANAGEMENT_MODE | 3. Identity, cognition, and live execution mode | live |
 | COGNITION_MEMORY_ENABLED | 3. Identity, cognition, and live execution mode | true |
@@ -194,7 +192,6 @@ This inventory covers the root server environment and both Vite frontends. Secre
 | COGNITION_PER_MODULE_EVIDENCE | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_EMIT_OPERATOR_NOTIFICATIONS | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_LOOP_INTERVAL_SECONDS | Loop cadence and live opportunity/management settings. | 30 |
-| COGNITION_MAX_DECISION_AGE_SECONDS | 3. Identity, cognition, and live execution mode | 300 |
 | COGNITION_MAX_SYMBOLS_PER_CYCLE | 3. Identity, cognition, and live execution mode | 12 |
 | COGNITION_EVENT_DRIVEN | 3. Identity, cognition, and live execution mode | true |
 | COGNITION_EVENT_MIN_INTERVAL_SECONDS | 3. Identity, cognition, and live execution mode | 1 |
