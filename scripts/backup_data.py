@@ -66,8 +66,8 @@ def _should_skip(
 ) -> str | None:
     """Return a reason string if *file_path* should be excluded, else None."""
     name = file_path.name
-    for pat in exclude_patterns:
-        if fnmatch.fnmatch(name, pat):
+    for pat in (*exclude_patterns, *_PUBLIC_REPO_SECRET_EXCLUDES):
+        if fnmatch.fnmatch(name.lower(), pat.lower()):
             return f"matches exclude pattern '{pat}'"
     try:
         size = file_path.stat().st_size
