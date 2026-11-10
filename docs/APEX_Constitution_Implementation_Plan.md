@@ -65,9 +65,10 @@
 
 **Completed foundation (Phases A–D, merged):** constitutional contracts
 (`cognition/contracts.py`), the single `CognitiveBrain` (`cognition/brain.py`),
-evidence-consolidation + background loop + Brain→Composio bridge
-(`cognition/loop.py`), the entry gate shadow→veto→authoritative
-(`cognition/gate.py`), default live.
+evidence consolidation, the background cognition loop and Brain→execution
+bridge (`cognition/loop.py`). The former CognitionGate/ManagementGate rollout
+layer was retired; it was not a live decision caller and is not part of the
+current authority contract.
 
 ---
 
@@ -429,18 +430,18 @@ once every surface is gone — i.e. the machine-checkable Part XIV
   mean confidence/uncertainty, faults, and — when aligned realised outcomes are
   supplied — calibration; it returns a `ValidationReport` with a go/no-go `ready`
   verdict. `readiness_verdict(cognition_status)` is a pure gate the rollout
-  consults before promoting a symbol group to `authoritative`.
-- `docs/APEX_Cognition_Rollout_Runbook.md` (new): the controlled-rollout runbook —
-  shadow → veto → authoritative **per symbol group**, one-switch rollback via
-  `COGNITION_GATE_MODE`, the observability metrics to watch, and the readiness
-  gates (offline harness green + live `readiness_verdict` ready) at each rung.
-- Wired: `CognitionObservability` built in `system_context` from the live
-  components; params added to `GovernanceDivision.__init__` + `bind_runtime`;
-  lazy exports in `cognition/__init__`.
+  consults before enabling live origination for a symbol group.
+- `docs/APEX_Cognition_Rollout_Runbook.md`: the current production-acceptance
+  runbook. It uses `COGNITION_ORIGINATION_MODE` for new campaign routing and
+  `TRADING_ENABLED=false` as the new-exposure kill switch; no shadow/veto gate
+  ladder or legacy entry fallback remains.
+- Wired: `CognitionObservability` is built from the live Brain, loop, calibration
+  and campaign-memory components. Retired gate status and veto metrics were
+  removed from governance and observability.
 
 **Acceptance:** ✅ reasoning quality is measurable (calibration + observability
 score); ✅ validation harness produces a green/`ready` verdict gate before
-`authoritative` is trusted; ✅ controlled-rollout + rollback documented.
+live origination is enabled; ✅ controlled-rollout + rollback documented.
 
 **Note:** Phase L is exactly what unblocks the deferred Phase K tail — once a
 symbol group holds `authoritative` cleanly on the demo (harness green,
