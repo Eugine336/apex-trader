@@ -28,6 +28,12 @@ remaining flip-confirmer, tick-delta and sequence settings in InstrumentProfile
 also had no production readers. This was dead state/configuration and redundant
 data-fetch work, not an active gate.
 
+The unused CognitionGate and ManagementGate modules are also being retired in
+PR #890. They were constructed and exposed through status, but no production
+caller evaluated either gate. Their mode/freshness configuration and status
+metrics are removed with the wiring; the canonical Brain loop and shared
+execution/portfolio/broker/owner-limit checks remain authoritative.
+
 ## Ordered retirement record
 
 1. **Extract shared non-directional types.** Completed historically:
