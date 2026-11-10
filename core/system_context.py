@@ -1131,11 +1131,6 @@ class SystemContext:
                         getattr(cog_cfg, "manage_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
                     ),
-                    # Art XXXI — close the learning loop: the Brain's stated
-                    # confidence is corrected by its demonstrated calibration
-                    # (Decision → Outcome → Attribution → Calibration → future
-                    # reasoning). Neutral until the tracker has enough samples.
-                    calibration=_calibration,
                     # Article XX — advisor quorum: a campaign must be backed by at
                     # least this many advisors that actually responded.
                     min_advisors_for_action=int(
