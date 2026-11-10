@@ -567,7 +567,6 @@ class CognitionLoop:
         *,
         interval_seconds: float = 30.0,
         max_symbols_per_cycle: int = 12,
-        shadow_mode: bool = True,
         action_bridge: Optional[BrainActionBridge] = None,
         position_source: Optional[Callable[[], Any]] = None,
         origination_mode: str = "shadow",
@@ -597,7 +596,6 @@ class CognitionLoop:
         self._symbols_provider = symbols_provider
         self.interval_seconds = max(1.0, float(interval_seconds))
         self.max_symbols_per_cycle = max(1, int(max_symbols_per_cycle))
-        self.shadow_mode = bool(shadow_mode)
         self._action_bridge = action_bridge
         self._position_source = position_source
         m = str(origination_mode or "shadow").strip().lower()
@@ -3243,8 +3241,8 @@ class CognitionLoop:
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self._name)
         self._thread.start()
         logger.info(
-            "[cognition-loop] started (interval=%.0fs, shadow=%s, event_driven=%s)",
-            self.interval_seconds, self.shadow_mode, self.event_driven,
+            "[cognition-loop] started (interval=%.0fs, event_driven=%s)",
+            self.interval_seconds, self.event_driven,
         )
 
     def stop(self) -> None:
@@ -3258,7 +3256,6 @@ class CognitionLoop:
     def get_status(self) -> dict:
         return {
             "running": self._running,
-            "shadow_mode": self.shadow_mode,
             "interval_seconds": self.interval_seconds,
             "cycles": self._cycles,
             "decisions": self._decisions,
