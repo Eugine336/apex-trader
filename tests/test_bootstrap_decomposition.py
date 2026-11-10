@@ -323,7 +323,11 @@ def test_tick_poller_rejects_missing_provider_symbol():
 class _HistoryFrame:
     def __init__(self, rows, *, verified=True):
         self._rows = list(rows)
-        self.attrs = {"source_timestamp_verified": verified}
+        self.attrs = {
+            "source_timestamp_verified": verified,
+            "source_timezone": "UTC" if verified else "broker_server",
+            "utc_normalization": "live_server_offset" if verified else "historical_offset_required",
+        }
         self.empty = not self._rows
 
     def iterrows(self):
