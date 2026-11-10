@@ -128,3 +128,60 @@ def test_council_evidence_carries_raw_dimensions_without_effective_score():
     )[0].measurements
     assert measurements["execution_confidence"] == 0.3
     assert "effective_confidence" not in measurements
+
+def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkeypatch):
+    """An available but under-covered advisor cannot suppress native reasoning."""
+    for responded in (None, 1):
+        brain = CognitiveBrain(
+            reasoner=SimpleNamespace(
+                available=True,
+                reason=lambda symbol, evidence, now=None: LLMOpinion(
+                    symbol=symbol, direction="LONG", confidence=0.99,
+                ),
+            ),
+            min_advisors_for_action=2,
+        )
+        analysis = object()
+        hypotheses = [object()]
+        marker = object()
+        native_calls = []
+
+        monkeypatch.setattr(
+            brain, "_native_reasoning",
+            lambda market_state, consolidation, symbol, now=None: (analysis, hypotheses),
+        )
+
+        def native_qualification(*args, **kwargs):
+            native_calls.append((args, kwargs))
+            return marker
+
+        monkeypatch.setattr(brain, "_originate_independent", native_qualification)
+        monkeypatch.setattr(
+            brain, "_from_opinion",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("under-quorum advisor opinion must not reach origination")
+            ),
+        )
+
+        market_state = MarketState(symbol="BTCUSD")
+        if responded is not None:
+            market_state.add(Evidence(
+                source_module="reasoning_engine.partial_council",
+                domain="reasoning",
+                symbol="BTCUSD",
+                observation="only one advisor responded",
+                confidence=1.0,
+                uncertainty=0.0,
+                measurements={
+                    "advisors_responded": responded,
+                    "advisors_available": 2,
+                    "advisors_total": 2,
+                },
+            ))
+
+        output = brain.reason(market_state)
+        assert output is marker
+        assert len(native_calls) == 1
+        assert native_calls[0][0][0] == "BTCUSD"
+        assert native_calls[0][1]["analysis"] is analysis
+        assert native_calls[0][1]["advisor_status"] == "available"
