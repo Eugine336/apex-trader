@@ -3159,15 +3159,13 @@ class CognitiveBrain:
                 questions["pattern_confidence_modifier"] = pattern_mod_note
             if lead_pattern_names:
                 questions["supporting_patterns"] = list(lead_pattern_names)
-            base_exposure = min(
-                lead_conf,
-                min(1.0, max(0.0, expected_value / max(0.01, reward_r))),
+            desired_exposure = round(
+                min(1.0, max(0.0, expected_value / max(0.01, reward_r))), 4,
             )
-            desired_exposure = round(base_exposure, 4)
             questions["sizing_rationale"] = (
-                f"native origination sized {desired_exposure:.4f} using reasoning strength "
-                "only as a conservative exposure cap alongside positive net expected value; "
-                "advisor availability does not change sizing"
+                f"native provisional exposure {desired_exposure:.4f} from verified net "
+                f"expected return {expected_value:.4f}R normalized by payoff "
+                "geometry; reasoning strength is excluded"
             )
             invalidation_conditions = (
                 ([lead.invalidation] if lead.invalidation else [])
