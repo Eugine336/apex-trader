@@ -554,3 +554,12 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 ### Full-universe category correction — 2026-11-10
 
 - **FIXED:** the default full-universe category list omitted `synthetic`, even though the instrument registry classifies Deriv synthetic instruments under that category. The default `AppConfig.enabled_categories` and `.env.example` now include `synthetic` alongside forex, commodity, index and crypto. Gold mode remains XAUUSD-only. Full mode still requires a non-empty list of valid registered category names.
+
+
+### WP-B5 incremental volume-profile computation — 2026-11-10
+
+- **ADDED:** `VolumeProfileConcept` now caches weekly OHLCV profiles by symbol, timeframe, ISO week and a content fingerprint. On a new candle, unchanged closed weeks reuse their prior profiles while only the changed active week is recomputed. A historical correction invalidates only the affected week.
+- The cache is bounded (4,096 entries), thread-safe, and reports per-reading weekly-profile cache hits/misses. A public clear function supports deterministic tests and explicit data reloads.
+- Session metadata is now evaluated once per bar rather than repeatedly while selecting the active session profile.
+- **TESTS ADDED:** unchanged-history reuse, active-week append invalidation, and historical correction invalidation.
+- This complements the shared incremental swing state and liquidity-pool work. Owner-host full-universe cold/warm timing is still required to quantify production impact.
