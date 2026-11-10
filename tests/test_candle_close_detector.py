@@ -399,3 +399,51 @@ class TestWatchdogTimerFallback:
         det.stop()
         det.stop()  # second stop is a no-op
 
+
+
+def test_raw_tick_channel_receives_ticks_even_when_working_store_coalesces():
+    bus = EventBus()
+    store = TickStore(max_hz=1.0)
+    detector = CandleCloseDetector(bus)
+    router = TickRouter(store, detector, bus)
+    raw_events = []
+    sampled_events = []
+    bus.subscribe("raw_tick:EURUSD", lambda event: raw_events.append(event))
+    bus.subscribe("tick:EURUSD", lambda event: sampled_events.append(event))
+
+    router.on_tick(_tick(ts=1700000000.0))
+    router.on_tick(_tick(ts=1700000000.05))
+
+    assert len(raw_events) == 2
+    assert len(sampled_events) == 1
+    assert store.stats()["ticks_received"] == 2
+    assert store.stats()["ticks_coalesced"] == 1
+
+
+def test_raw_callback_receives_every_routed_tick_before_coalescing():
+    bus = EventBus()
+    store = TickStore(max_hz=1.0)
+    detector = CandleCloseDetector(bus)
+    router = TickRouter(store, detector, bus)
+    raw_received = []
+    sampled_received = []
+    router.register_raw_callback(lambda tick: raw_received.append(tick))
+    router.register_callback(lambda tick: sampled_received.append(tick))
+
+    router.on_tick(_tick(ts=1700000000.0))
+    router.on_tick(_tick(ts=1700000000.05))
+
+    assert len(raw_received) == 2
+    assert len(sampled_received) == 1
+
+
+def test_unregister_raw_callback():
+    bus = EventBus()
+    router = TickRouter(TickStore(max_hz=10000.0), CandleCloseDetector(bus), bus)
+    received = []
+    callback = lambda tick: received.append(tick)
+    router.register_raw_callback(callback)
+    router.on_tick(_tick(ts=1700000000.0))
+    router.unregister_raw_callback(callback)
+    router.on_tick(_tick(ts=1700000001.0))
+    assert len(received) == 1

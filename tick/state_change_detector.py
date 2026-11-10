@@ -10,7 +10,7 @@ market *meaningfully* changes for a symbol.
 
 What it does
 ------------
-* Subscribes to ``"tick"`` events (``on_tick`` is the EventBus callback).
+* Subscribes to ``"raw_tick"`` events (``on_tick`` is the EventBus callback).
 * Maintains a tiny **per-symbol running state** — reference price, an adaptive
   per-tick volatility estimate (an ATR-like proxy derived from the tape),
   a spread EMA, an absolute-velocity EMA and a smoothed momentum sign — updated
@@ -38,7 +38,7 @@ What it deliberately does NOT do
   purely additive.
 
 Fail-safe and thread-safe throughout: ``on_tick`` is called synchronously on
-the EventBus publisher's thread (which may be the MT5 poll thread or the Deriv
+the raw EventBus publisher thread (which may be the MT5 poll thread or the Deriv
 WS thread), so all per-symbol state is guarded by a lock, and any fault is
 swallowed — a detector error must never break tick routing.
 """
