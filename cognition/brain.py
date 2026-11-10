@@ -1646,11 +1646,10 @@ class CognitiveBrain:
                 )
                 return self._record_management(output)
             conf = _clamp01(getattr(opinion, "confidence", 0.0))
-            # Part XXV — resolve the confidence PROFILE. Risk-ADDING actions
-            # (SCALE_IN) require the effective conviction (the weakest dimension),
-            # so the Brain never adds into weak execution/timing. Risk-REDUCING
-            # actions keep using the raw scalar — a poor execution read must never
-            # make it HARDER to cut/reduce a position.
+            # Resolve reasoning-strength dimensions for audit output only.
+            # This metadata cannot authorize, veto, reverse, or scale management.
+            # SCALE_IN is not permitted through management; additional exposure
+            # must be a separate Brain opportunity through origination admission.
             conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
             # A management opinion (any of thesis_state / opportunity_status /
             # management_action present) is decided by the thesis-based tree —
@@ -1662,8 +1661,7 @@ class CognitiveBrain:
             thesis_state = str(getattr(opinion, "thesis_state", "") or "").strip()
             opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip()
             if mgmt_action or thesis_state or opp_status:
-                action, why = self._decide_management_thesis(
-                    position, opinion, conf, conf_dims, eff_conf, limiting_dim)
+                action, why = self._decide_management_thesis(position, opinion)
             else:
                 # V-008 — a management reply MUST carry a thesis_state /
                 # opportunity_status / management_action. When NONE is present the
@@ -1726,8 +1724,7 @@ class CognitiveBrain:
                 symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
 
     def _decide_management_thesis(
-        self, position: "PositionView", opinion: Any, conf: float,
-        conf_dims: dict, eff_conf: float, limiting_dim: str,
+        self, position: "PositionView", opinion: Any,
     ) -> "tuple[DecisionType, str]":
         """THESIS-based management decision (Part XXV Art 11) for a management
         opinion carrying a thesis_state and/or a management_action.
