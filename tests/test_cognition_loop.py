@@ -1097,7 +1097,8 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
     assert len(calls) == 1
     assert calls[0].symbol == "AUDUSD"
     assert calls[0].fraction == 0.25
-    assert calls[0].action_id == plan["action_id"]
+    assert calls[0].action_id.startswith("brain-management-")
+    assert calls[0].action_id != plan["action_id"]
     assert loop.get_status()["reallocations"] == 1
     memory.close()
 
