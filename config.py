@@ -3758,11 +3758,12 @@ class CognitionConfig:
     single_path: bool = True
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
-    # Identity requirement: net expected value is the default actionability gate,
-    # not an optional upgrade to a raw confidence floor. A market thesis cannot
-    # originate exposure without positive EV after estimated costs.
+    # Identity requirement: net expected value is the actionability gate. A market
+    # thesis cannot originate exposure without producer-verified positive EV after
+    # verified execution costs; reasoning strength is not a substitute.
     # ``ev_action_threshold_r`` is the minimum net EV in R (0.0 means strictly
-    # positive EV); confidence still contributes to EV and sizing.
+    # positive EV); uncalibrated reasoning strength is diagnostic/sizing metadata,
+    # never a probability or an actionability threshold.
     # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
     ev_primary_gate: bool = True
     ev_action_threshold_r: float = 0.0
