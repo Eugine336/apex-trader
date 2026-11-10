@@ -196,6 +196,19 @@ docker-compose up -d
 | `DD_DASHBOARD_API_KEY` | No | API key for dashboard authentication |
 | `DD_API_KEY` | No | Datadog API key for APM |
 
+### Runtime and execution controls
+
+| Variable | Purpose |
+|---|---|
+| `TRADING_MODE` | Gold-only, full configured universe, selected symbols, or one symbol |
+| `TRADING_MODE_LOCKED` | Enforce the process-level instrument universe over saved per-user preferences |
+| `TRADING_ENABLED` | Reject new OPEN intents at cognition and execution boundaries |
+| `APEX_ED_POSEVAL_PARALLEL` | Parallel position evaluation; serial rollback switch |
+| `APEX_ED_EVENT_REACTIVE_MGMT` | Event-reactive management; periodic-sweep rollback switch |
+
+See [the full configuration reference](docs/CONFIGURATION_REFERENCE.md) and
+[typed configuration field inventory](docs/CONFIGURATION_FIELD_INVENTORY.md).
+
 ### Cognition and origination controls
 
 The effective values depend on config.py plus environment overrides. Review runtime logs before starting an unattended session.
