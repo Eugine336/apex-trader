@@ -93,7 +93,7 @@ class MT5PortfolioAdapter:
                     current_price = 0.0
                     try:
                         raw_type = row.get("type")
-                        side = str(raw_type or "").strip().lower()
+                        side = str(raw_type).strip().lower() if raw_type is not None else ""
                         if side in {"0", "buy", "long"}:
                             direction = "LONG"
                         elif side in {"1", "sell", "short"}:
