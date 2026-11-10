@@ -722,6 +722,8 @@ class CampaignRegistry:
                 if len(pending) != 1:
                     return False
                 camp.legs.remove(pending[0])
+                if not camp.legs:
+                    self._live.pop((sym, side), None)
                 return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("[campaign] reject_pending_leg({}) failed closed: {}", symbol, exc)
