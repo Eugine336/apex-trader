@@ -4403,6 +4403,18 @@ class AppConfig:
             )
         elif not isinstance(self.owner_limits, OwnerLimits):
             raise TypeError("owner_limits must be an OwnerLimits instance")
+        raw_owner_limits = os.getenv("APEX_OWNER_LIMITS_JSON")
+        if raw_owner_limits is not None and raw_owner_limits.strip():
+            try:
+                owner_updates = json.loads(raw_owner_limits)
+            except json.JSONDecodeError as exc:
+                raise ValueError("APEX_OWNER_LIMITS_JSON must be a valid JSON object") from exc
+            if not isinstance(owner_updates, dict):
+                raise ValueError("APEX_OWNER_LIMITS_JSON must be a JSON object")
+            # OwnerLimits enforces its editable-field allowlist and immutable
+            # hard safety ceilings before mutating the canonical contract.
+            self.owner_limits.apply_updates(owner_updates)
+
         self.sync_owner_limit_views()
         raw_log_level = os.getenv("APEX_LOG_LEVEL")
         if raw_log_level is not None and raw_log_level.strip():
