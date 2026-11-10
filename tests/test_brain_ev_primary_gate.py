@@ -147,7 +147,7 @@ def test_explicit_legacy_gate_request_cannot_veto_positive_net_ev():
 def test_ev_primary_acts_on_positive_ev_below_floor():
     out = _brain(0.45, ev_primary=True).reason(_state(expected_return_r=0.45))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.direction == "LONG"
+    assert out.campaign is not None and out.campaign.direction == "LONG"
     assert out.decision.expected_value > 0.0
     assert out.campaign is not None
 
