@@ -19,6 +19,7 @@ def _make_tick(symbol: str, mid: float, epoch: float) -> Tick:
         ask=mid + 0.0001,
         timestamp=datetime.fromtimestamp(epoch, tz=timezone.utc),
         source="test",
+        source_timestamp_verified=True,
     )
 
 
