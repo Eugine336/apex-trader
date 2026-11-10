@@ -153,3 +153,37 @@ def test_decision_confidence_can_be_unknown_without_changing_source_evidence_con
     evidence_payload = evidence.to_dict()
     assert evidence_payload["confidence"] == 0.0
     assert "confidence_semantics" not in evidence_payload
+
+
+def test_hypothesis_probability_rejects_caller_supplied_numeric_scores():
+    supplied = Hypothesis(statement="candidate", probability=0.73)
+    assert supplied.probability is None
+    assert supplied.to_dict()["probability"] is None
+    assert supplied.to_dict()["probability_semantics"] == "unverified_probability_rejected"
+
+    absent = Hypothesis(statement="candidate without calibration")
+    assert absent.probability is None
+    assert absent.to_dict()["probability_semantics"] == "not_calibrated"
+
+def test_brain_competing_hypotheses_do_not_inherit_probability_from_reasoning_strength():
+    from cognition.brain import CognitiveBrain
+
+    hypotheses = CognitiveBrain._build_hypotheses(
+        "LONG",
+        1.8,
+        1.0,
+        "Primary long explanation",
+        ["Competing short explanation", "No-trade explanation"],
+        "invalidation at structural low",
+        ["evidence-1"],
+        ["evidence-2"],
+    )
+
+    assert len(hypotheses) == 3
+    assert [item.statement for item in hypotheses] == [
+        "Primary long explanation",
+        "Competing short explanation",
+        "No-trade explanation",
+    ]
+    assert all(item.probability is None for item in hypotheses)
+    assert all(item.to_dict()["probability"] is None for item in hypotheses)
