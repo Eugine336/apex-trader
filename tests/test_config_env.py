@@ -91,3 +91,27 @@ def test_owner_limits_environment_cannot_exceed_immutable_risk_ceiling(monkeypat
     )
     with pytest.raises(ValueError, match="5% hard per-trade ceiling"):
         AppConfig()
+
+
+def test_timeframe_cache_ttl_map_is_typed_and_validated(monkeypatch):
+    monkeypatch.setenv(
+        "APEX_PERFORMANCE_CANDLE_CACHE_TTL",
+        '{"M1":1.5,"M5":4.5}',
+    )
+    config = AppConfig()
+    assert config.performance.candle_cache_ttl == {"M1": 1.5, "M5": 4.5}
+
+
+def test_invalid_timeframe_cache_ttl_is_rejected(monkeypatch):
+    monkeypatch.setenv(
+        "APEX_PERFORMANCE_CANDLE_CACHE_TTL",
+        '{"M1":0,"M5":4.5}',
+    )
+    with pytest.raises(ValueError, match="positive finite TTLs"):
+        AppConfig()
+
+
+def test_default_app_config_remains_constructible_without_environment(monkeypatch):
+    monkeypatch.delenv("APEX_PERFORMANCE_CANDLE_CACHE_TTL", raising=False)
+    config = AppConfig()
+    assert config.performance.candle_cache_ttl["M1"] > 0
