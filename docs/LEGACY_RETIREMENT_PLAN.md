@@ -106,3 +106,10 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
    opportunity queue was never initialized and its configuration was also removed.
    The scanner's proximity setting was also unused (no proximity callback was
    wired) and was removed rather than presented as an effective control.
+
+
+10. **Remove the unconsumed execution-quality sizing toggle.** Repository call-site
+    audit found `execution_quality_sizing_enabled` only in RiskConfig, its field
+    inventory and a test that asserted the default was true. No execution quality
+    gate or size-throttle consumer existed. Remove the field and misleading test
+    instead of advertising a live control that had no runtime effect.
