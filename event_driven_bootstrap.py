@@ -7807,6 +7807,7 @@ class EventDrivenSystem:
                                     "decision_id": str(payload.get("decision_id") or ""),
                                     "campaign_id": str(payload.get("campaign_id") or ""),
                                     "opportunity_id": str(payload.get("opportunity_id") or ""),
+                                    "platform": str(payload.get("platform") or "").strip().lower(),
                                     "snapshot_id": str(payload.get("snapshot_id") or recovered.get("snapshot_id") or ""),
                                     "decision_snapshot_complete": bool(payload.get("decision_snapshot_complete")),
                                     "decision_feature_snapshot": recovered,
