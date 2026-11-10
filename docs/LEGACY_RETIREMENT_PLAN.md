@@ -102,5 +102,5 @@ execution/portfolio/broker/owner-limit checks remain authoritative.
    PositionDisplacer beyond SystemContext construction and dashboard status. The
    quality sizer also used reasoning confidence as a size multiplier. Remove the
    modules, tests, SystemContext wiring, dashboard/UI status, configuration fields,
-   environment switches and operator-reference rows. Retain only the queue for
-   already Brain-authorized intents and the observational proactive watchlist.
+   environment switches and operator-reference rows. Retain only the observational proactive watchlist; the advertised global
+   opportunity queue was never initialized and its configuration was also removed.
