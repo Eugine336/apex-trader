@@ -3733,9 +3733,9 @@ class CognitionConfig:
 
     Runs the one Brain over consolidated Evidence on a background loop and,
     when explicitly configured for live origination, may drive execution from
-    qualified DecisionPackages. The shipped identity-safe defaults require the
-    authoritative cognition gate, candidate-specific evidence lineage and net-EV qualification;
-    deterministic risk + broker feasibility (Parts IX/X) still constrain every
+    qualified DecisionPackages. The Brain is the sole market decision authority;
+    candidate-specific evidence lineage and net-EV qualification are mandatory.
+    Deterministic risk and broker feasibility (Parts IX/X) still constrain every
     order. Env overrides:
     COGNITION_ENABLED, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
