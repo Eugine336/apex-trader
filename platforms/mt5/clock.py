@@ -1,9 +1,10 @@
 """Live MT5 trade-server clock bridge.
 
-MT5 quote timestamps can be broker-server wall-clock epochs. The terminal does
-not expose its server UTC offset through the Python API. A companion MQL5 EA
-publishes TimeTradeServer()-TimeGMT() to the terminal's MQL5/Files directory.
-This module accepts only a fresh, server-matched, internally consistent sample.
+The Python MT5 API does not expose a direct TimeTradeServer() value. The
+production synchronizer estimates the broker timestamp offset from an advancing
+terminal tick and independent network UTC observations. It anchors the result
+to monotonic time, carries an explicit uncertainty bound, and rejects stale or
+inconsistent evidence. A chart-attached MQL5 publisher is not required.
 """
 
 from __future__ import annotations
