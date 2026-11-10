@@ -580,7 +580,6 @@ class CognitiveBrain:
         # Confidence is retained as an advisor-supplied descriptive field only.
         # The Brain does not aggregate dimensions, calibrate confidence, or turn
         # it into probability, expected return, an action gate or sizing input.
-        eff_conf = confidence
         conf_dims = {
             name: getattr(opinion, f"{name}_confidence", None)
             for name in ("thesis", "opportunity", "timing", "execution")
@@ -589,7 +588,6 @@ class CognitiveBrain:
         calib_note = "observational only; no confidence adjustment is applied"
         brain_synthesis = ""
         brain_adv_synthesis = ""
-        pattern_mod_note = ""
         lead_pattern_names = []
         # Article XX / XXI / V-013 — advisory-council coverage. Read how much of
         # the council actually contributed. This is a first-class health signal:
@@ -2942,8 +2940,6 @@ class CognitiveBrain:
                 "payoff_geometry_status": "qualified_from_fresh_completed_market_evidence",
                 "reasoner_state": reason_txt,
             }
-            if pattern_mod_note:
-                questions["pattern_confidence_modifier"] = pattern_mod_note
             if lead_pattern_names:
                 questions["supporting_patterns"] = list(lead_pattern_names)
             desired_exposure = round(
