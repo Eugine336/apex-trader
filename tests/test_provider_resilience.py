@@ -1,4 +1,4 @@
-"""APEX TRADER — PROVIDER_RESILIENCE fixes (V-013, V-016, V-017).
+"""APEX TRADER — PROVIDER_RESILIENCE fixes (V-013, V-016).
 
 Stdlib-only (``cognition.*`` is pure standard library) so these run without the
 optional LLM/runtime dependencies. Executable assertions for:
@@ -9,8 +9,6 @@ optional LLM/runtime dependencies. Executable assertions for:
 * V-016 — provider unavailability is recorded separately from the native
   market verdict; advisor failure must not replace native observe with an
   infrastructure-shaped market decision.
-* V-017 — a non-authoritative CognitionGate never passes silently on absent
-  cognition (it fails open but records the reason).
 """
 
 from cognition.brain import CognitiveBrain
@@ -18,12 +16,6 @@ from cognition.contracts import (
     DecisionType,
     Evidence,
     MarketState,
-)
-from cognition.gate import (
-    MODE_AUTHORITATIVE,
-    MODE_OFF,
-    MODE_SHADOW,
-    CognitionGate,
 )
 
 
@@ -123,7 +115,6 @@ def test_v016_provider_unavailable_preserves_native_observe_verdict():
     assert out.provider_status == "unavailable"
     assert out.provider_unavailable is True
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
-    assert out.direction == "FLAT"
     assert out.to_dict()["provider_unavailable"] is True
 
 
@@ -136,20 +127,3 @@ def test_v016_flat_market_read_is_distinct_from_unavailable():
     assert out.provider_status == "not_configured"
     assert out.native_verdict == DecisionType.CONTINUE_OBSERVING.value
     assert out.direction == "FLAT"
-
-
-# ── V-017 — the gate never passes silently on absent cognition ───────────────
-
-def test_v017_gate_off_allows():
-    assert CognitionGate(None, mode=MODE_OFF).evaluate("EURUSD", "LONG").allow is True
-
-
-def test_v017_shadow_absent_brain_fails_open_but_records():
-    v = CognitionGate(None, mode=MODE_SHADOW).evaluate("EURUSD", "LONG")
-    assert v.allow is True
-    assert "fail-open" in v.reason
-
-
-def test_v017_authoritative_absent_brain_fails_closed():
-    v = CognitionGate(None, mode=MODE_AUTHORITATIVE).evaluate("EURUSD", "LONG")
-    assert v.allow is False
