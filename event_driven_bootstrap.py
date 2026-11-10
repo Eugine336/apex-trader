@@ -6180,6 +6180,10 @@ class EventDrivenSystem:
                     ticket,
                 )
                 return
+            # Market fills are bound to a campaign only after the exact
+            # broker-confirmed position snapshot is available. Pending orders
+            # attach later in the reconciliation path.
+            self._attach_open_campaign_ticket(intent, result)
             ticket = ""
             if isinstance(response, dict):
                 ticket = str(
@@ -6534,9 +6538,6 @@ class EventDrivenSystem:
 
     def _handle_execution_result(self, intent: Intent, result: Any) -> None:
         """Feed every actual executor outcome back to the Brain action ledger."""
-        if getattr(intent, "intent_type", None) == IntentType.OPEN:
-            self._attach_open_campaign_ticket(intent, result)
-            return
         action_id = str(getattr(intent, "action_id", "") or "").strip()
         if not action_id:
             return
