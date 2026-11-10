@@ -172,3 +172,17 @@ def test_brain_management_identity_and_provenance_reach_execution_intents():
         for call in calls:
             kwargs = {item.arg: item.value for item in call.keywords if item.arg}
             assert required <= kwargs.keys(), f"{method} intent lost Brain provenance: {required - kwargs.keys()}"
+
+
+def test_brain_management_resolves_exact_confirmed_ticket_not_first_symbol_side_match():
+    module = _parse("event_driven_bootstrap.py")
+    factory = _function(module, "_make_management_sink")
+    resolver = _function(factory, "_open_position_for")
+    resolver_source = ast.unparse(resolver)
+    assert "get_open_positions_snapshot" in resolver_source
+    assert "confirmed_platforms" in resolver_source
+    assert "failed_platforms" in resolver_source
+    assert "position.ticket" in resolver_source
+    assert "position.platform" in resolver_source
+    assert "get_all_open_positions" not in resolver_source
+    assert "len(matches) != 1" in resolver_source
