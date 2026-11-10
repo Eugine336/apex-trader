@@ -541,3 +541,11 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 
 
 - **SAFE TEMPLATE DEFAULT:** `.env.example` now sets `TRADING_ENABLED=false`. The operator must explicitly set it to `true` to allow new exposure; position reconciliation and risk-reducing management remain available.
+
+
+### WP-B5 benchmark correctness — 2026-11-10
+
+- **FIXED:** the live concept benchmark requested `count` rows and then called `analyze_market_frames(source_includes_forming_bar=True)`, which deliberately excludes the final forming bar. It therefore reported raw rows as though they were completed bars and could claim the requested depth with one fewer completed candle.
+- The benchmark now fetches `count + 1` raw rows, reports both `raw_timeframes` and completed `timeframes`, and makes the requested bar depth refer to completed candles. The pass gate requires the full requested completed-bar count across every requested symbol/timeframe in both cold and warm passes.
+- **TESTS ADDED:** exact fetch depth, raw-versus-completed counts, and complete cold/warm coverage.
+- Actual broker-universe timing remains an owner-host, read-only measurement. CI validates the benchmark logic; it cannot substitute synthetic data for the broker-connected performance acceptance.
