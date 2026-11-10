@@ -79,6 +79,11 @@ class Intent:
     entry_zone_high: Optional[float] = None
     # Appended to preserve positional compatibility of existing Intent callers.
     action_id: str = ""
+    expected_return_r: Optional[float] = None
+    expected_cost_r: Optional[float] = None
+    expected_value_r: Optional[float] = None
+    expected_return_verified: bool = False
+    expected_return_source: str = ""
 
     @staticmethod
     def cancel_pending(
@@ -169,6 +174,11 @@ class Intent:
         order_type: str = "MARKET",
         entry_zone_low: Optional[float] = None,
         entry_zone_high: Optional[float] = None,
+        expected_return_r: Optional[float] = None,
+        expected_cost_r: Optional[float] = None,
+        expected_value_r: Optional[float] = None,
+        expected_return_verified: bool = False,
+        expected_return_source: str = "",
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         """An intent to OPEN a new position.
@@ -206,6 +216,11 @@ class Intent:
             order_type=str(order_type or "MARKET").upper(),
             entry_zone_low=entry_zone_low,
             entry_zone_high=entry_zone_high,
+            expected_return_r=expected_return_r,
+            expected_cost_r=expected_cost_r,
+            expected_value_r=expected_value_r,
+            expected_return_verified=expected_return_verified,
+            expected_return_source=expected_return_source,
             priority=IntentType.OPEN,
         )
 

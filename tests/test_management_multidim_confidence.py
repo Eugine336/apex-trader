@@ -62,7 +62,7 @@ def test_scale_in_requires_new_opportunity_even_when_execution_is_weak():
     assert out.decision.decision_type == DecisionType.HOLD
     rr = out.decision.risk_rationale.lower()
     assert "separately qualified brain opportunity" in rr
-    assert abs(out.decision.confidence - 0.3) < 1e-9   # honest effective conviction
+    assert abs(out.decision.confidence - 0.8) < 1e-9   # raw advisor field only
 
 
 def test_scale_in_requires_separate_qualified_opportunity_even_when_confidence_is_high():
@@ -108,11 +108,13 @@ def test_reverse_is_never_authorized_by_confidence():
 
 # ── the profile is recorded on the management decision (audit) ──────────────
 
-def test_management_records_confidence_profile():
+def test_management_records_raw_confidence_without_effective_profile():
     op = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.8,
                     execution_confidence=0.3, management_action="SCALE_IN",
                     thesis_state="strengthening")
     out = _brain(op).manage(_pos("LONG", profit_r=1.0), _state(0.8))
     qa = out.decision.questions_answered
-    assert qa["confidence_raw"] == 0.8
-    assert "execution 0.30" in qa["confidence_profile"]
+    assert qa["advisor_confidence_raw"] == 0.8
+    assert qa["advisor_confidence_dimensions"]["execution"] == 0.3
+    assert "confidence_profile" not in qa
+    assert "effective_confidence" not in qa

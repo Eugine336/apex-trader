@@ -147,82 +147,6 @@ def _num(value: Any, default: float = 0.0) -> float:
     return f
 
 
-def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
-    """Convert the DEVELOPING (forming-bar) WorldModel structural read into one Evidence.
-
-    Closed-candle readings are the confirmed picture; the developing store carries
-    the *fresher* NON-directional structural measurements computed on the still-
-    forming bar (trend strength, multi-timeframe alignment degree, conflict) — no
-    votes, only a measurements dict. Surfacing it as a single, clearly-labelled
-    multi-timeframe Evidence lets the Brain react between candle closes without
-    mistaking it for a confirmed module vote. It is deliberately short-lived (a
-    forming bar's read goes stale in seconds).
-
-    V-004 — this path must NEVER leak a directional conviction as evidence weight.
-    The Evidence ``confidence`` is derived ONLY from the NON-directional clarity of
-    the structural read (how strongly/aligned the forming bar reads, eroded by its
-    conflict); any directional conviction the store may carry
-    (``confidence`` / ``long_probability`` / ``short_probability`` / ``score`` /
-    ``direction``) is ignored, and ``polarity`` is always 0.0. Fail-safe: returns
-    ``[]`` on empty/any fault.
-    """
-    out: list[Evidence] = []
-    try:
-        b = dict(bias or {})
-        if not b:
-            return out
-        source_epoch = _num(b.get("source_timestamp_epoch"))
-        source_verified = (
-            b.get("source_timestamp_verified") is True
-            and source_epoch is not None and source_epoch > 0.0
-        )
-        conflict = _clamp01(b.get("conflict_score", 0.0))
-        # Observation certainty = the NON-directional clarity of the forming-bar
-        # structural read: how strongly/aligned the developing structure reads,
-        # eroded by its own conflict. Never a directional conviction — directional
-        # keys (confidence / long_probability / short_probability / score) are
-        # deliberately NOT read here (V-004).
-        alignment = _clamp01(_num(b.get("alignment_degree")))
-        strength = _clamp01(_num(b.get("trend_strength")))
-        clarity = max(alignment, strength)
-        read_certainty = _clamp01(clarity * (1.0 - conflict))
-        observation = (
-            f"developing-candle structural reading "
-            f"(clarity {read_certainty:.2f}, conflict {conflict:.2f})"
-        )
-        out.append(Evidence(
-            source_module="world_model.developing",
-            domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
-            observation=observation,
-            confidence=read_certainty,
-            # Higher forming-bar conflict ⇒ more source-side doubt.
-            uncertainty=_clamp01(max(1.0 - read_certainty, conflict)),
-            polarity=0.0,
-            measurements={
-                "developing": True,
-                "source_timestamp_epoch": source_epoch if source_verified else None,
-                "model_generated_at_epoch": (
-                    _num(b.get("model_generated_at_epoch"))
-                    if _num(b.get("model_generated_at_epoch")) > 0.0 else None
-                ),
-                "conflict_score": round(conflict, 4),
-                "alignment_degree": round(alignment, 4),
-                "trend_strength": round(strength, 4),
-                "strength": str(b.get("strength", "") or "")[:32],
-                "tradeable": bool(b.get("tradeable", False)),
-            },
-            timestamp_epoch=time.time(),
-            source_timestamp_epoch=source_epoch if source_verified else None,
-            source_timestamp_verified=source_verified,
-            relevance_horizon_seconds=60.0,
-            data_basis=str(b.get("data_basis", "") or "developing_world_model"),
-            provisional=True,
-        ))
-    except Exception:  # noqa: BLE001
-        return out
-    return out
-
-
 def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
     """Convert a broker-derived round-trip cost model into neutral Evidence.
 
@@ -529,7 +453,7 @@ _REASONING_LIST_FIELDS = (
 # Part XXV — the advisor's multidimensional confidence profile (each in [0,1]).
 _REASONING_NUM_FIELDS = (
     "thesis_confidence", "opportunity_confidence", "timing_confidence",
-    "execution_confidence", "effective_confidence",
+    "execution_confidence",
 )
 
 

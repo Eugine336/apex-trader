@@ -30,6 +30,7 @@ Design principles:
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -368,18 +369,16 @@ def _map_mgmt_opportunity(s: Any) -> str:
 # ── Opportunity-harvesting normalisation ──────────────────────────────────────
 # The opportunity-harvesting prompt asks the model for a SET of ranked
 # opportunities plus a market-state read, instead of a single collapsed
-# direction. These helpers backfill the legacy direction/confidence (+
-# multidimensional confidence + excursions) fields from the PREFERRED
-# opportunity so the pre-existing EV / sizing / cost machinery keeps working
-# with no downstream change — this is a backward-COMPATIBILITY shim, not the
-# primary cognitive path. The FULL opportunity set (with each opportunity's
-# lifecycle state, activation / invalidation conditions and scores) is carried
-# intact on the opinion (``opportunities`` / ``preferred_opportunity_id`` /
+# direction. These helpers retain legacy direction/confidence and excursion
+# fields as compatibility metadata, backfilled from the preferred opportunity.
+# Those fields are not expected-return, probability, qualification or sizing
+# inputs. The FULL opportunity set (with each opportunity's lifecycle state,
+# activation / invalidation conditions and scores) is carried intact on the
+# opinion (``opportunities`` / ``preferred_opportunity_id`` /
 # ``market_is_untradeable`` / ``market_state``); the Brain lifts that set into
 # first-class :class:`~cognition.contracts.Opportunity` objects and reasons over
 # the SET (activation gate, forming-vs-no-opportunity, multiple coexisting
-# ideas) rather than over the collapsed single direction. A legacy single-
-# direction reply carries no set and is untouched.
+# ideas). A legacy single-direction reply remains observational only.
 
 def _coerce_opportunities(raw: Any) -> "list[dict]":
     """The opportunities value as a list of dicts (defensive; never raises)."""
@@ -689,25 +688,23 @@ class LLMOpinion:
     model: str = ""
 
     def to_dict(self) -> dict:
-        def _rc(v):
+        def _raw(v):
+            if v is None:
+                return None
             try:
-                return round(self.confidence if v is None else min(1.0, max(0.0, float(v))), 4)
-            except (TypeError, ValueError):
-                return round(self.confidence, 4)
-        thesis_c = _rc(self.thesis_confidence)
-        opp_c = _rc(self.opportunity_confidence)
-        timing_c = _rc(self.timing_confidence)
-        exec_c = _rc(self.execution_confidence)
+                value = float(v)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return round(min(1.0, max(0.0, value)), 4) if math.isfinite(value) else None
         return {
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
             "confidence_semantics": "uncalibrated_reasoning_strength_not_probability",
-            "thesis_confidence": thesis_c,
-            "opportunity_confidence": opp_c,
-            "timing_confidence": timing_c,
-            "execution_confidence": exec_c,
-            "effective_confidence": round(min(thesis_c, opp_c, timing_c, exec_c), 4),
+            "thesis_confidence": _raw(self.thesis_confidence),
+            "opportunity_confidence": _raw(self.opportunity_confidence),
+            "timing_confidence": _raw(self.timing_confidence),
+            "execution_confidence": _raw(self.execution_confidence),
             "rationale": self.rationale,
             "competing_hypotheses": list(self.competing_hypotheses),
             "missing_information": list(self.missing_information),

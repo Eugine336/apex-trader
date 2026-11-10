@@ -722,8 +722,6 @@ their own frontend templates by `tests/test_frontend_env_example_coverage.py`.
 - `ev_primary_gate`
 - `ev_action_threshold_r`
 - `min_advisors_for_action`
-- `degraded_confidence_multiplier`
-- `degrade_on_unknown_council`
 - `loop_interval_seconds`
 - `max_symbols_per_cycle`
 - `concept_timeframes`

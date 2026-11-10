@@ -101,7 +101,7 @@ class EngineOpinion:
         """The advisor's multidimensional confidence profile (never one scalar)."""
         out: dict = {}
         for k in ("thesis_confidence", "opportunity_confidence",
-                  "timing_confidence", "execution_confidence", "effective_confidence"):
+                  "timing_confidence", "execution_confidence"):
             v = self.cognition.get(k)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 out[k] = round(float(v), 4)

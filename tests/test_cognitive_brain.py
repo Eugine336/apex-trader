@@ -332,46 +332,14 @@ def test_campaign_carries_expected_value_field():
     assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.35)
 
 
-# ── V13: Brain applies calibration correction to effective confidence ──────────
+# ── calibration trackers are not part of Brain decision authority ───────────
 
-class _StubCalibration:
-    def __init__(self, factor):
-        self._factor = factor
-
-    def calibration_adjustment(self):
-        return self._factor
-
-    def metrics(self):
-        return {"samples": 100, "mean_confidence": 0.9,
-                "win_rate": 0.63, "reliability_gap": 0.27, "brier": 0.24}
-
-
-def test_calibration_attenuates_effective_confidence():
-    # Over-predicting Brain: factor 0.7 attenuates eff_conf 0.8 → 0.56.
-    brain = CognitiveBrain(
+def test_brain_does_not_accept_calibration_tracker_as_decision_input():
+    import inspect
+    assert "calibration" not in inspect.signature(CognitiveBrain).parameters
+    out = CognitiveBrain(
         reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-        calibration=_StubCalibration(0.7),
-    )
-    out = brain.reason(_confident_state(polarity=0.8))
-    assert out.decision.confidence == pytest.approx(0.56)
-    note = out.decision.questions_answered.get("calibration_correction", "")
-    assert note.startswith("applied: factor 0.700")
-
-
-def test_calibration_not_wired_records_inactive():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
-    out = brain.reason(_confident_state(polarity=0.8))
-    assert out.decision.questions_answered.get("calibration_correction") == (
-        "not active (insufficient samples or not wired)"
-    )
-
-
-def test_calibration_neutral_factor_leaves_confidence_unchanged():
-    brain = CognitiveBrain(
-        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-        calibration=_StubCalibration(1.0),
-    )
-    out = brain.reason(_confident_state(polarity=0.8))
+    ).reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
 
 

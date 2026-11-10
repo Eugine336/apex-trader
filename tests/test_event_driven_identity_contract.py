@@ -87,6 +87,20 @@ def test_execution_sink_cannot_disable_net_expected_value_qualification():
     assert not true_returns
     assert _calls(method, function="qualify_net_ev")
     assert _calls(method, attribute="warning")
+    assert not any(
+        isinstance(item, ast.Name) and item.id == "confidence"
+        for item in ast.walk(method)
+    ), "reasoning confidence must not enter execution-side EV qualification"
+    assert any(
+        keyword.arg == "expected_return_r"
+        for call in _calls(method, function="qualify_net_ev")
+        for keyword in call.keywords
+    ), "execution-side EV must consume the verified fixed-horizon return"
+    stake_method = _function(module, "_opportunity_qualifies_stake")
+    assert not any(
+        isinstance(item, ast.Name) and item.id == "confidence"
+        for item in ast.walk(stake_method)
+    ), "stake qualification must not consume reasoning confidence"
 
 
 def test_legacy_atomic_reversal_runtime_wiring_is_disabled():

@@ -48,7 +48,10 @@ def _initial_intent(symbol="EURUSD", direction="LONG", entry=1.1, sl=1.09, tp=1.
 def _spec(**kw) -> CampaignSpecification:
     base = dict(
         symbol="EURUSD", direction="LONG", desired_exposure=0.5,
-        confidence=0.8, thesis="momentum breakout",
+        confidence=0.8, expected_return_r=0.8, expected_cost_r=0.1,
+        expected_value=0.7, expected_return_verified=True,
+        expected_return_source="verified-test-calibration-artifact",
+        thesis="momentum breakout",
         decision_id="decision-default", opportunity_id="opportunity-default",
         opportunity_state="ACTIVE",
     )
@@ -73,6 +76,11 @@ def test_translate_long_sizes_stake_from_balance():
     # stake = balance × risk × exposure = 10000 × 0.01 × 0.5
     assert abs(intent.stake_usd - 50.0) < 1e-6
     assert intent.source == "ai_brain"
+    assert intent.expected_return_verified is True
+    assert intent.expected_return_r == 0.8
+    assert intent.expected_cost_r == 0.1
+    assert intent.expected_value_r == 0.7
+    assert intent.expected_return_source == "verified-test-calibration-artifact"
 
 
 def test_translate_short_direction_preserved():
@@ -146,6 +154,13 @@ def test_translate_requires_decision_campaign_and_activated_opportunity_links():
     assert translate(no_campaign) is None
     assert translate(_spec(opportunity_state="FORMING")) is None
     assert translate(_spec(opportunity_state="UNKNOWN")) is None
+
+
+def test_translate_rejects_missing_or_inconsistent_expected_return_artifact():
+    assert translate(_spec(expected_return_verified=False)) is None
+    assert translate(_spec(expected_return_source="")) is None
+    assert translate(_spec(expected_value=0.8)) is None
+    assert translate(_spec(expected_return_r=0.0)) is None
 
 
 def test_translate_never_raises_on_garbage():

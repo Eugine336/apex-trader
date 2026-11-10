@@ -861,25 +861,9 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
 
 
-def test_developing_world_model_generation_time_is_not_source_time():
-    from cognition.evidence_adapters import evidence_from_developing_bias
-
-    generated_at = 1_900_000_000.0
-    evidence = evidence_from_developing_bias("EURUSD", {
-        "alignment_degree": 0.8,
-        "trend_strength": 0.7,
-        "conflict_score": 0.1,
-        "model_generated_at_epoch": generated_at,
-        "source_timestamp_verified": False,
-        "provisional": True,
-        "data_basis": "developing_world_model",
-    })
-
-    assert len(evidence) == 1
-    assert evidence[0].source_timestamp_verified is False
-    assert evidence[0].source_timestamp_epoch is None
-    assert evidence[0].provisional is True
-    assert evidence[0].measurements["model_generated_at_epoch"] == generated_at
+def test_forming_bar_world_model_is_not_adapted_into_brain_evidence():
+    import cognition.evidence_adapters as adapters
+    assert not hasattr(adapters, "evidence_from_developing_bias")
 
 
 def test_evidence_contract_distinguishes_ingest_time_from_verified_source_time():

@@ -1,10 +1,8 @@
-"""Multidimensional confidence (Part XXV) — decompose the single scalar into
-thesis / opportunity / timing / execution and let the Brain ACT on the profile.
+"""Advisor-reported confidence fields are descriptive evidence only.
 
-A great thesis with poor execution or bad timing is not an act-now trade. The
-Brain now blends to an EFFECTIVE conviction = the WEAKEST dimension, which drives
-EV, the act gate AND sizing. A legacy reply carrying only the overall scalar is
-unchanged (every dimension resolves to it) — zero regression.
+The Brain does not synthesize, calibrate, aggregate, or act on confidence.
+Expected return, execution costs, opportunity activation and risk admission own
+the origination decision.
 """
 
 from types import SimpleNamespace
@@ -14,7 +12,6 @@ from cognition.brain import CognitiveBrain
 from test_support.market_geometry import add_market_geometry
 from cognition.contracts import DecisionType, Evidence, MarketState
 from cognition.evidence_adapters import evidence_from_reasoning
-from cognition.expected_value import effective_confidence
 from llm.reasoner import LLMOpinion
 from llm.reasoning_orchestrator import EngineOpinion
 
@@ -78,81 +75,148 @@ def _decide(opinion, uncertainty=0.1):
     )
 
 
-# ── the blend ───────────────────────────────────────────────────────────────
-
-def test_effective_confidence_scalar_only_is_unchanged():
-    assert effective_confidence(SimpleNamespace(confidence=0.8)) == 0.8
-    assert effective_confidence({"confidence": 0.42}) == 0.42
+# Confidence dimensions are source-reported observations, not a Brain score.
 
 
-def test_effective_confidence_is_the_weakest_dimension():
-    op = LLMOpinion(symbol="X", direction="LONG", confidence=0.8,
-                    thesis_confidence=0.8, opportunity_confidence=0.75,
-                    timing_confidence=0.8, execution_confidence=0.3)
-    assert abs(effective_confidence(op, fallback=0.8) - 0.3) < 1e-9
-
-
-def test_to_dict_resolves_dims_and_effective():
-    # execution supplied (0.2); the rest absent ⇒ resolve to the overall 0.7.
-    d = LLMOpinion(symbol="X", direction="LONG", confidence=0.7,
-                   execution_confidence=0.2).to_dict()
-    assert d["thesis_confidence"] == 0.7 and d["timing_confidence"] == 0.7
+def test_to_dict_preserves_only_source_reported_dimensions():
+    d = LLMOpinion(
+        symbol="X", direction="LONG", confidence=0.7,
+        execution_confidence=0.2,
+    ).to_dict()
+    assert d["confidence"] == 0.7
+    assert d["thesis_confidence"] is None
     assert d["execution_confidence"] == 0.2
-    assert d["effective_confidence"] == 0.2
+    assert "effective_confidence" not in d
 
 
-# ── zero regression: legacy single-scalar opinion behaves exactly as before ──
-
-def test_single_scalar_opinion_opens_campaign_unchanged():
+def test_single_scalar_opinion_can_only_act_on_verified_opportunity_economics():
     out = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8))
     assert out.decision.questions_answered.get("expected_return_verification", "").startswith(
         "VERIFIED"
     ), out.decision.questions_answered.get("expected_return_verification")
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert abs(out.decision.confidence - 0.8) < 1e-9
-    # Uncalibrated reasoning strength remains descriptive; the same verified
-    # economics must produce the same provisional exposure regardless of score.
     assert out.campaign.desired_exposure > 0.0
-    assert "reasoning strength is excluded" in \
-        out.decision.questions_answered["sizing_rationale"]
+    assert "reasoning strength is excluded" in out.decision.questions_answered["sizing_rationale"]
+    assert out.decision.questions_answered["confidence_authority"].startswith("descriptive advisor metadata")
 
 
-# ── weak execution: contextual EV + sizing, not a universal cutoff ─────────────
-
-def test_weak_execution_is_evaluated_by_net_ev_and_activation():
+def test_source_reported_execution_dimension_does_not_change_ev_or_exposure():
     strong = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
-    weaker = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9,
-                                execution_confidence=0.2))
-    assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    # A weaker uncalibrated execution-strength descriptor is not a probability
-    # or a sizing input. Verified costs and geometry are unchanged here.
-    assert weaker.decision.expected_value == strong.decision.expected_value
-    assert weaker.campaign is not None
-    assert weaker.campaign.desired_exposure == strong.campaign.desired_exposure
-    assert weaker.decision.questions_answered["confidence_profile"] != strong.decision.questions_answered["confidence_profile"]
-
-
-# ── moderate execution: reasoning metadata changes, sizing does not ───────
-
-def test_weak_execution_sizes_down_when_it_still_acts():
-    strong = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9))
-    weaker = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.9,
-                                execution_confidence=0.6))
+    weaker = _decide(LLMOpinion(
+        symbol="BTCUSD", direction="LONG", confidence=0.9,
+        execution_confidence=0.2,
+    ))
     assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert weaker.decision.expected_value == strong.decision.expected_value
     assert weaker.campaign.desired_exposure == strong.campaign.desired_exposure
-    assert weaker.campaign.desired_exposure > 0
-    assert "execution 0.60" in weaker.decision.questions_answered["confidence_profile"]
+    assert weaker.decision.questions_answered["advisor_confidence_dimensions"]["execution"] == 0.2
 
 
-# ── council carries each advisor's confidence PROFILE to the Brain ──────────
+def test_council_evidence_carries_raw_dimensions_without_effective_score():
+    cog = LLMOpinion(
+        symbol="BTCUSD", direction="LONG", confidence=0.8,
+        execution_confidence=0.3, opportunity="sweep-reclaim long",
+    ).to_dict()
+    op = EngineOpinion(
+        engine="cerebras", direction="LONG", confidence=0.8,
+        rationale="r", latency_ms=10.0, cognition=cog,
+    )
+    measurements = evidence_from_reasoning(
+        "BTCUSD", SimpleNamespace(opinions=[op]),
+    )[0].measurements
+    assert measurements["execution_confidence"] == 0.3
+    assert "effective_confidence" not in measurements
 
-def test_council_evidence_carries_confidence_profile():
-    cog = LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8,
-                     execution_confidence=0.3, opportunity="sweep-reclaim long").to_dict()
-    op = EngineOpinion(engine="cerebras", direction="LONG", confidence=0.8,
-                       rationale="r", latency_ms=10.0, cognition=cog)
-    m = evidence_from_reasoning("BTCUSD", SimpleNamespace(opinions=[op]))[0].measurements
-    assert m["thesis_confidence"] == 0.8
-    assert m["execution_confidence"] == 0.3
-    assert m["effective_confidence"] == 0.3
+def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkeypatch):
+    """An available but under-covered advisor cannot suppress native reasoning."""
+    for responded in (None, 1):
+        brain = CognitiveBrain(
+            reasoner=SimpleNamespace(
+                available=True,
+                reason=lambda symbol, evidence, now=None: LLMOpinion(
+                    symbol=symbol, direction="LONG", confidence=0.99,
+                ),
+            ),
+            min_advisors_for_action=2,
+        )
+        analysis = SimpleNamespace(to_dict=lambda: {})
+        hypotheses = [SimpleNamespace(to_dict=lambda: {})]
+        marker = object()
+        native_calls = []
+
+        monkeypatch.setattr(
+            brain, "_native_reasoning",
+            lambda market_state, consolidation, symbol, now=None: (analysis, hypotheses),
+        )
+
+        def native_qualification(*args, **kwargs):
+            native_calls.append((args, kwargs))
+            return marker
+
+        monkeypatch.setattr(brain, "_originate_independent", native_qualification)
+        monkeypatch.setattr(
+            brain, "_from_opinion",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("under-quorum advisor opinion must not reach origination")
+            ),
+        )
+
+        market_state = MarketState(symbol="BTCUSD")
+        if responded is not None:
+            market_state.add(Evidence(
+                source_module="reasoning_engine.partial_council",
+                domain="reasoning",
+                symbol="BTCUSD",
+                observation="only one advisor responded",
+                confidence=1.0,
+                uncertainty=0.0,
+                measurements={
+                    "advisors_responded": responded,
+                    "advisors_available": 2,
+                    "advisors_total": 2,
+                },
+            ))
+
+        output = brain.reason(market_state)
+        assert output is marker
+        assert len(native_calls) == 1
+        assert native_calls[0][0][0] == "BTCUSD"
+        assert native_calls[0][0][2] is analysis
+        assert native_calls[0][0][3] is hypotheses
+        assert native_calls[0][1]["advisor_status"] == "available"
+
+
+def test_unqualified_native_fallback_observes_when_advisor_quorum_is_unknown(monkeypatch):
+    brain = CognitiveBrain(
+        reasoner=SimpleNamespace(
+            available=True,
+            reason=lambda symbol, evidence, now=None: LLMOpinion(
+                symbol=symbol, direction="LONG", confidence=0.99,
+            ),
+        ),
+        min_advisors_for_action=2,
+    )
+    analysis = SimpleNamespace(to_dict=lambda: {})
+    hypotheses = [SimpleNamespace(to_dict=lambda: {})]
+    marker = object()
+    fallback_calls = []
+    monkeypatch.setattr(
+        brain, "_native_reasoning",
+        lambda market_state, consolidation, symbol, now=None: (analysis, hypotheses),
+    )
+    monkeypatch.setattr(brain, "_originate_independent", lambda *args, **kwargs: None)
+
+    def observe(*args, **kwargs):
+        fallback_calls.append((args, kwargs))
+        return marker
+
+    monkeypatch.setattr(brain, "_from_opinion", observe)
+    output = brain.reason(MarketState(symbol="BTCUSD"))
+    assert output is marker
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0][0][0] == "BTCUSD"
+    assert fallback_calls[0][0][3].confidence == 0.99
+    assert fallback_calls[0][1]["analysis"] is analysis
+    assert fallback_calls[0][1]["brain_hypotheses"] is hypotheses

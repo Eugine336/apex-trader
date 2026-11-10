@@ -1994,7 +1994,7 @@ class EventDrivenSystem:
         Missing broker-book confirmation, account risk state, instrument economics,
         or the initialized portfolio division fails closed. The Brain's normalized
         exposure scales the configured per-trade risk budget; it is not replaced by
-        a second confidence multiplier or a separate inline lot-size algorithm.
+        a second multiplier or a separate inline lot-size algorithm.
         """
         try:
             import math
@@ -2105,7 +2105,7 @@ class EventDrivenSystem:
             exposure = min(1.0, max(0.0, exposure))
             # Brain exposure is already a normalized decision from the single
             # CognitiveBrain. Apply it to the configured per-trade risk fraction
-            # exactly once; do not multiply by confidence a second time.
+            # exactly once; do not apply a second decision multiplier.
             base_risk_pct = base_risk_fraction * exposure
             if base_risk_pct <= 0.0:
                 return None
@@ -2126,13 +2126,11 @@ class EventDrivenSystem:
                 return None
 
             broker = str(platform_manager.get_broker_name(symbol) or "")
-            confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
             candidate = PortfolioCandidate(
                 symbol=symbol,
                 direction=direction,
                 entry_price=entry,
                 stop_loss=float(sl),
-                conviction=min(100.0, max(0.0, confidence * 100.0)),
                 context=platform_context,
                 pip_size=pip_size,
                 pip_value_per_lot=pip_value_per_lot,
@@ -2150,7 +2148,6 @@ class EventDrivenSystem:
                 account,
                 SizingFactors(
                     base_risk_pct=base_risk_pct,
-                    calib_mult=self._calibration_size_scale(),
                 ),
             )
             approved_size = float(getattr(verdict, "approved_size", 0.0) or 0.0)
@@ -2189,43 +2186,38 @@ class EventDrivenSystem:
             return None
 
     def _opportunity_qualifies_stake(
-        self, symbol: str, direction: str, sl: float, tp: float,
-        stake_usd: float, confidence: float,
+        self, symbol: str, direction: str, sl, tp, stake_usd: float,
+        expected_return_r: float, expected_return_verified: bool,
+        expected_return_source: str,
     ) -> bool:
-        """Net-EV check for stake-sized contracts using stake as max loss at SL.
-
-        Stake-based brokers do not express size in lots. The approved stake is the
-        defined loss at the supplied stop, so it provides the price-move conversion
-        needed by the same net-EV gate. If required price, stop, stake, spread or
-        configured fee inputs are invalid, decline rather than bypass qualification.
-        """
+        """Recheck verified expected return against fresh stake-broker costs."""
         try:
             import math
             from cognition.opportunity import qualify_net_ev
-
             stake = float(stake_usd)
-            if not math.isfinite(stake) or stake <= 0.0:
+            expected_r = float(expected_return_r)
+            if (
+                expected_return_verified is not True
+                or not str(expected_return_source or "").strip()
+                or not math.isfinite(expected_r)
+                or not math.isfinite(stake) or stake <= 0.0
+            ):
                 return False
             tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
             if tick is None:
                 return False
             is_long = str(direction or "").upper() == "LONG"
-            entry = float(
-                (getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0))
-                or getattr(tick, "mid", 0.0)
-                or 0.0
-            )
+            entry = float((getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0)) or getattr(tick, "mid", 0.0) or 0.0)
             pip_size = float(self._safe_pip_size(symbol))
             risk_distance = abs(entry - float(sl))
+            reward_distance = abs(float(tp) - entry)
             if (
                 not math.isfinite(entry) or entry <= 0.0
                 or not math.isfinite(pip_size) or pip_size <= 0.0
                 or not math.isfinite(risk_distance) or risk_distance <= 0.0
+                or not math.isfinite(reward_distance) or reward_distance <= 0.0
             ):
                 return False
-            # By the portfolio sizing contract, stake is the maximum loss at the
-            # stop. Therefore stake / stop-distance is the stake-size money
-            # conversion, not a lot-size proxy.
             money_per_price = stake / risk_distance
             try:
                 spread_pips = float(self._get_spread_pips(symbol) or 0.0)
@@ -2235,42 +2227,21 @@ class EventDrivenSystem:
             if not math.isfinite(spread_pips) or spread_pips < 0.0:
                 return False
             cognition_cfg = getattr(self._config, "cognition", None)
-            per_lot_commission = float(
-                getattr(cognition_cfg, "commission_per_lot_round_trip", 0.0) or 0.0
-            ) if cognition_cfg is not None else 0.0
-            # A per-lot fee cannot safely be converted into a stake-based fee
-            # without a broker contract schedule; don't silently ignore it.
+            per_lot_commission = float(getattr(cognition_cfg, "commission_per_lot_round_trip", 0.0) or 0.0) if cognition_cfg is not None else 0.0
             if per_lot_commission > 0.0:
-                logger.warning(
-                    "[opportunity] {} stake-sized entry declined — configured "
-                    "per-lot commission cannot be mapped to stake economics", symbol,
-                )
+                logger.warning("[opportunity] {} stake-sized entry declined — configured per-lot commission cannot be mapped to stake economics", symbol)
                 return False
             slippage_pips = 1.0
             cost_ccy = (spread_pips + slippage_pips) * pip_size * money_per_price
             if not math.isfinite(cost_ccy) or cost_ccy <= 0.0:
                 return False
             q = qualify_net_ev(
-                entry=entry,
-                sl=float(sl),
-                tp=float(tp),
-                confidence=confidence,
-                money_per_price=money_per_price,
-                cost_ccy=cost_ccy,
-                min_edge_ccy=float(
-                    getattr(cognition_cfg, "opportunity_min_net_ev", 0.0)
-                    if cognition_cfg is not None else 0.0
-                ),
-                cost_multiple=float(
-                    getattr(cognition_cfg, "opportunity_cost_multiple", 2.0)
-                    if cognition_cfg is not None else 2.0
-                ),
+                expected_return_r=expected_r, risk_ccy=stake, cost_ccy=cost_ccy,
+                min_edge_ccy=float(getattr(cognition_cfg, "opportunity_min_net_ev", 0.0) if cognition_cfg is not None else 0.0),
+                cost_multiple=float(getattr(cognition_cfg, "opportunity_cost_multiple", 2.0) if cognition_cfg is not None else 2.0),
             )
             if not q.qualified:
-                logger.info(
-                    "[opportunity] {} {} stake-sized entry REJECTED — {}",
-                    symbol, direction, q.reason,
-                )
+                logger.info("[opportunity] {} {} stake-sized entry REJECTED — {}", symbol, direction, q.reason)
             return bool(q.qualified)
         except Exception as exc:  # noqa: BLE001 — qualification faults must fail closed
             logger.debug("[opportunity] stake qualification failed for {}: {}", symbol, exc)
@@ -2390,7 +2361,22 @@ class EventDrivenSystem:
                 # Unknown state or any fault rejects.
                 if not self._compliance_permits(symbol, direction):
                     return False
-                confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
+                try:
+                    expected_return_r = float(getattr(origination, "expected_return_r", None))
+                    expected_cost_r = float(getattr(origination, "expected_cost_r", None))
+                    expected_value_r = float(getattr(origination, "expected_value_r", None))
+                except (TypeError, ValueError, OverflowError):
+                    return False
+                expected_return_verified = getattr(origination, "expected_return_verified", False) is True
+                expected_return_source = str(getattr(origination, "expected_return_source", "") or "").strip()
+                if (
+                    not expected_return_verified or not expected_return_source
+                    or not all(math.isfinite(value) for value in (expected_return_r, expected_cost_r, expected_value_r))
+                    or expected_return_r <= 0.0 or expected_cost_r < 0.0 or expected_value_r <= 0.0
+                    or not math.isclose(expected_return_r - expected_cost_r, expected_value_r, rel_tol=1e-5, abs_tol=1e-6)
+                ):
+                    logger.warning("[origination-sink] {} {} skipped — verified expected-return artifact or decision-time EV provenance is missing/inconsistent", symbol, direction)
+                    return False
                 sized = self._size_brain_origination_with_portfolio(
                     origination, symbol, direction, float(sl),
                 )
@@ -2405,7 +2391,8 @@ class EventDrivenSystem:
                 if sized["sizing_mode"] == "stake":
                     if not self._opportunity_qualifies_stake(
                         symbol, direction, float(sl), float(tp),
-                        float(stake_usd or 0.0), confidence,
+                        float(stake_usd or 0.0), expected_return_r,
+                        expected_return_verified, expected_return_source,
                     ):
                         return False
                     quantity_for_key = float(stake_usd or 0.0)
@@ -2413,15 +2400,13 @@ class EventDrivenSystem:
                     # Part XIX Art 1/7 — only proceed with positive expected NET
                     # value after a broker-truth round-trip cost estimate.
                     if lots <= 0.0 or not self._opportunity_qualifies(
-                        symbol, direction, sl, tp, lots, confidence,
+                        symbol, direction, sl, tp, lots, expected_return_r,
+                        expected_return_verified, expected_return_source,
                     ):
                         return False
                     quantity_for_key = lots
                 idem_key = generate_idempotency_key(symbol, direction, quantity_for_key)
-                comment = build_order_comment(
-                    "APEX", idem_key,
-                    score=round(confidence, 4),
-                )
+                comment = build_order_comment("APEX", idem_key)
                 self._aggregator.submit([Intent.open(
                     symbol=symbol,
                     direction=direction,
@@ -2444,6 +2429,11 @@ class EventDrivenSystem:
                         if isinstance(getattr(origination, "payoff_geometry", None), dict)
                         else None
                     ),
+                    expected_return_r=expected_return_r,
+                    expected_cost_r=expected_cost_r,
+                    expected_value_r=expected_value_r,
+                    expected_return_verified=expected_return_verified,
+                    expected_return_source=expected_return_source,
                     decision_feature_snapshot=(
                         dict(getattr(origination, "meta", {}).get("decision_feature_snapshot", {}) or {})
                         if isinstance(getattr(origination, "meta", None), dict)
@@ -2462,22 +2452,6 @@ class EventDrivenSystem:
                 return False
 
         return _sink
-
-    def _calibration_size_scale(self) -> float:
-        """Risk scale from verified calibration of the Brain's confidence.
-
-        Unverified (or unavailable) calibration scales risk down to the tracker's
-        floor; it never blocks a trade, concept or instrument. As market outcomes
-        verify stated confidence the scale rises to 1.0.
-        """
-        try:
-            tracker = getattr(getattr(self, "_ctx", None), "brain_calibration", None)
-            if tracker is None:
-                return 0.25
-            return float(tracker.sizing_scale())
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[calibration] size scale fault: {}", exc)
-            return 0.25
 
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
         """Ask the ComplianceDivision whether new exposure is permitted.
@@ -2634,49 +2608,44 @@ class EventDrivenSystem:
             return 0.0
 
     def _opportunity_qualifies(
-        self, symbol: str, direction: str, sl, tp, lots: float, confidence: float,
+        self, symbol: str, direction: str, sl, tp, lots: float,
+        expected_return_r: float, expected_return_verified: bool,
+        expected_return_source: str,
     ) -> bool:
-        """Gate an entry/scale on positive expected NET value (Part XIX Art 1/7/8).
-
-        Fail-closed and mandatory: when the cost or money conversion cannot be
-        estimated (missing broker spec / spread), the gate DECLINES the trade.
-        The legacy config flag is retained for compatibility but cannot disable
-        net-EV qualification under the canonical Apex identity.
-        """
+        """Mandatory last-mile net-EV check using verified return, never confidence."""
         try:
+            import math
+            from cognition.opportunity import qualify_net_ev
+            expected_r = float(expected_return_r)
+            if expected_return_verified is not True or not str(expected_return_source or "").strip() or not math.isfinite(expected_r):
+                logger.warning("[opportunity] {} {} declined — verified fixed-horizon expected return missing", symbol, direction)
+                return False
             cog = getattr(self._config, "cognition", None)
-            if cog is not None and not bool(
-                getattr(cog, "opportunity_qualification_enabled", True)
-            ):
-                logger.warning(
-                    "[opportunity] COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED=false "
-                    "is ignored; net-EV qualification is mandatory under Apex identity"
-                )
+            if cog is not None and not bool(getattr(cog, "opportunity_qualification_enabled", True)):
+                logger.warning("[opportunity] COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED=false is ignored; net-EV qualification is mandatory under Apex identity")
             tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
             is_long = str(direction or "").upper() == "LONG"
-            entry = 0.0
-            if tick is not None:
-                entry = float(
-                    (getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0))
-                    or getattr(tick, "mid", 0.0) or 0.0
-                )
+            entry = float((getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0)) or getattr(tick, "mid", 0.0) or 0.0) if tick is not None else 0.0
             mpp = self._money_per_price(symbol, lots)
+            risk_distance = abs(entry - float(sl))
             cost = self._estimate_round_trip_cost(symbol, lots)
-            if entry <= 0.0 or mpp <= 0.0 or cost <= 0.0:
-                return False  # cannot qualify → fail-closed (decline the trade)
-            from cognition.opportunity import qualify_net_ev
+            risk_ccy = risk_distance * mpp
+            if (
+                not math.isfinite(entry) or entry <= 0.0
+                or not math.isfinite(mpp) or mpp <= 0.0
+                or not math.isfinite(risk_distance) or risk_distance <= 0.0
+                or not math.isfinite(risk_ccy) or risk_ccy <= 0.0
+                or not math.isfinite(cost) or cost <= 0.0
+            ):
+                return False
             q = qualify_net_ev(
-                entry=entry, sl=float(sl), tp=float(tp), confidence=confidence,
-                money_per_price=mpp, cost_ccy=cost,
+                expected_return_r=expected_r, risk_ccy=risk_ccy, cost_ccy=cost,
                 min_edge_ccy=float(getattr(cog, "opportunity_min_net_ev", 0.0) if cog else 0.0),
                 cost_multiple=float(getattr(cog, "opportunity_cost_multiple", 2.0) if cog else 2.0),
             )
             if not q.qualified:
-                logger.info(
-                    "[opportunity] {} {} REJECTED — {} (Part XIX Art 7)",
-                    symbol, direction, q.reason,
-                )
-            return q.qualified
+                logger.info("[opportunity] {} {} REJECTED — {} (Part XIX Art 7)", symbol, direction, q.reason)
+            return bool(q.qualified)
         except Exception as exc:  # noqa: BLE001 — qualification must never break the sink
             logger.debug("[opportunity] qualify fault for {}: {}", symbol, exc)
             return False

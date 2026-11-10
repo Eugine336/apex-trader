@@ -1,14 +1,16 @@
-"""Seed the Brain's confidence calibration from market-truth outcomes.
+"""Seed observational reasoning-strength diagnostics from market outcomes.
 
-The market is the only source of truth for whether Apex's stated confidence was
-right. This loads (confidence, won) pairs produced by any market-truth source --
-a hindcast replay of history, demo/shadow results, or exported live closes --
-into ``<data_dir>/brain_calibration.json`` so verified calibration survives
-restarts. It never restricts which concepts, strategies or instruments Apex may
-use; verified calibration only raises the risk scale (``sizing_scale``).
+This loads reported reasoning-strength/outcome pairs from a hindcast replay,
+demo/shadow results, or exported live closes into
+``<data_dir>/brain_calibration.json`` for governance and diagnostic reporting.
+The legacy input column/key is named ``confidence``, but these values are
+uncalibrated reasoning metadata, not win probabilities. The resulting metrics
+are observational only: they do not qualify opportunities, change expected
+return, authorize decisions, or scale position size.
 
 Input: JSON Lines (one object per line) or CSV with columns ``confidence`` and
-``won`` (true/false/1/0). Usage::
+``won`` (true/false/1/0). The legacy field name is retained for input
+compatibility. Usage::
 
     python scripts/seed_calibration.py outcomes.jsonl --source hindcast
     python scripts/seed_calibration.py outcomes.csv --source demo --dry-run
