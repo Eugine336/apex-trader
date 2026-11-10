@@ -156,21 +156,12 @@ def test_decision_confidence_can_be_unknown_without_changing_source_evidence_con
     assert "confidence_semantics" not in evidence_payload
 
 
-def test_hypothesis_probability_requires_verified_calibration_provenance():
-    unverified = Hypothesis(statement="unverified candidate", probability=0.73)
-    assert unverified.probability is None
-    assert unverified.to_dict()["probability"] is None
-    assert unverified.to_dict()["probability_semantics"] == "unverified_probability_rejected"
+def test_hypothesis_probability_rejects_caller_supplied_numeric_scores():
+    supplied = Hypothesis(statement="candidate", probability=0.73)
+    assert supplied.probability is None
+    assert supplied.to_dict()["probability"] is None
+    assert supplied.to_dict()["probability_semantics"] == "unverified_probability_rejected"
 
     absent = Hypothesis(statement="candidate without calibration")
     assert absent.probability is None
     assert absent.to_dict()["probability_semantics"] == "not_calibrated"
-
-    calibrated = Hypothesis(
-        statement="calibrated candidate",
-        probability=0.73,
-        probability_calibration_artifact_id="calibration-artifact-123",
-        probability_calibration_verified=True,
-    )
-    assert calibrated.probability == 0.73
-    assert calibrated.to_dict()["probability_semantics"] == "calibrated_probability"
