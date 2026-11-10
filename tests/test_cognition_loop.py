@@ -1074,7 +1074,7 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
         clock=_ManualClock(),
     )
     calls = []
-    loop.set_management_sink(lambda action, pos: (calls.append(action) or True) or True)
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     issued = loop._maybe_reallocate(positions, now=100.0)
     assert issued == 1
     assert len(calls) == 1
