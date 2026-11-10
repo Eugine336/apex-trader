@@ -315,6 +315,8 @@ def test_high_confidence_without_producer_verified_return_stands_down():
         "qualified_from_fresh_completed_market_evidence"
     )
     assert out.decision.expected_value == 0.0
+    assert "DIAGNOSTIC ONLY" not in out.decision.questions_answered["expected_value"]
+    assert "no probability or diagnostic EV is inferred" in out.decision.questions_answered["expected_value"]
     assert "fixed-horizon expected return is unverified" in out.decision.risk_rationale
 
 
