@@ -87,6 +87,10 @@ class MT5PortfolioAdapter:
                     # current-mark-to-stop risk. This is account-currency P&L,
                     # not a pip/point approximation. Missing stops, invalid
                     # position sides, or unavailable calculations remain unknown.
+                    direction = ""
+                    symbol = str(row.get("symbol") or "").strip()
+                    volume = 0.0
+                    current_price = 0.0
                     try:
                         raw_type = row.get("type")
                         side = str(raw_type or "").strip().lower()
@@ -96,7 +100,6 @@ class MT5PortfolioAdapter:
                             direction = "SHORT"
                         else:
                             direction = ""
-                        symbol = str(row.get("symbol") or "").strip()
                         volume = float(row.get("volume"))
                         current_price = float(row.get("price_current"))
                         stop_price = float(row.get("sl") or 0.0)
@@ -113,7 +116,7 @@ class MT5PortfolioAdapter:
                                 position["risk_account_ccy"] = max(0.0, -stop_pnl)
                                 position["stop_pnl_account_ccy"] = stop_pnl
                                 position["risk_calculation_source"] = "mt5.order_calc_profit"
-                    except (TypeError, ValueError, OverflowError, RuntimeError) as exc:
+                    except Exception as exc:  # SAFE-FALLBACK: keep the broker position visible with unknown stop risk.
                         errors.append(
                             f"connector_{index}:position_risk_{type(exc).__name__}"
                         )
@@ -132,7 +135,7 @@ class MT5PortfolioAdapter:
                             if margin == margin and abs(margin) != float("inf") and margin >= 0.0:
                                 position["margin_account_ccy"] = margin
                                 position["margin_calculation_source"] = "mt5.order_calc_margin"
-                    except (TypeError, ValueError, OverflowError, RuntimeError) as exc:
+                    except Exception as exc:  # SAFE-FALLBACK: keep the broker position visible with unknown margin.
                         errors.append(
                             f"connector_{index}:position_margin_{type(exc).__name__}"
                         )
