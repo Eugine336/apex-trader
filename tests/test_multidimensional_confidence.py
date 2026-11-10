@@ -141,8 +141,8 @@ def test_unknown_or_insufficient_advisor_quorum_uses_native_qualification(monkey
             ),
             min_advisors_for_action=2,
         )
-        analysis = object()
-        hypotheses = [object()]
+        analysis = SimpleNamespace(to_dict=lambda: {})
+        hypotheses = [SimpleNamespace(to_dict=lambda: {})]
         marker = object()
         native_calls = []
 
@@ -198,8 +198,8 @@ def test_unqualified_native_fallback_observes_when_advisor_quorum_is_unknown(mon
         ),
         min_advisors_for_action=2,
     )
-    analysis = object()
-    hypotheses = [object()]
+    analysis = SimpleNamespace(to_dict=lambda: {})
+    hypotheses = [SimpleNamespace(to_dict=lambda: {})]
     marker = object()
     fallback_calls = []
     monkeypatch.setattr(
@@ -212,10 +212,11 @@ def test_unqualified_native_fallback_observes_when_advisor_quorum_is_unknown(mon
         fallback_calls.append((args, kwargs))
         return marker
 
-    monkeypatch.setattr(brain, "_native_fallback_observe", observe)
+    monkeypatch.setattr(brain, "_from_opinion", observe)
     output = brain.reason(MarketState(symbol="BTCUSD"))
     assert output is marker
     assert len(fallback_calls) == 1
-    assert "advisor quorum unknown" in fallback_calls[0][0][1]
+    assert fallback_calls[0][0][0] == "BTCUSD"
+    assert fallback_calls[0][0][3].confidence == 0.99
     assert fallback_calls[0][1]["analysis"] is analysis
-    assert fallback_calls[0][1]["hypotheses"] is hypotheses
+    assert fallback_calls[0][1]["brain_hypotheses"] is hypotheses
