@@ -156,7 +156,6 @@ class PositionView:
     hold_seconds: float = 0.0
     size: float = 0.0
     campaign_id: str = ""
-    entry_confidence: Optional[float] = None
     # Original lineage helps the Brain reassess the held campaign without guessing.
     opportunity_id: str = ""
     originating_decision_id: str = ""
@@ -1900,7 +1899,6 @@ class CognitiveBrain:
                 "hold_seconds": round(float(getattr(position, "hold_seconds", 0.0) or 0.0), 2),
                 "size": getattr(position, "size", 0.0),
                 "campaign_id": str(getattr(position, "campaign_id", "") or ""),
-                "entry_confidence": getattr(position, "entry_confidence", None),
             }
             # Recover the ORIGINAL campaign thesis by exact campaign id before
             # consulting process-local history. A later market opinion must not
