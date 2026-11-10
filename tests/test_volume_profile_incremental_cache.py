@@ -44,8 +44,10 @@ def test_weekly_profiles_are_reused_for_unchanged_history(monkeypatch):
     assert len(calls) == 2
     assert first.facts["weekly_profile_cache_misses"] == 2
     assert first.facts["weekly_profile_cache_hits"] == 1
+    first.facts["current_week_profile"]["poc"] = 99.0
 
     second = reader.read("EURUSD", {"H1": bars})[0]
+    assert second.facts["current_week_profile"]["poc"] == 1.2
     assert len(calls) == 2
     assert second.facts["weekly_profile_cache_misses"] == 0
     assert second.facts["weekly_profile_cache_hits"] == 3
