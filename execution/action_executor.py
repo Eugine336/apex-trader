@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional, Protocol
 from loguru import logger
 
 from execution.intents import Intent, IntentType
+from config_env import trading_enabled_from_env
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
 from execution.risk_gate import GateConfig, RiskGate
 from platforms.circuit_breaker import CircuitBreaker
@@ -160,19 +161,6 @@ class ExecutorConfig:
         self.margin_block_entry_level_pct = value
 
 
-def _trading_enabled_from_env() -> bool:
-    """Read the final execution-boundary gate for new exposure."""
-    raw = os.getenv("TRADING_ENABLED")
-    if raw is None:
-        return True
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off", ""}:
-        return False
-    raise ValueError("TRADING_ENABLED must be a boolean")
-
-
 class ActionExecutor:
     """Serialized, risk-gated broker execution.
 
@@ -192,7 +180,7 @@ class ActionExecutor:
         # Defense in depth: CognitionConfig stops new Brain origination, while
         # this last-mile gate also rejects any already-queued OPEN intent.
         # Management/close intents remain available for risk reduction.
-        self._trading_enabled = _trading_enabled_from_env()
+        self._trading_enabled = trading_enabled_from_env(default=True)
         self._gate = RiskGate(self._cfg.gate_config)
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
