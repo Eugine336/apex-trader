@@ -2278,12 +2278,29 @@ class CognitionLoop:
             # Suppress repeats within a cycle regardless of submission outcome.
             self._open_keys.add((symbol, direction))
             if self.origination_mode == "live" and self._origination_sink is not None:
+                # Register the pending Brain decision before exposing the intent
+                # to the asynchronous FlushLoop. Otherwise a fast broker fill can
+                # arrive before its campaign leg exists and exact-ticket binding
+                # will correctly fail closed with no later opportunity to attach.
+                self._campaign_open(symbol, direction, campaign, decision)
                 sink_result = self._origination_sink(intent)
                 if sink_result is False:
                     self._orig_suppressed += 1
+                    registry = self._campaigns
+                    if registry is not None:
+                        try:
+                            registry.reject_pending_leg(
+                                symbol, direction,
+                                str(getattr(campaign, "campaign_id", "") or ""),
+                                str(getattr(decision, "decision_id", "") or ""),
+                            )
+                        except Exception as cleanup_exc:  # noqa: BLE001
+                            logger.error(
+                                "[cognition-loop] rejected campaign cleanup failed for %s: %s",
+                                symbol, cleanup_exc,
+                            )
                     logger.warning(
-                        "[cognition-loop] origination rejected for %s %s — "
-                        "not registering a live campaign",
+                        "[cognition-loop] origination rejected for %s %s — pending campaign leg removed",
                         symbol, direction,
                     )
                     return
@@ -2292,10 +2309,6 @@ class CognitionLoop:
                     "[cognition-loop] originated LIVE %s %s (stake=%s)",
                     symbol, direction, intent.stake_usd,
                 )
-                # Part XVIII Art 1 — a trade begins a campaign. Birth (or revive)
-                # the campaign for this symbol/direction and record the opening
-                # leg so the Brain manages it as one campaign spanning positions.
-                self._campaign_open(symbol, direction, campaign, decision)
             else:
                 self._orig_intended += 1
                 logger.info(
