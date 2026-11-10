@@ -367,3 +367,23 @@ def test_calibration_neutral_factor_leaves_confidence_unchanged():
     )
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.decision.confidence == pytest.approx(0.8)
+
+
+def test_competing_hypotheses_do_not_convert_uncalibrated_confidence_to_probability():
+    hypotheses = CognitiveBrain._build_hypotheses(
+        "LONG",
+        2.0,
+        1.0,
+        "primary explanation",
+        ["competing explanation A", "competing explanation B"],
+        "invalidation",
+        ["evidence-1"],
+        ["evidence-2"],
+    )
+
+    assert len(hypotheses) == 3
+    assert all(hypothesis.probability is None for hypothesis in hypotheses)
+    assert all(
+        hypothesis.probability_semantics == "not_calibrated"
+        for hypothesis in hypotheses
+    )
