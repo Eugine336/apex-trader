@@ -38,6 +38,7 @@ served out of it, and they must NOT be conflated in multi-tenant mode:
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -164,7 +165,15 @@ def data_dir_is_safe(path: Path | None = None) -> tuple[bool, str]:
     # external data-repository link too; otherwise a safe data junction nested
     # under the source checkout is incorrectly rejected as a plain directory.
     is_junction = getattr(d, "is_junction", None)
-    if d.is_symlink() or (callable(is_junction) and is_junction()):
+    is_reparse_point = False
+    try:
+        attributes = getattr(d.lstat(), "st_file_attributes", 0)
+        is_reparse_point = bool(
+            attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except OSError:
+        pass
+    if d.is_symlink() or (callable(is_junction) and is_junction()) or is_reparse_point:
         return True, "symlink/junction"
     if (d / ".git").exists():
         return True, "dedicated git repo"
