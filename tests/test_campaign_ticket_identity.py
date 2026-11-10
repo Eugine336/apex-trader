@@ -117,7 +117,7 @@ def test_campaign_registry_rejects_ambiguous_or_wrong_decision_ticket_attachment
     live = registry.get_status()["live"]
     assert len(live) == 1
     assert live[0]["open_ticket_bindings"] == []
-    assert live[0]["open_legs"] == 2
+    assert live[0]["open_legs"] == 1
 
 
 def test_explicit_open_rejection_removes_only_the_unfilled_pending_leg():
@@ -183,6 +183,7 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     assert status["live"][0]["open_ticket_bindings"] == [
         {"platform": "deriv", "ticket": "shared-ticket"}
     ]
+    assert status["live"][0]["open_legs"] == 1
     assert status["recent"] == []
 
     # The campaign finalizes only after its last exact broker ticket closes.
@@ -193,6 +194,7 @@ def test_campaign_registry_close_removes_only_the_matching_platform_ticket():
     final_status = registry.get_status()
     assert final_status["live"] == []
     assert final_status["recent"][-1]["campaign_id"] == "campaign-close"
+    assert final_status["recent"][-1]["open_legs"] == 0
 
 
 def test_terminal_close_keeps_campaign_alive_while_an_unbound_open_leg_is_pending():
