@@ -218,7 +218,6 @@ The effective values depend on config.py plus environment overrides. Review runt
 
 | Variable | Meaning |
 |---|---|
-| `COGNITION_GATE_MODE` | Default `authoritative`: stale/missing cognition cannot silently authorize a legacy exposure-increasing route |
 | `COGNITION_EV_PRIMARY_GATE` | Default `true`: requires positive net expected value after estimated costs, not only confidence |
 | `COGNITION_EVENT_MIN_INTERVAL_SECONDS` | Default `1`: material market changes can wake native cognition once per second per symbol; provider calls have separate throttles |
 | `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
