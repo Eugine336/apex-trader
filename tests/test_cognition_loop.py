@@ -766,7 +766,7 @@ def test_management_shadow_records_but_does_not_call_sink():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="shadow",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     st = loop.get_status()
     assert st["manage_intended"] == 1
@@ -780,7 +780,7 @@ def test_management_live_calls_sink():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     st = loop.get_status()
     assert st["manage_submitted"] == 1
@@ -806,7 +806,7 @@ def test_management_hold_is_noop():
         _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert loop.get_status()["manage_intended"] == 0
     assert calls == []
@@ -818,7 +818,7 @@ def test_management_off_skips_entirely():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos()], management_mode="off",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert loop.get_status()["manage_intended"] == 0
     assert calls == []
@@ -846,7 +846,7 @@ def test_event_reason_manages_symbol_immediately():
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
         clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.reason_symbol_now("XAUUSD")
     st = loop.get_status()
     assert st["manage_submitted"] == 1
@@ -864,7 +864,7 @@ def test_event_management_respects_per_symbol_floor():
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
         clock=clk,
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.reason_symbol_now("XAUUSD")
     loop.reason_symbol_now("XAUUSD")  # within the 8s floor → throttled
     assert len(calls) == 1
@@ -881,7 +881,7 @@ def test_periodic_backstop_manages_unreasoned_symbol():
         _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: ["OTHER"],
         position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert len(calls) == 1 and calls[0].kind == "close"
 
@@ -1030,7 +1030,7 @@ def test_reallocation_candidate_cannot_create_a_partial_without_brain_plan():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert calls == []
     assert loop.get_status()["reallocations"] == 0
@@ -1074,7 +1074,7 @@ def test_reallocation_executes_only_the_brain_authored_concept_plan():
         clock=_ManualClock(),
     )
     calls = []
-    loop.set_management_sink(lambda action, pos: calls.append(action) or True)
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True) or True)
     issued = loop._maybe_reallocate(positions, now=100.0)
     assert issued == 1
     assert len(calls) == 1
@@ -1101,7 +1101,7 @@ def test_reallocation_brain_veto_prevents_mechanical_trim():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
     assert loop.get_status()["reallocations"] == 0
@@ -1121,7 +1121,7 @@ def test_reallocation_disabled_is_noop():
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=False, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
 
@@ -1202,7 +1202,7 @@ def test_reallocation_native_scale_out_without_concept_plan_does_not_invent_trim
         campaign_registry=CampaignRegistry(enabled=True),
         reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert brain.managed >= 1, "native review was never consulted"
     assert calls == []
@@ -1219,7 +1219,7 @@ def test_reallocation_native_hold_still_vetoes_trim_when_advisor_down():
         campaign_registry=CampaignRegistry(enabled=True),
         reallocation_enabled=True, clock=_ManualClock(),
     )
-    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
     assert loop.get_status()["reallocations"] == 0
