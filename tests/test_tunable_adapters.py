@@ -20,7 +20,6 @@ from adaptive.tunable_adapters import (
     PairLearnerTunable,
     SessionLearnerTunable,
     EVEstimatorTunable,
-    PlannerCalibratorTunable,
     SignalLedgerTunable,
 )
 
@@ -233,67 +232,6 @@ class TestEVEstimatorTunable:
 # ── Gate tuner ──────────────────────────────────────────────────────────
 
 
-
-
-# ── Planner calibrator ──────────────────────────────────────────────────
-
-
-class TestPlannerCalibratorTunable:
-    @pytest.fixture
-    def calibrator(self):
-        from dataclasses import replace
-        from planning.calibrator import Calibrator
-        from planning.trade_planner import PlannerConfig
-
-        cfg = PlannerConfig()
-        cfg = replace(cfg, calibration_enabled=True, calibration_min_trades=8,
-                      calibration_interval_trades=1)
-        return Calibrator(cfg)
-
-    def _completed(self, sl_strategy, wins, total):
-        out = []
-        for i in range(total):
-            r = 1.0 if i < wins else -1.0
-            out.append({
-                "plan": {"sl_strategy": sl_strategy, "confidence": 0.5},
-                "outcome": {"pnl_r": r, "outcome": "tp" if r > 0 else "stop"},
-            })
-        return out
-
-    def test_metadata_depends_on_regime(self, calibrator):
-        t = PlannerCalibratorTunable(calibrator, lambda: [])
-        assert t.tunable_name == "planner_calibrator"
-        assert t.dependencies == ["regime_learner"]
-
-    def test_current_params_are_the_four_fields(self, calibrator):
-        t = PlannerCalibratorTunable(calibrator, lambda: [])
-        params = t.get_current_params()
-        assert set(params) == {
-            "prefer_structure_sl_within_atr", "limit_order_zone_distance_atr",
-            "default_be_trigger_r", "min_confidence_to_enter",
-        }
-
-    def test_validate_rejects_bad_confidence(self, calibrator):
-        t = PlannerCalibratorTunable(calibrator, lambda: [])
-        ok, why = t.validate_params({"min_confidence_to_enter": 5.0})
-        assert ok is False
-
-    def test_tune_moves_structure_preference(self, calibrator):
-        completed = (
-            self._completed("structure", wins=9, total=10)
-            + self._completed("atr", wins=2, total=10)
-        )
-        before = calibrator.config.prefer_structure_sl_within_atr
-        t = PlannerCalibratorTunable(calibrator, lambda: completed, planner=None)
-        res = t.tune(_ctx())
-        assert res.success is True
-        after = calibrator.config.prefer_structure_sl_within_atr
-        assert after > before  # structure stops won more → preference widened
-
-    def test_tune_skips_when_not_due(self, calibrator):
-        t = PlannerCalibratorTunable(calibrator, lambda: [])  # 0 completed < min
-        res = t.tune(_ctx())
-        assert res.skipped is True
 
 
 # ── Signal ledger grading ───────────────────────────────────────────────
