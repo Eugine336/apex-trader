@@ -34,6 +34,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from runtime_paths import data_dir
+
 
 class NewsImpactTracker:
     """Captures price at news-event time and measures the reaction 30 min later."""
@@ -47,7 +49,7 @@ class NewsImpactTracker:
         capture_window_min: float = 6.0,
         max_pending_age_min: float = 180.0,
         atr_tf: str = "M5",
-        state_path: str = "data/news_impact_pending.json",
+        state_path: str | None = None,
     ) -> None:
         self._calibration_engine = calibration_engine
         self._news_guard = news_guard
@@ -55,7 +57,11 @@ class NewsImpactTracker:
         self._capture_window_min = float(capture_window_min)
         self._max_pending_age_min = float(max_pending_age_min)
         self._atr_tf = atr_tf
-        self.state_path = state_path
+        # Default mutable state follows the same isolated runtime-data root as
+        # the rest of Apex. Never resolve a relative data/ path against cwd.
+        self.state_path = str(state_path) if state_path is not None else str(
+            data_dir() / "news_impact_pending.json"
+        )
         # key -> {symbol, currency, event_iso, price_at_event, atr_pips, pip_size}
         self._pending: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
