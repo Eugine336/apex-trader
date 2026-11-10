@@ -1350,20 +1350,23 @@ def test_concept_cycle_snapshot_hooks_are_forwarded():
 
 
 def test_live_management_derives_stable_action_id_from_decision_and_exact_ticket():
-    action_ids = []
-    for _ in range(2):
-        calls = []
-        loop = CognitionLoop(
-            _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
-            position_source=lambda: [_mgmt_pos()], management_mode="live",
-        )
-        loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
-        assert loop._manage_one(_mgmt_pos()) == 1
-        assert len(calls) == 1
-        action_ids.append(calls[0].action_id)
+    import hashlib
 
-    assert action_ids[0].startswith("brain-management-")
-    assert action_ids[0] == action_ids[1]
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: (calls.append(action) or True))
+    assert loop._manage_one(_mgmt_pos()) == 1
+    assert len(calls) == 1
+    action = calls[0]
+    material = "|".join((
+        "apex-management-action-v1", action.decision_id, "mt5", "ticket-XAUUSD",
+        action.kind, action.milestone_id,
+    ))
+    expected = "brain-management-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    assert action.action_id == expected
 
 
 def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
