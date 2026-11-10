@@ -46,7 +46,7 @@ def verify_quote_source_provenance(
         )
         sources = raw_fields.get("source_clock_sources")
         source_time = _finite(raw_fields.get("time_msc"))
-        if source_time is None:
+        if source_time is None or source_time <= 0.0:
             source_time = _finite(raw_fields.get("time"))
         return bool(
             str(raw_fields.get("source_timezone", "") or "").lower()
