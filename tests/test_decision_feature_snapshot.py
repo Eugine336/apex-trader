@@ -101,6 +101,11 @@ def test_campaign_translation_carries_the_exact_decision_snapshot():
         symbol="XAUUSD",
         direction="LONG",
         desired_exposure=0.2,
+        expected_value=0.7,
+        expected_return_r=0.8,
+        expected_cost_r=0.1,
+        expected_return_verified=True,
+        expected_return_source="verified-test-calibration-artifact",
         initial_execution_intent={
             "entry_price": 100.0,
             "sl": 99.0,
