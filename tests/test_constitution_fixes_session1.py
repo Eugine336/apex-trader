@@ -360,24 +360,24 @@ def test_v9_execution_cost_adapter_defaults_to_unverified():
     assert ev[0].measurements["cost_verified"] is False
 
 
-# ── V1 — the Brain attenuates an overconfident advisor ───────────────────────
+# ── V1 — advisor reasoning strength is descriptive, never synthesized ──────
 
-def test_v1_attenuates_overconfident_advisor():
-    # Advisor is very confident (0.9) but the evidence mean confidence is low
-    # (0.4) — the Brain must attenuate and record the synthesis.
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.9)),
-                         reward_r_default=2.0, min_expected_value=0.0).reason(
-        _evidence_state(conf=0.4))
-    synth = out.decision.questions_answered.get("brain_synthesis", "")
-    assert "continuously attenuated" in synth
-    # The recorded effective confidence is pulled below the advisor's 0.9.
-    assert out.decision.confidence < 0.9
+def test_evidence_does_not_attenuate_or_rewrite_advisor_strength():
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.9)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    ).reason(_evidence_state(conf=0.4))
+    assert out.decision.confidence == pytest.approx(0.9)
+    assert out.decision.questions_answered["confidence_authority"].startswith(
+        "descriptive advisor metadata"
+    )
+    assert "brain_synthesis" not in out.decision.questions_answered
 
 
-def test_v1_consistent_advisor_not_attenuated():
-    out = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)),
-                         reward_r_default=2.0, min_expected_value=0.0).reason(
-        _evidence_state(conf=0.9))
-    synth = out.decision.questions_answered.get("brain_synthesis", "")
-    assert "confidence unchanged" in synth
+def test_evidence_does_not_promote_advisor_strength():
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    ).reason(_evidence_state(conf=0.9))
     assert out.decision.confidence == pytest.approx(0.8)
+    assert "brain_synthesis" not in out.decision.questions_answered
