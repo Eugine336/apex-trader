@@ -1309,6 +1309,28 @@ class PlatformManager:
             )
         return list(snapshot.positions)
 
+    def get_utc_time_lower_bound(self, symbol: str) -> Optional[float]:
+        """Return the selected venue's verified UTC lower bound, or unknown.
+
+        The MT5 connector derives this from its independently witnessed,
+        monotonic-anchored broker clock. Platforms without an equivalent
+        verified authority remain unknown; callers must not substitute host
+        wall time when this method returns None.
+        """
+        try:
+            connector = self.get_connector(symbol)
+            provider = getattr(connector, "get_utc_time_lower_bound", None)
+            if not callable(provider):
+                return None
+            value = provider()
+            if value is None:
+                return None
+            result = float(value)
+            return result if math.isfinite(result) else None
+        except Exception as exc:
+            _pm_logger.debug("[platform_manager] UTC lower bound unavailable for {}: {}", symbol, exc)
+            return None
+
     def get_tick_history(self, symbol: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
         """Fetch historical ticks from the owning connector when supported."""
         connector = self.get_connector(symbol)
