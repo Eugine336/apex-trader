@@ -147,9 +147,14 @@ def _acceptance_summary(
         }
         spec = row.get("instrument_specification", {})
         spec_epoch = _finite(spec.get("source_timestamp_epoch"))
+        timestamp_uncertainty = _finite(spec.get("source_timestamp_uncertainty_seconds"))
         spec_timestamp_verified = bool(
             spec.get("source_timestamp_verified") is True
+            and spec.get("source_timestamp_semantics") == "broker_server_observation_time"
+            and spec.get("broker_server_clock_verified") is True
             and spec_epoch is not None and spec_epoch > 0.0
+            and timestamp_uncertainty is not None
+            and 0.0 <= timestamp_uncertainty <= 2.5
         )
         session_calendar_verified = bool(
             spec.get("broker_session_timezone_verified") is True
@@ -332,6 +337,9 @@ def audit_connector(
                 "specification_verified": spec.get("specification_verified") is True,
                 "source_timestamp_epoch": spec.get("source_timestamp_epoch"),
                 "source_timestamp_verified": spec.get("source_timestamp_verified") is True,
+                "source_timestamp_semantics": spec.get("source_timestamp_semantics"),
+                "source_timestamp_uncertainty_seconds": spec.get("source_timestamp_uncertainty_seconds"),
+                "broker_server_clock_verified": spec.get("broker_server_clock_verified") is True,
                 "broker_session_timezone": spec.get("broker_session_timezone"),
                 "currency_base": spec.get("currency_base"),
                 "currency_profit": spec.get("currency_profit"),
