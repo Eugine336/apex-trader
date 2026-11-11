@@ -243,7 +243,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 ### System 5 — compliance and portfolio allocation
 - PR #904 adds a durable portfolio admission reservation ledger for Brain-approved but not-yet-broker-confirmed OPEN intents.
 - Origination check→size→reserve→submit is serialized. Reservation-ledger lazy initialization is itself guarded so concurrent first-use cannot create separate locks/ledgers. Reservations participate in duplicate-pair and max-open-position checks, account heat, daily-loss remaining-room calculations, and portfolio pair/broker concentration plus correlation sizing.
-- Reservations survive event-store restart, link to broker pending-order IDs, release on broker-confirmed position visibility or explicit rejection, and release after broker-confirmed terminal pending-order reconciliation. Ambiguous broker outcomes retain the reservation.
+- Reservations survive event-store restart and link both market and pending OPENs to broker order IDs. Release requires exact position-ticket equality, verified MT5 entry-deal order→position attribution, or broker-confirmed terminal pending-order reconciliation/explicit rejection. An unrelated same-symbol/same-side position cannot release another order's reservation; ambiguous broker outcomes retain capacity.
 - **Still not accepted:** full supported-account owner-limit matrix, concurrency stress, portfolio correlation/whole-book fault injection, and owner-connected evidence.
 
 ### System 6 — execution integrity and broker mutation boundaries
@@ -254,7 +254,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 
 ### System 7 — position lifecycle and reconciliation
 - A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. A partial fill is also retained when the broker has not yet supplied a position ID: release now requires explicit broker volume evidence that the order was wholly unfilled, or exact fill attribution.
-- A durable reservation linked to a pending order is released only after terminal broker reconciliation; unresolved partial fills retain both lineage and reserved capacity.
+- A durable reservation is released only after exact market-fill order→position attribution or terminal pending-order reconciliation; unresolved partial fills and unlinked market acknowledgements retain both lineage and reserved capacity.
 - **Still not accepted:** full market/pending/partial-fill/manual-close/partial-close/restart/reconciliation matrix against owner broker history.
 
 ### System 8 — learning and statistical validation
