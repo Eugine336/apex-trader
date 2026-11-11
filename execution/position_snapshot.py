@@ -1,6 +1,6 @@
 """APEX TRADER — Position Snapshot (Phase 4).
 
-A frozen, point-in-time copy of a ManagedPosition plus its associated
+A frozen, point-in-time copy of a broker position plus its associated
 persistent management state.  Workers receive snapshots so they never
 touch live mutable state — all broker interaction is deferred to the
 Action Executor (Phase 6) via Intent objects.
@@ -53,7 +53,7 @@ class PositionSnapshot:
     """Immutable point-in-time view of a single open position.
 
     Combines data from ``ManagedPosition`` (broker-level tracking) and
-    ``ManagedTrade`` (management-level state: status, trailing, partials).
+    ``ManagementState`` (persistent per-ticket lifecycle and broker-confirmation state).
     """
 
     # ── Identity ──────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ def build_position_snapshot(
     current_price: float = 0.0,
     score_history: tuple[int, ...] = (),
 ) -> PositionSnapshot:
-    """Build a PositionSnapshot from a ManagedPosition + optional ManagedTrade.
+    """Build a PositionSnapshot from a broker position + optional ManagementState.
 
     Accepts the live mutable objects and freezes their state. Safe to call
     from the trading loop thread — the returned snapshot is immutable.
