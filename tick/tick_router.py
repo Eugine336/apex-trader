@@ -72,11 +72,6 @@ class TickRouter:
         self._ticks_routed += 1
         self._bus.publish("raw_tick", tick)
         self._bus.publish(f"raw_tick:{tick.symbol}", tick)
-        if tick.source_timestamp_verified is True:
-            self._detector.on_tick(tick)
-            self._bus.publish("verified_tick", tick)
-            self._bus.publish(f"verified_tick:{tick.symbol}", tick)
-
         with self._lock:
             raw_cbs = list(self._raw_callbacks)
         for cb in raw_cbs:
@@ -87,6 +82,16 @@ class TickRouter:
                     "[tick-router] raw callback error: {} — {}",
                     type(exc).__name__, exc,
                 )
+
+        # Raw consumers (notably LiveCandleAggregator) must process the
+        # boundary-crossing tick before CandleCloseDetector synchronously
+        # publishes the close event. Otherwise close subscribers can observe
+        # the previous candle as still forming and miss its final completed
+        # state. Verified-tick wakes follow the same ordering.
+        if tick.source_timestamp_verified is True:
+            self._detector.on_tick(tick)
+            self._bus.publish("verified_tick", tick)
+            self._bus.publish(f"verified_tick:{tick.symbol}", tick)
 
         # The store and legacy "tick" events remain deliberately coalesced for
         # consumers that need a bounded, rate-limited working set. This is not
