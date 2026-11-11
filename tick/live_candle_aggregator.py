@@ -273,6 +273,8 @@ class LiveCandleAggregator:
                 ):
                     raise ValueError("completed-bar warmup timestamp is not UTC-aware")
                 row_epoch = row_time.tz_convert("UTC").timestamp()
+                if seeded_rows and row_epoch <= seeded_rows[-1]["timestamp_epoch"]:
+                    raise ValueError("completed-bar warmup rows are not strictly chronological")
             except Exception as exc:
                 # A frame-level completed-bar attestation cannot make a naive
                 # or non-UTC row safe: timestamp conversion would otherwise
