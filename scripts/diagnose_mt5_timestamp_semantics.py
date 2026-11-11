@@ -10,7 +10,9 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 import platform
+import sys
 import time
+from pathlib import Path
 from typing import Any
 
 
@@ -35,7 +37,17 @@ def _record(value: Any) -> dict[str, Any] | None:
     return {"repr": repr(value)}
 
 
+def _ensure_repository_root_on_path() -> Path:
+    """Make direct ``python scripts/...`` execution import repository packages."""
+    repository_root = Path(__file__).resolve().parents[1]
+    root = str(repository_root)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    return repository_root
+
+
 def main() -> int:
+    _ensure_repository_root_on_path()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", required=True, help="Exact broker-native MT5 symbol")
     parser.add_argument("--window-seconds", type=int, default=60)
