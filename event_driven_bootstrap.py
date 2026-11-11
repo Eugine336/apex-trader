@@ -3416,7 +3416,10 @@ class EventDrivenSystem:
             try:
                 from cognition.market_lenses import analyze_market_frames
                 evidence.extend(analyze_market_frames(
-                    symbol, data, source_includes_forming_bar=False,
+                    symbol,
+                    data,
+                    source_includes_forming_bar=False,
+                    concept_context={"analysis_epoch": utc_now_epoch},
                 ))
             except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
                 logger.debug("[cognition] universal market-lens evidence failed for {}: {}", symbol, exc)
