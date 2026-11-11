@@ -348,3 +348,16 @@ Two owner-host captures on the same Windows 11 MT5 terminal (JustMarkets-Demo, p
 
 ### Exact next action
 Poll PR #908's full CI matrix for HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`. Fix every failure without weakening assertions. Then obtain a second independent MT5 host capture, exercise sustained owner-host tick recovery, and complete the remaining clock lifecycle and Systems 2/6/7 integration gates.
+
+
+### CI failure correction — 2026-11-11
+
+- PR #908 head before correction: 9c51103125dadfaf3a8cd11c3020c4208c20c5d9. Gold Desk workflow run #2429 / job `gold-desk (3.11)` reported 3 failures in `tests/test_apex_identity_and_contextual_patterns.py`; 442 tests passed. The three failures all originated from the same fixture-contract defect: `_frames_with_breakout()` and `_frames_with_liquidity_reclaim()` passed `source_includes_forming_bar=True` but their synthetic DataFrames omitted the required `forming_bar_included=True` provenance attribute. The production reader correctly rejected those fixtures under the new provenance gate.
+- Corrected both test fixture builders to explicitly declare their included final forming row. No production validation was relaxed and no test assertion was weakened.
+- Correction commit: `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` on `fix/wp-t-timestamp-contract-recovery`; PR #908 remains draft.
+- Verification after correction: pending. The prior failed run is not evidence for the corrected head. The new head's CI must complete before this correction is marked verified.
+- Current WP-T status: implementation committed; integrated on PR branch; not yet verified/accepted. T-A1 through T-A10 remain OPEN. Second independent MT5 host, sustained feed, DST, clock lifecycle, and Systems 2/6/7 integration evidence remain outstanding.
+- Safety unchanged: no live broker mutations, host clock changes, real `.env` access, credential access, account changes, or runtime DB changes.
+
+### Exact next action
+Poll the new PR #908 head `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` for fresh Python 3.11/3.12, Gold Desk 3.11/3.12 and lint results. Diagnose and fix every failure at its source. Do not merge while checks are missing/failing or while the independent-host and operational acceptance gates remain open.
