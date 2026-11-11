@@ -3427,6 +3427,20 @@ class EventDrivenSystem:
             # System 2 — ingest live broker-truth instrument economics as neutral
             # evidence. Missing fields stay absent; registry/config fallbacks are
             # not mislabeled as broker-verified specifications.
+            utc_now_epoch = None
+            try:
+                utc_value = self._pm.get_utc_time_lower_bound(symbol)
+                if utc_value is not None and math.isfinite(float(utc_value)):
+                    utc_now_epoch = float(utc_value)
+            except Exception:
+                utc_now_epoch = None
+            evidence_ingested_at = (
+                utc_now_epoch if utc_now_epoch is not None else _time.time()
+            )
+            evidence_timestamp_basis = (
+                "verified_utc_lower_bound"
+                if utc_now_epoch is not None else "host_ingestion_time_unverified"
+            )
             try:
                 from cognition.contracts import Evidence, EvidenceDomain
                 spec_fn = getattr(self._pm, "get_symbol_spec", None)
@@ -3471,7 +3485,7 @@ class EventDrivenSystem:
                         confidence=1.0,
                         uncertainty=0.0,
                         measurements=measurements,
-                        timestamp_epoch=_time.time(),
+                        timestamp_epoch=evidence_ingested_at,
                         relevance_horizon_seconds=60.0,
                     ))
             except Exception as exc:  # noqa: BLE001 — missing specs remain missing
@@ -3499,6 +3513,7 @@ class EventDrivenSystem:
                             "broker_trading_sessions": broker_sessions,
                             "source": spec.get("source", "unknown"),
                             "source_verified": spec.get("source_verified") is True,
+                            "evidence_timestamp_basis": evidence_timestamp_basis,
                             "session_calendar_verified": False,
                             "broker_session_timezone_verified": (
                                 spec.get("broker_session_timezone_verified") is True
@@ -3506,9 +3521,10 @@ class EventDrivenSystem:
                             "broker_holiday_calendar_verified": (
                                 spec.get("broker_holiday_calendar_verified") is True
                             ),
+                            "evidence_timestamp_basis": evidence_timestamp_basis,
                             "clock_timezone": "broker_server_time",
                         },
-                        timestamp_epoch=_time.time(),
+                        timestamp_epoch=evidence_ingested_at,
                         relevance_horizon_seconds=900.0,
                     ))
             except Exception as exc:  # noqa: BLE001 — calendar evidence is optional context
@@ -3521,8 +3537,9 @@ class EventDrivenSystem:
                 from cognition.contracts import Evidence, EvidenceDomain
                 ctx = getattr(self, "_ctx", None)
                 session_engine = getattr(ctx, "session_engine", None)
-                if session_engine is not None:
-                    status = session_engine.get_status()
+                if session_engine is not None and utc_now_epoch is not None:
+                    utc_now = datetime.fromtimestamp(utc_now_epoch, tz=timezone.utc)
+                    status = session_engine.get_status(utc_now)
                     session_fields = {
                         "session_name": getattr(status, "current_session", None),
                         "session_open_minutes": getattr(status, "session_open_minutes", None),
@@ -3531,6 +3548,7 @@ class EventDrivenSystem:
                         "is_tradeable": getattr(status, "is_tradeable", None),
                         "best_pairs": getattr(status, "best_pairs", None),
                         "clock_timezone": "UTC",
+                        "evidence_timestamp_basis": "verified_utc_lower_bound",
                         "session_calendar_verified": False,
                         "source_verified": False,
                     }
