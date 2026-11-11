@@ -224,13 +224,27 @@ class ComplianceDivision:
         return CheckOutcome("spread_ok", False, why)
 
     def _check_duplicate(
-        self, c: ComplianceCandidate, b: ComplianceBook, _a: ComplianceAccount
+        self, c: ComplianceCandidate, b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
         sym = c.symbol.upper()
-        direction = c.direction.upper()
+        direction_raw = c.direction.upper()
+        direction = "LONG" if direction_raw in {"BUY", "LONG"} else (
+            "SHORT" if direction_raw in {"SELL", "SHORT"} else direction_raw
+        )
         for pos in b.open_positions:
-            psym = str(getattr(pos, "symbol", "") or getattr(pos, "pair", "")).upper()
-            pdir = str(getattr(pos, "direction", "")).upper()
+            if isinstance(pos, dict):
+                position_account = str(pos.get("account_key") or "")
+                psym = str(pos.get("symbol") or pos.get("pair") or "").upper()
+                pdir_raw = str(pos.get("direction") or "").upper()
+            else:
+                position_account = str(getattr(pos, "account_key", "") or "")
+                psym = str(getattr(pos, "symbol", "") or getattr(pos, "pair", "")).upper()
+                pdir_raw = str(getattr(pos, "direction", "")).upper()
+            if position_account and position_account != a.account_key:
+                continue
+            pdir = "LONG" if pdir_raw in {"BUY", "LONG"} else (
+                "SHORT" if pdir_raw in {"SELL", "SHORT"} else pdir_raw
+            )
             if psym == sym and pdir == direction:
                 return CheckOutcome(
                     "duplicate",
@@ -378,9 +392,20 @@ class ComplianceDivision:
         return CheckOutcome("drawdown_not_frozen", True, f"drawdown mode={status.mode}")
 
     def _check_max_positions(
-        self, _c: ComplianceCandidate, b: ComplianceBook, _a: ComplianceAccount
+        self, _c: ComplianceCandidate, b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
-        open_count = len(b.open_positions)
+        # The broker book is aggregated across connected accounts. Position
+        # limits are account-scoped; unknown account identity remains included
+        # conservatively rather than being silently excluded.
+        open_count = 0
+        for position in b.open_positions:
+            position_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if not position_account or position_account == a.account_key:
+                open_count += 1
         if open_count >= self._max_open_positions:
             return CheckOutcome(
                 "max_positions",
