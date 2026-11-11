@@ -1283,3 +1283,45 @@ class TestPendingOrderLifecycle:
         assert recovered["attribution_status"] == "unresolved_position_ticket"
         assert recovered["broker_record"]["volume_current"] == 0.06
         store.close()
+
+def test_mt5_poll_gate_uses_verified_utc_not_host_wall_clock(monkeypatch):
+    from event_driven_bootstrap import EventDrivenSystem
+    import event_driven_bootstrap as bootstrap_module
+
+    trusted_epoch = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc).timestamp()
+
+    class _Session:
+        observed = None
+
+        def get_status(self, utc_now):
+            self.observed = utc_now
+            return SimpleNamespace(current_session="WEEKEND")
+
+    session = _Session()
+    system = object.__new__(EventDrivenSystem)
+    system._ctx = SimpleNamespace(session_engine=session)
+    system._config = SimpleNamespace(enabled_pairs=["XAUUSD"])
+    system._pm = SimpleNamespace(
+        get_utc_time_lower_bound=lambda symbol: trusted_epoch,
+    )
+    monkeypatch.setattr(bootstrap_module, "is_always_open", lambda _symbol: False)
+
+    assert system._should_poll_symbol("XAUUSD") is False
+    assert session.observed == datetime.fromtimestamp(trusted_epoch, tz=timezone.utc)
+
+
+def test_mt5_poll_gate_fails_open_when_verified_utc_is_unavailable(monkeypatch):
+    from event_driven_bootstrap import EventDrivenSystem
+    import event_driven_bootstrap as bootstrap_module
+
+    class _Session:
+        def get_status(self, _utc_now):
+            raise AssertionError("session engine must not receive an unverified time")
+
+    system = object.__new__(EventDrivenSystem)
+    system._ctx = SimpleNamespace(session_engine=_Session())
+    system._config = SimpleNamespace(enabled_pairs=["XAUUSD"])
+    system._pm = SimpleNamespace(get_utc_time_lower_bound=lambda _symbol: None)
+    monkeypatch.setattr(bootstrap_module, "is_always_open", lambda _symbol: False)
+
+    assert system._should_poll_symbol("XAUUSD") is True
