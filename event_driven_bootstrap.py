@@ -6147,10 +6147,14 @@ class EventDrivenSystem:
                             entry_context["lots"] = fill_lots
                             entry_context["entry_price"] = fill_price
                     meta["attributed_lots"] = fill_lots
-                if terminal and (
-                    status not in {"FILLED", "PARTIALLY_FILLED_TERMINAL"}
-                    or meta.get("attributed")
-                ):
+                terminal_without_fill = (
+                    status in {"CANCELLED", "EXPIRED", "REJECTED"}
+                    and not broker_position_id
+                )
+                terminal_fill_attributed = bool(
+                    broker_position_id and meta.get("attributed")
+                )
+                if terminal and (terminal_without_fill or terminal_fill_attributed):
                     store.emit(
                         event_type=DE.ORDER_RECONCILED, severity="INFO",
                         symbol=str(meta.get("symbol", "") or ""),
