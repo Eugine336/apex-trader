@@ -45,3 +45,28 @@ This is the durable session-to-session engineering ledger. The authoritative arc
 ### Exact next action
 Fetch and inspect, on `fix/mt5-clock-holdover-tick-integrity`, the full source of:
 `platforms/mt5/clock.py`, `platforms/mt5/mt5_connector.py`, `tick/models.py`, `tick/tick_sources.py`, `tick/tick_router.py`, `tick/tick_store.py`, `tick/live_candle_aggregator.py`, `tick/event_bus.py`, and relevant clock/tick tests. Build a caller/consumer map, identify the active lossy conversions and synchronization lifecycle defects, then implement the first complete production-path correction with regression tests. Do not claim tests were run unless an actual supported execution environment is available.
+
+
+### Source trace — findings and decisions (2026-11-11)
+- Inspected platforms/mt5/clock.py, relevant ranges in platforms/mt5/mt5_connector.py, tick/models.py, tick/tick_sources.py, tick/tick_router.py, tick/tick_store.py, tick/live_candle_aggregator.py, tick/candle_close_detector.py, cognition/concepts/tick_microstructure_readings.py, and clock/tick tests.
+- **High-priority timestamp contract conflict:** MetaQuotes' official Python docs state that returned tick/bar times are UTC. Existing Apex code treats tick epochs as broker-server labels and subtracts a measured offset in both get_price and get_ticks. The history poller passes UTC bounds and rejects rows outside those bounds; if returned epochs are UTC, offset subtraction shifts them out of range. This can explain a history-replay path that routes only latest-quote fallback. This remains a source-derived hypothesis pending actual owner-terminal raw samples and package/version evidence. Relevant docs: https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py and https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksfrom_py.
+- **Clock holdover:** cached state uncertainty is constant while cache age grows; first advancing tick can be used to establish a clock without a separate source-age proof.
+- **Restart recovery:** clock state, tick replay cursor, bounded dedup fingerprints and gap counters are process-local and reset on connect/restart.
+- **Gap recovery:** history replay is limited to 300 seconds. A longer gap causes cursor re-anchor and explicit log/counter, not recovery. The gap record is not durable.
+- **Tick delivery:** router emits raw/verified events and raw callbacks before coalescing; TickStore is a deliberately sampled working set, not a durable tape. Live candle aggregation is on raw callbacks.
+- **Precision correction:** MT5 time_msc is millisecond source precision; Python datetime microsecond resolution alone does not lose that precision. Keep raw integer epochs and avoid unsupported claims of nanosecond provider precision.
+- Updated docs/APEX_MT5_DATA_CAPABILITY_CONTRACT.md and docs/MT5_CLOCK_BRIDGE.md to record the official-doc discrepancy and require multi-host owner-host evidence before choosing normalization semantics.
+- Updated docs/WP_MT5_CLOCK_AUTHORITY_TICK_STREAM_INTEGRITY.md with detailed source trace findings and implementation order.
+
+### Current status
+- **Plan:** recorded.
+- **Source audit:** partial; initial high-risk call path traced, full consumer/caller inventory remains open.
+- **Implementation:** not yet changed.
+- **Tests:** not run.
+- **Production integration:** not verified.
+- **Owner-host acceptance:** not performed.
+- **Live broker mutation:** none; prohibited.
+- **Current branch HEAD:** see latest branch ref; all documentation changes above are committed to this branch. Do not assume PR exists.
+
+### Exact next action
+Resolve the timestamp semantics conflict with a focused executable test suite and owner-host raw sample: capture symbol_info_tick (time, time_msc), copy_ticks_range raw epochs and query bounds, API/package/terminal versions, account server identity, independent UTC witness and monotonic receipt times on at least two hosts. Then correct get_price and get_ticks as one coherent contract, add regression tests for non-zero offset and history-window inclusion, and execute focused clock/market-data/poller/candle/Brain tests in Python 3.11 and 3.12. Do not use offset-adjusted timestamps as verified UTC until this gate passes.
