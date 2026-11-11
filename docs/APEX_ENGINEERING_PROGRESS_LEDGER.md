@@ -409,3 +409,15 @@ Poll PR #908 for workflows attached to `da6eb1822ce43bf996996b5084feb8bd169b6b9c
 
 ### Exact next action
 Verify fresh CI on the latest branch head. Require full Python 3.11/3.12, Gold Desk 3.11/3.12 and lint. Confirm the indicator-emission regression and exactly-once conversion test both pass. Then continue WP-T owner-host operational evidence and the remaining System 2/6/7 integration gates. Do not close WP-T from CI alone.
+
+
+### Indicator-window architecture correction — 2026-11-11
+
+- The initial 200-row `_rows(return_tail_limit=...)` change passed the indicator-emission test but broke the established 32-row bounded-window performance contract. The subsequent 200-row assertion change was superseded and reverted; the performance invariant remains exactly one frame conversion with a 32-row general-purpose tail.
+- Final architecture correction: retain `return_tail_limit=32`; derive `indicator_bars = completed_rows[-200:]` from `full_rows` already produced by the same single conversion; exclude the forming bar before slicing; pass only `indicator_bars` to `_technical_indicator_evidence`. General market-lens calculations remain on the original 32-row `bars` view. This removes the root cause without increasing the general processing window or converting provider data twice.
+- Production correction commit: `a95ee4246169d3352d24b76454957ef706eb1938`. Performance assertion restored to the original 32-row contract in `fb260292c280045903ad9d44bef1ba4ffbf4f400`.
+- The full CI runs #4379 and #4380 were against earlier commits and failed on the expected obsolete 32-vs-200 tail assertion. They do not verify this final architecture. No CI runs are currently reported for the latest PR head. Local execution is unavailable in this connected GitHub-only session; do not claim the final correction passes until a fresh PR-triggered matrix runs.
+- PR #908 current head: `fb260292c280045903ad9d44bef1ba4ffbf4f400`; open/draft. No merge, live broker mutation or clock change.
+
+### Exact next action
+Trigger a fresh PR CI run against `fb260292c280045903ad9d44bef1ba4ffbf4f400` using a normal branch push/PR synchronize event (the available GitHub workflow-run reader currently reports no run for this head). Require both full Python versions, Gold Desk 3.11/3.12 and lint. Verify both indicator-family emission and the 32-row exactly-once conversion contract. Then continue independent-host MT5 capture, sustained tick continuity, DST, restart recovery, consumer audit and Systems 2/6/7 acceptance. Keep T-A1–T-A10 OPEN until evidence exists.
