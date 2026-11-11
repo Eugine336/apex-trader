@@ -295,7 +295,7 @@ class MT5Connector(BaseConnector):
                 and tick is None
             ):
                 return _holdover_state()
-            if now_mono < retry_after and cached is None:
+            if now_mono < retry_after:
                 return _holdover_state()
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
