@@ -168,10 +168,10 @@ class LiveCandleAggregator:
         """Seed the ring buffers from broker history before live ticks start.
 
         For each (symbol, timeframe) it fetches up to ``max_candles`` bars via
-        ``candle_fetcher`` and stores **all** returned rows as closed candles —
-        at warmup time every fetched bar (including the broker's in-progress
-        last bar) is treated as closed.  The first live tick then starts a
-        fresh forming candle.
+        ``candle_fetcher``. A frame is accepted only when its provider explicitly
+        attests ``completed_bars_verified=True`; an ordinary OHLCV frame is not
+        proof that its final row is closed. Unattested data is rejected rather
+        than guessed from host time or a potentially mismatched broker clock.
 
         Must be called BEFORE the live tick loops start so it cannot race a
         live tick for the same (symbol, timeframe).  Best-effort: any fetch or
@@ -185,7 +185,8 @@ class LiveCandleAggregator:
             Timeframes to seed (only supported ones are used).
         candle_fetcher : callable
             ``(symbol, timeframe, count) -> DataFrame | None`` with columns
-            ``time, open, high, low, close, volume`` (broker format).
+            ``time, open, high, low, close, volume`` and the explicit
+            ``completed_bars_verified=True`` frame attribute.
         per_symbol_timeout : float
             Max seconds to wait for a single symbol's seed to complete.
 
@@ -251,6 +252,14 @@ class LiveCandleAggregator:
     ) -> bool:
         df = candle_fetcher(symbol, tf, self._max_candles)
         if df is None or getattr(df, "empty", True):
+            return False
+        attrs = getattr(df, "attrs", {})
+        if not isinstance(attrs, dict) or attrs.get("completed_bars_verified") is not True:
+            logger.warning(
+                "[live-candles] warmup {} {} skipped — provider did not attest "
+                "that every returned bar is complete",
+                symbol, tf,
+            )
             return False
         tf_secs = _TF_SECONDS[tf]
         seeded_rows: list[dict] = []
