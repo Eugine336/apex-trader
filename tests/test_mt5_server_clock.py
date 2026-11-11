@@ -481,3 +481,18 @@ def test_independent_utc_lower_bound_caches_monotonic_consensus(monkeypatch):
     assert second > first
     assert calls == ["query"]
     clear_independent_utc_clock_cache()
+
+def test_clock_state_without_monotonic_anchor_never_uses_host_wall_time():
+    import pytest
+    from platforms.mt5.clock import MT5ServerClockState
+
+    state = MT5ServerClockState(
+        server="JustMarkets-Demo",
+        offset_seconds=7200.0,
+        observed_server_epoch=1_800_007_200,
+        observed_gmt_epoch=1_800_000_000,
+        file_age_seconds=0.0,
+    )
+    with pytest.raises(ValueError, match="host wall time is not an authority"):
+        state.server_now_epoch()
+    assert state.server_now_epoch(now_epoch=1_800_000_010.0) == 1_800_007_210.0
