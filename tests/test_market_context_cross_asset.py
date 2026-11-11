@@ -38,6 +38,9 @@ def _frame(start, closes, *, symbol, naive=False):
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "completed_bars_verified": True,
+        "forming_bar_included": False,
     })
     return frame
 
@@ -166,3 +169,28 @@ def test_money_per_price_rejects_unverified_or_invalid_broker_spec():
         "trade_tick_size": 0.01,
     })
     assert system._money_per_price("XAUUSD", 2.0) == 0.0
+
+
+
+def test_confirmed_candle_fetcher_requests_and_requires_completed_bars():
+    start = datetime.now(timezone.utc) - timedelta(hours=3)
+    completed = _frame(start, [2000 + index for index in range(32)], symbol="XAUUSD")
+
+    class _CompletedBarsPM:
+        def __init__(self, frame):
+            self.frame = frame
+            self.include_forming_values = []
+
+        def fetch_market_data(self, symbol, timeframes, count, *, include_forming=True):
+            self.include_forming_values.append(include_forming)
+            return {timeframes[0]: self.frame}
+
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = _CompletedBarsPM(completed)
+
+    assert system._fetch_candles("XAUUSD", "H1", 64) is completed
+    assert system._pm.include_forming_values == [False]
+
+    completed.attrs["completed_bars_verified"] = False
+    assert system._fetch_candles("XAUUSD", "H1", 64) is None
+    assert system._pm.include_forming_values == [False, False]
