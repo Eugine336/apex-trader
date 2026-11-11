@@ -689,6 +689,49 @@ class PositionEvaluator:
         except Exception:
             return None
 
+    def _fetch_completed_candles(
+        self, symbol: str, timeframe: str, count: int,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch only provider-attested completed bars for live-candle warmup."""
+        try:
+            data = self._pm.fetch_market_data(
+                symbol, [timeframe], count, include_forming=False,
+            )
+            frame = (data or {}).get(timeframe)
+            attrs = getattr(frame, "attrs", {}) if frame is not None else {}
+            if not (
+                isinstance(attrs, dict)
+                and frame is not None
+                and not getattr(frame, "empty", True)
+                and attrs.get("source_timestamp_verified") is True
+                and attrs.get("source_timezone") == "UTC"
+                and attrs.get("source_symbol") == str(symbol or "").strip().upper()
+                and attrs.get("source_timestamp_unit") == "unix_seconds"
+                and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+                and bool(str(attrs.get("source_broker", "") or "").strip())
+                and attrs.get("completed_bars_verified") is True
+                and attrs.get("forming_bar_included") is False
+                and "time" in frame.columns
+                and pd.api.types.is_datetime64tz_dtype(frame["time"].dtype)
+                and str(frame["time"].dt.tz) == "UTC"
+                and not frame["time"].isna().any()
+                and not frame["time"].duplicated().any()
+                and frame["time"].is_monotonic_increasing
+            ):
+                logger.warning(
+                    "[event-driven] completed candle warmup unavailable for {}/{} — "
+                    "provider did not attest closed UTC bars",
+                    symbol, timeframe,
+                )
+                return None
+            return frame
+        except Exception as exc:
+            logger.warning(
+                "[event-driven] completed candle fetch failed {}/{}: {}",
+                symbol, timeframe, exc,
+            )
+            return None
+
     def _safe_pip_size(self, symbol: str) -> float:
         try:
             spec = (
@@ -1226,12 +1269,6 @@ class EventDrivenSystem:
         # Kept distinct from ``self._wm_store`` so developing data can never
         # corrupt confirmed, non-repainting WorldModels.
         self._developing_wm_store = WorldModelStore()
-        # Session 26 — continuous (sub-candle) thesis re-evaluation state. The
-        # developing store fires ``_on_developing_update`` on every publish; a
-        # per-symbol monotonic timestamp debounces bursts so several TF publishes
-        # landing together can't re-evaluate the same symbol repeatedly.
-        self._developing_reeval_at: dict[str, float] = {}
-        self._developing_reeval_lock = threading.Lock()
 
         # ── Learned analysis edge ────────────────────────────────────
         # Bounded, default-neutral multipliers that make the analysis
@@ -1403,10 +1440,9 @@ class EventDrivenSystem:
         )
 
         # ── Developing analysis loop (Phase 2) ───────────────────────
-        # Background thread that runs the brain modules on forming candles from
-        # the LiveCandleAggregator and publishes to the developing store. Opt-in
-        # via config.developing_analysis.enabled (default True). Purely additive
-        # — failures never affect the confirmed path.
+        # Background observer computes provisional forming-bar facts into a
+        # separate store used only by the position-management advisory. It is
+        # not connected to cognition wakes or the confirmed Brain data path.
         self._developing_loop = None
         _dev_cfg = getattr(self._config, "developing_analysis", None)
         if _dev_cfg is None:
@@ -1427,21 +1463,9 @@ class EventDrivenSystem:
                 )
                 self._developing_loop = None
 
-        # Session 26 — wire the developing store's change notification to the
-        # continuous thesis re-evaluation. Registered whenever the developing
-        # loop is live so a sub-candle probability shift updates the thesis the
-        # instant it publishes, not on the next candle close. Fully guarded
-        # (``_on_developing_update`` no-ops when the engine/config is absent or
-        # continuous re-eval is disabled), so this is behaviour-neutral until
-        # both the developing loop and a ThesisEngine are present.
-        if self._developing_loop is not None:
-            try:
-                self._developing_wm_store.set_on_publish(self._on_developing_update)
-            except Exception as exc:
-                logger.warning(
-                    "[event-driven] developing thesis re-eval wiring failed: {}",
-                    exc,
-                )
+        # Developing-bar observations remain isolated to the management advisory
+        # and observer store. They are deliberately not wired to cognition wakes:
+        # the Brain is awakened by verified ticks and completed candle closes only.
 
         # ── Inter-candle structural interaction detector (Violation #2) ──
         # A lightweight tick-driven detector that watches the live price against
@@ -1645,6 +1669,7 @@ class EventDrivenSystem:
         self._mt5_poller = MT5TickPoller(
             self._pm, self._tick_router, mt5_symbols,
             should_poll=self._should_poll_symbol,
+            checkpoint_store=get_event_store(),
         )
         self._deriv_adapter = DerivTickAdapter(
             self._pm, self._tick_router, deriv_symbols,
@@ -3084,40 +3109,6 @@ class EventDrivenSystem:
 
         return _sink
 
-    def _cognition_developing_bias(self, symbol: str) -> dict:
-        """Fresher forming-bar structural alignment for one symbol, for cognition.
-
-        Returns the DEVELOPING WorldModel's non-directional
-        ``multi_tf_alignment`` dict — the between-close STRUCTURAL measurements
-        computed on the still-forming bar (Violation V5: no pre-computed
-        directional bias). The consolidator turns it into one short-lived
-        multi-timeframe Evidence so the Brain reacts to developing structural
-        shifts without waiting for the next candle close. Fail-safe: returns
-        ``{}`` when the store is empty or on any fault.
-        """
-        try:
-            store = self._developing_wm_store
-            if store is None:
-                return {}
-            wm = store.get(symbol)
-            if wm is None:
-                return {}
-            alignment = wm.multi_tf_alignment_dict()
-            try:
-                # This is when the WorldModel was published, not the broker
-                # timestamp of every underlying forming candle. Keep it as
-                # generation metadata; it cannot establish source-time authority.
-                alignment["model_generated_at_epoch"] = wm.timestamp.timestamp()
-            except (AttributeError, TypeError, ValueError, OverflowError, OSError):
-                alignment["model_generated_at_epoch"] = None
-            alignment.pop("source_timestamp_epoch", None)
-            alignment["source_timestamp_verified"] = False
-            alignment["provisional"] = True
-            alignment["data_basis"] = "developing_world_model"
-            return alignment
-        except Exception as exc:  # noqa: BLE001 — never break the cognition loop
-            logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
-            return {}
 
     def _cognition_cross_asset_evidence(self, symbol: str, primary_data: dict) -> list:
         """Calculate synchronized cross-asset return associations from broker bars.
@@ -3144,7 +3135,7 @@ class EventDrivenSystem:
             if not related or self._pm is None:
                 return []
 
-            def _closed_series(frame, drop_forming: bool, expected_symbol: str):
+            def _closed_series(frame, expected_symbol: str):
                 if frame is None or not hasattr(frame, "columns"):
                     return None
                 attrs = getattr(frame, "attrs", {})
@@ -3156,13 +3147,16 @@ class EventDrivenSystem:
                     and attrs.get("source_timestamp_unit") == "unix_seconds"
                     and attrs.get("source_timestamp_origin") == "broker_ohlcv"
                     and bool(str(attrs.get("source_broker", "") or "").strip())
+                    and attrs.get("source_timezone") == "UTC"
+                    and attrs.get("completed_bars_verified") is True
+                    and attrs.get("forming_bar_included") is False
                 ):
                     return None
                 if "time" not in frame.columns or "close" not in frame.columns:
                     return None
-                # The primary snapshot includes a forming bar; related fetches
-                # explicitly request include_forming=False and are already closed.
-                data = frame.iloc[:-1].copy() if drop_forming else frame.copy()
+                # Both primary and related inputs must carry provider-backed
+                # completed-bar attestation; no positional forming-row guess.
+                data = frame.copy()
                 if len(data) < 22:
                     return None
                 timestamps = []
@@ -3186,7 +3180,7 @@ class EventDrivenSystem:
 
             primary_frame = (primary_data or {}).get("H1")
             primary = _closed_series(
-                primary_frame, drop_forming=True, expected_symbol=symbol,
+                primary_frame, expected_symbol=symbol,
             )
             if not primary:
                 return []
@@ -3201,7 +3195,7 @@ class EventDrivenSystem:
                     if related_frame is None:
                         continue
                     related_series = _closed_series(
-                        related_frame, drop_forming=False, expected_symbol=related_symbol,
+                        related_frame, expected_symbol=related_symbol,
                     )
                     if not related_series:
                         continue
@@ -3698,56 +3692,6 @@ class EventDrivenSystem:
         except Exception:  # noqa: BLE001
             return None
 
-    def _on_developing_update(self, symbol: str) -> None:
-        """Developing-store publish hook — wake the Brain on a sub-candle shift.
-
-        Registered via ``WorldModelStore.set_on_publish`` so a forming-bar
-        probability shift re-engages cognition the instant it publishes, rather
-        than waiting on the next candle-close EventBus tick. The continuous
-        thesis re-evaluation this once drove was retired with the ThesisEngine;
-        the live continuous-cognition equivalent is the event-driven Brain nudge,
-        which this delegates to. Fully guarded (the nudge no-ops when the
-        cognition loop or a developing bias is absent) and never raises — a
-        consumer fault must never break the developing-publish path.
-        """
-        try:
-            self._nudge_cognition_on_developing(symbol)
-        except Exception as exc:  # noqa: BLE001 — never disturb the publish path
-            logger.debug(
-                "[event-driven] developing update hook failed for {}: {}",
-                symbol, exc,
-            )
-
-    def _nudge_cognition_on_developing(self, symbol: str) -> None:
-        """Wake the Brain on a meaningful forming-bar shift (event-driven cadence).
-
-        Hands the loop a NON-DIRECTIONAL change magnitude (the forming-bar
-        conviction/activity level), never a direction: cognition must not be
-        gated on a precomputed directional bias (Constitution §XXIV / §VII Q25).
-        The loop decides — under its own magnitude-delta trigger and per-symbol
-        floor — whether to reason immediately, on its OWN thread, so this never
-        blocks the developing-publish path on an LLM call. Best-effort.
-        """
-        try:
-            ctx = self._ctx
-            loop = getattr(ctx, "cognition_loop", None) if ctx is not None else None
-            if loop is None:
-                return
-            nudge = getattr(loop, "maybe_reason_on_change", None)
-            if not callable(nudge):
-                return
-            bias = self._cognition_developing_bias(symbol)
-            if not bias:
-                return
-            # Non-directional magnitude only — how much the forming-bar read has
-            # shifted, not which way. Direction is never passed to the wake.
-            try:
-                magnitude = float(bias.get("confidence", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                magnitude = 0.0
-            nudge(symbol, magnitude)
-        except Exception as exc:  # noqa: BLE001 — never disturb the developing loop
-            logger.debug("[cognition] developing nudge failed for {}: {}", symbol, exc)
 
     def _nudge_cognition_on_tick_change(self, symbol: str, magnitude: float) -> None:
         """Wake the Brain on a meaningful tick-driven state change (Part XII).
@@ -4069,7 +4013,7 @@ class EventDrivenSystem:
         try:
             from tick.candle_close_detector import SUPPORTED_TIMEFRAMES
             self._live_candle_aggregator.warmup(
-                symbols, list(SUPPORTED_TIMEFRAMES), self._fetch_candles,
+                symbols, list(SUPPORTED_TIMEFRAMES), self._fetch_completed_candles,
             )
         except Exception as exc:
             logger.warning(
@@ -4162,13 +4106,9 @@ class EventDrivenSystem:
             if _cog_loop is not None and bool(
                 getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
             ):
-                # Also feed the fresher forming-bar read: the developing store's
-                # bias becomes one short-lived multi-timeframe Evidence so the
-                # Brain reacts between candle closes, not only on close.
-                try:
-                    _cog_loop.set_developing_source(self._cognition_developing_bias)
-                except Exception as exc:
-                    logger.debug("[event-driven] developing-source wiring failed: {}", exc)
+                # Forming-bar data is intentionally not registered as a Brain
+                # evidence source. Cognition uses verified ticks for wake cadence
+                # and completed, provenance-bearing bars for analysis.
                 # Verified round-trip cost evidence is a mandatory input to net EV.
                 try:
                     _cog_loop.set_execution_cost_source(self._cognition_execution_cost)
@@ -7096,13 +7036,8 @@ class EventDrivenSystem:
     def _fetch_candles(
         self, symbol: str, timeframe: str, count: int,
     ) -> Optional[pd.DataFrame]:
-        """Candle fetcher for CandleCloseHandler — wraps PlatformManager."""
-        try:
-            data = self._pm.fetch_market_data(symbol, [timeframe], count)
-            return data.get(timeframe)
-        except Exception as exc:
-            logger.debug("[event-driven] candle fetch failed {}/{}: {}", symbol, timeframe, exc)
-            return None
+        """Canonical completed-bar fetcher for every confirmed analysis path."""
+        return self._fetch_completed_candles(symbol, timeframe, count)
 
     def _safe_pip_size(self, symbol: str) -> float:
         """Pip size, broker symbol spec first (broker truth), static table second.
