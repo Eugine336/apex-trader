@@ -265,9 +265,23 @@ class LiveCandleAggregator:
         seeded_rows: list[dict] = []
         for row in df.itertuples(index=False):
             try:
-                row_epoch = pd.Timestamp(row.time).timestamp()
-            except Exception:  # SAFE-FALLBACK: skip malformed broker candle row during warm seed
-                continue
+                row_time = pd.Timestamp(row.time)
+                if (
+                    row_time.tzinfo is None
+                    or row_time.utcoffset() is None
+                    or row_time.utcoffset().total_seconds() != 0
+                ):
+                    raise ValueError("completed-bar warmup timestamp is not UTC-aware")
+                row_epoch = row_time.tz_convert("UTC").timestamp()
+            except Exception as exc:
+                # A frame-level completed-bar attestation cannot make a naive
+                # or non-UTC row safe: timestamp conversion would otherwise
+                # depend on the host timezone. Reject the whole warmup batch.
+                logger.warning(
+                    "[live-candles] warmup {} {} rejected — invalid UTC row timestamp: {}",
+                    symbol, tf, type(exc).__name__,
+                )
+                return False
             seeded_rows.append(
                 {
                     "boundary": _candle_boundary(row_epoch, tf_secs),
