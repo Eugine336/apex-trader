@@ -432,3 +432,50 @@ def test_connector_utc_lower_bound_is_unknown_without_verified_clock():
     connector._read_server_clock_state = lambda: None
 
     assert connector.get_utc_time_lower_bound() is None
+
+def test_independent_utc_estimator_requires_two_corroborating_authorities():
+    from platforms.mt5.clock import NTPClockSample, estimate_utc_clock
+
+    samples = (
+        NTPClockSample(1_800_000_000.0, 99.0, 0.5, "ntp:time.cloudflare.com"),
+        NTPClockSample(1_800_000_000.1, 99.0, 0.5, "ntp:time.google.com"),
+    )
+    state = estimate_utc_clock(samples, observed_monotonic=100.0)
+    assert state is not None
+    assert abs(state.observed_utc_epoch - 1_800_000_001.05) < 0.01
+    assert state.lower_bound(100.0) < state.observed_utc_epoch
+    assert estimate_utc_clock(samples[:1], observed_monotonic=100.0) is None
+
+    conflicting = (
+        samples[0],
+        NTPClockSample(1_800_000_010.0, 99.0, 0.5, "ntp:time.google.com"),
+    )
+    assert estimate_utc_clock(conflicting, observed_monotonic=100.0) is None
+
+
+def test_independent_utc_lower_bound_caches_monotonic_consensus(monkeypatch):
+    import platforms.mt5.clock as clock_module
+    from platforms.mt5.clock import (
+        NTPClockSample,
+        clear_independent_utc_clock_cache,
+        independent_utc_lower_bound,
+    )
+
+    clear_independent_utc_clock_cache()
+    times = iter((100.0, 101.0, 102.0))
+    calls = []
+    monkeypatch.setattr(clock_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        clock_module, "query_ntp_sources",
+        lambda: calls.append("query") or (
+            NTPClockSample(1_800_000_000.0, 100.0, 0.5, "ntp:time.cloudflare.com"),
+            NTPClockSample(1_800_000_000.1, 100.0, 0.5, "ntp:time.google.com"),
+        ),
+    )
+
+    first = independent_utc_lower_bound()
+    second = independent_utc_lower_bound()
+    assert first is not None and second is not None
+    assert second > first
+    assert calls == ["query"]
+    clear_independent_utc_clock_cache()
