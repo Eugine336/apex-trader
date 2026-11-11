@@ -2045,7 +2045,7 @@ class CognitionLoop:
                     logger.warning("[cognition] %s DEGRADED COGNITION — %s", symbol, _deg)
             except Exception as exc:  # noqa: BLE001 — logging must never break the cycle
                 logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)
-            if self._memory is not None:
+            if self._memory is not None and decision_now > 0.0:
                 self._record_open_memory(output, ms, now=decision_now)
             # Part XVIII Art 13 — management is continuous and event-driven, not
             # clock-gated: the instant a symbol's evidence is re-reasoned (on a
@@ -2710,7 +2710,8 @@ class CognitionLoop:
                 self._last_manage_at[symbol] = t
             self._managed += 1
             # Part XVIII Art 12 — fold this verdict into live campaign health.
-            self._campaign_record(pos, output, now=decision_now)
+            if decision_now > 0.0:
+                self._campaign_record(pos, output, now=decision_now)
             # Article X — a close (EXIT / REVERSE / TERMINATE) resolves the
             # originated patterns' outcomes so the tracker learns their edge.
             self._record_pattern_outcome_on_close(pos, output)
