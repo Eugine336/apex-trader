@@ -6408,9 +6408,14 @@ class EventDrivenSystem:
                 submitted_at = _response_value("timestamp", None)
                 if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
                     submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
-                self._get_portfolio_admission_reservations().link_order(
+                linked = self._get_portfolio_admission_reservations().link_order(
                     str(getattr(intent, "idempotency_key", "") or ""), ticket,
                 )
+                if not linked:
+                    logger.error(
+                        "[portfolio-reservations] pending OPEN {} could not link broker order ticket {}; reserved capacity remains unresolved",
+                        intent.symbol, ticket,
+                    )
                 self._record_pending_order_result(response, {
                     "order_id": ticket,
                     "symbol": str(intent.symbol or "").upper(),
