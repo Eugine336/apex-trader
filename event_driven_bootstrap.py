@@ -2455,6 +2455,7 @@ class EventDrivenSystem:
                     "campaign_id": str(getattr(origination, "campaign_id", "") or ""),
                     "opportunity_id": str(getattr(origination, "opportunity_id", "") or ""),
                     "broker": str(self._pm.get_broker_name(symbol) or ""),
+                    "order_type": str(getattr(origination, "order_type", "MARKET") or "MARKET").upper(),
                 }):
                     logger.warning(
                         "[origination-sink] {} {} blocked — durable portfolio reservation unavailable",
@@ -2558,7 +2559,10 @@ class EventDrivenSystem:
             earliest = datetime.fromtimestamp(0.0, tz=timezone.utc)
             for reservation in reservations:
                 order_id = str(reservation.get("broker_order_id") or "").strip()
-                if not order_id:
+                if (
+                    not order_id
+                    or str(reservation.get("order_type") or "").strip().upper() != "MARKET"
+                ):
                     continue
                 wanted_symbol = str(reservation.get("symbol") or "").strip().upper()
                 wanted_account = str(reservation.get("account_key") or "")
