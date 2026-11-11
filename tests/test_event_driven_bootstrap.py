@@ -1111,3 +1111,55 @@ class TestPendingOrderLifecycle:
             system._restore_pending_orders()
         assert system._pending_orders["ORDER-CANCEL-ZERO-REMAINDER"]["status"] == "UNKNOWN"
 
+
+
+    def test_cancelled_partial_fill_with_unresolved_position_id_is_retained(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-CANCEL-PARTIAL": {
+                "order_id": "ORDER-CANCEL-PARTIAL",
+                "symbol": "EURUSD",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "lots": 0.10,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "decision_id": "decision-cancel-partial",
+                "idempotency_key": "idem-cancel-partial",
+            },
+        }
+        system._entry_context = {}
+        system._known_open = {}
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "CANCELLED",
+                "broker_confirmed": True,
+                "record": {
+                    "ticket": "ORDER-CANCEL-PARTIAL",
+                    "position_id": "POSITION-CANCEL-PARTIAL",
+                    "state": 2,
+                    "volume_initial": 0.10,
+                    "volume_current": 0.06,
+                    "connector_index": 0,
+                },
+            },
+            get_pending_order_fill_deals=lambda *args, **kwargs: [],
+        )
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        assert "ORDER-CANCEL-PARTIAL" in system._pending_orders
+        assert system._pending_orders["ORDER-CANCEL-PARTIAL"]["status"] == "CANCELLED"
+        reconciled = [
+            call.kwargs["payload"]
+            for call in store.emit.call_args_list
+            if call.kwargs.get("event_type") == DE.ORDER_RECONCILED
+        ]
+        assert reconciled
+        assert reconciled[-1]["broker_record"]["position_id"] == "POSITION-CANCEL-PARTIAL"
