@@ -637,7 +637,7 @@ def _record(
     sampled_at = (
         supplied_analysis_epoch
         if supplied_analysis_epoch is not None and supplied_analysis_epoch > 0
-        else 0.0
+        else datetime.now(timezone.utc).timestamp()
     )
     timestamp_iso = (
         datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
@@ -768,10 +768,10 @@ def analyze_market_frames(
         source_metadata = {
             "source_timestamp_origin": current.get("source_timestamp_origin"),
             "source_broker": current.get("source_broker"),
-            "analysis_epoch": snapshot_cutoff_epoch,
+            "analysis_epoch": analysis_epoch,
             "evidence_timestamp_basis": (
                 "verified_utc_analysis_cutoff"
-                if analysis_epoch is not None else "unknown"
+                if analysis_epoch is not None else "host_ingestion_time_unverified"
             ),
         }
         timeframe_observations.append({
