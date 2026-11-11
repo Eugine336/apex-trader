@@ -457,8 +457,19 @@ def test_market_lenses_emit_causal_indicator_families_with_volume_provenance():
             "volume_source": "tick_volume_proxy",
         })
 
+    frame = pd.DataFrame(bars)
+    frame.attrs.update({
+        "source_timestamp_verified": True,
+        "source_symbol": "EURUSD",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+        "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "completed_bars_verified": True,
+        "forming_bar_included": False,
+    })
     evidence = analyze_market_frames(
-        "EURUSD", {"M5": bars}, source_includes_forming_bar=False,
+        "EURUSD", {"M5": frame}, source_includes_forming_bar=False,
     )
     technical = {
         item.source_module.rsplit(".", 1)[-1]: item
