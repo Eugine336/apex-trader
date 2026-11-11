@@ -227,6 +227,48 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 - **Immediate priority remains System 2 acceptance**, not declaring downstream systems complete: decision-time snapshot-to-close lineage and restart recovery, authoritative broker/connector calendars and instrument capabilities, verified financing costs, inherited silent-exception audit, and independent chronological walk-forward plus untouched-holdout evidence. The dedicated `apex-trader-data` repository remains an owner setup dependency; its topology guard must not be weakened.
 - Systems 3 and 4 remain implemented/integrated but not accepted. PR #902 advances Systems 1, 3, 4, 5, 6, 7 and 10 but does not satisfy their complete system-level acceptance gates. Systems 5–10 require explicit source audits and acceptance evidence; do not infer completion from the PR scope.
 
+## Concurrent engineering reconciliation — 2026-11-11
+
+**Current mainline:** `c3d2f1c1a900a70f6c1baecee77b7c74304e6481` (PR #902 merge).
+**Active implementation:** PR #904, `engineering/systems2-10-concurrent-acceptance-20261111`. Its latest implementation is not merged and its full CI matrix is still running. Do not treat the entries below as accepted until CI and the remaining owner-host gates pass.
+
+### System 2 — provenance, data lineage and restart recovery
+- Final OPEN admission now requires a one-to-one, duplicate-free mapping between the snapshot evidence IDs and feature rows. Every feature must be source-timestamp verified, non-provisional, and match the exact intent symbol. Rejection tests cover unverified, provisional, cross-symbol and duplicate rows.
+- Provider session observations now drive the session state instead of being exposed only as side metadata. Acceptance requires complete provider provenance, canonical instrument identity, receipt/publication/revision timestamps no later than the analysis cutoff, a valid timezone, session identity, and explicit DST, holiday and tradeability status.
+- Decision-to-trade recovery test now closes and reopens the SQLite event store and constructs a new bootstrap object before recovering the exact-ticket entry snapshot and linking its close outcome.
+- Calibration candidate/outcome replay now rejects future-dated outcomes relative to the producer's explicit as-of cutoff and rejects feature rows missing source module, domain, data basis or measurements.
+- **Still data-gated:** independently authenticated source manifests, broker-history samples, verified full-history coverage, independent holdout and walk-forward evidence, economic-calendar provider, macro series, authoritative venue calendars and verified directional financing.
+
+### System 5 — compliance and portfolio allocation
+- PR #904 adds a durable portfolio admission reservation ledger for Brain-approved but not-yet-broker-confirmed OPEN intents.
+- Origination check→size→reserve→submit is serialized. Reservations participate in duplicate-pair and max-open-position checks, account heat, and daily-loss budget remaining-room calculations.
+- Reservations survive event-store restart, link to broker pending-order IDs, release on broker-confirmed position visibility or explicit rejection, and release after broker-confirmed terminal pending-order reconciliation. Ambiguous broker outcomes retain the reservation.
+- **Still not accepted:** full supported-account owner-limit matrix, concurrency stress, portfolio correlation/whole-book fault injection, and owner-connected evidence.
+
+### System 6 — execution integrity and broker mutation boundaries
+- The static broker mutation audit now covers entry, pending entry, close, modify and cancel operations rather than entry calls alone.
+- Final OPEN validation rejects unverified, provisional, cross-symbol, duplicate or unreferenced decision features before the broker call.
+- **Still not accepted:** complete per-adapter order/modify/close/cancel mutation matrix, acknowledgement ambiguity, reconnect, restart and broker-history reconciliation across every supported platform.
+
+### System 7 — position lifecycle and reconciliation
+- A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. If the position identity or fill attribution is unresolved, the pending projection remains for subsequent broker reconciliation.
+- A durable reservation linked to a pending order is released only after terminal broker reconciliation; unresolved partial fills retain both lineage and reserved capacity.
+- **Still not accepted:** full market/pending/partial-fill/manual-close/partial-close/restart/reconciliation matrix against owner broker history.
+
+### System 8 — learning and statistical validation
+- Calibration producer now enforces the explicit as-of cutoff on both outcome observation and outcome quote timestamps, and requires source module, domain, data basis and non-empty measurements for every point-in-time feature.
+- Calibration outputs remain historical fixed-horizon summaries, not calibrated probabilities or demonstrated current-regime edge.
+- **Still not accepted:** independently authenticated data manifests, complete selection coverage on real provider history, immutable untouched holdout, multiple-testing controls and independent walk-forward reproduction.
+
+### System 9 — governance and observability
+- Existing silent-exception AST audit remains a mandatory CI gate. The broker mutation audit is broadened to management as well as entry routes.
+- **Still not accepted:** complete fault-injection evidence for event-store degradation, queue failures, broker ambiguity, clock skew, restart and partial storage failure across all systems.
+
+### System 10 — integrated acceptance
+- PR #904 currently integrates Systems 2, 5, 6 and 7 corrections with regression tests; its CI matrix is pending.
+- No production or live-broker acceptance is claimed. No live broker orders were sent.
+- Final release gate remains the integrated ten-system matrix, canonical identity/legacy-path audit, supported broker validation, owner-host data-capability report and documented owner approval.
+
 ## Per-system completion record
 
 For every system, record: branch/PR and merge SHA; changed files; acceptance criteria; commands/tests actually run; pass/fail counts; identity-audit result; manual review performed; known gaps; safety implications; and explicit acceptance decision. If execution could not be performed, state that directly and leave the gate open.
