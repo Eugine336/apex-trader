@@ -254,7 +254,52 @@ class ComplianceDivision:
                 False,
                 f"account {a.account_key} daily-loss halt ({pct:.2f}% incl. open)",
             )
-        return CheckOutcome("daily_loss", True, "daily loss within cap")
+        reserved_loss = 0.0
+        for position in _b.open_positions:
+            pending = (
+                position.get("is_pending_reservation") is True
+                if isinstance(position, dict)
+                else getattr(position, "is_pending_reservation", False) is True
+            )
+            if not pending:
+                continue
+            reserved_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if reserved_account != str(a.account_key):
+                continue
+            raw_loss = (
+                position.get("reserved_max_loss")
+                if isinstance(position, dict)
+                else getattr(position, "reserved_max_loss", None)
+            )
+            try:
+                max_loss = float(raw_loss)
+            except (TypeError, ValueError, OverflowError):
+                return CheckOutcome("daily_loss", False, "pending reservation has invalid max-loss provenance")
+            if not math.isfinite(max_loss) or max_loss <= 0.0:
+                return CheckOutcome("daily_loss", False, "pending reservation has unknown/non-positive max loss")
+            reserved_loss += max_loss
+        if reserved_loss > 0.0:
+            balance = float(a.balance or 0.0)
+            cap_pct = float(getattr(self._account_risk, "daily_loss_cap_pct", 0.0) or 0.0)
+            current_pnl = float(self._account_risk.combined_pnl(a.account_key))
+            if (
+                not math.isfinite(balance) or balance <= 0.0
+                or not math.isfinite(cap_pct) or cap_pct <= 0.0
+                or not math.isfinite(current_pnl)
+            ):
+                return CheckOutcome("daily_loss", False, "cannot validate pending reservations against daily-loss budget")
+            remaining = cap_pct / 100.0 * balance + current_pnl
+            if reserved_loss >= remaining:
+                return CheckOutcome(
+                    "daily_loss", False,
+                    f"pending reservations consume daily-loss room "
+                    f"(${reserved_loss:.2f} reserved / ${max(remaining, 0.0):.2f} remaining)",
+                )
+        return CheckOutcome("daily_loss", True, "daily loss within cap and pending reservations")
 
     def _check_heat(
         self, c: ComplianceCandidate, _b: ComplianceBook, a: ComplianceAccount
