@@ -30,12 +30,17 @@ class _AccountRisk:
         self._heat = heat
         self._pct = pct
         self.heat_block_pct = 2.0
+        self.daily_loss_cap_pct = 3.0
+        self._daily_pnl = 0.0
 
     def daily_loss_halted(self, account):  # noqa: ARG002
         return self._halted
 
     def combined_pnl_pct(self, account):  # noqa: ARG002
         return self._pct
+
+    def combined_pnl(self, account):  # noqa: ARG002
+        return self._daily_pnl
 
     def heat_blocked(self, account):  # noqa: ARG002
         return self._heat_blocked
@@ -311,5 +316,46 @@ def test_pending_portfolio_reservation_is_account_scoped():
         _candidate("EURUSD", "LONG"),
         ComplianceBook([pending]),
         _account(),
+    )
+    assert verdict.approved
+
+
+def test_pending_portfolio_reservations_consume_daily_loss_room():
+    risk = _AccountRisk()
+    risk._daily_pnl = -290.0
+    div = _full_division(account_risk=risk)
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="mt5:123",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.005,
+        reserved_max_loss=10.01,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(balance=10_000.0),
+    )
+    assert verdict.rejected
+    assert any("pending reservations consume daily-loss room" in reason for reason in verdict.reasons)
+
+
+def test_pending_daily_loss_reservation_is_account_scoped():
+    risk = _AccountRisk()
+    risk._daily_pnl = -290.0
+    div = _full_division(account_risk=risk)
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="deriv:other",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.005,
+        reserved_max_loss=100.0,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(balance=10_000.0),
     )
     assert verdict.approved
