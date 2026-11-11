@@ -410,3 +410,25 @@ def test_connector_rejects_delayed_tick_burst_as_clock_witness(monkeypatch):
 
     assert state is not None
     assert abs(state.offset_seconds - 7200.0) < 0.2
+
+def test_connector_utc_lower_bound_subtracts_offset_and_uncertainty(monkeypatch):
+    from types import SimpleNamespace
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    connector = MT5Connector.__new__(MT5Connector)
+    connector._read_server_clock_state = lambda: SimpleNamespace(
+        server_now_epoch=lambda: 1_800_007_205.0,
+        offset_seconds=7200.0,
+        uncertainty_seconds=0.8,
+    )
+
+    assert connector.get_utc_time_lower_bound() == 1_800_000_004.2
+
+
+def test_connector_utc_lower_bound_is_unknown_without_verified_clock():
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    connector = MT5Connector.__new__(MT5Connector)
+    connector._read_server_clock_state = lambda: None
+
+    assert connector.get_utc_time_lower_bound() is None
