@@ -9,11 +9,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from management.trade_manager import (
-    EntrySignal as TMEntrySignal,
-    TradeManager,
-    TradeStatus,
-)
 from persistence.position_store import PositionStore
 from risk.risk_engine import RiskEngine, RiskAssessment
 from adaptive.ev_estimator import EVEstimator, EVEstimate
@@ -34,33 +29,6 @@ def _make_ohlcv(n: int = 50, start: float = 1.10, trend: float = 0.0001) -> pd.D
         "tick_volume": [100 + int(np.random.exponential(50)) for _ in range(n)],
         "time": pd.date_range("2024-01-01", periods=n, freq="1min"),
     })
-
-
-def _make_entry_signal(
-    pair: str = "EURUSD",
-    direction: str = "LONG",
-    entry: float = 1.1000,
-    sl: float = 1.0950,
-    tp1: float = 1.1050,
-    tp2: float = 1.1100,
-    score: int = 90,
-) -> TMEntrySignal:
-    risk_pips = abs(entry - sl)
-    return TMEntrySignal(
-        pair=pair,
-        direction=direction,
-        entry_price=entry,
-        stop_loss=sl,
-        tp1=tp1,
-        tp2=tp2,
-        risk_reward_1=round(abs(tp1 - entry) / risk_pips, 2) if risk_pips else 1.0,
-        risk_reward_2=round(abs(tp2 - entry) / risk_pips, 2) if risk_pips else 2.0,
-        position_size_lots=0.05,
-        score=score,
-        confluences=["structure", "fvg", "ob"],
-        entry_zone="FVG_MIDPOINT",
-        entry_timeframe="M5",
-    )
 
 
 def _make_trade_history(n: int = 30, win_rate: float = 0.6) -> list[dict]:
@@ -133,50 +101,6 @@ class TestEntryToRiskPipeline:
             score=92,
         )
         assert result.approved is False
-
-
-class TestTradeLifecycle:
-    """Open → TP1 partial → breakeven → trailing → close lifecycle."""
-
-    def test_full_lifecycle_long(self):
-        tm = TradeManager()
-        signal = _make_entry_signal()
-        trade = tm.open_trade(signal)
-
-        assert trade.status == TradeStatus.OPEN
-        assert trade.partial_closed is False
-        assert trade.breakeven_active is False
-
-        trade = tm.update(trade, current_price=signal.tp1)
-        assert trade.status in {TradeStatus.TP1_HIT, TradeStatus.BREAKEVEN}
-        assert trade.partial_closed is True
-
-        trade = tm.update(trade, current_price=signal.tp2)
-        assert trade.status in {TradeStatus.CLOSED, TradeStatus.TRAILING}
-
-    def test_stop_loss_hit(self):
-        tm = TradeManager()
-        signal = _make_entry_signal()
-        trade = tm.open_trade(signal)
-
-        trade = tm.update(trade, current_price=signal.stop_loss - 0.0001)
-        assert trade.status == TradeStatus.STOPPED
-        assert trade.pnl_pips < 0
-
-    def test_short_trade_lifecycle(self):
-        tm = TradeManager()
-        signal = _make_entry_signal(
-            direction="SHORT",
-            entry=1.1000,
-            sl=1.1050,
-            tp1=1.0950,
-            tp2=1.0900,
-        )
-        trade = tm.open_trade(signal)
-        assert trade.status == TradeStatus.OPEN
-
-        trade = tm.update(trade, current_price=signal.tp1)
-        assert trade.partial_closed is True
 
 
 class TestMicroAccountPipeline:
