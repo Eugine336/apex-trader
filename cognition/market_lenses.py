@@ -694,13 +694,13 @@ def analyze_market_frames(
     timeframe_scores: list[float] = []
     timeframe_observations: list[dict[str, Any]] = []
     bars_by_timeframe: dict[str, list[dict[str, Any]]] = {}
-    context_cutoff = (
-        concept_context.get(
-            "multi_symbol_snapshot_cutoff_epoch",
-            concept_context.get("analysis_epoch"),
-        )
-        if isinstance(concept_context, dict) else None
-    )
+    context_cutoff = None
+    if isinstance(concept_context, dict):
+        context_cutoff = concept_context.get("multi_symbol_snapshot_cutoff_epoch")
+        if context_cutoff is None:
+            # Per-symbol timeframe alignment remains measurable even when a
+            # different venue prevents a shared cross-symbol cutoff.
+            context_cutoff = concept_context.get("analysis_epoch")
     try:
         snapshot_cutoff_epoch = float(context_cutoff)
         if not math.isfinite(snapshot_cutoff_epoch) or snapshot_cutoff_epoch <= 0:
