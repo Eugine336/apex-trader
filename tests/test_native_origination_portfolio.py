@@ -134,6 +134,7 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
     system._get_portfolio_admission_reservations = lambda: SimpleNamespace(
         lock=threading.RLock(),
         reconcile=lambda _positions: 0,
+        reserve=lambda _payload: True,
         snapshot=lambda: list(reservations or []),
     )
     system._safe_pip_size = lambda _symbol: 0.0001
