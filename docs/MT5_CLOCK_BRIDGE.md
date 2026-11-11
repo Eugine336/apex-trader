@@ -82,3 +82,10 @@ Evidence:
 Do not convert this ambiguity into a hardcoded UTC or broker-server rule. Keep raw integer fields unchanged and distinguish API request-bound semantics from returned snapshot/history field semantics. The new read-only `scripts/diagnose_mt5_timestamp_semantics.py` captures raw live and historical samples, API/package/terminal version, server identity, host wall/monotonic readings, independent UTC witnesses and exact UTC request bounds. Run it on each supported host and preserve outputs. A source contract change requires correlated samples across hosts and versions, with no unexplained offset residual or DST discontinuity.
 
 Until evidence resolves the contract, any timestamp conversion requiring the disputed interpretation must remain explicitly gated; do not silently apply the estimated broker offset twice or treat a wall-clock comparison as proof.
+
+
+## API-specific UTC correction — 2026-11-11
+
+The previous generic statement about broker-server timestamp labels is superseded for MT5 Python history APIs. MetaQuotes documents returned `copy_ticks_range` and bar data as UTC. Two owner-host captures on JustMarkets-Demo / XAUUSD.ecn confirm that history rows match UTC request bounds while the latest `symbol_info_tick` snapshot is approximately UTC+2. Therefore the live snapshot and historical range must not share one normalization rule.
+
+Apex now preserves raw history epochs, never subtracts the live broker offset from `copy_ticks_range`, and attests only bounded rows that corroborate the exact UTC query bounds. MT5 bars use documented UTC epochs; `copy_rates_from_pos(start_pos=1)` supplies the last completed bar without inferring completion from a broker offset. Closed-only range reads use the independent UTC lower bound and fail closed if that authority is unavailable. This is implemented on WP-T branch `fix/wp-t-timestamp-contract-recovery`; CI and second-host acceptance remain pending.
