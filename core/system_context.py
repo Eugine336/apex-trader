@@ -1467,13 +1467,15 @@ class SystemContext:
                             symbol, type(exc).__name__,
                         )
                         market_depth = {}
+                    analysis_utc_epoch = None
                     try:
                         from datetime import datetime, timedelta, timezone
                         utc_lower_bound = platform_manager.get_utc_time_lower_bound(symbol)
                         if utc_lower_bound is None or not math.isfinite(float(utc_lower_bound)):
                             raise RuntimeError("verified UTC clock authority unavailable")
+                        analysis_utc_epoch = float(utc_lower_bound)
                         tick_window_end = datetime.fromtimestamp(
-                            float(utc_lower_bound), tz=timezone.utc,
+                            analysis_utc_epoch, tz=timezone.utc,
                         )
                         tick_window_start = tick_window_end - timedelta(seconds=10)
                         tick_frame = platform_manager.get_tick_history(
@@ -1525,6 +1527,7 @@ class SystemContext:
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
                             "tick_history": tick_history,
+                            "analysis_epoch": analysis_utc_epoch,
                             "multi_symbol_frames": dict(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
