@@ -1375,7 +1375,7 @@ class SystemContext:
                             value = platform_manager.get_utc_time_lower_bound(selected_symbol)
                             numeric = float(value) if value is not None else None
                             if numeric is not None and math.isfinite(numeric) and numeric > 0:
-                                per_symbol_cutoffs[selected_symbol] = numeric
+                                per_symbol_cutoffs[str(selected_symbol or "").strip().upper()] = numeric
                         except Exception:
                             continue
                     _concept_market_cycle_meta["per_symbol_cutoff_epochs"] = per_symbol_cutoffs
@@ -1472,7 +1472,7 @@ class SystemContext:
                         market_depth = {}
                     analysis_utc_epoch = _concept_market_cycle_meta.get(
                         "per_symbol_cutoff_epochs", {},
-                    ).get(symbol)
+                    ).get(str(symbol or "").strip().upper())
                     try:
                         from datetime import datetime, timedelta, timezone
                         if analysis_utc_epoch is None:
