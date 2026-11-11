@@ -180,9 +180,6 @@ class MT5TickPoller:
         )
         if identity in self._history_gap_reported:
             return
-        self._history_gap_reported.add(identity)
-        if store is None:
-            return
         try:
             from persistence import domain_events as DE
             store.emit(
@@ -199,6 +196,9 @@ class MT5TickPoller:
                 },
                 durable=True,
             )
+            # Only suppress duplicate writes after the durable store confirms
+            # success. A transient EventStore failure must remain retryable.
+            self._history_gap_reported.add(identity)
         except Exception as exc:
             logger.critical(
                 "[mt5-poller] {} unrecoverable history gap could not be durably recorded: {}",
@@ -249,10 +249,18 @@ class MT5TickPoller:
         ):
             return False
 
-        time_msc = raw.get("time_msc")
+        # Deduplication uses the normalized UTC event instant, never the
+        # provider's raw epoch. MT5 latest-quote time_msc can be broker-server
+        # time while copy_ticks_range history is UTC; comparing those raw
+        # values makes the same quote appear to be two different events.
+        time_msc = raw.get("timestamp_utc_epoch")
+        if time_msc is not None:
+            try:
+                time_msc = int(round(float(time_msc) * 1000.0))
+            except (TypeError, ValueError, OverflowError):
+                time_msc = None
         if time_msc is None and timestamp.tzinfo is not None:
-            # Never use datetime.timestamp() on a naive broker timestamp: it
-            # interprets the value in the host machine's local timezone.
+            # TickData.timestamp is already normalized and timezone-aware.
             time_msc = int(timestamp.astimezone(timezone.utc).timestamp() * 1000)
         if time_msc is not None:
             key = self._tick_key(time_msc, bid, ask, raw.get("flags", 0))
