@@ -236,3 +236,84 @@ Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and
 - PR #907 CI run #4325: Python 3.12 passed, lint passed, Python 3.11 still running at last poll.
 - WP-T acceptance: all T-A1 through T-A10 remain OPEN.
 - Next: poll run #4325; audit `symbol_map` production call graph and all `get_ticks` consumers; add non-mutating timestamp-domain regression fixtures; repeat owner-host capture and obtain second-host capture before any normalization rewrite. Continue durable tick recovery, completed-bar warmup and consumer audit independently.
+
+## 2026-11-11 — WP-T timestamp correction and recovery implementation
+
+- **Repository:** `Eugine336/apex-trader`
+- **Base:** `main` at `b417e349579adb9de210ede572b939cb87c75bee`
+- **Branch:** `fix/wp-t-timestamp-contract-recovery`
+- **Latest recorded commit at this ledger update:** `74e64ab280109cc839cdb1a80462d6b213ec2401`
+- **PR:** not yet created.
+- **Protected paths:** real `.env`, credentials, runtime databases, broker account selection/settings remain untouched and prohibited.
+- **Live broker mutation:** none; prohibited during engineering.
+
+### Root-cause evidence
+Two owner-host captures on the same Windows 11 MT5 terminal (JustMarkets-Demo, package 5.0.6231, terminal 500.6308) for `XAUUSD.ecn` repeatedly show latest quote `time`/`time_msc` approximately 7,200 seconds ahead of independent UTC witnesses, while `copy_ticks_range` rows align with the exact UTC request interval. The wrong unsuffixed symbol `XAUUSD` is unavailable; `XAUUSD.ecn` is visible, selected and returning quotes/history. This is repeatable same-host evidence, not fleet-wide proof.
+
+### Changes committed
+1. `platforms/mt5/mt5_connector.py`
+   - Removed live broker-offset subtraction from `copy_ticks_range` history.
+   - Preserves raw provider epochs in explicit source-epoch fields and legacy aliases.
+   - Verifies seconds/milliseconds consistency and exact UTC query-bound membership before assigning UTC.
+   - Leaves shifted, malformed or out-of-range history timezone-unknown and unverified.
+   - Adds broker-server identity to live tick provenance for recovery checkpoint scoping.
+2. `tick/tick_sources.py`
+   - Requires `utc_request_bounds_verified` for history replay.
+   - Splits long gaps into independently verified 300-second batches.
+   - Stops on failed/empty/unverified batches; no cursor jump to current quote.
+   - Restores and durably persists broker-server-scoped cursor and bounded fingerprints through EventStore.
+   - Does not advance the durable cursor when checkpoint commit fails.
+3. `persistence/domain_events.py`: registered `MT5_TICK_RECOVERY_CHECKPOINT`.
+4. `event_driven_bootstrap.py`: injects the existing EventStore into the MT5 poller; no new database.
+5. `tick/live_candle_aggregator.py`: rejects warmup frames without explicit `completed_bars_verified=True`.
+6. `tests/test_mt5_market_data.py`: tests batch-local UTC corroboration, no offset subtraction, offset-shifted rows, inconsistent fields and stale-clock independence.
+7. `tests/test_mt5_tick_poller_recovery.py`: tests 300-second batching, no advancement after a failed batch, durable checkpoint persistence/restore and broker identity mismatch.
+8. `tests/test_live_candle_aggregator.py`: tests that unattested history cannot seed closed candles; synthetic accepted fixtures explicitly attest completion.
+9. Documentation updates are being recorded in this branch.
+
+### Verification and limitations
+- No local test/lint/compile command has been executed in this environment.
+- PR #907 diagnostic CI run `43014426036` completed green for Python 3.11, Python 3.12 and lint; this is not CI evidence for this implementation branch.
+- Same-host timestamp captures are repeated; a second independent MT5 host and sustained feed evidence are still missing.
+- The live aggregator's production warmup currently skips because the existing MT5 candle fetcher does not provide the new completed-bar attestation. This is intentionally fail-closed and must be resolved with a verified provider completion contract.
+- Durable checkpoint code needs CI and real EventStore restart/failure integration tests.
+- The complete clock lifecycle, full consumer map, gap/missingness propagation and Systems 2/6/7 acceptance remain open.
+- T-A1 through T-A10 remain OPEN. No production acceptance or WP-T completion is claimed.
+
+### Exact next actions
+1. Open a PR from this branch to main and wait for Python 3.11/3.12 plus lint CI; fix failures.
+2. Inspect CI results and correct test/source defects before further expansion.
+3. Add EventStore-backed checkpoint integration/fault tests and ensure no cursor advancement on persistence failure.
+4. Verify the broker timestamp semantics on a second independent MT5 host.
+5. Complete the MT5 OHLCV completed-bar attestation, then re-enable aggregator warmup only when the provider contract is proven.
+6. Finish System 2/6/7 consumer and lifecycle audits; update the roadmap and ledger with actual test evidence.
+
+
+### Recovery hardening follow-up — 2026-11-11
+
+- Durable checkpoint writes are rate-limited to at most one per five seconds per symbol; each checkpoint retains the most recent 256 fingerprints. This bounds EventStore write volume while keeping restart replay overlap bounded. The cursor in memory may advance between durable checkpoints; restart resumes from the last committed cursor and replays the intervening range.
+- Empty history responses, invalid timestamp attestations, fetch failures, malformed timestamp batches and cursor-ahead conditions are retained as durable `MT5_TICK_RECOVERY_GAP` events when the canonical EventStore is available. The cursor is not advanced across these ranges.
+- Added a real temporary-SQLite EventStore close/reopen test for checkpoint restoration, plus tests for write failure, checkpoint write throttling and durable gap deduplication. These tests are committed but not executed.
+- The 300-second batch tests verify that a failed later batch leaves the cursor at the last successful batch rather than jumping to the requested end.
+- The test suite still needs CI execution. Same-host timestamp evidence remains repeated but not multi-host.
+
+
+## 2026-11-11 — WP-T completed-bar and API-specific UTC correction
+
+- Updated MT5 API contracts based on MetaQuotes' official Python documentation and repeated owner-host captures.
+- `get_ohlcv(include_forming=False)` now requests MT5 bar position 1, excluding the current forming bar by provider contract rather than a server-clock heuristic.
+- `get_ohlcv_range` validates returned UTC bar epochs against the exact UTC request bounds; closed-only filtering uses the conservative lower bound of the independent UTC witness anchor.
+- Event-driven `_fetch_candles` and LiveCandleAggregator warmup now use a completed-only fetcher and require `completed_bars_verified=True`.
+- Cross-asset context requires completed-bar attestation for both primary and related legs.
+- Forming-bar WorldModel publications are no longer wired to cognition wake callbacks. Verified tick-change wakes and completed candle-close analysis remain.
+- Tests updated for MT5 chronological OHLCV ordering, start-position closed-bar semantics, independent-UTC range filtering and completed-bar-only cross-asset context. Tests are committed but not executed locally.
+- Live quote `symbol_info_tick` remains broker-clock normalized; historical `copy_ticks_range` and bar data use API-specific UTC semantics. Multi-host and DST acceptance remain open.
+
+
+## 2026-11-11 — Completed-bar production integration
+
+- MT5 OHLCV now follows MetaQuotes' documented UTC contract. `copy_rates_from_pos(start_pos=1)` excludes the current forming bar by provider position; `copy_rates_range` validates returned epochs against exact UTC request bounds and uses a conservative independent UTC lower bound when closed-only filtering is requested.
+- Event-driven `_fetch_candles` now requires provider-attested completed bars. The same contract feeds `CandleCloseHandler` and LiveCandleAggregator warmup. Cross-asset analysis rejects any frame without completed-bar attestation.
+- Removed the forming-bar WorldModel publish callback into CognitionLoop. Brain reasoning now wakes on verified tick-change observations and completed candle-close events; provisional developing bars remain isolated to the position-management advisory.
+- Added regression coverage for completed-bar position semantics, UTC range filtering, completed-only fetch wiring and cross-asset attestation.
+- No tests on this branch have yet been executed. CI must validate the rebased branch.
