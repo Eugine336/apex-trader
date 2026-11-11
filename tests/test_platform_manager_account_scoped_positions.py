@@ -37,7 +37,7 @@ def _manager():
 def test_mt5_positions_keep_their_exact_connector_account_identity():
     manager = _manager()
     manager.mt5_connectors = [
-        _MT5(1001, "icmarkets", "ICMarketsSC-Demo"),
+        _MT5(1001, "ICMarkets", "ICMarketsSC-Demo"),
         _MT5(2002, "auto", "Pepperstone-Edge"),
     ]
     manager._mt5_connected_flags = [True, True]
@@ -48,7 +48,7 @@ def test_mt5_positions_keep_their_exact_connector_account_identity():
     assert snapshot.failed_platforms == set()
     assert snapshot.confirmed_platforms == {"mt5"}
     assert [position.account_key for position in snapshot.positions] == [
-        "icmarkets:1001",
+        "ICMarkets:1001",
         "pepperstone:2002",
     ]
     assert [position.connector_index for position in snapshot.positions] == [0, 1]
