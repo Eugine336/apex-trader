@@ -804,17 +804,9 @@ class CognitionLoop:
                     "[cognition-loop] venue UTC authority unavailable for {}: {}",
                     symbol, type(exc).__name__,
                 )
-        try:
-            from platforms.mt5.clock import independent_utc_lower_bound
-            value = independent_utc_lower_bound()
-            numeric = float(value) if value is not None else None
-            if numeric is not None and math.isfinite(numeric) and numeric > 0.0:
-                return numeric
-        except Exception as exc:
-            logger.debug(
-                "[cognition-loop] independent UTC authority unavailable for {}: {}",
-                symbol, type(exc).__name__,
-            )
+        # No provider means no market-time authority. Production injects the
+        # PlatformManager provider, which itself falls back to independent
+        # NTP/HTTPS consensus; test/replay callers must supply an explicit cutoff.
         logger.warning(
             "[cognition-loop] {} reasoning cutoff unknown — host wall time will not be substituted",
             symbol,
