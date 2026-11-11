@@ -405,9 +405,13 @@ class MT5Connector(BaseConnector):
                 - float(state.uncertainty_seconds)
             )
             return lower_bound if math.isfinite(lower_bound) else None
-        except Exception as exc:  # noqa: BLE001 — scheduling authority must fail closed
-            logger.debug("[mt5] UTC lower-bound unavailable: {}", exc)
-            return None
+        except Exception as exc:  # noqa: BLE001 — independent UTC remains the safe fallback
+            logger.debug("[mt5] broker UTC lower-bound unavailable; using independent UTC: {}", exc)
+            try:
+                from platforms.mt5.clock import independent_utc_lower_bound
+                return independent_utc_lower_bound()
+            except Exception:
+                return None
 
     @staticmethod
     def _tick_server_epoch(tick: Any) -> float:
