@@ -278,6 +278,8 @@ def estimate_utc_clock(
                 float(current.uncertainty_seconds) if current is not None else float("inf")
             )
         except (TypeError, ValueError, OverflowError):
+            # SAFE-FALLBACK: discard this malformed authority sample; the
+            # consensus below still requires the minimum independent sources.
             continue
         if math.isfinite(quality) and quality >= 0 and quality < current_quality:
             by_authority[authority] = sample
@@ -291,6 +293,8 @@ def estimate_utc_clock(
                 + now_mono - float(sample.monotonic_epoch)
             )
         except (TypeError, ValueError, OverflowError):
+            # SAFE-FALLBACK: discard this malformed time sample; no host clock
+            # value is substituted and the independent-source quorum remains.
             continue
         if (
             math.isfinite(estimate)
