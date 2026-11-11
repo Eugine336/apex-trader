@@ -205,3 +205,34 @@ Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and
 - **Correction committed:** `59ddd9e4c8f674930c3efb41f45ffea03f94c17a`; reworded the comment to describe the read-only guarantee without embedding the forbidden API token. The test's safety assertion remains unchanged.
 - **Verification status:** correction committed; CI rerun required. No tests are claimed passing for this correction until GitHub Actions completes.
 - **Next action:** poll the new CI run for PR #907; fix any genuine failures without weakening safety checks. Keep WP-T acceptance gates open pending owner-host expanded diagnostic captures and end-to-end tick/recovery validation.
+
+
+## 2026-11-11 — Owner-host MT5 symbol resolution and timestamp-domain evidence
+
+- **Branch:** `fix/mt5-symbol-feed-diagnostics`
+- **PR:** #907 — https://github.com/Eugine336/apex-trader/pull/907
+- **Diagnostic revision:** read-only expanded symbol/feed diagnostic on the PR branch.
+- **Owner host:** Windows 11, India Standard Time; MetaTrader5 Python 5.0.6231 / terminal 500.6308; broker server JustMarkets-Demo.
+- **Capture symbol:** `XAUUSD.ecn`; no credentials or account identifiers included.
+
+### Evidence
+1. Exact `XAUUSD` lookup failed with terminal error `[-4, "Terminal: Not found"]`; wildcard discovery returned `XAUUSD.ecn`.
+2. Exact `XAUUSD.ecn` lookup succeeded; visible and selected; Bid 4049.70 / Ask 4049.79; latest tick API succeeded.
+3. UTC-bounded `copy_ticks_range` returned 203 rows for 11:41:57.117621–11:42:57.117621 UTC; final raw row epoch `1794397376` / `1794397376835` ms lies within the requested interval.
+4. Latest quote raw epoch `1794404576` / `1794404576984` ms is approximately 7,200 seconds ahead of the UTC witness projection.
+5. Host wall time remained within the broad ~0.55–0.59 second NTP witness uncertainty; no clock correction is justified.
+6. Diagnostic safety flags: credentials_read=false, host_clock_modified=false, orders_submitted=false, terminal_settings_modified=false.
+
+### Root-cause interpretation
+- **Confirmed for this capture:** the prior empty feed result was caused by requesting the non-existent exact broker symbol `XAUUSD`; the terminal's actual instrument is `XAUUSD.ecn`.
+- **Strong evidence, not yet a global contract:** latest-quote timestamps and history-range timestamps appear to use different domains (latest quote approximately broker-server UTC+2; history rows align with UTC request bounds).
+- **Potential production defect:** `MT5Connector.get_ticks` currently treats history epochs as broker-server time and subtracts the live offset for recent windows. If the history behavior repeats, this would incorrectly shift UTC history rows by two hours. No normalization change has been made pending repeat and second-host evidence.
+- **Mapping integration remains to be proven:** `_COMMON_SUFFIXES` includes `.ecn`; audit production call paths to ensure canonical `XAUUSD` always passes through `symbol_map` and no consumer bypasses the resolved broker symbol.
+
+### Status and next actions
+- Owner-host broker-native quote/history: OBSERVED.
+- Canonical-to-broker symbol mapping in source: IMPLEMENTED; runtime integration NOT YET VERIFIED.
+- Latest/history timestamp contract: DATA-GATED; repeat same-host capture and second independent host required.
+- PR #907 CI run #4325: Python 3.12 passed, lint passed, Python 3.11 still running at last poll.
+- WP-T acceptance: all T-A1 through T-A10 remain OPEN.
+- Next: poll run #4325; audit `symbol_map` production call graph and all `get_ticks` consumers; add non-mutating timestamp-domain regression fixtures; repeat owner-host capture and obtain second-host capture before any normalization rewrite. Continue durable tick recovery, completed-bar warmup and consumer audit independently.
