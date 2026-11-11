@@ -1428,6 +1428,10 @@ class SystemContext:
                     _concept_market_cycle_snapshot.clear()
                     _concept_market_cycle_specs.clear()
                     _concept_market_cycle_meta["cutoff_epoch"] = None
+                    # Per-symbol cutoffs are cycle-scoped too. Retaining them
+                    # after teardown could timestamp a later fallback read with
+                    # a stale venue clock observation.
+                    _concept_market_cycle_meta["per_symbol_cutoff_epochs"] = {}
 
                 def _concept_market_source(symbol: str) -> list:
                     """Fetch source-attested OHLCV and emit native concept evidence."""
