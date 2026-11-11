@@ -6292,6 +6292,7 @@ class EventDrivenSystem:
                             entry_context["lots"] = fill_lots
                             entry_context["entry_price"] = fill_price
                     meta["attributed_lots"] = fill_lots
+                initial_volume = remaining_volume = None
                 try:
                     initial_volume = float(record.get("volume_initial"))
                     remaining_volume = float(record.get("volume_current"))
@@ -6334,8 +6335,13 @@ class EventDrivenSystem:
                         reason=f"broker_confirmed_pending_terminal:{status.lower()}",
                     )
                 elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"} or (
-                    terminal and broker_position_id and position is None
+                    terminal and not terminal_no_fill_confirmed and not meta.get("attributed")
                 ):
+                    unresolved_attribution = (
+                        "unresolved_closed_fill"
+                        if broker_position_id and position is None
+                        else "unresolved_position_ticket"
+                    )
                     if meta.get("status") != status:
                         store.emit(
                             event_type=DE.ORDER_RECONCILED, severity="WARNING",
@@ -6344,11 +6350,23 @@ class EventDrivenSystem:
                             parent_id=tracking_key,
                             source_module="execution.pending_order_reconciliation",
                             durable=True,
-                            payload={"order_id": resolved_ticket, "tracking_key": tracking_key, "status": status,
-                                     "attribution_status": "unresolved_position_ticket" if status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"} else "unresolved_closed_fill",
-                                     "broker_record": record, "broker_confirmed": True},
+                            payload={
+                                "order_id": resolved_ticket,
+                                "tracking_key": tracking_key,
+                                "status": status,
+                                "attribution_status": unresolved_attribution,
+                                "broker_record": record,
+                                "broker_confirmed": True,
+                            },
                         )
                     meta["status"] = status
+                    meta["post_cancel_broker_record"] = record
+                    if (
+                        initial_volume is not None and remaining_volume is not None
+                        and initial_volume > 0.0
+                        and 0.0 < remaining_volume < initial_volume - 1e-9
+                    ):
+                        meta["last_partial_remaining_volume"] = remaining_volume
             except Exception as exc:  # noqa: BLE001 — retain unresolved order for next broker-confirmed cycle
                 logger.error("[pending-orders] reconciliation failed for {}: {}", tracking_key, exc)
 
