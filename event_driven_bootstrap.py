@@ -7292,33 +7292,42 @@ class EventDrivenSystem:
             logger.warning("[session-gate] SessionEngine check failed; blocking entry for {}: {}", symbol, exc)
             return False
 
-    def _is_fx_market_closed(self) -> bool:
-        """True when the FX market is closed (weekend) per the SessionEngine.
+    def _is_fx_market_closed(self, symbol: Optional[str] = None) -> bool:
+        """Use a verified venue UTC lower bound for the FX weekend gate.
 
-        Used to suppress the process watchdog's tick-stall alert during the
-        weekend, when FX ticks legitimately stop.
+        Missing clock authority fails open so a feed is never silently starved.
         """
         ctx = self._ctx
         if ctx is None or ctx.session_engine is None:
             return False
-        try:
-            return ctx.session_engine.get_status().current_session == "WEEKEND"
-        except Exception:
-            return False
+        candidates = (
+            [str(symbol or "").strip().upper()]
+            if symbol else
+            [
+                str(item or "").strip().upper()
+                for item in (getattr(self._config, "enabled_pairs", []) or [])
+                if str(item or "").strip()
+            ]
+        )
+        for candidate in candidates:
+            try:
+                utc_lower_bound = self._pm.get_utc_time_lower_bound(candidate)
+                if utc_lower_bound is None or not math.isfinite(float(utc_lower_bound)):
+                    continue
+                utc_now = datetime.fromtimestamp(
+                    float(utc_lower_bound), tz=timezone.utc,
+                )
+                return ctx.session_engine.get_status(utc_now).current_session == "WEEKEND"
+            except Exception:
+                continue
+        return False
 
     def _should_poll_symbol(self, symbol: str) -> bool:
-        """True when *symbol*'s market is currently open and worth polling.
+        """True when the verified venue clock says the feed is worth polling.
 
-        Polling gate for the tick adapters.  24/7 instruments (Deriv synthetics
-        and crypto) are always polled.  Session-gated 24/5 instruments (forex,
-        commodities, indices) are skipped while the FX market is closed
-        (weekend), which stops the stale-tick warning flood and prevents the
-        consecutive-failure removal from dropping symbols that are merely
-        closed.  Polling resumes automatically when the market reopens — no
-        symbol is permanently removed for a weekend closure.
-
-        Fail-open: any uncertainty (unknown symbol, SessionEngine error)
-        defaults to polling so a real feed is never silently starved.
+        24/7 instruments are always polled. Session-gated 24/5 instruments are
+        skipped only when a verified UTC authority confirms the FX weekend.
+        Unknown clock state fails open; host wall time never suppresses a feed.
         """
         try:
             if is_always_open(symbol):
@@ -7327,7 +7336,7 @@ class EventDrivenSystem:
         except Exception:
             return True
         try:
-            return not self._is_fx_market_closed()
+            return not self._is_fx_market_closed(symbol)
         # safe-fallback: avoid starving a potentially open feed; entry admission independently checks tradeability.
         except Exception:
             return True
