@@ -148,8 +148,18 @@ def test_warmup_seeding():
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        return _attest_completed(_seed_df(base, 300, 5))
+        frame = _attest_completed(_seed_df(base, 300, 5))
+        assert frame.attrs["source_symbol"] == symbol
+        assert frame.attrs["completed_bars_verified"] is True
+        assert frame.attrs["forming_bar_included"] is False
+        assert frame.attrs["source_timestamp_verified"] is True
+        assert frame.attrs["source_timezone"] == "UTC"
+        assert frame.attrs["source_timestamp_unit"] == "unix_seconds"
+        assert frame.attrs["source_timestamp_origin"] == "broker_ohlcv"
+        return frame
 
+    # Isolate the attestation/row parser from the threaded warmup coordinator.
+    assert agg._warmup_one("EURUSD", "M5", fetcher) is True
     seeded = agg.warmup(["EURUSD"], ["M5"], fetcher)
     assert seeded == 1
     confirmed = agg.get_confirmed_dataframe("EURUSD", "M5")
