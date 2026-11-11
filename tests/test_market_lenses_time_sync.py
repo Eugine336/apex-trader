@@ -157,3 +157,34 @@ def test_cross_timeframe_alignment_fails_closed_without_verified_common_cutoff()
     assert alignment.measurements["synchronized_timestamps"] is False
     assert alignment.measurements["source_verified"] is False
     assert alignment.measurements["snapshot_cutoff_epoch"] is None
+
+def test_market_lens_evidence_timestamp_requires_verified_analysis_epoch():
+    frame = _frame(60)
+    unknown = analyze_market_frames(
+        "XAUUSD", {"M1": frame}, source_includes_forming_bar=True,
+    )
+    structure_unknown = next(
+        item for item in unknown
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure_unknown.timestamp_epoch == 0.0
+    assert structure_unknown.timestamp_iso == ""
+    assert structure_unknown.measurements["evidence_timestamp_basis"] == "unknown"
+    assert structure_unknown.source_timestamp_verified is True
+
+    trusted_epoch = 1_800_000_000.0
+    verified = analyze_market_frames(
+        "XAUUSD",
+        {"M1": frame},
+        source_includes_forming_bar=True,
+        concept_context={"analysis_epoch": trusted_epoch},
+    )
+    structure_verified = next(
+        item for item in verified
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure_verified.timestamp_epoch == trusted_epoch
+    assert structure_verified.timestamp_epoch != structure_verified.source_timestamp_epoch
+    assert structure_verified.measurements["evidence_timestamp_basis"] == (
+        "verified_utc_analysis_cutoff"
+    )
