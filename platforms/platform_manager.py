@@ -1312,10 +1312,10 @@ class PlatformManager:
     def get_utc_time_lower_bound(self, symbol: str) -> Optional[float]:
         """Return the selected venue's verified UTC lower bound, or unknown.
 
-        The MT5 connector derives this from its independently witnessed,
-        monotonic-anchored broker clock. Platforms without an equivalent
-        verified authority remain unknown; callers must not substitute host
-        wall time when this method returns None.
+        The selected connector's broker clock is preferred when available;
+        otherwise independent NTP/HTTPS UTC witnesses are used. The returned
+        value is a conservative lower bound anchored to monotonic time. Callers
+        must never substitute host wall time when all authorities are unknown.
         """
         try:
             connector = self.get_connector(symbol)
