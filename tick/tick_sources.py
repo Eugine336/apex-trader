@@ -524,10 +524,35 @@ class MT5TickPoller:
             raise RuntimeError(
                 f"MT5 tick symbol mismatch: requested={symbol}, received={reported_symbol}"
             )
-        self._route_history_quotes(symbol, quote)
+        try:
+            self._route_history_quotes(symbol, quote)
+        except Exception as exc:
+            # Historical replay is a recovery supplement, not a prerequisite
+            # for the live quote path. A malformed frame or parser defect must
+            # never prevent delivery of the current verified broker quote.
+            raw = getattr(quote, "raw_fields", {})
+            raw = raw if isinstance(raw, dict) else {}
+            broker_server = str(raw.get("broker_server_identity") or "").strip()
+            end = getattr(quote, "time", None)
+            if isinstance(end, datetime) and end.tzinfo is not None:
+                end = end.astimezone(timezone.utc)
+                start = self._history_cursor.get(
+                    symbol, end - timedelta(seconds=300),
+                ) - timedelta(milliseconds=1)
+                self._persist_history_gap(
+                    symbol, start, end, broker_server,
+                    f"history_replay_processing_failed:{type(exc).__name__}",
+                )
+            now = _time.monotonic()
+            if now - self._last_error_log.get(f"history-process:{symbol}", 0.0) >= 60.0:
+                self._last_error_log[f"history-process:{symbol}"] = now
+                logger.exception(
+                    "[mt5-poller] {} history replay processing failed; live quote path continues: {}",
+                    symbol, exc,
+                )
         # Always retain the current verified quote, including when the history
-        # endpoint is temporarily unavailable or returns no rows. Fingerprints
-        # suppress the overlap duplicate when history already delivered it.
+        # endpoint is temporarily unavailable, malformed or returns no rows.
+        # Fingerprints suppress the overlap duplicate when history delivered it.
         self._route_latest_quote(symbol, quote)
 
     def start(self) -> None:
