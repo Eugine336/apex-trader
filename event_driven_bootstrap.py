@@ -2061,6 +2061,21 @@ class EventDrivenSystem:
             # confirm its book. Never size from a partial or unknown portfolio.
             book = list(platform_manager.get_all_open_positions())
             daily_pnl = float(account_risk.combined_pnl(account_key))
+            # Unfilled Brain-approved OPENs already consume daily-loss capacity.
+            # Subtract their max-loss reservations before sizing another intent.
+            reservation_book = self._get_portfolio_admission_reservations()
+            reserved_loss = 0.0
+            for reservation in reservation_book.snapshot():
+                if str(reservation.get("account_key") or "") != account_key:
+                    continue
+                try:
+                    reserved_max_loss = float(reservation.get("max_loss"))
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if not math.isfinite(reserved_max_loss) or reserved_max_loss <= 0.0:
+                    return None
+                reserved_loss += reserved_max_loss
+            daily_pnl -= reserved_loss
             daily_loss_cap_pct = float(account_risk.daily_loss_cap_pct)
             if not math.isfinite(daily_pnl) or not math.isfinite(daily_loss_cap_pct):
                 logger.error(
@@ -2513,6 +2528,7 @@ class EventDrivenSystem:
                     account_key=str(reservation.get("account_key") or ""),
                     is_pending_reservation=True,
                     reserved_risk_pct=reservation.get("risk_pct"),
+                    reserved_max_loss=reservation.get("max_loss"),
                 ))
             verdict = compliance.permit(
                 ComplianceCandidate(symbol=symbol, direction=direction),
