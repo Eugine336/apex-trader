@@ -312,3 +312,21 @@ def test_warmup_rejects_unordered_rows_even_with_completion_attestation():
         lambda _symbol, _tf, _count: frame,
     ) == 0
     assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+
+def test_warmup_rejects_zero_offset_non_utc_timezone_even_with_utc_frame_attestation():
+    from datetime import timedelta, timezone
+
+    agg = LiveCandleAggregator()
+    frame = _seed_df(1_700_000_000, 300, 5)
+    local_zero = timezone(timedelta(0), name="LOCAL")
+    frame["time"] = frame["time"].map(
+        lambda value: value.astimezone(local_zero)
+    )
+    _attest_completed(frame)
+
+    assert agg.warmup(
+        ["EURUSD"], ["M5"],
+        lambda _symbol, _tf, _count: frame,
+    ) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
