@@ -285,7 +285,8 @@ def test_range_rotation_flows_from_candles_to_hypothesis_and_geometry(monkeypatc
     frame.attrs.update({
         "source_timestamp_verified": True, "source_symbol": "EURUSD",
         "source_timestamp_unit": "unix_seconds", "source_timestamp_origin": "broker_ohlcv",
-        "source_broker": "mt5", "tick_size": 0.5, "tick_size_verified": True,
+        "source_broker": "mt5", "source_timezone": "UTC",
+        "forming_bar_included": True, "tick_size": 0.5, "tick_size_verified": True,
     })
     state = MarketState(symbol="EURUSD")
     evidence = analyze_market_frames("EURUSD", {"M5": frame})

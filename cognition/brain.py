@@ -1481,7 +1481,7 @@ class CognitiveBrain:
             # pass on EVERY position cycle, before consulting an optional provider.
             # A provider outage is infrastructure state, never the market verdict.
             analysis, native_hypotheses = self._native_reasoning(
-                market_state, consolidation, symbol,
+                market_state, consolidation, symbol, now=now,
             )
             payload = self._management_evidence_payload(
                 symbol, market_state, consolidation, position,

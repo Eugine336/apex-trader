@@ -326,7 +326,7 @@ class _HistoryFrame:
         self.attrs = {
             "source_timestamp_verified": verified,
             "source_timezone": "UTC" if verified else "broker_server",
-            "utc_normalization": "live_server_offset" if verified else "historical_offset_required",
+            "utc_normalization": "utc_request_bounds_verified" if verified else "unverified",
         }
         self.empty = not self._rows
 

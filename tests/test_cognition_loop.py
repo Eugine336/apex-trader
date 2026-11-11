@@ -536,6 +536,7 @@ def test_loop_records_open_snapshot_to_memory():
     loop = CognitionLoop(
         _OpenBrain(), _EvidenceConsolidator(), lambda: ["EURUSD"],
         origination_mode="off", memory=store,
+        utc_now_provider=lambda _symbol: 1_800_000_000.0,
     )
     loop.run_once()
     st = loop.get_status()
@@ -977,6 +978,7 @@ def test_management_records_campaign_health():
         _ManageBrain(DecisionType.TIGHTEN_RISK), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos("XAUUSD", "LONG")],
         management_mode="live", campaign_registry=reg,
+        utc_now_provider=lambda _symbol: 1_800_000_000.0,
     )
     loop.set_management_sink(lambda action, pos: None)
     loop.run_once()
@@ -1407,3 +1409,142 @@ def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
         position,
     ) is False
     assert calls == []
+
+
+def test_cognition_loop_uses_injected_verified_utc_cutoff():
+    loop = CognitionLoop(
+        _StubBrain(), _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda symbol: 1_800_000_123.5 if symbol == "XAUUSD" else None,
+    )
+    assert loop._resolve_decision_utc("XAUUSD", None) == 1_800_000_123.5
+
+
+def test_cognition_loop_keeps_unknown_utc_unknown_without_host_clock(monkeypatch):
+    import platforms.mt5.clock as clock_module
+
+    monkeypatch.setattr(clock_module, "independent_utc_lower_bound", lambda: None)
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: [])
+    assert loop._resolve_decision_utc("XAUUSD", None) == 0.0
+
+
+def test_cognition_loop_explicit_replay_cutoff_is_preserved():
+    loop = CognitionLoop(
+        _StubBrain(), _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda _symbol: 1_900_000_000.0,
+    )
+    assert loop._resolve_decision_utc("XAUUSD", 1_800_000_000.0) == 1_800_000_000.0
+
+
+def test_reasoning_cycle_uses_verified_utc_for_market_state_and_decision_timestamps():
+    cutoff = 1_800_000_123.5
+
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            self.market_state = market_state
+            self.now = now
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=0.0,
+                ),
+                decided_at_epoch=0.0,
+            )
+
+    brain = CapturingBrain()
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda symbol: cutoff if symbol == "XAUUSD" else None,
+    )
+
+    output = loop._reason_over_symbol("XAUUSD")
+
+    assert output is not None
+    assert brain.now == cutoff
+    assert brain.market_state.created_epoch == cutoff
+    assert output.decision.created_epoch == cutoff
+    assert output.decided_at_epoch == cutoff
+
+
+def test_unknown_utc_does_not_leak_host_timestamps_into_decision():
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            self.now = now
+            self.market_state = market_state
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=1_800_000_000.0,
+                    created_iso="host-derived",
+                ),
+                decided_at_epoch=1_800_000_000.0,
+            )
+
+    brain = CapturingBrain()
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: [])
+    output = loop._reason_over_symbol("XAUUSD")
+
+    assert output is not None
+    assert brain.now == 0.0
+    assert brain.market_state.created_epoch == 0.0
+    assert brain.market_state.created_iso == ""
+    assert output.decision.created_epoch == 0.0
+    assert output.decision.created_iso == ""
+    assert output.decided_at_epoch == 0.0
+
+
+def test_portfolio_reasoning_uses_oldest_verified_utc_cutoff_across_symbols():
+    seen = []
+
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            seen.append((market_state.symbol, now))
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=0.0,
+                ),
+                decided_at_epoch=0.0,
+            )
+
+    loop = CognitionLoop(
+        CapturingBrain(), _StubConsolidator(), lambda: ["XAUUSD", "EURUSD"],
+        utc_now_provider=lambda symbol: {
+            "XAUUSD": 1_800_000_123.5,
+            "EURUSD": 1_800_000_120.0,
+        }.get(symbol),
+    )
+
+    assert loop.run_once() == 2
+    assert seen == [
+        ("XAUUSD", 1_800_000_120.0),
+        ("EURUSD", 1_800_000_120.0),
+    ]
+
+
+def test_portfolio_reasoning_cutoff_is_unknown_if_any_selected_venue_is_unknown():
+    seen = []
+
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            seen.append((market_state.symbol, now))
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=0.0,
+                ),
+                decided_at_epoch=0.0,
+            )
+
+    loop = CognitionLoop(
+        CapturingBrain(), _StubConsolidator(), lambda: ["XAUUSD", "EURUSD"],
+        utc_now_provider=lambda symbol: (
+            1_800_000_123.5 if symbol == "XAUUSD" else None
+        ),
+    )
+
+    assert loop.run_once() == 2
+    assert seen == [("XAUUSD", 0.0), ("EURUSD", 0.0)]

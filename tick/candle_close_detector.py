@@ -18,10 +18,11 @@ and is fully testable with synthetic tick sequences.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -78,8 +79,10 @@ class CandleCloseDetector:
         event_bus: EventBus,
         watchdog_interval: float = 5.0,
         max_catchup_periods: int = 5,
+        utc_lower_bound_provider: Optional[Callable[[str], Optional[float]]] = None,
     ) -> None:
         self._bus = event_bus
+        self._utc_lower_bound_provider = utc_lower_bound_provider
         self._lock = threading.Lock()
         # (symbol, timeframe) → epoch of the next candle close
         self._next_close: dict[tuple[str, str], float] = {}
@@ -214,31 +217,56 @@ class CandleCloseDetector:
                 )
 
     def fire_overdue_closes(self, now: Optional[float] = None) -> list[CandleClose]:
-        """Fire closes for any (symbol, tf) whose boundary has passed.
+        """Fire closes using an explicit or independently verified UTC time.
 
-        Used by the watchdog thread (and directly testable). For each tracked
-        pair where wall-clock ``now`` is at or past ``_next_close``, a
-        ``CandleClose`` is emitted with ``last_tick=None`` (timer-triggered).
-        Missed periods are fired sequentially — one event per boundary — up to
-        ``max_catchup_periods``; beyond that the pair is re-based to avoid an
-        event storm after a prolonged gap. The boundary check-and-advance runs
-        under ``_lock`` so it can never double-fire with the tick path.
+        An explicit value is accepted for deterministic tests. In production,
+        a configured per-symbol UTC lower-bound provider is authoritative.
+        Unknown/expired clock evidence skips the watchdog close instead of
+        consulting the host wall clock. The host-clock fallback is retained
+        only for standalone detectors that have no provider configured.
+        Clock providers are called outside the detector lock so slow terminal
+        metadata reads cannot stall tick ingestion.
         """
-        if now is None:
-            now = time.time()
+        with self._lock:
+            symbols = {symbol for symbol, _timeframe in self._next_close}
+
+        now_by_symbol: dict[str, Optional[float]] = {}
+        for symbol in symbols:
+            if now is not None:
+                try:
+                    pair_now = float(now)
+                except (TypeError, ValueError, OverflowError):
+                    pair_now = None
+            elif self._utc_lower_bound_provider is not None:
+                try:
+                    value = self._utc_lower_bound_provider(symbol)
+                    pair_now = float(value) if value is not None else None
+                except Exception as exc:
+                    logger.debug(
+                        "[candle-close] UTC authority unavailable for {}: {}",
+                        symbol, exc,
+                    )
+                    pair_now = None
+            else:
+                pair_now = time.time()
+            now_by_symbol[symbol] = (
+                pair_now if pair_now is not None and math.isfinite(pair_now) else None
+            )
 
         events: list[CandleClose] = []
-
         with self._lock:
             for key, nc in list(self._next_close.items()):
-                if nc is None or now < nc:
+                if nc is None:
                     continue
                 symbol, tf = key
+                pair_now = now_by_symbol.get(symbol)
+                if pair_now is None or pair_now < nc:
+                    continue
                 tf_secs = _TF_SECONDS[tf]
-                overdue = int((now - nc) // tf_secs) + 1
+                overdue = int((pair_now - nc) // tf_secs) + 1
                 if overdue > self._max_catchup_periods:
-                    # Prolonged gap — skip the stale closes and re-base.
-                    self._next_close[key] = _next_close(now, tf_secs)
+                    # Re-base only to the verified UTC lower bound.
+                    self._next_close[key] = _next_close(pair_now, tf_secs)
                     logger.debug(
                         "[candle-close] watchdog re-based {} {} after {} missed "
                         "periods (> max_catchup {})",
@@ -246,7 +274,7 @@ class CandleCloseDetector:
                     )
                     continue
                 boundary = nc
-                while now >= boundary:
+                while pair_now >= boundary:
                     close_time = datetime.fromtimestamp(boundary, tz=timezone.utc)
                     events.append(
                         CandleClose(

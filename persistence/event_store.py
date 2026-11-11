@@ -426,6 +426,7 @@ class EventStore:
         limit: int = 200,
         offset: int = 0,
         raise_on_error: bool = False,
+        order_by_sequence: bool = False,
     ) -> List[Dict[str, Any]]:
         """Dashboard read; critical callers may request database faults to propagate."""
         min_rank = self._SEVERITY_RANK.get(severity_min.upper(), 1)
@@ -454,11 +455,16 @@ class EventStore:
         if since_ms is not None:
             clauses.append("ts_utc_ms >= ?")
             params.append(since_ms)
+        if order_by_sequence:
+            # Recovery cursors must follow the durable append sequence, not
+            # wall-clock timestamps that can jump or differ across hosts.
+            clauses.append("seq IS NOT NULL")
 
         where = " WHERE " + " AND ".join(clauses)
+        order_clause = "seq DESC" if order_by_sequence else "ts_utc_ms DESC, seq DESC"
         sql = (
             f"SELECT * FROM events{where}"
-            f" ORDER BY ts_utc_ms DESC, seq DESC LIMIT ? OFFSET ?"
+            f" ORDER BY {order_clause} LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
 

@@ -38,6 +38,9 @@ def _frame(start, closes, *, symbol, naive=False):
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "completed_bars_verified": True,
+        "forming_bar_included": False,
     })
     return frame
 
@@ -111,7 +114,9 @@ def test_round_trip_cost_fails_closed_when_spread_is_zero_or_unknown():
 
 
 def test_measured_cross_asset_evidence_is_classified_as_verified_association():
-    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=31)
+    # The final timestamp is the open time of the last completed H1 bar;
+    # keep it one full hour behind the current UTC boundary.
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
     xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)], symbol="XAUUSD")
     usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)], symbol="USDJPY")
     evidence = _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau})
@@ -166,3 +171,28 @@ def test_money_per_price_rejects_unverified_or_invalid_broker_spec():
         "trade_tick_size": 0.01,
     })
     assert system._money_per_price("XAUUSD", 2.0) == 0.0
+
+
+
+def test_confirmed_candle_fetcher_requests_and_requires_completed_bars():
+    start = datetime.now(timezone.utc) - timedelta(hours=3)
+    completed = _frame(start, [2000 + index for index in range(32)], symbol="XAUUSD")
+
+    class _CompletedBarsPM:
+        def __init__(self, frame):
+            self.frame = frame
+            self.include_forming_values = []
+
+        def fetch_market_data(self, symbol, timeframes, count, *, include_forming=True):
+            self.include_forming_values.append(include_forming)
+            return {timeframes[0]: self.frame}
+
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = _CompletedBarsPM(completed)
+
+    assert system._fetch_candles("XAUUSD", "H1", 64) is completed
+    assert system._pm.include_forming_values == [False]
+
+    completed.attrs["completed_bars_verified"] = False
+    assert system._fetch_candles("XAUUSD", "H1", 64) is None
+    assert system._pm.include_forming_values == [False, False]

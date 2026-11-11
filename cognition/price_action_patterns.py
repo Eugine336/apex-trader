@@ -304,6 +304,16 @@ def evidence_from_m1_candles(
 ) -> Evidence | None:
     """Convert M1 price-action measurements into one neutral Evidence record."""
     try:
+        if not provisional:
+            attrs = getattr(frame, "attrs", {})
+            if not (
+                isinstance(attrs, dict)
+                and attrs.get("source_timestamp_verified") is True
+                and attrs.get("source_timezone") == "UTC"
+                and attrs.get("completed_bars_verified") is True
+                and attrs.get("forming_bar_included") is False
+            ):
+                return None
         measurements = detect_m1_price_action(frame, expected_symbol=symbol)
         if not measurements:
             return None

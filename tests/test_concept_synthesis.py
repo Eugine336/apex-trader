@@ -274,3 +274,28 @@ def test_brain_fails_closed_when_concept_decision_cutoff_is_missing():
         "EURUSD",
     )
     assert not any(item.hypothesis_kind.startswith("concept_group:") for item in hypotheses)
+
+
+def test_explicit_unknown_decision_cutoff_does_not_project_host_wall_time(monkeypatch):
+    import cognition.brain_reasoning as reasoning
+
+    state = MarketState(symbol="EURUSD")
+    state.add(Evidence(
+        source_module="test.completed_market",
+        domain=EvidenceDomain.STRUCTURE,
+        symbol="EURUSD",
+        measurements={"structure": "verified"},
+        timestamp_epoch=1_000.0,
+        relevance_horizon_seconds=300.0,
+    ))
+    monkeypatch.setattr(reasoning.time, "time", lambda: 2_000.0)
+
+    analysis = BrainReasoner().analyze_evidence(state, now=0.0)
+
+    assert analysis.decision_timestamp_epoch is None
+    # Generic unknown-regime observations may still be emitted, but no
+    # evidence-derived observations, domains, patterns or concepts may survive.
+    assert analysis.domain_coverage == {}
+    assert analysis.evidence_index == []
+    assert analysis.concept_readings == []
+    assert analysis.detected_patterns == []

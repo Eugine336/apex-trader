@@ -168,10 +168,10 @@ class LiveCandleAggregator:
         """Seed the ring buffers from broker history before live ticks start.
 
         For each (symbol, timeframe) it fetches up to ``max_candles`` bars via
-        ``candle_fetcher`` and stores **all** returned rows as closed candles —
-        at warmup time every fetched bar (including the broker's in-progress
-        last bar) is treated as closed.  The first live tick then starts a
-        fresh forming candle.
+        ``candle_fetcher``. A frame is accepted only when its provider explicitly
+        attests ``completed_bars_verified=True`; an ordinary OHLCV frame is not
+        proof that its final row is closed. Unattested data is rejected rather
+        than guessed from host time or a potentially mismatched broker clock.
 
         Must be called BEFORE the live tick loops start so it cannot race a
         live tick for the same (symbol, timeframe).  Best-effort: any fetch or
@@ -185,7 +185,8 @@ class LiveCandleAggregator:
             Timeframes to seed (only supported ones are used).
         candle_fetcher : callable
             ``(symbol, timeframe, count) -> DataFrame | None`` with columns
-            ``time, open, high, low, close, volume`` (broker format).
+            ``time, open, high, low, close, volume`` and the explicit
+            ``completed_bars_verified=True`` frame attribute.
         per_symbol_timeout : float
             Max seconds to wait for a single symbol's seed to complete.
 
@@ -252,23 +253,71 @@ class LiveCandleAggregator:
         df = candle_fetcher(symbol, tf, self._max_candles)
         if df is None or getattr(df, "empty", True):
             return False
+        attrs = getattr(df, "attrs", {})
+        attrs = attrs if isinstance(attrs, dict) else {}
+        if not (
+            attrs.get("completed_bars_verified") is True
+            and attrs.get("forming_bar_included") is False
+            and attrs.get("source_timestamp_verified") is True
+            and str(attrs.get("source_symbol") or "").strip().upper()
+                == str(symbol or "").strip().upper()
+            and str(attrs.get("source_timezone") or "").upper() == "UTC"
+            and attrs.get("source_timestamp_unit") == "unix_seconds"
+            and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+        ):
+            logger.warning(
+                "[live-candles] warmup {} {} skipped — completed-bar/source-time attestation missing",
+                symbol, tf,
+            )
+            return False
         tf_secs = _TF_SECONDS[tf]
         seeded_rows: list[dict] = []
-        for row in df.itertuples(index=False):
+        # Record iteration preserves the broker's explicit column names across
+        # pandas versions; namedtuple field access can be sanitized differently
+        # for reserved/renamed columns.
+        for row in df.to_dict(orient="records"):
             try:
-                row_epoch = pd.Timestamp(row.time).timestamp()
-            except Exception:  # SAFE-FALLBACK: skip malformed broker candle row during warm seed
-                continue
-            seeded_rows.append(
-                {
+                row_time = row["time"]
+                tzinfo = getattr(row_time, "tzinfo", None)
+                utcoffset = (
+                    row_time.utcoffset()
+                    if callable(getattr(row_time, "utcoffset", None))
+                    else None
+                )
+                timezone_label = str(tzinfo or "").strip().upper()
+                if (
+                    tzinfo is None
+                    or utcoffset is None
+                    or utcoffset.total_seconds() != 0
+                    or timezone_label not in {"UTC", "UTC+00:00"}
+                ):
+                    raise ValueError(
+                        "completed-bar warmup timestamp must carry explicit UTC timezone"
+                    )
+                row_epoch = float(row_time.timestamp())
+                if not math.isfinite(row_epoch):
+                    raise ValueError("completed-bar warmup timestamp is non-finite")
+                if seeded_rows and row_epoch <= seeded_rows[-1]["timestamp_epoch"]:
+                    raise ValueError("completed-bar warmup rows are not strictly chronological")
+                seeded_row = {
                     "boundary": _candle_boundary(row_epoch, tf_secs),
-                    "open": float(row.open),
-                    "high": float(row.high),
-                    "low": float(row.low),
-                    "close": float(row.close),
-                    "volume": float(getattr(row, "volume", 0.0) or 0.0),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row.get("volume", 0.0) or 0.0),
                 }
-            )
+            except Exception as exc:
+                # A frame-level completed-bar attestation cannot make a naive
+                # or non-UTC row safe: timestamp conversion would otherwise
+                # depend on the host timezone. Reject the whole warmup batch.
+                logger.warning(
+                    "[live-candles] warmup {} {} rejected — invalid UTC row timestamp: {} ({})",
+                    symbol, tf, type(exc).__name__, exc,
+                )
+                return False
+            seeded_row["timestamp_epoch"] = row_epoch
+            seeded_rows.append(seeded_row)
         if not seeded_rows:
             return False
         # Keep only the most recent ``max_candles`` rows.

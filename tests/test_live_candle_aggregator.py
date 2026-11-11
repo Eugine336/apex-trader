@@ -130,13 +130,51 @@ def _seed_df(start_epoch: float, tf_secs: int, n: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
 
 
-def test_warmup_seeding():
+def _attest_completed(frame: pd.DataFrame, symbol: str = "EURUSD") -> pd.DataFrame:
+    frame.attrs.update({
+        "completed_bars_verified": True,
+        "forming_bar_included": False,
+        "source_timestamp_verified": True,
+        "source_symbol": symbol,
+        "source_timezone": "UTC",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+    })
+    return frame
+
+
+def test_warmup_seeding(monkeypatch):
+    import tick.live_candle_aggregator as aggregator_module
+
+    warnings = []
+    monkeypatch.setattr(
+        aggregator_module, "logger",
+        type(
+            "WarmupLogger",
+            (),
+            {
+                "warning": staticmethod(lambda *args: warnings.append(args)),
+                "info": staticmethod(lambda *args: None),
+                "debug": staticmethod(lambda *args: None),
+            },
+        )(),
+    )
     agg = LiveCandleAggregator()
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        return _seed_df(base, 300, 5)
+        frame = _attest_completed(_seed_df(base, 300, 5))
+        assert frame.attrs["source_symbol"] == symbol
+        assert frame.attrs["completed_bars_verified"] is True
+        assert frame.attrs["forming_bar_included"] is False
+        assert frame.attrs["source_timestamp_verified"] is True
+        assert frame.attrs["source_timezone"] == "UTC"
+        assert frame.attrs["source_timestamp_unit"] == "unix_seconds"
+        assert frame.attrs["source_timestamp_origin"] == "broker_ohlcv"
+        return frame
 
+    # Isolate the attestation/row parser from the threaded warmup coordinator.
+    assert agg._warmup_one("EURUSD", "M5", fetcher) is True, warnings
     seeded = agg.warmup(["EURUSD"], ["M5"], fetcher)
     assert seeded == 1
     confirmed = agg.get_confirmed_dataframe("EURUSD", "M5")
@@ -146,13 +184,24 @@ def test_warmup_seeding():
     assert confirmed.iloc[0]["volume"] == pytest.approx(100)
 
 
+def test_warmup_rejects_unattested_potentially_forming_last_bar():
+    agg = LiveCandleAggregator()
+    base = 1_700_000_000
+
+    def fetcher(symbol, tf, count):
+        return _seed_df(base, 300, 5)
+
+    assert agg.warmup(["EURUSD"], ["M5"], fetcher) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+
 def test_warmup_then_live_ticks():
     agg = LiveCandleAggregator()
     tf_secs = 300
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        return _seed_df(base, tf_secs, 5)
+        return _attest_completed(_seed_df(base, tf_secs, 5))
 
     agg.warmup(["EURUSD"], ["M5"], fetcher)
     # First live tick in a NEW period (after the 5 seeded bars) starts bar #6.
@@ -240,3 +289,44 @@ def test_thread_safety():
     assert (df["high"] >= df["low"]).all()
     forming = df.iloc[-1]
     assert forming["high"] >= forming["low"]
+
+def test_warmup_rejects_naive_timestamps_even_with_frame_completion_attestation():
+    agg = LiveCandleAggregator()
+    frame = _seed_df(1_700_000_000, 300, 5)
+    frame["time"] = frame["time"].dt.tz_localize(None)
+    _attest_completed(frame)
+
+    assert agg.warmup(
+        ["EURUSD"], ["M5"],
+        lambda _symbol, _tf, _count: frame,
+    ) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+def test_warmup_rejects_unordered_rows_even_with_completion_attestation():
+    agg = LiveCandleAggregator()
+    frame = _seed_df(1_700_000_000, 300, 5).iloc[::-1].copy()
+    _attest_completed(frame)
+
+    assert agg.warmup(
+        ["EURUSD"], ["M5"],
+        lambda _symbol, _tf, _count: frame,
+    ) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+
+def test_warmup_rejects_zero_offset_non_utc_timezone_even_with_utc_frame_attestation():
+    from datetime import timedelta, timezone
+
+    agg = LiveCandleAggregator()
+    frame = _seed_df(1_700_000_000, 300, 5)
+    local_zero = timezone(timedelta(0), name="LOCAL")
+    frame["time"] = frame["time"].map(
+        lambda value: value.astimezone(local_zero)
+    )
+    _attest_completed(frame)
+
+    assert agg.warmup(
+        ["EURUSD"], ["M5"],
+        lambda _symbol, _tf, _count: frame,
+    ) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None

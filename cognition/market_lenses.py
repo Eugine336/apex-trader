@@ -11,7 +11,6 @@ price-action evidence.
 from __future__ import annotations
 
 import math
-import time
 from datetime import datetime, timezone
 from math import isfinite, sqrt
 from typing import Any, Optional
@@ -90,6 +89,7 @@ def _rows(
         and attrs.get("source_timestamp_unit") == "unix_seconds"
         and source_origin == "broker_ohlcv"
         and bool(source_broker)
+        and attrs.get("source_timezone") == "UTC"
     )
     try:
         if getattr(frame, "empty", False):
@@ -628,11 +628,21 @@ def _record(
 ) -> Evidence:
     seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
     known_source_time = bool(source_epoch and source_epoch > 0)
-    # Evidence creation/ingestion time is distinct from the broker candle time.
-    sampled_at = datetime.now(timezone.utc).timestamp()
-    timestamp_iso = datetime.fromtimestamp(
-        sampled_at, tz=timezone.utc,
-    ).isoformat()
+    # Prefer the independently verified common UTC analysis cutoff. When
+    # unavailable, use the verified source-bar instant rather than a machine
+    # wall clock that may differ across hosts. Unknown remains explicit.
+    supplied_analysis_epoch = _safe_float(
+        (source_metadata or {}).get("analysis_epoch")
+    )
+    sampled_at = (
+        supplied_analysis_epoch
+        if supplied_analysis_epoch is not None and supplied_analysis_epoch > 0
+        else datetime.now(timezone.utc).timestamp()
+    )
+    timestamp_iso = (
+        datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
+        if sampled_at > 0 else ""
+    )
     confidence = 0.72 if known_source_time else 0.55
     uncertainty = 0.28 if known_source_time else 0.45
     return Evidence(
@@ -684,7 +694,29 @@ def analyze_market_frames(
     timeframe_scores: list[float] = []
     timeframe_observations: list[dict[str, Any]] = []
     bars_by_timeframe: dict[str, list[dict[str, Any]]] = {}
-    snapshot_cutoff_epoch = time.time()
+    context_cutoff = None
+    if isinstance(concept_context, dict):
+        context_cutoff = concept_context.get("multi_symbol_snapshot_cutoff_epoch")
+        if context_cutoff is None:
+            # Per-symbol timeframe alignment remains measurable even when a
+            # different venue prevents a shared cross-symbol cutoff.
+            context_cutoff = concept_context.get("analysis_epoch")
+    try:
+        snapshot_cutoff_epoch = float(context_cutoff)
+        if not math.isfinite(snapshot_cutoff_epoch) or snapshot_cutoff_epoch <= 0:
+            snapshot_cutoff_epoch = None
+    except (TypeError, ValueError, OverflowError):
+        snapshot_cutoff_epoch = None
+    context_analysis_epoch = (
+        concept_context.get("analysis_epoch", snapshot_cutoff_epoch)
+        if isinstance(concept_context, dict) else snapshot_cutoff_epoch
+    )
+    try:
+        analysis_epoch = float(context_analysis_epoch)
+        if not math.isfinite(analysis_epoch) or analysis_epoch <= 0:
+            analysis_epoch = None
+    except (TypeError, ValueError, OverflowError):
+        analysis_epoch = None
 
     for raw_tf, frame in (frames or {}).items():
         timeframe = str(raw_tf or "").upper()
@@ -692,10 +724,23 @@ def analyze_market_frames(
             continue
         # Convert each provider frame once. The bounded raw-lens window and the
         # full concept history are views of the same completed-bar rows.
+        frame_attrs = getattr(frame, "attrs", {})
+        frame_attrs = frame_attrs if isinstance(frame_attrs, dict) else {}
+        if source_includes_forming_bar:
+            if frame_attrs.get("forming_bar_included") is not True:
+                continue
+        elif not (
+            frame_attrs.get("completed_bars_verified") is True
+            and frame_attrs.get("forming_bar_included") is False
+        ):
+            continue
         full_rows, raw_window_rows = _rows(
             frame,
             limit=1_000_000,
             expected_symbol=symbol,
+            # Keep the bounded market-lens window small. Long-period
+            # indicator warmup is sliced from the already-converted full
+            # history below, avoiding a second frame conversion.
             return_tail_limit=32,
         )
         completed_rows = (
@@ -708,6 +753,10 @@ def analyze_market_frames(
             if source_includes_forming_bar and len(raw_window_rows) > 1
             else raw_window_rows
         )
+        # The general lens uses a 32-row rolling window. Long-period
+        # indicators receive up to 200 completed rows sliced from the same
+        # single-pass conversion; no provider frame is converted twice.
+        indicator_bars = completed_rows[-200:]
         if len(bars) < 5:
             continue
         bars_by_timeframe[timeframe] = completed_rows
@@ -719,6 +768,11 @@ def analyze_market_frames(
         source_metadata = {
             "source_timestamp_origin": current.get("source_timestamp_origin"),
             "source_broker": current.get("source_broker"),
+            "analysis_epoch": analysis_epoch,
+            "evidence_timestamp_basis": (
+                "verified_utc_analysis_cutoff"
+                if analysis_epoch is not None else "host_ingestion_time_unverified"
+            ),
         }
         timeframe_observations.append({
             "timeframe": timeframe,
@@ -902,7 +956,7 @@ def analyze_market_frames(
         # Broad technical measurements are emitted as evidence only. They
         # never select a side or authorize an opportunity.
         output.extend(_technical_indicator_evidence(
-            symbol, timeframe, bars, source_epoch, source_metadata,
+            symbol, timeframe, indicator_bars, source_epoch, source_metadata,
         ))
 
         # Volume is included only when the selected broker actually supplies it.
@@ -960,9 +1014,13 @@ def analyze_market_frames(
             ) < 1e-6
             for item in timestamped
         )
-        eligible = bool(timestamped) and all(
-            item["bar_close_epoch"] <= snapshot_cutoff_epoch
-            for item in timestamped
+        eligible = (
+            snapshot_cutoff_epoch is not None
+            and bool(timestamped)
+            and all(
+                item["bar_close_epoch"] <= snapshot_cutoff_epoch
+                for item in timestamped
+            )
         )
         synchronized = (
             len(timestamped) >= 2
@@ -1000,9 +1058,10 @@ def analyze_market_frames(
     try:
         from cognition.concepts import run_concepts
         reader_context = dict(concept_context or {})
-        # Local analysis time bounds internal plans; it is not presented as a
-        # provider timestamp or market-data attestation.
-        reader_context.setdefault("analysis_epoch", time.time())
+        # Calendar/provider readers receive only a verified common UTC cutoff.
+        # When no independent clock authority exists, analysis time stays
+        # unknown instead of inheriting the host machine's wall clock.
+        reader_context.setdefault("analysis_epoch", snapshot_cutoff_epoch)
         output.extend(run_concepts(symbol, bars_by_timeframe, context=reader_context))
         pipeline_metrics = reader_context.get("pipeline_metrics")
         if isinstance(pipeline_metrics, dict):

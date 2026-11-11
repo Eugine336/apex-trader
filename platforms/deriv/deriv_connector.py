@@ -1252,6 +1252,7 @@ class DerivConnector(BaseConnector):
         for c in candles:
             rows.append({
                 "time": datetime.fromtimestamp(c["epoch"], tz=timezone.utc),
+                "time_source_epoch": int(c["epoch"]),
                 "open": float(c["open"]),
                 "high": float(c["high"]),
                 "low": float(c["low"]),
@@ -1260,18 +1261,25 @@ class DerivConnector(BaseConnector):
             })
         out = pd.DataFrame(rows)
         # Deriv ticks_history with end="latest" includes the in-progress candle
-        # as the last row. Callers needing confirmed-closed data can drop it via
-        # include_forming=False (default keeps it to preserve the closed-bar
-        # dual-view: structural modules drop it themselves; live observational
-        # reads legitimately keep it).
-        if not include_forming and len(out) > 1:
-            out = out.iloc[:-1]
+        # as the last row. A single returned row therefore provides no completed
+        # bar at all; return an empty, unattested closed view rather than mislabel it.
+        completed_verified = False
+        if not include_forming:
+            if len(out) > 1:
+                out = out.iloc[:-1].copy()
+                completed_verified = True
+            else:
+                out = out.iloc[0:0].copy()
         out.attrs.update({
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "deriv",
+            "source_timezone": "UTC",
+            "completed_bars_verified": completed_verified,
+            "forming_bar_included": bool(include_forming),
+            "bar_completion_basis": "deriv_latest_candle_excluded",
         })
         return out
 

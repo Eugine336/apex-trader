@@ -13,11 +13,13 @@ import paths) resolves identically — behaviour unchanged.
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time as _time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
@@ -39,6 +41,7 @@ class MT5TickPoller:
         symbols: list[str],
         poll_interval: float = 0.05,
         should_poll: Optional[Callable[[str], bool]] = None,
+        checkpoint_store: Optional[Any] = None,
     ) -> None:
         self._pm = platform_manager
         self._router = tick_router
@@ -60,6 +63,148 @@ class MT5TickPoller:
         self._history_seen_order: dict[str, deque] = {}
         self._history_seen_limit = 20_000
         self._history_gap_count: dict[str, int] = {}
+        self._history_broker_identity: dict[str, str] = {}
+        self._checkpoint_store = checkpoint_store
+        self._restored_history_checkpoints: dict[str, dict[str, Any]] = {}
+        self._checkpoint_restore_attempted: set[str] = set()
+        self._checkpoint_error_logged: set[str] = set()
+        self._last_checkpoint_cursor: dict[str, datetime] = {}
+        self._history_gap_reported: set[tuple[str, str, str, str]] = set()
+        self._restore_history_checkpoints()
+
+    def _restore_history_checkpoints(self) -> None:
+        """Load the latest durable per-symbol replay checkpoint from EventStore."""
+        store = self._checkpoint_store
+        if store is None:
+            return
+        try:
+            from persistence import domain_events as DE
+            rows = store.query_events(
+                severity_min="INFO",
+                event_types=[DE.MT5_TICK_RECOVERY_CHECKPOINT],
+                limit=10000,
+                raise_on_error=True,
+                order_by_sequence=True,
+            )
+            for row in rows:
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol or symbol in self._restored_history_checkpoints:
+                    continue
+                payload = row.get("payload_json")
+                payload = json.loads(payload) if isinstance(payload, str) else payload
+                if isinstance(payload, dict) and payload.get("schema") == "apex.mt5_tick_checkpoint.v1":
+                    self._restored_history_checkpoints[symbol] = payload
+        except Exception as exc:
+            logger.error("[mt5-poller] durable history checkpoint restore failed: {}", exc)
+
+    def _apply_history_checkpoint(self, symbol: str, broker_server: str) -> None:
+        if symbol in self._checkpoint_restore_attempted:
+            return
+        self._checkpoint_restore_attempted.add(symbol)
+        payload = self._restored_history_checkpoints.pop(symbol, None)
+        if not payload:
+            return
+        if str(payload.get("broker_server") or "") != broker_server:
+            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+            logger.error(
+                "[mt5-poller] {} persisted history cursor belongs to a different broker server; "
+                "checkpoint rejected and history will re-anchor without replaying foreign data",
+                symbol,
+            )
+            return
+        try:
+            cursor = datetime.fromisoformat(str(payload["cursor_utc"]))
+            if cursor.tzinfo is None:
+                raise ValueError("checkpoint cursor is timezone-naive")
+            self._history_cursor[symbol] = cursor.astimezone(timezone.utc)
+            self._last_checkpoint_cursor[symbol] = cursor.astimezone(timezone.utc)
+            fingerprints = payload.get("recent_fingerprints", [])
+            if isinstance(fingerprints, list):
+                for item in fingerprints[-self._history_seen_limit:]:
+                    if isinstance(item, list) and len(item) == 4:
+                        self._remember_history_tick(symbol, tuple(item))
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+            logger.error("[mt5-poller] {} persisted history checkpoint invalid: {}", symbol, exc)
+
+    def _persist_history_checkpoint(
+        self, symbol: str, cursor: datetime, broker_server: str,
+    ) -> bool:
+        store = self._checkpoint_store
+        if store is None or not broker_server:
+            return False
+        previous = self._last_checkpoint_cursor.get(symbol)
+        if previous is not None and cursor <= previous:
+            return True
+        if previous is not None and (cursor - previous).total_seconds() < 5.0:
+            return True
+        order = self._history_seen_order.get(symbol, deque())
+        fingerprints = [list(key) for key in list(order)[-256:]]
+        try:
+            from persistence import domain_events as DE
+            store.emit(
+                event_type=DE.MT5_TICK_RECOVERY_CHECKPOINT,
+                severity="INFO",
+                symbol=symbol,
+                source_module="tick.mt5_poller",
+                payload={
+                    "schema": "apex.mt5_tick_checkpoint.v1",
+                    "broker_server": broker_server,
+                    "cursor_utc": cursor.astimezone(timezone.utc).isoformat(),
+                    "recent_fingerprints": fingerprints,
+                },
+                durable=True,
+            )
+            self._last_checkpoint_cursor[symbol] = cursor.astimezone(timezone.utc)
+            return True
+        except Exception as exc:
+            if symbol not in self._checkpoint_error_logged:
+                self._checkpoint_error_logged.add(symbol)
+                logger.critical(
+                    "[mt5-poller] {} history checkpoint could not be committed; "
+                    "cursor will not advance durably: {}",
+                    symbol, exc,
+                )
+            return False
+
+    def _persist_history_gap(
+        self, symbol: str, start: datetime, end: datetime,
+        broker_server: str, reason: str,
+    ) -> None:
+        """Durably record a range that could not be verified or replayed."""
+        store = self._checkpoint_store
+        if store is None or not broker_server:
+            return
+        identity = (
+            symbol, broker_server, start.astimezone(timezone.utc).isoformat(),
+            end.astimezone(timezone.utc).isoformat(),
+        )
+        if identity in self._history_gap_reported:
+            return
+        try:
+            from persistence import domain_events as DE
+            store.emit(
+                event_type=DE.MT5_TICK_RECOVERY_GAP,
+                severity="ERROR",
+                symbol=symbol,
+                source_module="tick.mt5_poller",
+                payload={
+                    "schema": "apex.mt5_tick_gap.v1",
+                    "broker_server": broker_server,
+                    "from_utc": identity[2],
+                    "to_utc": identity[3],
+                    "reason": str(reason),
+                },
+                durable=True,
+            )
+            # Only suppress duplicate writes after the durable store confirms
+            # success. A transient EventStore failure must remain retryable.
+            self._history_gap_reported.add(identity)
+        except Exception as exc:
+            logger.critical(
+                "[mt5-poller] {} unrecoverable history gap could not be durably recorded: {}",
+                symbol, exc,
+            )
 
     def _remember_history_tick(self, symbol: str, key: tuple) -> bool:
         seen = self._history_seen.setdefault(symbol, set())
@@ -105,10 +250,18 @@ class MT5TickPoller:
         ):
             return False
 
-        time_msc = raw.get("time_msc")
+        # Deduplication uses the normalized UTC event instant, never the
+        # provider's raw epoch. MT5 latest-quote time_msc can be broker-server
+        # time while copy_ticks_range history is UTC; comparing those raw
+        # values makes the same quote appear to be two different events.
+        time_msc = raw.get("timestamp_utc_epoch")
+        if time_msc is not None:
+            try:
+                time_msc = int(round(float(time_msc) * 1000.0))
+            except (TypeError, ValueError, OverflowError):
+                time_msc = None
         if time_msc is None and timestamp.tzinfo is not None:
-            # Never use datetime.timestamp() on a naive broker timestamp: it
-            # interprets the value in the host machine's local timezone.
+            # TickData.timestamp is already normalized and timezone-aware.
             time_msc = int(timestamp.astimezone(timezone.utc).timestamp() * 1000)
         if time_msc is not None:
             key = self._tick_key(time_msc, bid, ask, raw.get("flags", 0))
@@ -130,8 +283,12 @@ class MT5TickPoller:
         self._router.on_tick(tick)
         return True
 
-    def _route_history_quotes(self, symbol: str, latest_quote: Any) -> bool:
-        """Replay all verified bid/ask ticks since the last broker-time cursor.
+    def _route_history_quotes(
+        self, symbol: str, latest_quote: Any, *,
+        _range_start: Optional[datetime] = None,
+        _range_end: Optional[datetime] = None,
+    ) -> bool:
+        """Replay all verified bid/ask ticks since the last UTC cursor.
 
         MT5's latest-quote polling can skip intermediate updates. The history
         API returns the broker's available quote tape, so the poller requests an
@@ -142,38 +299,91 @@ class MT5TickPoller:
         fetch = getattr(self._pm, "get_tick_history", None)
         if not callable(fetch):
             return False
-        end = getattr(latest_quote, "time", None)
-        if not isinstance(end, datetime) or end.tzinfo is None:
-            return False
-        end = end.astimezone(timezone.utc)
-        cursor = self._history_cursor.get(symbol)
-        start = (
-            cursor - timedelta(milliseconds=1)
-            if cursor is not None
-            else end - timedelta(seconds=300)
-        )
+        if _range_start is None or _range_end is None:
+            end = getattr(latest_quote, "time", None)
+            if not isinstance(end, datetime) or end.tzinfo is None:
+                return False
+            end = end.astimezone(timezone.utc)
+            latest_raw = getattr(latest_quote, "raw_fields", {})
+            latest_raw = latest_raw if isinstance(latest_raw, dict) else {}
+            broker_server = str(latest_raw.get("broker_server_identity") or "").strip()
+            if broker_server:
+                previous_server = self._history_broker_identity.get(symbol)
+                if previous_server and previous_server != broker_server:
+                    self._history_cursor.pop(symbol, None)
+                    self._history_seen.pop(symbol, None)
+                    self._history_seen_order.pop(symbol, None)
+                    # The durable checkpoint cursor is broker-server scoped
+                    # too. Never let an old server's cursor suppress the first
+                    # checkpoint for the newly connected server.
+                    self._last_checkpoint_cursor.pop(symbol, None)
+                    self._checkpoint_restore_attempted.discard(symbol)
+                    self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+                    logger.error(
+                        "[mt5-poller] {} broker server identity changed from {} to {}; "
+                        "discarded the prior server's replay cursor and dedup state",
+                        symbol, previous_server, broker_server,
+                    )
+                self._history_broker_identity[symbol] = broker_server
+                self._apply_history_checkpoint(symbol, broker_server)
+            cursor = self._history_cursor.get(symbol)
+            start = (
+                cursor - timedelta(milliseconds=1)
+                if cursor is not None
+                else end - timedelta(seconds=300)
+            )
+        else:
+            start = _range_start.astimezone(timezone.utc)
+            end = _range_end.astimezone(timezone.utc)
+            latest_raw = getattr(latest_quote, "raw_fields", {})
+            latest_raw = latest_raw if isinstance(latest_raw, dict) else {}
+            broker_server = str(latest_raw.get("broker_server_identity") or "").strip()
         window_seconds = (end - start).total_seconds()
         if window_seconds < 0:
+            self._persist_history_gap(
+                symbol, end, start, broker_server, "replay_cursor_ahead_of_latest_quote",
+            )
+            self._history_cursor.pop(symbol, None)
+            self._history_seen.pop(symbol, None)
+            self._history_seen_order.pop(symbol, None)
+            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+            logger.error(
+                "[mt5-poller] {} replay cursor was ahead of the latest verified quote; "
+                "cursor and dedup state cleared after recording the gap",
+                symbol,
+            )
             return False
         if window_seconds > 300.0:
-            # get_ticks only attests UTC normalization for a recent live window.
-            # Do not relabel a long outage/weekend replay with today's offset:
-            # record the gap, re-anchor at the current verified quote, and resume
-            # live capture without fabricating timestamps for the missing span.
-            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
-            self._history_cursor[symbol] = end
-            now = _time.monotonic()
-            if now - self._last_error_log.get(f"history-gap:{symbol}", 0.0) >= 60.0:
-                self._last_error_log[f"history-gap:{symbol}"] = now
-                logger.error(
-                    "[mt5-poller] {} tick-history gap {:.1f}s — cannot verify historical "
-                    "UTC offset; re-anchoring at current broker quote (gap_count={})",
-                    symbol, window_seconds, self._history_gap_count[symbol],
+            # Recover long outages as bounded, independently attested ranges.
+            # Each completed batch advances only to observed history, never to
+            # the requested end. A failed/empty/unverified batch leaves the
+            # remaining interval outstanding for the next poll/restart.
+            batch_start = start
+            recovered_any = False
+            while batch_start < end:
+                batch_end = min(batch_start + timedelta(seconds=300), end)
+                recovered = self._route_history_quotes(
+                    symbol, SimpleNamespace(time=batch_end, raw_fields=latest_raw),
+                    _range_start=batch_start, _range_end=batch_end,
                 )
-            return False
+                if not recovered:
+                    self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+                    self._persist_history_gap(
+                        symbol, batch_start, batch_end, broker_server,
+                        "batch_fetch_empty_or_timestamp_attestation_failed",
+                    )
+                    return False
+                recovered_any = True
+                if batch_end >= end:
+                    break
+                batch_start = batch_end - timedelta(milliseconds=1)
+            return recovered_any
         try:
             frame = fetch(symbol, start, end)
         except Exception as exc:
+            self._persist_history_gap(
+                symbol, start, end, broker_server, f"history_fetch_failed:{type(exc).__name__}",
+            )
             now = _time.monotonic()
             if now - self._last_error_log.get(f"history:{symbol}", 0.0) >= 60.0:
                 self._last_error_log[f"history:{symbol}"] = now
@@ -184,8 +394,12 @@ class MT5TickPoller:
             not isinstance(attrs, dict)
             or attrs.get("source_timestamp_verified") is not True
             or attrs.get("source_timezone") != "UTC"
-            or attrs.get("utc_normalization") != "live_server_offset"
+            or attrs.get("utc_normalization") != "utc_request_bounds_verified"
         ):
+            self._persist_history_gap(
+                symbol, start, end, broker_server,
+                "history_timestamp_attestation_missing_or_invalid",
+            )
             now = _time.monotonic()
             if now - self._last_error_log.get(f"history-clock:{symbol}", 0.0) >= 60.0:
                 self._last_error_log[f"history-clock:{symbol}"] = now
@@ -196,6 +410,9 @@ class MT5TickPoller:
                 )
             return False
         if bool(getattr(frame, "empty", True)):
+            self._persist_history_gap(
+                symbol, start, end, broker_server, "history_query_returned_no_rows",
+            )
             return False
 
         newest: Optional[datetime] = None
@@ -225,8 +442,8 @@ class MT5TickPoller:
             stamp = stamp.astimezone(timezone.utc)
             if stamp < start - timedelta(milliseconds=1) or stamp > end + timedelta(milliseconds=1):
                 continue
-            time_seconds = row.get("time_server_epoch")
-            time_milliseconds = row.get("time_msc_server_epoch")
+            time_seconds = row.get("time_source_epoch", row.get("time_server_epoch"))
+            time_milliseconds = row.get("time_msc_source_epoch", row.get("time_msc_server_epoch"))
             if time_seconds is not None and time_milliseconds is not None:
                 try:
                     if abs(float(time_milliseconds) / 1000.0 - float(time_seconds)) > 1.5:
@@ -276,7 +493,15 @@ class MT5TickPoller:
                 spread_unit="unknown",
                 raw_fields=raw_fields,
             ))
+        if newest is None:
+            self._persist_history_gap(
+                symbol, start, end, broker_server, "history_rows_contained_no_valid_timestamps",
+            )
+            return False
         if newest is not None:
+            if broker_server and self._checkpoint_store is not None:
+                if not self._persist_history_checkpoint(symbol, newest, broker_server):
+                    return False
             self._history_cursor[symbol] = newest
             return True
         return False
@@ -300,10 +525,35 @@ class MT5TickPoller:
             raise RuntimeError(
                 f"MT5 tick symbol mismatch: requested={symbol}, received={reported_symbol}"
             )
-        self._route_history_quotes(symbol, quote)
+        try:
+            self._route_history_quotes(symbol, quote)
+        except Exception as exc:
+            # Historical replay is a recovery supplement, not a prerequisite
+            # for the live quote path. A malformed frame or parser defect must
+            # never prevent delivery of the current verified broker quote.
+            raw = getattr(quote, "raw_fields", {})
+            raw = raw if isinstance(raw, dict) else {}
+            broker_server = str(raw.get("broker_server_identity") or "").strip()
+            end = getattr(quote, "time", None)
+            if isinstance(end, datetime) and end.tzinfo is not None:
+                end = end.astimezone(timezone.utc)
+                start = self._history_cursor.get(
+                    symbol, end - timedelta(seconds=300),
+                ) - timedelta(milliseconds=1)
+                self._persist_history_gap(
+                    symbol, start, end, broker_server,
+                    f"history_replay_processing_failed:{type(exc).__name__}",
+                )
+            now = _time.monotonic()
+            if now - self._last_error_log.get(f"history-process:{symbol}", 0.0) >= 60.0:
+                self._last_error_log[f"history-process:{symbol}"] = now
+                logger.exception(
+                    "[mt5-poller] {} history replay processing failed; live quote path continues: {}",
+                    symbol, exc,
+                )
         # Always retain the current verified quote, including when the history
-        # endpoint is temporarily unavailable or returns no rows. Fingerprints
-        # suppress the overlap duplicate when history already delivered it.
+        # endpoint is temporarily unavailable, malformed or returns no rows.
+        # Fingerprints suppress the overlap duplicate when history delivered it.
         self._route_latest_quote(symbol, quote)
 
     def start(self) -> None:

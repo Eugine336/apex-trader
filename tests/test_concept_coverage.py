@@ -93,6 +93,8 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     cognitive_analysis_source = inspect.getsource(CognitiveBrain._analyze_evidence)
     cognitive_hypothesis_source = inspect.getsource(CognitiveBrain._generate_hypotheses)
     system_context_source = inspect.getsource(SystemContext.create)
+    cognition_price_source = inspect.getsource(EventDrivenSystem._cognition_price_snapshot)
+    completed_fetch_source = inspect.getsource(EventDrivenSystem._fetch_candles)
     consolidator_source = inspect.getsource(EvidenceConsolidator.build)
     cycle_hook_source = inspect.getsource(EvidenceConsolidator.begin_concept_cycle)
     loop_cycle_source = inspect.getsource(CognitionLoop.run_once)
@@ -117,6 +119,14 @@ def test_all_79_method_keys_and_38_lenses_are_audited_against_the_live_brain_pat
     assert "analyze_market_frames(" in system_context_source
     assert "concept_source=_concept_market_source" in system_context_source
     assert "fetch_all_market_data(" in system_context_source
+    assert "include_forming=False" in system_context_source
+    assert "source_includes_forming_bar=False" in system_context_source
+    assert '"multi_symbol_source_includes_forming_bar": False' in system_context_source
+    assert "include_forming=True" not in system_context_source
+    assert "include_forming=False" in cognition_price_source
+    assert "source_includes_forming_bar=False" in cognition_price_source
+    assert "provisional=False" in cognition_price_source
+    assert "_fetch_completed_candles" in completed_fetch_source
     assert '"multi_symbol_frames": dict(_concept_market_cycle_snapshot)' in system_context_source
     assert '"data_source_registry": ctx.data_source_registry' in system_context_source
     assert "DataSourceRegistry()" in system_context_source

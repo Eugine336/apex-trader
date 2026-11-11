@@ -77,6 +77,8 @@ def _frame():
         "source_symbol": "XAUUSD",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "mt5",
+        "source_timezone": "UTC", "completed_bars_verified": True,
+        "forming_bar_included": False,
         "source_timestamp_verified": True,
         "source_timestamp_unit": "unix_seconds",
         "volume_basis": "tick_volume_alias_with_real_volume_preserved",

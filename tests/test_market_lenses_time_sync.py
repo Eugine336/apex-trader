@@ -48,13 +48,18 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
     })
     return frame
 
 
 def _alignment(frames):
     evidence = analyze_market_frames(
-        "XAUUSD", frames, source_includes_forming_bar=True
+        "XAUUSD",
+        frames,
+        source_includes_forming_bar=True,
+        concept_context={"multi_symbol_snapshot_cutoff_epoch": time.time() + 1.0},
     )
     return next(
         item for item in evidence
@@ -138,3 +143,68 @@ def test_broker_attestation_does_not_verify_unordered_candle_rows():
     assert structure.measurements["source_timestamp_known"] is False
     assert structure.source_timestamp_verified is False
     assert structure.source_timestamp_epoch is None
+
+def test_cross_timeframe_alignment_fails_closed_without_verified_common_cutoff():
+    evidence = analyze_market_frames(
+        "XAUUSD",
+        {"M1": _frame(60), "M5": _frame(300)},
+        source_includes_forming_bar=True,
+    )
+    alignment = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.MULTI_TIMEFRAME
+    )
+    assert alignment.measurements["synchronized_timestamps"] is False
+    assert alignment.measurements["source_verified"] is False
+    assert alignment.measurements["snapshot_cutoff_epoch"] is None
+
+def test_market_lens_evidence_separates_ingestion_time_from_source_time():
+    frame = _frame(60)
+    before = time.time()
+    unanchored = analyze_market_frames(
+        "XAUUSD", {"M1": frame}, source_includes_forming_bar=True,
+    )
+    structure_unanchored = next(
+        item for item in unanchored
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert before <= structure_unanchored.timestamp_epoch <= time.time() + 1.0
+    assert structure_unanchored.measurements["evidence_timestamp_basis"] == (
+        "host_ingestion_time_unverified"
+    )
+    assert structure_unanchored.source_timestamp_verified is True
+
+    trusted_epoch = 1_800_000_000.0
+    verified = analyze_market_frames(
+        "XAUUSD",
+        {"M1": frame},
+        source_includes_forming_bar=True,
+        concept_context={"analysis_epoch": trusted_epoch},
+    )
+    structure_verified = next(
+        item for item in verified
+        if item.domain == EvidenceDomain.STRUCTURE
+    )
+    assert structure_verified.timestamp_epoch == trusted_epoch
+    assert structure_verified.timestamp_epoch != structure_verified.source_timestamp_epoch
+    assert structure_verified.measurements["evidence_timestamp_basis"] == (
+        "verified_utc_analysis_cutoff"
+    )
+
+def test_per_symbol_cutoff_supports_timeframe_alignment_when_shared_venue_cut_is_unknown():
+    cutoff = time.time() + 1.0
+    evidence = analyze_market_frames(
+        "XAUUSD",
+        {"M1": _frame(60), "M5": _frame(300)},
+        source_includes_forming_bar=True,
+        concept_context={
+            "multi_symbol_snapshot_cutoff_epoch": None,
+            "analysis_epoch": cutoff,
+        },
+    )
+    alignment = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.MULTI_TIMEFRAME
+    )
+    assert alignment.measurements["synchronized_timestamps"] is True
+    assert alignment.measurements["snapshot_cutoff_epoch"] == cutoff

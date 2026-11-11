@@ -107,6 +107,8 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
     })
     evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
     assert evidence is not None
@@ -251,7 +253,9 @@ def _frames_with_breakout() -> pd.DataFrame:
         "open": 101.6, "high": 102.0, "low": 101.3, "close": 101.8,
         "tick_volume": 140.0,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs["forming_bar_included"] = True
+    return frame
 
 
 def _frames_with_liquidity_reclaim() -> pd.DataFrame:
@@ -275,7 +279,9 @@ def _frames_with_liquidity_reclaim() -> pd.DataFrame:
         "open": 100.0, "high": 100.2, "low": 99.8, "close": 100.05,
         "volume": 120.0,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs["forming_bar_included"] = True
+    return frame
 
 
 def test_universal_market_lenses_emit_structured_facts_for_all_supported_timeframes():
@@ -367,9 +373,17 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
     })
     evidence = analyze_market_frames(
-        "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
+        "EURUSD",
+        {"M5": frame},
+        source_includes_forming_bar=True,
+        concept_context={
+            "analysis_epoch": now.timestamp(),
+            "multi_symbol_snapshot_cutoff_epoch": now.timestamp(),
+        },
     )
     structure = next(
         item for item in evidence

@@ -98,3 +98,20 @@ Evidence:
 Do not convert this ambiguity into a hardcoded UTC or broker-server rule. Keep raw integer fields unchanged and distinguish API request-bound semantics from returned snapshot/history field semantics. The new read-only `scripts/diagnose_mt5_timestamp_semantics.py` captures raw live and historical samples, API/package/terminal version, server identity, host wall/monotonic readings, independent UTC witnesses and exact UTC request bounds. Run it on each supported host and preserve outputs. A source contract change requires correlated samples across hosts and versions, with no unexplained offset residual or DST discontinuity.
 
 Until evidence resolves the contract, any timestamp conversion requiring the disputed interpretation must remain explicitly gated; do not silently apply the estimated broker offset twice or treat a wall-clock comparison as proof.
+
+
+## Verified API-specific timestamp and completion contracts — 2026-11-11
+
+MetaQuotes' official Python API reference states that returned tick and bar data are UTC. The `copy_rates_from_pos` reference separately defines position zero as the current bar; the preceding position is therefore the last completed bar. See the official references:
+- `copy_ticks_range`: https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py
+- `copy_rates_from`: https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py
+- `copy_rates_from_pos`: https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrompos_py
+
+Owner-host captures on JustMarkets-Demo / XAUUSD.ecn repeatably show the live `symbol_info_tick` timestamp approximately UTC+2 while `copy_ticks_range` rows align with the UTC request bounds. This is a host/broker/package observation, not a universal claim about every terminal. The implementation now keeps the API contracts separate:
+
+- Live `symbol_info_tick`: identity-bound broker-clock normalization remains active; raw provider epochs and the broker identity are preserved.
+- `copy_ticks_range`: no live broker offset is subtracted. Only bounded (≤300-second) batches whose raw seconds and milliseconds are mutually consistent and inside the exact UTC request bounds are attested UTC. Broad or contradictory history remains timezone-unknown.
+- `copy_rates_from_pos`: `start_pos=0` includes the forming bar; `start_pos=1` returns completed bars only. Returned bar epochs are UTC and retain raw source epochs.
+- `copy_rates_range`: returned bar epochs are UTC; range membership is validated. Closed-only reads compare bar close times against a conservative independent UTC lower bound, not the broker-server offset.
+
+Production confirmed-analysis and live-candle warmup fetchers now request `include_forming=False` and require `completed_bars_verified=True`. Cross-asset context likewise rejects any bar frame without completed-bar attestation. Same-host captures are repeated; second-host and DST-transition validation remain open.

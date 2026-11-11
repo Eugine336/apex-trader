@@ -19,6 +19,7 @@ def _frame(rows, symbol="EURUSD"):
     df.attrs.update({
         "source_timestamp_verified": True, "source_symbol": symbol, "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv", "source_broker": "mt5",
+        "source_timezone": "UTC", "forming_bar_included": True,
     })
     return df
 

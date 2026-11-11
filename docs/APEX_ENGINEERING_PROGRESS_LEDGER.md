@@ -236,3 +236,199 @@ Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and
 - PR #907 CI run #4325: Python 3.12 passed, lint passed, Python 3.11 still running at last poll.
 - WP-T acceptance: all T-A1 through T-A10 remain OPEN.
 - Next: poll run #4325; audit `symbol_map` production call graph and all `get_ticks` consumers; add non-mutating timestamp-domain regression fixtures; repeat owner-host capture and obtain second-host capture before any normalization rewrite. Continue durable tick recovery, completed-bar warmup and consumer audit independently.
+
+## 2026-11-11 — WP-T timestamp correction and recovery implementation
+
+- **Repository:** `Eugine336/apex-trader`
+- **Base:** `main` at `b417e349579adb9de210ede572b939cb87c75bee`
+- **Branch:** `fix/wp-t-timestamp-contract-recovery`
+- **Latest recorded commit at this ledger update:** `74e64ab280109cc839cdb1a80462d6b213ec2401`
+- **PR:** not yet created.
+- **Protected paths:** real `.env`, credentials, runtime databases, broker account selection/settings remain untouched and prohibited.
+- **Live broker mutation:** none; prohibited during engineering.
+
+### Root-cause evidence
+Two owner-host captures on the same Windows 11 MT5 terminal (JustMarkets-Demo, package 5.0.6231, terminal 500.6308) for `XAUUSD.ecn` repeatedly show latest quote `time`/`time_msc` approximately 7,200 seconds ahead of independent UTC witnesses, while `copy_ticks_range` rows align with the exact UTC request interval. The wrong unsuffixed symbol `XAUUSD` is unavailable; `XAUUSD.ecn` is visible, selected and returning quotes/history. This is repeatable same-host evidence, not fleet-wide proof.
+
+### Changes committed
+1. `platforms/mt5/mt5_connector.py`
+   - Removed live broker-offset subtraction from `copy_ticks_range` history.
+   - Preserves raw provider epochs in explicit source-epoch fields and legacy aliases.
+   - Verifies seconds/milliseconds consistency and exact UTC query-bound membership before assigning UTC.
+   - Leaves shifted, malformed or out-of-range history timezone-unknown and unverified.
+   - Adds broker-server identity to live tick provenance for recovery checkpoint scoping.
+2. `tick/tick_sources.py`
+   - Requires `utc_request_bounds_verified` for history replay.
+   - Splits long gaps into independently verified 300-second batches.
+   - Stops on failed/empty/unverified batches; no cursor jump to current quote.
+   - Restores and durably persists broker-server-scoped cursor and bounded fingerprints through EventStore.
+   - Does not advance the durable cursor when checkpoint commit fails.
+3. `persistence/domain_events.py`: registered `MT5_TICK_RECOVERY_CHECKPOINT`.
+4. `event_driven_bootstrap.py`: injects the existing EventStore into the MT5 poller; no new database.
+5. `tick/live_candle_aggregator.py`: rejects warmup frames without explicit `completed_bars_verified=True`.
+6. `tests/test_mt5_market_data.py`: tests batch-local UTC corroboration, no offset subtraction, offset-shifted rows, inconsistent fields and stale-clock independence.
+7. `tests/test_mt5_tick_poller_recovery.py`: tests 300-second batching, no advancement after a failed batch, durable checkpoint persistence/restore and broker identity mismatch.
+8. `tests/test_live_candle_aggregator.py`: tests that unattested history cannot seed closed candles; synthetic accepted fixtures explicitly attest completion.
+9. Documentation updates are being recorded in this branch.
+
+### Verification and limitations
+- No local test/lint/compile command has been executed in this environment.
+- PR #907 diagnostic CI run `43014426036` completed green for Python 3.11, Python 3.12 and lint; this is not CI evidence for this implementation branch.
+- Same-host timestamp captures are repeated; a second independent MT5 host and sustained feed evidence are still missing.
+- The live aggregator's production warmup currently skips because the existing MT5 candle fetcher does not provide the new completed-bar attestation. This is intentionally fail-closed and must be resolved with a verified provider completion contract.
+- Durable checkpoint code needs CI and real EventStore restart/failure integration tests.
+- The complete clock lifecycle, full consumer map, gap/missingness propagation and Systems 2/6/7 acceptance remain open.
+- T-A1 through T-A10 remain OPEN. No production acceptance or WP-T completion is claimed.
+
+### Exact next actions
+1. Open a PR from this branch to main and wait for Python 3.11/3.12 plus lint CI; fix failures.
+2. Inspect CI results and correct test/source defects before further expansion.
+3. Add EventStore-backed checkpoint integration/fault tests and ensure no cursor advancement on persistence failure.
+4. Verify the broker timestamp semantics on a second independent MT5 host.
+5. Complete the MT5 OHLCV completed-bar attestation, then re-enable aggregator warmup only when the provider contract is proven.
+6. Finish System 2/6/7 consumer and lifecycle audits; update the roadmap and ledger with actual test evidence.
+
+
+### Recovery hardening follow-up — 2026-11-11
+
+- Durable checkpoint writes are rate-limited to at most one per five seconds per symbol; each checkpoint retains the most recent 256 fingerprints. This bounds EventStore write volume while keeping restart replay overlap bounded. The cursor in memory may advance between durable checkpoints; restart resumes from the last committed cursor and replays the intervening range.
+- Empty history responses, invalid timestamp attestations, fetch failures, malformed timestamp batches and cursor-ahead conditions are retained as durable `MT5_TICK_RECOVERY_GAP` events when the canonical EventStore is available. The cursor is not advanced across these ranges.
+- Added a real temporary-SQLite EventStore close/reopen test for checkpoint restoration, plus tests for write failure, checkpoint write throttling and durable gap deduplication. These tests are committed but not executed.
+- The 300-second batch tests verify that a failed later batch leaves the cursor at the last successful batch rather than jumping to the requested end.
+- The test suite still needs CI execution. Same-host timestamp evidence remains repeated but not multi-host.
+
+
+## 2026-11-11 — WP-T completed-bar and API-specific UTC correction
+
+- Updated MT5 API contracts based on MetaQuotes' official Python documentation and repeated owner-host captures.
+- `get_ohlcv(include_forming=False)` now requests MT5 bar position 1, excluding the current forming bar by provider contract rather than a server-clock heuristic.
+- `get_ohlcv_range` validates returned UTC bar epochs against the exact UTC request bounds; closed-only filtering uses the conservative lower bound of the independent UTC witness anchor.
+- Event-driven `_fetch_candles` and LiveCandleAggregator warmup now use a completed-only fetcher and require `completed_bars_verified=True`.
+- Cross-asset context requires completed-bar attestation for both primary and related legs.
+- Forming-bar WorldModel publications are no longer wired to cognition wake callbacks. Verified tick-change wakes and completed candle-close analysis remain.
+- Tests updated for MT5 chronological OHLCV ordering, start-position closed-bar semantics, independent-UTC range filtering and completed-bar-only cross-asset context. Tests are committed but not executed locally.
+- Live quote `symbol_info_tick` remains broker-clock normalized; historical `copy_ticks_range` and bar data use API-specific UTC semantics. Multi-host and DST acceptance remain open.
+
+
+## 2026-11-11 — Completed-bar production integration
+
+- MT5 OHLCV now follows MetaQuotes' documented UTC contract. `copy_rates_from_pos(start_pos=1)` excludes the current forming bar by provider position; `copy_rates_range` validates returned epochs against exact UTC request bounds and uses a conservative independent UTC lower bound when closed-only filtering is requested.
+- Event-driven `_fetch_candles` now requires provider-attested completed bars. The same contract feeds `CandleCloseHandler` and LiveCandleAggregator warmup. Cross-asset analysis rejects any frame without completed-bar attestation.
+- Removed the forming-bar WorldModel publish callback into CognitionLoop. Brain reasoning now wakes on verified tick-change observations and completed candle-close events; provisional developing bars remain isolated to the position-management advisory.
+- Added regression coverage for completed-bar position semantics, UTC range filtering, completed-only fetch wiring and cross-asset attestation.
+- No tests on this branch have yet been executed. CI must validate the rebased branch.
+
+
+## 2026-11-11 — Rebased WP-T integration state (supersedes earlier base/PR notes)
+
+- **Base main:** `8e316a3a6a6d303c6f576807473797e551aca8ae` (includes merged PR #907).
+- **Branch:** `fix/wp-t-timestamp-contract-recovery`.
+- **PR:** #908, draft, base main.
+- **Current branch HEAD:** `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`.
+- **Changed production paths:** `platforms/mt5/mt5_connector.py`, `tick/tick_sources.py`, `event_driven_bootstrap.py`, `tick/live_candle_aggregator.py`, `persistence/domain_events.py`.
+- **Changed tests:** `tests/test_mt5_market_data.py`, `tests/test_mt5_tick_poller_recovery.py`, `tests/test_live_candle_aggregator.py`, `tests/test_market_context_cross_asset.py`.
+- **Changed docs:** `docs/APEX_MT5_DATA_CAPABILITY_CONTRACT.md`, `docs/MT5_CLOCK_BRIDGE.md`, `docs/WP_MT5_CLOCK_AUTHORITY_TICK_STREAM_INTEGRITY.md`, `docs/APEX_FULL_REDESIGN_ROADMAP.md`, this ledger, and `AUDIT_CONSTITUTIONAL.md`.
+
+### Current implementation status
+- Historical `copy_ticks_range` no longer has the live broker offset subtracted. UTC is attested only for bounded batches (≤300 seconds) when raw seconds/milliseconds agree and corroborate the exact UTC request bounds.
+- Long recovery is split into bounded requests. Failed/empty/unverified ranges do not advance the cursor; durable gap events are recorded when EventStore is available.
+- Existing EventStore stores broker-server-scoped cursors and bounded fingerprint overlap. Writes are rate-limited to five seconds per symbol; write failure blocks durable cursor advancement.
+- MT5 bars follow documented UTC semantics. Position-one reads exclude the current forming bar; range reads validate UTC bounds and use an independent UTC lower bound for completion.
+- Confirmed CandleCloseHandler reads, LiveCandleAggregator warmup and cross-asset analysis require completed-bar provenance.
+- Forming-bar WorldModel publications no longer wake cognition. Verified tick-change wakes and completed candle closes remain.
+- No live broker orders, terminal setting changes, host clock changes or protected-path access occurred.
+
+### Verification state
+- PR #907 diagnostic CI passed Python 3.11, Python 3.12 and lint.
+- PR #908 CI for rebased HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4` is queued: Python 3.11, Python 3.12, Gold Desk 3.11/3.12 and lint. No result is claimed yet.
+- No local test/lint/compile command was executed.
+- Same-host timestamp evidence: two captures, one host. A second independent host and DST-transition evidence remain outstanding.
+- Durable EventStore restart test has been added using a temporary SQLite database; it is not yet executed.
+- All T-A1 through T-A10 remain OPEN. WP-T is not accepted.
+
+### Exact next action
+Poll PR #908's full CI matrix for HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`. Fix every failure without weakening assertions. Then obtain a second independent MT5 host capture, exercise sustained owner-host tick recovery, and complete the remaining clock lifecycle and Systems 2/6/7 integration gates.
+
+
+### CI failure correction — 2026-11-11
+
+- PR #908 head before correction: 9c51103125dadfaf3a8cd11c3020c4208c20c5d9. Gold Desk workflow run #2429 / job `gold-desk (3.11)` reported 3 failures in `tests/test_apex_identity_and_contextual_patterns.py`; 442 tests passed. The three failures all originated from the same fixture-contract defect: `_frames_with_breakout()` and `_frames_with_liquidity_reclaim()` passed `source_includes_forming_bar=True` but their synthetic DataFrames omitted the required `forming_bar_included=True` provenance attribute. The production reader correctly rejected those fixtures under the new provenance gate.
+- Corrected both test fixture builders to explicitly declare their included final forming row. No production validation was relaxed and no test assertion was weakened.
+- Correction commit: `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` on `fix/wp-t-timestamp-contract-recovery`; PR #908 remains draft.
+- Verification after correction: pending. The prior failed run is not evidence for the corrected head. The new head's CI must complete before this correction is marked verified.
+- Current WP-T status: implementation committed; integrated on PR branch; not yet verified/accepted. T-A1 through T-A10 remain OPEN. Second independent MT5 host, sustained feed, DST, clock lifecycle, and Systems 2/6/7 integration evidence remain outstanding.
+- Safety unchanged: no live broker mutations, host clock changes, real `.env` access, credential access, account changes, or runtime DB changes.
+
+### Exact next action
+Poll the new PR #908 head `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` for fresh Python 3.11/3.12, Gold Desk 3.11/3.12 and lint results. Diagnose and fix every failure at its source. Do not merge while checks are missing/failing or while the independent-host and operational acceptance gates remain open.
+
+
+### Full CI failure triage and correction increment — 2026-11-11
+
+- PR #908 validation run #4371 on pre-correction source head `9c51103125dadfaf3a8cd11c3020c4208c20c5d9`: lint passed; Python 3.11 and 3.12 test jobs failed. Python 3.11 reported **8 failed, 4,545 passed**; the Gold Desk focused run #2429 separately reported the three market-lens fixture failures (442 passed). Identity/safety audit step passed. These results are retained as failure evidence, not represented as current-head verification.
+- Root causes traced and corrected without weakening production guards:
+  1. Three market-lens tests supplied a forming bar but omitted `forming_bar_included=True`; both synthetic fixture builders now explicitly attest their actual shape.
+  2. Two MT5 history replay tests still attested `live_server_offset`; their fake history provider now uses the current batch contract `utc_request_bounds_verified`. Production history remains fail-closed on absent/old attestation.
+  3. Cross-asset test data included a bar opening at the current H1 boundary while claiming it was completed; the fixture now ends one full H1 interval earlier.
+  4. Production defect: `_fetch_completed_candles` had been inserted into `PositionEvaluator`, while `EventDrivenSystem._fetch_candles` invoked it on `EventDrivenSystem`. The single implementation was moved into the correct class; no duplicate method remains.
+  5. The technical-indicator test passed a plain list without completed-bar provenance; it now uses a DataFrame with explicit broker/timezone/completed-bar attestation.
+- Correction commits (in order): `75752fdea4ff43f0bd5a4d73bea078dcb5411d94`, `29d5136d7e1500459d79eccaa00a3d6d316c093c`, `e6258815c4f7eea0c5734521282cd697c73ff65a`, `b1041b1383b8d899902e10ba994fdcca45875484`, `2d28f18937aee1ffe81cd6e4c45ef20bf2b7fa6f`, `3529a070a781b42d9ea9561f1a66613e37fcd134`, `50debeb1e701b1e33a8e682602dbb7db3ec11184`, `acfe7b5304c5b1224910a13432652f5a608d201f`.
+- Static post-edit inspection confirms exactly one `_fetch_completed_candles` definition, located after `class EventDrivenSystem`; `_fetch_candles` calls it. The two market-lens fixtures, history normalization fixture, closed-H1 fixture and DataFrame provenance fixture are present.
+- Current PR #908 head at this checkpoint: `acfe7b5304c5b1224910a13432652f5a608d201f`; draft; base `main`; GitHub reports mergeable=false. No workflow runs or combined status checks are currently reported for this exact head. Therefore all corrections are **implemented but not verified**. Do not infer success from the previous run.
+- WP-T T-A1 through T-A10 remain OPEN. Multi-host MT5 capture, sustained feed, DST, full clock lifecycle, consumer coverage and integrated Systems 2/6/7 acceptance remain outstanding. No live broker mutation, host clock change, real `.env`/credential access, account-setting change or runtime DB change occurred.
+
+### Exact next action
+Resolve the PR's non-mergeable state after refreshing GitHub metadata, obtain a fresh full CI run for the exact latest head (Python 3.11/3.12, Gold Desk 3.11/3.12 and lint), and fix every remaining failure. If Actions cannot start because the repository quota is exhausted, run the same CI commands in the user's supported Windows checkout and capture complete output. Do not merge or mark WP-T accepted until automated and owner-host gates pass.
+
+
+### Repository state refresh — 2026-11-11 17:54 IST
+
+- After the roadmap checkpoint commit `3b8a7c035b70503f65b291d04134413df9b3efb2`, PR #908 metadata was refreshed: open, draft, base `main`, mergeable=true; branch is 55 commits ahead and 0 behind, with 35 changed files.
+- The exact refreshed head `3b8a7c035b70503f65b291d04134413df9b3efb2` has no associated PR workflow runs and no combined status checks reported. This remains an explicit verification blocker; do not report the fixes as tested or green.
+- No merge, live order, broker mutation, host clock change or protected runtime-file access was performed.
+
+
+### Full CI follow-up — technical indicator warmup correction — 2026-11-11
+
+- Latest full CI run #4378 on HEAD `27660986cd7a4119318f5f77e25393bc54c4faed`: Python 3.11 **4,552 passed, 1 failed**; Python 3.12 **4,552 passed, 1 failed**; lint passed; identity/safety audit passed. Both failures were the same assertion in `test_market_lenses_emit_causal_indicator_families_with_volume_provenance`. The focused Gold Desk run #2436 passed on Python 3.11 and 3.12, including compile and focused lint.
+- Root cause: `analyze_market_frames` limited the technical indicator tail to 32 bars, while the same producer exposes EMA-50/100/200 and requires at least 35 observations for MACD plus its signal line. The test's 240 attested completed bars were reduced to 32 before indicator calculation, so the long-period measurements were correctly omitted by the existing guards. This is a producer input-window defect, not a bad test expectation.
+- Correction: increase the bounded indicator tail to 200 completed bars, sufficient to warm the longest EMA/SMA family without changing indicator formulas, thresholds, authority or full-history concept path. Commit: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`.
+- Verification for this correction: pending. No workflow runs were visible for this exact new head at the initial metadata poll. Do not mark this fix verified until the fresh full matrix and focused test complete.
+- Latest branch head at this entry: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. No merge or broker mutation performed.
+
+### Exact next action
+Poll PR #908 for workflows attached to `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. Require Python 3.11/3.12 full suite, Gold Desk 3.11/3.12 and lint to pass. If another failure appears, trace the producer contract and fix without weakening tests. Then resume WP-T runtime owner-host evidence (second independent MT5 host, sustained replay continuity, DST, clock lifecycle, Systems 2/6/7).
+
+
+### Indicator warmup performance-contract follow-up — 2026-11-11
+
+- CI run #4379 reproduced one follow-on failure on both Python versions in `test_market_lenses_converts_each_broker_frame_once`. The producer correctly requested a 200-row bounded tail after the indicator warmup fix, while the performance test still asserted the former 32-row value. The invariant under test is one conversion per broker frame, not a fixed tail length.
+- Updated the performance assertion and its explanation to expect 200 while retaining the exactly-once conversion assertion. No production code, performance protection, indicator logic or safety guard was weakened. Commit: `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`.
+- Run #4380 was launched against the prior production correction commit before the test update and therefore cannot verify this follow-up. Fresh CI for the current branch head is pending.
+- Current branch head at this checkpoint: `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`; PR #908 remains open/draft. No merge or broker mutation performed.
+
+### Exact next action
+Verify fresh CI on the latest branch head. Require full Python 3.11/3.12, Gold Desk 3.11/3.12 and lint. Confirm the indicator-emission regression and exactly-once conversion test both pass. Then continue WP-T owner-host operational evidence and the remaining System 2/6/7 integration gates. Do not close WP-T from CI alone.
+
+
+### Indicator-window architecture correction — 2026-11-11
+
+- The initial 200-row `_rows(return_tail_limit=...)` change passed the indicator-emission test but broke the established 32-row bounded-window performance contract. The subsequent 200-row assertion change was superseded and reverted; the performance invariant remains exactly one frame conversion with a 32-row general-purpose tail.
+- Final architecture correction: retain `return_tail_limit=32`; derive `indicator_bars = completed_rows[-200:]` from `full_rows` already produced by the same single conversion; exclude the forming bar before slicing; pass only `indicator_bars` to `_technical_indicator_evidence`. General market-lens calculations remain on the original 32-row `bars` view. This removes the root cause without increasing the general processing window or converting provider data twice.
+- Production correction commit: `a95ee4246169d3352d24b76454957ef706eb1938`. Performance assertion restored to the original 32-row contract in `fb260292c280045903ad9d44bef1ba4ffbf4f400`.
+- The full CI runs #4379 and #4380 were against earlier commits and failed on the expected obsolete 32-vs-200 tail assertion. They do not verify this final architecture. No CI runs are currently reported for the latest PR head. Local execution is unavailable in this connected GitHub-only session; do not claim the final correction passes until a fresh PR-triggered matrix runs.
+- PR #908 current head: `fb260292c280045903ad9d44bef1ba4ffbf4f400`; open/draft. No merge, live broker mutation or clock change.
+
+### Exact next action
+Trigger a fresh PR CI run against `fb260292c280045903ad9d44bef1ba4ffbf4f400` using a normal branch push/PR synchronize event (the available GitHub workflow-run reader currently reports no run for this head). Require both full Python versions, Gold Desk 3.11/3.12 and lint. Verify both indicator-family emission and the 32-row exactly-once conversion contract. Then continue independent-host MT5 capture, sustained tick continuity, DST, restart recovery, consumer audit and Systems 2/6/7 acceptance. Keep T-A1–T-A10 OPEN until evidence exists.
+
+
+### Current branch checkpoint — 2026-11-11 18:10 IST
+
+- Final single-pass indicator-window architecture is committed and present on the PR branch: `a95ee4246169d3352d24b76454957ef706eb1938`. The 32-row conversion contract is restored by `fb260292c280045903ad9d44bef1ba4ffbf4f400`. Documentation correction commits: `22ffb86c961de6dd2f37f171961c32585ae677dc`, `b6a3c149159ea9e5ba7024a10c1af1e80b516992`. A no-tree-change CI trigger commit is `5d6ed3890b5c8a741152187acffbae36f980b39d`.
+- PR #908 head at this checkpoint: `5d6ed3890b5c8a741152187acffbae36f980b39d`; open, draft, mergeable state pending GitHub recomputation. The run reader and combined-status endpoint return no PR workflow runs/statuses for this exact head. This is an infrastructure/verification blocker, not a pass.
+- The last full CI runs #4379/#4380 were against superseded code and failed on the tail-size mismatch (and earlier #4378 failed because the 32-row indicator window lacked long-period warmup). Their results must not be attributed to the final design.
+- Final design is implemented and statically inspected; local execution and fresh CI are not verified in this environment. No broker orders, account mutations, host clock changes or runtime database changes were made. T-A1–T-A10 remain OPEN.
+
+### Exact next action
+Obtain a genuine PR synchronize/push event from the owner's authenticated CLI or another workflow-capable credential so Actions run against the exact current head. Require full Python 3.11/3.12, Gold Desk 3.11/3.12, lint, coverage generation and identity/safety audit. If no Actions capacity is available, run the same repository CI commands in the owner's Windows checkout and capture full output. Only after this gate proceed to multi-host MT5 and integrated Systems 2/6/7 acceptance. Do not merge or mark WP-T accepted.

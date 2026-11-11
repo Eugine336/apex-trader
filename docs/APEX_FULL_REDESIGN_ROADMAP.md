@@ -553,12 +553,12 @@ Continuation work started from PR #864 head `0406f14823110a2a2a4153c7561651922cc
 - **IMPLEMENTED:** live per-platform broker balances are reconciled into RiskEngine after connector startup and before EventDrivenSystem construction. Missing broker account balance truth marks startup safety-degraded; a confirmed zero balance is preserved rather than leaving the configured cold-start balance in place. The PnLTracker fallback denominator is synchronized to the first broker-confirmed balance, so a configured backtest default cannot remain as the live fallback.
 - **IMPLEMENTED:** removed the obsolete ctx.adaptive_weight_provider argument from AdaptiveSchedulerLoop construction; the current scheduler does not expose or consume that provider. Corrected Loguru formatting in execution-cost source diagnostics.
 - **VALIDATION ADDED:** regression coverage for explicit Deriv routing, offline Deriv behavior, initial/zero broker-balance reconciliation, and a read-only MT5 clock diagnostic (python scripts/diagnose_mt5_clock.py).
-- **CLOCK BASIS FINDING:** the consistent +7,200-second offset is consistent with JustMarkets broker-server time (JustMarkets documents GMT+2/GMT+3 schedules). Recent MQL5 moderator clarifications say returned market-data timestamps are broker-server time despite conflicting UTC wording in parts of the Python documentation. A fixed offset is unsafe because the broker changes between GMT+2/GMT+3.
+- **CLOCK BASIS FINDING (API-SPECIFIC):** owner-host captures show `symbol_info_tick` timestamps approximately UTC+2 on JustMarkets-Demo. This is not the contract for history APIs: MetaQuotes documents `copy_ticks_range` and bar epochs as UTC, and two owner-host captures show historical rows within the exact UTC query bounds. Do not generalize the live snapshot offset to historical ticks or bars. A fixed live offset is unsafe across GMT+2/GMT+3 transitions.
 - **IMPLEMENTED IN PR #868 — VALIDATION PENDING:** production MT5 clock acquisition no longer reads the terminal-local MQL5 publisher file. It estimates the broker timestamp offset from an advancing live tick and at least two agreeing independent network UTC sources (NTP, with HTTPS Date-header fallback), binds state to the exact account server, anchors it to monotonic time, and includes source/tick uncertainty. Tick freshness and completed-bar checks apply conservative uncertainty margins; market and pending entry preflights remain fail-closed. No fixed GMT+2/GMT+3 or workstation wall-clock substitution is used.
 - **OWNER ACTION REMOVED:** no EA compilation, chart attachment, or publisher file is required. The existing MQL5 publisher remains an optional diagnostic/reference utility only. PR #868 still requires MT5 regression, Python 3.11/3.12, lint, Gold desk, and integrated safety validation before merge.
 - **STILL BLOCKED BY OWNER SETUP:** the dedicated apex-trader-data repository is absent or not mounted as the required separate Git repository. Clean-start correctly refuses synchronization and purge. Provision the expected data repository; do not weaken the topology guard.
 - **CONFIGURATION DEPENDENCIES:** Deriv remains offline without DERIV_ACCESS_TOKEN. Local Ollama/vLLM advisor connection refusals do not disable native Brain reasoning. Gemini budget limits require owner-selected provider quotas and are not guessed.
-- **HISTORICAL DATA-GATED:** live ticks and short live tick-history windows use the current network-anchored broker-offset estimate with explicit uncertainty; completed-bar filtering uses a conservative lower bound of the synchronized broker clock. Historical OHLCV, older tick history, deals and order-history timestamps still need a historical offset series to normalize across DST changes; today's offset is not applied retroactively. No broker order or position mutation was issued.
+- **HISTORICAL DATA-GATED:** live `symbol_info_tick` snapshots use the identity-bound network-anchored broker clock with explicit uncertainty. `copy_ticks_range` and MT5 OHLCV use API-specific UTC semantics; tick history is attested only in bounded request windows after raw-field/range validation. Completed OHLCV uses MT5 position-one semantics or an independent UTC lower bound. Deal and order-history timestamp semantics still require their own API-specific audit. No broker order or position mutation was issued.
 
 - **SAFETY ENFORCEMENT CORRECTION:** a critical SystemContext degradation now trips CognitionLoop.broker_book_verified=False, both when the failure occurs before the loop is constructed and when it occurs afterward. This is the actual new-exposure admission breaker; market observation and existing-position management remain available. The previous status-only flag was insufficient.
 - **ACCOUNT DATA VALIDATION:** non-finite broker balances (NaN/Infinity) are excluded from PlatformManager account snapshots and RiskEngine reconciliation. A malformed account value cannot poison pooled capital or PnL denominators.
@@ -775,3 +775,70 @@ A follow-up read-only capture using `XAUUSD.ecn` on the same Windows 11 / JustMa
 The raw latest quote epoch (`1794404576`, milliseconds `1794404576984`) was approximately two hours ahead of the independent UTC witness projection, while the last history row (`1794397376`, milliseconds `1794397376835`) fell within the UTC query interval. This is strong single-host evidence that latest-quote and historical-range API timestamp domains differ. The active `get_ticks` path currently assumes history rows are broker-server time and can subtract the live offset; if the observed history semantics are confirmed, this would shift UTC history by two hours. No normalization change is made until repeated and second-host captures establish the contract. Preserve raw timestamps and unresolved provenance in the meantime.
 
 The connector's existing suffix scan includes `.ecn`, but production integration must be traced to prove all Apex market-data callers pass canonical `XAUUSD` through `MT5Connector.symbol_map` and consume the mapped `XAUUSD.ecn` consistently. Do not rename the canonical instrument. Host wall-time discrepancy remains within the reported witness uncertainty; no clock correction is supported. All WP-T acceptance gates remain OPEN.
+
+## WP-T implementation correction — 2026-11-11
+
+A dedicated implementation branch, `fix/wp-t-timestamp-contract-recovery`, was created from mainline `b417e349579adb9de210ede572b939cb87c75bee` after recovering the current repository state.
+
+Two repeated owner-host captures on the same Windows 11 / JustMarkets-Demo / XAUUSD.ecn terminal show that latest quote epochs are approximately UTC+2 while `copy_ticks_range` rows align with the exact UTC request bounds. The implementation therefore separates the two MT5 API contracts: live quotes retain identity-bound broker-clock normalization; historical ticks preserve raw epochs and are marked UTC only when each returned batch corroborates the UTC request bounds with consistent seconds and milliseconds. No historical broker-offset subtraction remains.
+
+The production poller now requires that batch-level UTC attestation, recovers long gaps in bounded 300-second requests, and does not jump the cursor past failed/unverified ranges. It uses the existing EventStore for durable per-symbol, broker-server-scoped replay checkpoints with a bounded fingerprint overlap; durable-write failure prevents cursor advancement. Live candle warmup now fails closed unless the provider explicitly attests that all supplied bars are completed. The current warmup adapter does not yet supply this attestation, so production warmup remains unavailable rather than seeding a forming bar as closed.
+
+Regression tests have been added for the timestamp contract, shifted/inconsistent rows, batched recovery, failed batches, checkpoint restore/identity mismatch and unattested warmup. These changes are implemented but not yet CI-validated. PR #907's diagnostic CI run `43014426036` is green (Python 3.11, Python 3.12, lint), but does not cover this branch. Only same-host repeated evidence exists; second-host and sustained feed acceptance remain open. All T-A1–T-A10 gates remain OPEN.
+
+
+### Recovery hardening follow-up — 2026-11-11
+
+- Durable checkpoint writes are rate-limited to at most one per five seconds per symbol; each checkpoint retains the most recent 256 fingerprints. This bounds EventStore write volume while keeping restart replay overlap bounded. The cursor in memory may advance between durable checkpoints; restart resumes from the last committed cursor and replays the intervening range.
+- Empty history responses, invalid timestamp attestations, fetch failures, malformed timestamp batches and cursor-ahead conditions are retained as durable `MT5_TICK_RECOVERY_GAP` events when the canonical EventStore is available. The cursor is not advanced across these ranges.
+- Added a real temporary-SQLite EventStore close/reopen test for checkpoint restoration, plus tests for write failure, checkpoint write throttling and durable gap deduplication. These tests are committed but not executed.
+- The 300-second batch tests verify that a failed later batch leaves the cursor at the last successful batch rather than jumping to the requested end.
+- The test suite still needs CI execution. Same-host timestamp evidence remains repeated but not multi-host.
+
+
+## WP-T implementation update — 2026-11-11 (supersedes earlier WP-T warmup note)
+
+Branch `fix/wp-t-timestamp-contract-recovery` now separates live MT5 quote snapshots from UTC history APIs, validates bounded historical tick batches, performs 300-second gap recovery without cursor jumps, persists broker-scoped replay checkpoints and durable gap records through EventStore, and uses provider-backed completed-bar semantics. `copy_rates_from_pos(start_pos=1)` is now the closed-bar source for normal OHLCV reads; the event-driven confirmed candle fetcher and LiveCandleAggregator warmup both request completed bars. Cross-asset analysis requires explicit completed-bar provenance. Forming-bar WorldModel updates no longer wake cognition. Tests for these paths are committed but the correction branch still requires full CI and owner-host verification. All T-A1–T-A10 remain OPEN.
+
+
+## WP-T rebased implementation status — 2026-11-11
+
+The WP-T correction branch has been rebased onto main after PR #907 merged. Current PR #908 HEAD is `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`.
+
+The implementation now separates `symbol_info_tick` live quote normalization from UTC historical tick APIs, validates bounded history batches without subtracting the live offset, recovers long gaps in 300-second batches, and persists broker-scoped checkpoints and unrecoverable gap records in the existing EventStore. MT5 OHLCV uses provider UTC semantics; `copy_rates_from_pos(start_pos=1)` supplies completed bars, and range reads use independent UTC completion checks. Confirmed candle analysis and warmup require completed-bar attestation. Forming-bar WorldModel updates no longer wake cognition.
+
+PR #908's Python 3.11/3.12, Gold Desk 3.11/3.12 and lint checks are queued. No test result or acceptance is claimed. A second independent MT5 host, DST transition coverage, full clock lifecycle and integrated Systems 2/6/7 acceptance remain open. T-A1 through T-A10 remain OPEN.
+
+
+### WP-T CI correction checkpoint — 2026-11-11
+
+The first Gold Desk CI execution for PR #908 exposed three failures in legacy synthetic market-lens fixtures. The tests declared `source_includes_forming_bar=True` but omitted the explicit `forming_bar_included=True` frame attribute now required by the production provenance contract. Both fixture builders have been corrected to attest their actual synthetic shape. The production provenance guard remains strict; no acceptance threshold or test assertion was weakened.
+
+Correction commit: `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` on `fix/wp-t-timestamp-contract-recovery`. CI for this exact head is pending. This is a test-fixture correction, not WP-T acceptance. T-A1 through T-A10 remain OPEN; multi-host, sustained-feed, DST, clock lifecycle and Systems 2/6/7 integration evidence remain required.
+
+
+### WP-T full CI triage checkpoint — 2026-11-11
+
+The first full PR #908 matrix reported eight failures (4,545 passed in Python 3.11; lint and identity/safety audit passed). Root causes were isolated: three test fixtures omitted the explicit forming-bar attribute; two replay fixtures used the obsolete history-normalization label; one cross-asset fixture included a still-forming H1 bar while claiming completion; the completed-bar fetcher was defined on the wrong runtime class; and one technical-indicator fixture lacked DataFrame provenance. All identified corrections are committed on `fix/wp-t-timestamp-contract-recovery`. Production provenance guards remain strict; no tests or safeguards were weakened.
+
+Latest correction head at this checkpoint: `acfe7b5304c5b1224910a13432652f5a608d201f`. Static source inspection confirms the completed-bar fetcher is now on EventDrivenSystem and the test fixtures carry their explicit provenance. CI has not yet run for this exact head; this is implemented but not verified. PR #908 remains draft and currently reports mergeable=false. T-A1 through T-A10 remain OPEN, including independent-host, sustained-feed, DST, clock-lifecycle and Systems 2/6/7 integration acceptance.
+
+
+### WP-T CI follow-up — indicator warmup defect — 2026-11-11
+
+Full CI run #4378 passed lint and identity/safety audit and failed one technical-indicator assertion on both Python 3.11 and 3.12 (4,552 passed per runtime). The root cause was the technical-lens 32-bar tail truncation, incompatible with its own EMA-50/100/200 and MACD signal warmup requirements. The producer now retains 200 completed bars for the bounded indicator calculation; formulas and guards are unchanged. Correction commit: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. Fresh CI is pending; this is implemented, not yet verified. All T-A1–T-A10 remain OPEN.
+
+
+### Indicator warmup correction — follow-up test contract
+
+The 32-row-to-200-row bounded indicator tail correction exposed an obsolete performance test expectation. The test now expects 200 rows while continuing to enforce exactly one frame conversion. Commit `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`. Fresh full CI is pending; implementation remains unverified until the current head passes both Python versions and the Gold Desk matrix.
+
+
+### Indicator warmup / bounded conversion correction — superseding implementation
+
+The final design keeps the normal market-lens conversion tail at 32 bars and derives a separate 200-completed-bar indicator window from the same already-converted full history. The forming bar is removed before the 200-bar slice. This preserves one conversion per provider frame and the 32-row bounded contract while providing sufficient history for EMA-50/100/200 and MACD signal measurements. Production commit `a95ee4246169d3352d24b76454957ef706eb1938`; performance assertion restored to 32 in `fb260292c280045903ad9d44bef1ba4ffbf4f400`. Fresh full CI on the current head is required; prior CI failures were on superseded implementations. WP-T remains OPEN.
+
+
+### WP-T current verification checkpoint — 2026-11-11
+
+Final indicator architecture keeps the ordinary frame conversion tail at 32 rows and slices 200 completed bars for indicator warmup from the same single-pass full-history conversion. Final production/test commits: `a95ee4246169d3352d24b76454957ef706eb1938`, `fb260292c280045903ad9d44bef1ba4ffbf4f400`. PR #908 current head checkpoint: `5d6ed3890b5c8a741152187acffbae36f980b39d`. No PR workflow runs or combined statuses are visible for this head; prior failures belong to superseded versions. The final correction is implemented but not CI-verified. T-A1–T-A10 remain OPEN pending a fresh full CI matrix and independent-host operational evidence.

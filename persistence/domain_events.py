@@ -91,3 +91,7 @@ OUTCOME_FEEDBACK = "OUTCOME_FEEDBACK"
 # Position Health panel (health-over-time, dimension breakdown, action log).
 POSITION_HEALTH = "POSITION_HEALTH"
 
+
+# ── Market-data ingestion recovery ──────────────────────────────────────────
+MT5_TICK_RECOVERY_CHECKPOINT = "MT5_TICK_RECOVERY_CHECKPOINT"
+MT5_TICK_RECOVERY_GAP = "MT5_TICK_RECOVERY_GAP"

@@ -123,3 +123,26 @@ def test_mt5_entry_and_close_prices_are_paired_without_live_broker_access(monkey
     observations = monitor.get_cost_observations("EURUSD", min_samples=1)
     assert observations["observed_round_trip_slippage_sample_count"] == 1
     assert observations["observed_round_trip_abs_slippage_avg_pips"] == pytest.approx(2.0)
+
+def test_platform_manager_uses_independent_utc_fallback_for_adapters_without_clock(monkeypatch):
+    import platforms.mt5.clock as clock_module
+
+    manager = object.__new__(PlatformManager)
+    manager.get_connector = lambda _symbol: SimpleNamespace(
+        get_utc_time_lower_bound=lambda: 1_800_000_000.25,
+    )
+    assert manager.get_utc_time_lower_bound("XAUUSD") == 1_800_000_000.25
+
+    manager.get_connector = lambda _symbol: SimpleNamespace()
+    monkeypatch.setattr(clock_module, "independent_utc_lower_bound", lambda: 1_800_000_001.0)
+    assert manager.get_utc_time_lower_bound("R_75") == 1_800_000_001.0
+
+    manager.get_connector = lambda _symbol: SimpleNamespace(
+        get_utc_time_lower_bound=lambda: float("nan"),
+    )
+    assert manager.get_utc_time_lower_bound("XAUUSD") == 1_800_000_001.0
+
+    manager.get_connector = lambda _symbol: SimpleNamespace(
+        get_utc_time_lower_bound=lambda: float("inf"),
+    )
+    assert manager.get_utc_time_lower_bound("XAUUSD") == 1_800_000_001.0

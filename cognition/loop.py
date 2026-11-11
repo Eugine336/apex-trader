@@ -33,6 +33,7 @@ import logging
 import math
 import threading
 import time as _time
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
@@ -561,6 +562,7 @@ class CognitionLoop:
         event_driven: bool = False,
         event_min_interval_seconds: float = 8.0,
         clock: Optional[Callable[[], float]] = None,
+        utc_now_provider: Optional[Callable[[str], Optional[float]]] = None,
         campaign_registry: Optional[Any] = None,
         reallocation_enabled: bool = False,
         reallocation_max_per_component: int = 2,
@@ -617,6 +619,10 @@ class CognitionLoop:
         self.event_driven = bool(event_driven)
         self.event_min_interval_seconds = max(0.0, float(event_min_interval_seconds))
         self._clock = clock or _time.monotonic
+        # Market-time authority is separate from the monotonic scheduler clock.
+        # The provider returns a conservative UTC lower bound; it must never be
+        # replaced by the machine wall clock when unavailable.
+        self._utc_now_provider = utc_now_provider
         self._wake = threading.Event()
         self._pending: set = set()
         self._pending_lock = threading.Lock()
@@ -773,6 +779,52 @@ class CognitionLoop:
         source means every symbol is reasoned over, matching prior behavior."""
         self._is_market_open = is_market_open
 
+    def _resolve_decision_utc(self, symbol: str, supplied: Optional[float]) -> float:
+        """Resolve a point-in-time UTC cutoff without consulting host wall time.
+
+        Explicit supplied values are caller-owned test/replay cutoffs. Live
+        production cycles use the injected per-symbol broker/platform authority,
+        then the independent NTP/HTTPS UTC consensus. Unknown remains 0.0 so
+        freshness checks fail closed rather than projecting host time.
+        """
+        if supplied is not None:
+            try:
+                value = float(supplied)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+            return value if math.isfinite(value) and value > 0.0 else 0.0
+        if callable(self._utc_now_provider):
+            try:
+                value = self._utc_now_provider(str(symbol or ""))
+                numeric = float(value) if value is not None else None
+                if numeric is not None and math.isfinite(numeric) and numeric > 0.0:
+                    return numeric
+            except Exception as exc:
+                logger.debug(
+                    "[cognition-loop] venue UTC authority unavailable for %s: %s",
+                    symbol, type(exc).__name__,
+                )
+        # No provider means no market-time authority. Production injects the
+        # PlatformManager provider, which itself falls back to independent
+        # NTP/HTTPS consensus; test/replay callers must supply an explicit cutoff.
+        logger.warning(
+            "[cognition-loop] %s reasoning cutoff unknown — host wall time will not be substituted",
+            symbol,
+        )
+        return 0.0
+
+    def _resolve_cycle_utc(self, symbols: list[str], supplied: Optional[float]) -> float:
+        """Choose one conservative UTC cutoff for a multi-symbol reasoning pass."""
+        if supplied is not None:
+            return self._resolve_decision_utc("", supplied)
+        cutoffs = [
+            self._resolve_decision_utc(symbol, None)
+            for symbol in symbols
+        ]
+        if not cutoffs or any(value <= 0.0 for value in cutoffs):
+            return 0.0
+        return min(cutoffs)
+
     @property
     def running(self) -> bool:
         return self._running
@@ -798,13 +850,18 @@ class CognitionLoop:
             )
         made = 0
         cycle_outputs: list = []
+        selected_symbols = self._select_cycle_batch(symbols)
+        # A portfolio pass compares opportunities at one point in time. Use
+        # the oldest verified UTC lower bound across this cycle's selected
+        # symbols; if any authority is unknown, keep the whole cycle unknown.
+        cycle_now = self._resolve_cycle_utc(selected_symbols, now)
         begin_concept_cycle = getattr(self._consolidator, "begin_concept_cycle", None)
         end_concept_cycle = getattr(self._consolidator, "end_concept_cycle", None)
         try:
             if callable(begin_concept_cycle):
                 begin_concept_cycle(symbols)
-            for symbol in self._select_cycle_batch(symbols):
-                output = self._reason_over_symbol(symbol, now=now)
+            for symbol in selected_symbols:
+                output = self._reason_over_symbol(symbol, now=cycle_now)
                 if output is not None:
                     made += 1
                     cycle_outputs.append(output)
@@ -1833,15 +1890,24 @@ class CognitionLoop:
                 "[cognition-loop] candidate disposition persistence failed: %s", exc,
             )
 
-    def _inject_calibration_evidence(self, market_state: MarketState) -> None:
+    def _inject_calibration_evidence(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> None:
         """Supply producer-owned learning context; it never authorizes a decision."""
         symbol = str(getattr(market_state, "symbol", "") or "")
         try:
-            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            cutoff = float(
+                now if now is not None
+                else getattr(market_state, "created_epoch", 0.0) or 0.0
+            )
         except (TypeError, ValueError, OverflowError):
             cutoff = 0.0
         if not math.isfinite(cutoff) or cutoff <= 0.0:
-            cutoff = 0.0
+            logger.warning(
+                "[cognition-loop] calibration evidence skipped for %s: verified UTC cutoff unknown",
+                symbol or "?",
+            )
+            return
         providers = []
         try:
             provider = self._calibration_provider
@@ -1906,10 +1972,27 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001
                 # Fail-open: a faulting check must never block reasoning.
                 logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
+        decision_now = self._resolve_decision_utc(symbol, now)
         try:
-            ms = self._consolidator.build(symbol, now=now)
-            self._inject_calibration_evidence(ms)
-            output = self._brain.reason(ms, now=now)
+            ms = self._consolidator.build(symbol, now=decision_now)
+            # MarketState creation time is a market-time cutoff, not the host's
+            # ingestion clock. Unknown UTC remains explicit and yields no fresh
+            # evidence in downstream Brain reasoning.
+            ms.created_epoch = decision_now
+            ms.created_iso = (
+                datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                if decision_now > 0.0 else ""
+            )
+            self._inject_calibration_evidence(ms, now=decision_now)
+            output = self._brain.reason(ms, now=decision_now)
+            decision = getattr(output, "decision", None)
+            if decision is not None:
+                decision.created_epoch = decision_now
+                decision.created_iso = (
+                    datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                    if decision_now > 0.0 else ""
+                )
+            output.decided_at_epoch = decision_now
             self._record_candidate_snapshot(output, ms)
             self._label_due_candidate_horizons(ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
@@ -1962,15 +2045,15 @@ class CognitionLoop:
                     logger.warning("[cognition] %s DEGRADED COGNITION — %s", symbol, _deg)
             except Exception as exc:  # noqa: BLE001 — logging must never break the cycle
                 logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)
-            if self._memory is not None:
-                self._record_open_memory(output, ms, now=now)
+            if self._memory is not None and decision_now > 0.0:
+                self._record_open_memory(output, ms, now=decision_now)
             # Part XVIII Art 13 — management is continuous and event-driven, not
             # clock-gated: the instant a symbol's evidence is re-reasoned (on a
             # periodic pass OR an event wake), immediately manage that symbol's
             # open campaign too. The periodic _manage_open_positions remains a
             # backstop for positions whose symbol wasn't in this pass's slice.
             if self.management_mode != "off":
-                self._manage_symbol(symbol, now=now)
+                self._manage_symbol(symbol, now=decision_now)
             return output
         except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
             logger.warning("[cognition-loop] reason(%s) FAILED: %s", symbol, exc)
@@ -2600,18 +2683,35 @@ class CognitionLoop:
         management decision was produced, else 0 (throttled / faulted)."""
         try:
             symbol = getattr(pos, "symbol", "") or ""
-            t = self._clock() if now is None else float(now)
+            # Throttling is process-local scheduling and therefore uses only
+            # monotonic time. Market freshness and decision timestamps use UTC.
+            t = self._clock()
             if symbol and self.event_min_interval_seconds > 0.0:
                 last = self._last_manage_at.get(symbol, 0.0)
                 if (t - last) < self.event_min_interval_seconds:
                     return 0
-            ms = self._consolidator.build(symbol, now=now)
-            output = self._brain.manage(pos, ms, now=now)
+            decision_now = self._resolve_decision_utc(symbol, now)
+            ms = self._consolidator.build(symbol, now=decision_now)
+            ms.created_epoch = decision_now
+            ms.created_iso = (
+                datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                if decision_now > 0.0 else ""
+            )
+            output = self._brain.manage(pos, ms, now=decision_now)
+            decision = getattr(output, "decision", None)
+            if decision is not None:
+                decision.created_epoch = decision_now
+                decision.created_iso = (
+                    datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                    if decision_now > 0.0 else ""
+                )
+            output.decided_at_epoch = decision_now
             if symbol:
                 self._last_manage_at[symbol] = t
             self._managed += 1
             # Part XVIII Art 12 — fold this verdict into live campaign health.
-            self._campaign_record(pos, output, now=now)
+            if decision_now > 0.0:
+                self._campaign_record(pos, output, now=decision_now)
             # Article X — a close (EXIT / REVERSE / TERMINATE) resolves the
             # originated patterns' outcomes so the tracker learns their edge.
             self._record_pattern_outcome_on_close(pos, output)

@@ -495,3 +495,62 @@ def test_live_candle_aggregator_ignores_unverified_source_time():
     aggregator.on_tick(unverified)
 
     assert aggregator.get_dataframe("EURUSD", "M1") is None
+
+def test_live_aggregator_closes_boundary_before_candle_close_event_is_published():
+    from tick.live_candle_aggregator import LiveCandleAggregator
+
+    bus = EventBus()
+    store = TickStore(max_hz=10000.0)
+    detector = CandleCloseDetector(bus)
+    detector.register("EURUSD", ["M1"])
+    router = TickRouter(store, detector, bus)
+    aggregator = LiveCandleAggregator(max_candles=20)
+    router.register_raw_callback(aggregator.on_tick)
+
+    close_observations = []
+    bus.subscribe(
+        "candle_close:M1",
+        lambda _event: close_observations.append(
+            aggregator.get_confirmed_dataframe("EURUSD", "M1")
+        ),
+    )
+
+    start = 1700000000.0
+    router.on_tick(_tick(ts=start + 10.0))
+    router.on_tick(_tick(ts=start + 60.0))
+
+    assert len(close_observations) == 1
+    assert close_observations[0] is not None
+    assert len(close_observations[0]) == 1
+    assert aggregator.get_dataframe("EURUSD", "M1") is not None
+    assert len(aggregator.get_dataframe("EURUSD", "M1")) == 2
+
+def test_watchdog_uses_per_symbol_verified_utc_lower_bound():
+    bus = EventBus()
+    detector = CandleCloseDetector(
+        bus,
+        utc_lower_bound_provider=lambda symbol: 1700000041.0 if symbol == "EURUSD" else None,
+    )
+    detector.register("EURUSD", ["M1"])
+    detector.on_tick(_tick(ts=1700000000.0))
+
+    events = detector.fire_overdue_closes()
+
+    assert len(events) == 1
+    assert events[0].symbol == "EURUSD"
+    assert events[0].close_time.timestamp() == 1700000040.0
+
+
+def test_watchdog_does_not_fall_back_to_host_clock_when_authority_is_unknown(monkeypatch):
+    import tick.candle_close_detector as detector_module
+
+    bus = EventBus()
+    detector = CandleCloseDetector(
+        bus,
+        utc_lower_bound_provider=lambda _symbol: None,
+    )
+    detector.register("EURUSD", ["M1"])
+    detector.on_tick(_tick(ts=1700000000.0))
+    monkeypatch.setattr(detector_module.time, "time", lambda: 9_999_999_999.0)
+
+    assert detector.fire_overdue_closes() == []

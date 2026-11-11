@@ -202,8 +202,10 @@ class BaseConnector(ABC):
         DataFrame attrs after normalizing provider timestamps to Unix seconds:
         source_timestamp_verified=True, source_symbol (canonical symbol),
         source_timestamp_unit="unix_seconds", and
-        source_timestamp_origin="broker_ohlcv". Never set this attestation from
-        local ingestion time, cache insertion time, or an unverified parsed time.
+        source_timestamp_origin="broker_ohlcv". Closed-bar views must additionally
+        set source_timezone="UTC", completed_bars_verified=True, and
+        forming_bar_included=False. Never set these attestations from local
+        ingestion time, cache insertion time, or an unverified parsed time.
         Missing provenance remains unattested.
         """
 
