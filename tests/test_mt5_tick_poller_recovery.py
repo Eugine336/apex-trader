@@ -279,3 +279,69 @@ def test_future_replay_cursor_is_cleared_and_next_poll_reanchors_boundedly():
 
     assert poller._route_history_quotes("XAUUSD", latest) is True
     assert pm.calls[0][0] == end - timedelta(seconds=300)
+
+def test_latest_quote_and_utc_history_share_normalized_dedup_identity():
+    from types import SimpleNamespace
+
+    start = datetime(2026, 11, 11, 10, 0, tzinfo=timezone.utc)
+    event_time = start + timedelta(seconds=1)
+    event_epoch = event_time.timestamp()
+    pm = _PlatformManager(lambda _symbol, left, right: _verified_frame(left, right))
+    router = _Router()
+    poller = MT5TickPoller(pm, router, ["XAUUSD"])
+
+    history_latest = SimpleNamespace(
+        time=event_time,
+        raw_fields={"broker_server_identity": "JustMarkets-Demo"},
+    )
+    assert poller._route_history_quotes("XAUUSD", history_latest) is True
+    assert len(router.ticks) == 1
+
+    # The latest-quote API exposes a broker-server epoch (+2h here), while
+    # the history API exposes the same event in UTC. The normalized UTC epoch
+    # must make these two provider representations deduplicate as one event.
+    live_quote = SimpleNamespace(
+        time=event_time,
+        bid=2000.0,
+        ask=2000.1,
+        source_timestamp_verified=True,
+        quote_kind="bid_ask",
+        spread_unit="ticks",
+        raw_fields={
+            "time_msc": int((event_epoch + 7200) * 1000),
+            "timestamp_utc_epoch": event_epoch,
+            "flags": 0,
+        },
+    )
+    assert poller._route_latest_quote("XAUUSD", live_quote) is False
+    assert len(router.ticks) == 1
+
+
+def test_durable_gap_write_failure_remains_retryable():
+    store = _CheckpointStore()
+    store.fail_writes = True
+    poller = MT5TickPoller(
+        _PlatformManager(lambda *_args: pd.DataFrame()),
+        _Router(),
+        ["XAUUSD"],
+        checkpoint_store=store,
+    )
+    start = datetime(2026, 11, 11, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=30)
+
+    poller._persist_history_gap(
+        "XAUUSD", start, end, "JustMarkets-Demo", "history_unverified",
+    )
+    assert store.rows == []
+    assert not poller._history_gap_reported
+
+    store.fail_writes = False
+    poller._persist_history_gap(
+        "XAUUSD", start, end, "JustMarkets-Demo", "history_unverified",
+    )
+    poller._persist_history_gap(
+        "XAUUSD", start, end, "JustMarkets-Demo", "history_unverified",
+    )
+
+    assert len(store.rows) == 1
+    assert poller._history_gap_reported
