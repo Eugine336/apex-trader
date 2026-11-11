@@ -256,3 +256,80 @@ def test_same_symbol_position_cannot_release_unrelated_linked_order(tmp_path):
     ) == 1
     assert reservations.snapshot() == []
     store.close()
+
+
+def test_mt5_market_fill_releases_reservation_only_after_exact_entry_order_attribution(tmp_path):
+    from datetime import datetime, timezone
+
+    from event_driven_bootstrap import EventDrivenSystem
+
+    database = str(tmp_path / "portfolio-mt5-entry-attribution.db")
+    store = EventStore(db_path=database)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+    assert reservations.link_order("idem-1", "broker-order-1")
+
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pm = SimpleNamespace(
+        get_position_entry_order_ids=lambda position_id, **kwargs: (
+            {"broker-order-1"} if position_id == "position-9"
+            and kwargs.get("platform") == "mt5_1" else set()
+        ),
+    )
+    released = system._reconcile_portfolio_admission_reservations(
+        reservations,
+        [
+            SimpleNamespace(
+                symbol="XAUUSD", direction="BUY", order_id="position-9",
+                platform="mt5", connector_index=1,
+                account_key="mt5:account-a",
+            ),
+        ],
+    )
+    assert released == 1
+    assert reservations.snapshot() == []
+    store.close()
+
+
+def test_market_open_result_links_reservation_to_broker_order(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    import event_driven_bootstrap as bootstrap_module
+    from event_driven_bootstrap import EventDrivenSystem
+
+    database = str(tmp_path / "market-open-reservation-link.db")
+    store = EventStore(db_path=database)
+    monkeypatch.setattr(bootstrap_module, "get_event_store", lambda: store)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._get_portfolio_admission_reservations = lambda: reservations
+    system._attach_open_campaign_ticket = lambda intent, result: None
+    system._entry_context = {}
+    system._known_open = {}
+    submitted_at = datetime.now(timezone.utc)
+    intent = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        idempotency_key="idem-1",
+        decision_id="decision-1",
+        campaign_id="campaign-1",
+        opportunity_id="opportunity-1",
+        decision_feature_snapshot={},
+        timestamp=submitted_at,
+        identity_version="canonical",
+    )
+    result = SimpleNamespace(
+        success=True,
+        broker_response=SimpleNamespace(
+            order_id="broker-order-1",
+            order_status="FILLED",
+            platform="mt5",
+        ),
+    )
+
+    system._handle_open_result(intent, result)
+
+    assert reservations.snapshot()[0]["broker_order_id"] == "broker-order-1"
+    store.close()
