@@ -111,7 +111,7 @@ def main() -> int:
         symbol_info_error = mt5.last_error()
         symbol_candidates = []
         if symbol_info is None:
-            # This is a read-only lookup. Never call symbol_select() here.
+            # This lookup is read-only; Market Watch selection is not changed.
             matches = mt5.symbols_get(group=f"*{args.symbol}*")
             symbol_candidates = _matching_symbol_names(matches, args.symbol)
 
