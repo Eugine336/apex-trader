@@ -253,7 +253,9 @@ def _frames_with_breakout() -> pd.DataFrame:
         "open": 101.6, "high": 102.0, "low": 101.3, "close": 101.8,
         "tick_volume": 140.0,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs["forming_bar_included"] = True
+    return frame
 
 
 def _frames_with_liquidity_reclaim() -> pd.DataFrame:
@@ -277,7 +279,9 @@ def _frames_with_liquidity_reclaim() -> pd.DataFrame:
         "open": 100.0, "high": 100.2, "low": 99.8, "close": 100.05,
         "volume": 120.0,
     })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs["forming_bar_included"] = True
+    return frame
 
 
 def test_universal_market_lenses_emit_structured_facts_for_all_supported_timeframes():
