@@ -149,7 +149,15 @@ def test_warmup_seeding(monkeypatch):
     warnings = []
     monkeypatch.setattr(
         aggregator_module, "logger",
-        type("WarmupLogger", (), {"warning": staticmethod(lambda *args: warnings.append(args))})(),
+        type(
+            "WarmupLogger",
+            (),
+            {
+                "warning": staticmethod(lambda *args: warnings.append(args)),
+                "info": staticmethod(lambda *args: None),
+                "debug": staticmethod(lambda *args: None),
+            },
+        )(),
     )
     agg = LiveCandleAggregator()
     base = 1_700_000_000
