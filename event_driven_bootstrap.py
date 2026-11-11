@@ -6224,9 +6224,21 @@ class EventDrivenSystem:
                             entry_context["lots"] = fill_lots
                             entry_context["entry_price"] = fill_price
                     meta["attributed_lots"] = fill_lots
+                try:
+                    initial_volume = float(record.get("volume_initial"))
+                    remaining_volume = float(record.get("volume_current"))
+                    terminal_no_fill_confirmed = bool(
+                        math.isfinite(initial_volume)
+                        and math.isfinite(remaining_volume)
+                        and initial_volume > 0.0
+                        and remaining_volume >= initial_volume - 1e-9
+                    )
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    terminal_no_fill_confirmed = False
                 terminal_without_fill = (
                     status in {"CANCELLED", "EXPIRED", "REJECTED"}
                     and not broker_position_id
+                    and terminal_no_fill_confirmed
                 )
                 terminal_fill_attributed = bool(
                     broker_position_id and meta.get("attributed")
