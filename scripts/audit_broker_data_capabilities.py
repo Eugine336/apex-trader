@@ -189,13 +189,22 @@ def _acceptance_summary(
             )
         )
         financing_cash_model = spec.get("financing_cash_model")
+        cash_epoch = (
+            _finite(financing_cash_model.get("source_timestamp_epoch"))
+            if isinstance(financing_cash_model, dict) else None
+        )
         financing_cash_projection_verified = bool(
             isinstance(financing_cash_model, dict)
             and financing_cash_model.get("source_verified") is True
             and financing_cash_model.get("source_timestamp_verified") is True
-            and _finite(financing_cash_model.get("source_timestamp_epoch")) is not None
+            and cash_epoch is not None and 0.0 < cash_epoch <= datetime.now(timezone.utc).timestamp()
+            and str(financing_cash_model.get("symbol") or "").strip().upper() == symbol
+            and str(financing_cash_model.get("source") or "").strip()
+            and str(financing_cash_model.get("source_record_id") or "").strip()
+            and str(financing_cash_model.get("account_currency") or "").strip()
+            and str(financing_cash_model.get("calculation_method") or "").strip()
             and _finite(financing_cash_model.get("amount_account_ccy_per_lot_round_trip")) is not None
-            and _finite(financing_cash_model.get("holding_period_seconds"),) is not None
+            and _finite(financing_cash_model.get("holding_period_seconds")) is not None
             and _finite(financing_cash_model.get("holding_period_seconds")) > 0.0
         )
         symbol_checks[symbol] = {
