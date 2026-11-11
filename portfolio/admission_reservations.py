@@ -222,6 +222,11 @@ class PortfolioAdmissionReservations:
             for key, item in self._active.items():
                 wanted_symbol = str(item.get("symbol") or "").strip().upper()
                 wanted_direction = str(item.get("direction") or "").strip().upper()
+                # A pending order may be partially filled while its remainder
+                # is still live. Its reservation is released only by terminal
+                # broker reconciliation, never merely because one fill exists.
+                if str(item.get("order_type") or "").strip().upper() != "MARKET":
+                    continue
                 for position in positions:
                     if isinstance(position, dict):
                         symbol = str(position.get("symbol") or "").strip().upper()
