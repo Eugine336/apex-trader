@@ -1808,6 +1808,8 @@ class PlatformManager:
         timeframes: Optional[list[str]] = None,
         count: int = 200,
         now_utc=None,
+        *,
+        include_forming: bool = True,
     ) -> dict[str, dict[str, pd.DataFrame]]:
         """Fetch OHLCV for every enabled symbol across timeframes.
         Uses a thread pool so all broker calls run concurrently — cuts
@@ -1837,7 +1839,9 @@ class PlatformManager:
 
         def _fetch(symbol: str):
             try:
-                data = self.fetch_market_data(symbol, timeframes, count)
+                data = self.fetch_market_data(
+                    symbol, timeframes, count, include_forming=include_forming,
+                )
                 return symbol, data
             except ConnectionError:
                 logger.debug("Skipping {} — no platform available", symbol)
