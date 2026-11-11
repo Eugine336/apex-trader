@@ -56,7 +56,10 @@ def _frame(timeframe_seconds, *, naive=False, count=12):
 
 def _alignment(frames):
     evidence = analyze_market_frames(
-        "XAUUSD", frames, source_includes_forming_bar=True
+        "XAUUSD",
+        frames,
+        source_includes_forming_bar=True,
+        concept_context={"multi_symbol_snapshot_cutoff_epoch": time.time() + 1.0},
     )
     return next(
         item for item in evidence
@@ -140,3 +143,17 @@ def test_broker_attestation_does_not_verify_unordered_candle_rows():
     assert structure.measurements["source_timestamp_known"] is False
     assert structure.source_timestamp_verified is False
     assert structure.source_timestamp_epoch is None
+
+def test_cross_timeframe_alignment_fails_closed_without_verified_common_cutoff():
+    evidence = analyze_market_frames(
+        "XAUUSD",
+        {"M1": _frame(60), "M5": _frame(300)},
+        source_includes_forming_bar=True,
+    )
+    alignment = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.MULTI_TIMEFRAME
+    )
+    assert alignment.measurements["synchronized_timestamps"] is False
+    assert alignment.measurements["source_verified"] is False
+    assert alignment.measurements["snapshot_cutoff_epoch"] is None
