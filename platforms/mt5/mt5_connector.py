@@ -274,12 +274,14 @@ class MT5Connector(BaseConnector):
             except (AttributeError, TypeError, ValueError, OverflowError):
                 return None
         retry_after = getattr(self, "_server_clock_retry_after", 0.0)
+        identity_verified = False
 
         try:
             account = mt5.account_info()
             server = str(getattr(account, "server", "") or "").strip() if account else ""
             if not server:
                 raise RuntimeError("MT5 account server identity unavailable")
+            identity_verified = True
             if cached is not None and cached.server != server:
                 cached = None
                 cache_age = float("inf")
@@ -293,6 +295,7 @@ class MT5Connector(BaseConnector):
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
                 now_mono = _time.monotonic()
+                cache_age = now_mono - cached_at if cached_at is not None else float("inf")
             if tick is None:
                 return _holdover_state()
             tick_epoch = self._tick_server_epoch(tick)
@@ -332,7 +335,7 @@ class MT5Connector(BaseConnector):
             # NTP/HTTPS authorities below. Monotonic time is used only to ensure
             # the observations are ordered in the local process.
             if elapsed <= 0:
-                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+                return _holdover_state()
 
             # Advance the baseline only after observing a strictly newer broker
             # event. This also lets the next observation recover after a stale,
