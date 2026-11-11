@@ -2391,7 +2391,31 @@ class EventDrivenSystem:
                     quantity_for_key = lots
                 idem_key = generate_idempotency_key(symbol, direction, quantity_for_key)
                 comment = build_order_comment("APEX", idem_key)
-                self._aggregator.submit([Intent.open(
+                account_key_fn = getattr(self._ctx, "account_key", None)
+                account_key = (
+                    str(account_key_fn(symbol, self._pm) or "")
+                    if callable(account_key_fn) else ""
+                )
+                reservation_book = self._get_portfolio_admission_reservations()
+                if not reservation_book.reserve({
+                    "reservation_id": idem_key,
+                    "account_key": account_key,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "risk_pct": float(sized.get("risk_pct", 0.0) or 0.0),
+                    "max_loss": float(sized.get("max_loss", 0.0) or 0.0),
+                    "decision_id": str(getattr(origination, "decision_id", "") or ""),
+                    "campaign_id": str(getattr(origination, "campaign_id", "") or ""),
+                    "opportunity_id": str(getattr(origination, "opportunity_id", "") or ""),
+                    "broker": str(self._pm.get_broker_name(symbol) or ""),
+                }):
+                    logger.warning(
+                        "[origination-sink] {} {} blocked — durable portfolio reservation unavailable",
+                        symbol, direction,
+                    )
+                    return False
+                try:
+                    self._aggregator.submit([Intent.open(
                     symbol=symbol,
                     direction=direction,
                     lots=lots,
@@ -2425,6 +2449,11 @@ class EventDrivenSystem:
                         else None
                     ),
                 )])
+                except Exception:
+                    reservation_book.release(
+                        idem_key, reason="intent_submission_failed",
+                    )
+                    raise
                 logger.info(
                     "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
                     symbol, direction, lots,
@@ -2435,16 +2464,28 @@ class EventDrivenSystem:
                 logger.warning("[origination-sink] submit failed: {}", exc)
                 return False
 
-        return _sink
+        def _serialized_sink(origination: Any) -> bool:
+            # Serialize check→size→reserve→submit so two decisions cannot both
+            # consume the same still-unfilled broker capacity.
+            reservation_book = self._get_portfolio_admission_reservations()
+            with reservation_book.lock:
+                return _sink(origination)
+
+        return _serialized_sink
+
+    def _get_portfolio_admission_reservations(self):
+        """Return the durable reservation ledger shared by concurrent origination calls."""
+        reservations = getattr(self, "_portfolio_admission_reservations", None)
+        if reservations is None:
+            from portfolio.admission_reservations import PortfolioAdmissionReservations
+            reservations = PortfolioAdmissionReservations()
+            self._portfolio_admission_reservations = reservations
+        return reservations
 
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
-        """Ask the ComplianceDivision whether new exposure is permitted.
-
-        Fails closed: a missing division, unresolved account/book, or any fault
-        rejects. The book comes from ``get_all_open_positions``, which raises when
-        any connected platform cannot confirm its positions.
-        """
+        """Ask Compliance against broker positions plus durable queued-open reservations."""
         try:
+            from types import SimpleNamespace
             from compliance.models import ComplianceAccount, ComplianceBook, ComplianceCandidate
 
             ctx = getattr(self, "_ctx", None)
@@ -2463,6 +2504,16 @@ class EventDrivenSystem:
                 return False
             balance = float(platform_manager.get_platform_balance(symbol) or 0.0)
             book = list(platform_manager.get_all_open_positions())
+            reservation_book = self._get_portfolio_admission_reservations()
+            reservation_book.reconcile(book)
+            for reservation in reservation_book.snapshot():
+                book.append(SimpleNamespace(
+                    symbol=str(reservation.get("symbol") or ""),
+                    direction=str(reservation.get("direction") or ""),
+                    account_key=str(reservation.get("account_key") or ""),
+                    is_pending_reservation=True,
+                    reserved_risk_pct=reservation.get("risk_pct"),
+                ))
             verdict = compliance.permit(
                 ComplianceCandidate(symbol=symbol, direction=direction),
                 ComplianceBook(open_positions=book),
@@ -6117,6 +6168,10 @@ class EventDrivenSystem:
                     )
                     with self._pending_orders_lock:
                         self._pending_orders.pop(tracking_key, None)
+                    self._get_portfolio_admission_reservations().release_by_order_id(
+                        resolved_ticket,
+                        reason=f"broker_confirmed_pending_terminal:{status.lower()}",
+                    )
                 elif status in {"FILLED", "PARTIALLY_FILLED_TERMINAL"} or (
                     terminal and broker_position_id and position is None
                 ):
@@ -6165,6 +6220,9 @@ class EventDrivenSystem:
                 submitted_at = _response_value("timestamp", None)
                 if not isinstance(submitted_at, datetime) or submitted_at.tzinfo is None:
                     submitted_at = getattr(intent, "timestamp", datetime.now(timezone.utc))
+                self._get_portfolio_admission_reservations().link_order(
+                    str(getattr(intent, "idempotency_key", "") or ""), ticket,
+                )
                 self._record_pending_order_result(response, {
                     "order_id": ticket,
                     "symbol": str(intent.symbol or "").upper(),
@@ -6552,10 +6610,34 @@ class EventDrivenSystem:
     def _handle_execution_result(self, intent: Intent, result: Any) -> None:
         """Feed every actual executor outcome back to the Brain action ledger."""
         if intent.intent_type == IntentType.OPEN:
-            # Successful opens are handled by _handle_open_result after the
-            # broker-success callback. Only explicit rejections may remove a
-            # pending campaign leg here; transport ambiguity must remain visible.
-            if not bool(getattr(result, "success", False)):
+            # Release an admission reservation only after broker position
+            # confirmation or an explicit rejection. Ambiguous outcomes remain
+            # reserved until broker live/history reconciliation resolves them.
+            reservation_book = self._get_portfolio_admission_reservations()
+            if bool(getattr(result, "success", False)):
+                try:
+                    positions = self._pm.get_all_open_positions() if self._pm is not None else None
+                    if positions is not None:
+                        reservation_book.reconcile(list(positions))
+                except Exception as exc:  # noqa: BLE001 — unresolved reservation remains fail-closed
+                    logger.warning("[portfolio] open reservation reconciliation failed: {}", exc)
+            else:
+                response = getattr(result, "broker_response", None)
+                response_status = (
+                    str(response.get("order_status", "") or "").upper()
+                    if isinstance(response, dict)
+                    else str(getattr(response, "order_status", "") or "").upper()
+                )
+                if bool(getattr(result, "rejected_by_gate", False)) or response_status == "REJECTED":
+                    reservation_book.release(
+                        str(getattr(intent, "idempotency_key", "") or ""),
+                        reason="explicit_execution_rejection",
+                    )
+                else:
+                    logger.error(
+                        "[portfolio] OPEN outcome ambiguous for {}; reservation retained pending broker reconciliation",
+                        getattr(intent, "symbol", ""),
+                    )
                 self._attach_open_campaign_ticket(intent, result)
             return
         action_id = str(getattr(intent, "action_id", "") or "").strip()
