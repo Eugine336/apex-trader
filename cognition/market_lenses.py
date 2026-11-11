@@ -628,11 +628,22 @@ def _record(
 ) -> Evidence:
     seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
     known_source_time = bool(source_epoch and source_epoch > 0)
-    # Evidence creation/ingestion time is distinct from the broker candle time.
-    sampled_at = datetime.now(timezone.utc).timestamp()
-    timestamp_iso = datetime.fromtimestamp(
-        sampled_at, tz=timezone.utc,
-    ).isoformat()
+    # Prefer the independently verified common UTC analysis cutoff. When
+    # unavailable, use the verified source-bar instant rather than a machine
+    # wall clock that may differ across hosts. Unknown remains explicit.
+    supplied_analysis_epoch = _safe_float(
+        (source_metadata or {}).get("analysis_epoch")
+    )
+    sampled_at = (
+        supplied_analysis_epoch
+        if supplied_analysis_epoch is not None and supplied_analysis_epoch > 0
+        else _safe_float(source_epoch)
+    )
+    sampled_at = sampled_at if sampled_at is not None and sampled_at > 0 else 0.0
+    timestamp_iso = (
+        datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
+        if sampled_at > 0 else ""
+    )
     confidence = 0.72 if known_source_time else 0.55
     uncertainty = 0.28 if known_source_time else 0.45
     return Evidence(
@@ -748,6 +759,13 @@ def analyze_market_frames(
         source_metadata = {
             "source_timestamp_origin": current.get("source_timestamp_origin"),
             "source_broker": current.get("source_broker"),
+            "analysis_epoch": snapshot_cutoff_epoch,
+            "evidence_timestamp_basis": (
+                "verified_utc_analysis_cutoff"
+                if snapshot_cutoff_epoch is not None else
+                "verified_source_bar_time" if source_epoch is not None else
+                "unknown"
+            ),
         }
         timeframe_observations.append({
             "timeframe": timeframe,
