@@ -39,6 +39,21 @@ def _number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _source_timestamp_verified(
+    spec: dict[str, Any], analysis_epoch: float | None = None,
+) -> bool:
+    epoch = _number(spec.get("source_timestamp_epoch"))
+    uncertainty = _number(spec.get("source_timestamp_uncertainty_seconds"))
+    return bool(
+        spec.get("source_timestamp_verified") is True
+        and spec.get("source_timestamp_semantics") == "broker_server_observation_time"
+        and spec.get("broker_server_clock_verified") is True
+        and epoch is not None and epoch > 0.0
+        and uncertainty is not None and 0.0 <= uncertainty <= 2.5
+        and (analysis_epoch is None or epoch <= analysis_epoch)
+    )
+
+
 def _step_aligned(value: float, step: float) -> bool:
     if step <= 0:
         return False
@@ -76,15 +91,17 @@ class InstrumentEconomicsReadings:
             and spec.get("specification_verified") is True
             and bool(source.strip())
         )
+        analysis_epoch = _number(context.get("analysis_epoch")) if isinstance(context, dict) else None
+        timestamp_verified = _source_timestamp_verified(spec, analysis_epoch)
         unknowns: list[str] = []
         errors: list[str] = []
         if not verified:
             unknowns.append(
                 "live broker-verified symbol_info contract specification for this instrument"
             )
-        if spec and verified and spec.get("source_timestamp_epoch") is None:
+        if spec and verified and not timestamp_verified:
             unknowns.append(
-                "provider-originated specification timestamp; retrieval time is not a verified source timestamp"
+                "fresh synchronized broker-server observation timestamp for the instrument specification"
             )
 
         reported_values = {key: _number(spec.get(key)) for key in _NUMERIC_FIELDS}
@@ -199,6 +216,16 @@ class InstrumentEconomicsReadings:
             "source": source,
             "source_verified": verified,
             "specification_verified": spec.get("specification_verified") is True,
+            "source_timestamp_epoch": (
+                _number(spec.get("source_timestamp_epoch")) if timestamp_verified else None
+            ),
+            "source_timestamp_verified": timestamp_verified,
+            "source_timestamp_semantics": (
+                spec.get("source_timestamp_semantics") if timestamp_verified else None
+            ),
+            "source_timestamp_uncertainty_seconds": (
+                _number(spec.get("source_timestamp_uncertainty_seconds")) if timestamp_verified else None
+            ),
             "broker_symbol": spec.get("broker_symbol") if verified else None,
             "description": spec.get("description") if verified else None,
             "path": spec.get("path") if verified else None,
@@ -273,9 +300,14 @@ class InstrumentEconomicsReadings:
             data_basis="broker_symbol_specification",
             independence_group=f"broker_symbol_spec:{source}:{str(symbol or '').upper()}",
             relevance_horizon_seconds=900.0,
+            source_timestamp_epoch=(
+                _number(spec.get("source_timestamp_epoch")) if timestamp_verified else None
+            ),
+            source_timestamp_verified=timestamp_verified,
         )
         carry_reading = self._carry_reading(
             symbol, spec, verified, reference, reference_tf,
+            analysis_epoch=analysis_epoch,
         )
         return [instrument_reading, carry_reading]
 
@@ -286,7 +318,10 @@ class InstrumentEconomicsReadings:
         verified: bool,
         reference: float | None,
         reference_tf: str,
+        *,
+        analysis_epoch: float | None = None,
     ) -> ConceptReading:
+        timestamp_verified = _source_timestamp_verified(spec, analysis_epoch)
         raw_mode = spec.get("swap_mode_name") if verified else None
         mode = str(raw_mode or "").strip().lower()
         valid_modes = {
@@ -298,9 +333,9 @@ class InstrumentEconomicsReadings:
         errors: list[str] = []
         if not verified:
             unknowns.append("live broker-verified symbol financing specification")
-        elif spec.get("source_timestamp_epoch") is None:
+        elif not timestamp_verified:
             unknowns.append(
-                "provider-originated financing specification timestamp; retrieval time is not a verified source timestamp"
+                "fresh synchronized broker-server observation timestamp for financing terms"
             )
         if verified and mode not in valid_modes:
             unknowns.append(
@@ -432,6 +467,16 @@ class InstrumentEconomicsReadings:
             "status": state,
             "source": spec.get("source") if verified else None,
             "source_verified": verified,
+            "source_timestamp_epoch": (
+                _number(spec.get("source_timestamp_epoch")) if timestamp_verified else None
+            ),
+            "source_timestamp_verified": timestamp_verified,
+            "source_timestamp_semantics": (
+                spec.get("source_timestamp_semantics") if timestamp_verified else None
+            ),
+            "source_timestamp_uncertainty_seconds": (
+                _number(spec.get("source_timestamp_uncertainty_seconds")) if timestamp_verified else None
+            ),
             "swap_mode": spec.get("swap_mode") if verified else None,
             "swap_mode_name": mode or None,
             "swap_units": units.get(mode),
@@ -487,4 +532,8 @@ class InstrumentEconomicsReadings:
             data_basis="broker_symbol_specification",
             independence_group=f"broker_symbol_spec:{str(spec.get('source') or 'unavailable')}:{str(symbol or '').upper()}",
             relevance_horizon_seconds=900.0,
+            source_timestamp_epoch=(
+                _number(spec.get("source_timestamp_epoch")) if timestamp_verified else None
+            ),
+            source_timestamp_verified=timestamp_verified,
         )
