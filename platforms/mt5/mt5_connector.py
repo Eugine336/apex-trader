@@ -387,7 +387,6 @@ class MT5Connector(BaseConnector):
             logger.warning("[mt5] automatic broker-clock synchronization unavailable: {}", exc)
             return _holdover_state() if identity_verified else None
 
-    @staticmethod
     def get_utc_time_lower_bound(self) -> Optional[float]:
         """Return a conservative UTC lower bound from the verified broker clock.
 
@@ -409,6 +408,7 @@ class MT5Connector(BaseConnector):
             logger.debug("[mt5] UTC lower-bound unavailable: {}", exc)
             return None
 
+    @staticmethod
     def _tick_server_epoch(tick: Any) -> float:
         """Use MT5 millisecond precision when available; preserve seconds fallback."""
         milliseconds = float(getattr(tick, "time_msc", 0) or 0)
