@@ -102,3 +102,31 @@ This document is the execution checklist for the WP-T roadmap entry. The roadmap
 | Date | Change | Evidence | Status |
 |---|---|---|---|
 | 2026-11-11 | Added WP-T scope and gates to authoritative redesign roadmap | Commit `4773ae23d0974fbc9578eab6003f1354f87b0a6b` | Recorded |
+
+
+## Source trace findings — 2026-11-11 (not yet runtime-accepted)
+
+### Confirmed in source
+1. `MT5Connector._synchronize_server_clock_state` at `platforms/mt5/mt5_connector.py` uses `time.monotonic()` for cache age and retry timing, and requires a second strictly advancing `symbol_info_tick` observation. The cache is reused up to its age limit, but the state uncertainty remains constant during holdover. A stale cached tick can be used to seed the first observation; the production estimator does not independently verify that the tick's source timestamp is current before anchoring the new clock state.
+2. The broker clock cache and per-symbol advancing-tick observations are process memory only. `connect()` and `disconnect()` clear them. There is no restart-persisted verified clock state or durable tick-history cursor in the poller.
+3. `MT5Connector.get_price` subtracts the estimated offset from the provider timestamp before constructing the UTC `datetime`. It preserves raw `time` and `time_msc` in `raw_fields`.
+4. `MT5Connector.get_ticks` sends UTC-aware `from_dt`/`to_dt` to `copy_ticks_range`, then subtracts the estimated broker offset from returned `time` and `time_msc` when a live clock is available.
+5. `MT5TickPoller._route_history_quotes` rejects returned rows outside the UTC query interval (±1 ms). If the official MT5 Python UTC timestamp contract applies to returned ticks, the offset subtraction above can shift every history row outside the requested interval. This would leave the latest-quote fallback as the only routed tick. This is a high-priority test hypothesis; confirm with raw terminal evidence before changing semantics.
+6. The official MetaQuotes Python docs say returned tick and bar timestamps are UTC: `https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py` and `https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksfrom_py`. The prior Apex docs' blanket server-time assumption conflicts with this provider documentation. Both `APEX_MT5_DATA_CAPABILITY_CONTRACT.md` and `MT5_CLOCK_BRIDGE.md` now record the discrepancy and the required proof.
+7. Historical replay is capped at a 300-second window. When the cursor gap exceeds 300 seconds, the poller increments an in-memory gap counter, jumps the cursor to the current quote and resumes. It deliberately does not recover the longer gap because it lacks a historical offset series; this is an explicit unrecovered data gap, not complete recovery.
+8. `_history_cursor`, `_history_seen` and `_history_gap_count` are in-memory only. Their loss on restart can cause overlapping history replay and duplicates beyond the bounded per-process fingerprint cache.
+9. `TickRouter` publishes raw and verified tick events and invokes raw callbacks before `TickStore` coalescing. `LiveCandleAggregator` subscribes to raw callbacks. `TickStore` intentionally rate-coalesces its bounded working set; it is not a complete durable tick tape.
+10. The current `Tick` model stores an aware Python `datetime` and raw fields. MT5's source `time_msc` is millisecond precision, so Python datetime's microsecond resolution can represent that source precision. The critical risk is the offset/normalization and conversion lineage, not an unsupported claim that all MT5 millisecond precision is lost by `datetime` alone.
+11. The live candle aggregator ignores unverified ticks and uses tick timestamps for candle buckets. It closes only the forming candle when a new tick crosses a boundary; it does not fabricate intermediate candles over gaps. The close detector/watchdog and aggregator lifecycle still require complete review for data-gap and stale-source behavior.
+
+### Immediate implementation order
+1. Resolve raw MT5 API timestamp semantics and historical query-bound behavior first. Add a failing regression test for non-zero offset with UTC source epochs; prove the correct behavior from official docs and owner-host captures.
+2. Correct the live and historical normalization contract together; do not patch only `get_ticks` while leaving `get_price` on a contradictory time basis.
+3. Add monotonic-age/uncertainty growth to clock holdover and reject a stale first tick as synchronization evidence.
+4. Persist restart-safe replay cursor and gap ledger using the repository's established durable store; do not invent a second event authority.
+5. Replace the 300-second silent re-anchor behavior with explicit recoverable range batching where the provider can verify history; retain durable unrecoverable gap records otherwise.
+6. Add feed-health metrics for per-symbol last source tick, last receipt monotonic, poll errors, advancing observations, history rows requested/returned/accepted/rejected, duplicate/out-of-order counts, cursor lag and unrecovered gaps.
+7. Verify every downstream consumer and preserve Brain/closed-bar authority.
+
+### Execution limitation in this session
+The available GitHub connector can inspect and commit repository files but does not provide a local checkout or command runner. No source code has been changed and no tests have been executed in this pass. Source changes must not be marked validated without an actual supported-runtime test run.
