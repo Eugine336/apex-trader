@@ -192,3 +192,16 @@ Interpretation: this is a repeatable empty-data observation, not proof that the 
 
 ### Exact next action
 Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and fix all failures without weakening tests. Then have the user pull the branch and rerun the exact command. Interpret `symbol_info`, visibility/selection, Bid/Ask/time fields, tick error and history state together. If the exact symbol is absent, use the reported candidate names to identify the broker-native suffix. Obtain a second independent host capture before deciding timestamp semantics. Continue WP-T2–T6 implementation after the diagnostic cause is narrowed; do not stall the independent durable cursor/gap, candle warmup and consumer-audit work on this evidence gate.
+
+
+## 2026-11-11 — PR #907 CI failure and correction
+
+- **PR:** https://github.com/Eugine336/apex-trader/pull/907
+- **Branch:** `fix/mt5-symbol-feed-diagnostics`
+- **CI run:** `43003257190` (workflow run 4324)
+- **Initial head:** `eb0e6ef6473a1e13780ee98cfb59731d75827d3e`
+- **Failure:** both Python 3.11 and 3.12 jobs reported 4,534 passed / 1 failed; lint passed.
+- **Root cause:** `test_mt5_timestamp_diagnostic_is_read_only` scans the diagnostic source for prohibited mutation API calls. A safety comment mentioned the prohibited API name, causing a source-text false positive. The diagnostic contains no invocation of that API.
+- **Correction committed:** `59ddd9e4c8f674930c3efb41f45ffea03f94c17a`; reworded the comment to describe the read-only guarantee without embedding the forbidden API token. The test's safety assertion remains unchanged.
+- **Verification status:** correction committed; CI rerun required. No tests are claimed passing for this correction until GitHub Actions completes.
+- **Next action:** poll the new CI run for PR #907; fix any genuine failures without weakening safety checks. Keep WP-T acceptance gates open pending owner-host expanded diagnostic captures and end-to-end tick/recovery validation.
