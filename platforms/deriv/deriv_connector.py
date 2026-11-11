@@ -1252,6 +1252,7 @@ class DerivConnector(BaseConnector):
         for c in candles:
             rows.append({
                 "time": datetime.fromtimestamp(c["epoch"], tz=timezone.utc),
+                "time_source_epoch": int(c["epoch"]),
                 "open": float(c["open"]),
                 "high": float(c["high"]),
                 "low": float(c["low"]),
@@ -1272,6 +1273,10 @@ class DerivConnector(BaseConnector):
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "deriv",
+            "source_timezone": "UTC",
+            "completed_bars_verified": not include_forming,
+            "forming_bar_included": bool(include_forming),
+            "bar_completion_basis": "deriv_latest_candle_excluded",
         })
         return out
 
