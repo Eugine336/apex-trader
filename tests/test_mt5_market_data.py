@@ -336,3 +336,31 @@ def test_raw_position_and_pending_order_snapshots_preserve_broker_fields(monkeyp
     assert orders[0]["ticket"] == 456
     assert orders[0]["type"] == 2
     assert orders[0]["source"] == "mt5.orders_get"
+
+
+def test_stale_live_clock_is_not_applied_to_historical_tick_window(monkeypatch):
+    import time
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    offset = 7200
+    source_epoch = now - 3600 + offset
+    mt5_module.mt5.copy_ticks_range = lambda *args: [
+        {"time": int(source_epoch), "time_msc": int(source_epoch * 1000),
+         "bid": 1.0, "ask": 1.1, "last": 1.05, "volume": 2,
+         "volume_real": 2.0, "flags": 16},
+    ]
+    connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
+        offset_seconds=offset,
+        uncertainty_seconds=0.0,
+        observed_gmt_epoch=now,
+        observed_monotonic=time.monotonic(),
+        sources=("ntp:one", "ntp:two"),
+    )
+    end = datetime.fromtimestamp(now - 3600, timezone.utc)
+    frame = connector.get_ticks("EURUSD", end - timedelta(seconds=10), end)
+
+    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["source_timestamp_verified"] is False
+    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert frame["time_msc_datetime"].dt.tz is None

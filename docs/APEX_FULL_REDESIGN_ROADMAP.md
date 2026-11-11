@@ -237,32 +237,28 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 - Provider session observations now drive the session state instead of being exposed only as side metadata. Acceptance requires complete provider provenance, canonical instrument identity, receipt/publication/revision timestamps no later than the analysis cutoff, a valid timezone, session identity, and explicit DST, holiday and tradeability status.
 - Decision-to-trade recovery test now closes and reopens the SQLite event store and constructs a new bootstrap object before recovering the exact-ticket entry snapshot and linking its close outcome.
 - Calibration candidate/outcome replay now rejects future-dated outcomes relative to the producer's explicit as-of cutoff and rejects feature rows missing source module, domain, data basis or measurements.
-- The read-only broker capability audit now treats source-time verification, venue timezone/holiday calendar, broker swap-term completeness and source-attested account-currency cash-financing projection as separate acceptance checks. A live `symbol_info` response alone cannot certify these capabilities.
-- MT5 symbol-spec observations now carry a source timestamp derived only from the fresh, independently synchronized broker-server clock cache, with explicit observation-time semantics and uncertainty. This timestamps when the broker specification was observed; it does not claim to know when the broker last changed the specification.
-- **Still data-gated:** independently authenticated source manifests, broker-history samples, verified full-history coverage, independent holdout and walk-forward evidence, a provider-sourced IANA timezone/holiday calendar, and a source-attested position-horizon cash-financing projection. MT5 exposes raw swap terms and schedule but no cash projection; Deriv exposes contract constraints but no verified financing schedule.
+- **Still data-gated:** independently authenticated source manifests, broker-history samples, verified full-history coverage, independent holdout and walk-forward evidence, economic-calendar provider, macro series, authoritative venue calendars and verified directional financing.
 
 ### System 5 — compliance and portfolio allocation
 - PR #904 adds a durable portfolio admission reservation ledger for Brain-approved but not-yet-broker-confirmed OPEN intents.
-- Origination check→size→reserve→submit is serialized. Reservation-ledger lazy initialization is itself guarded so concurrent first-use cannot create separate locks/ledgers. Reservations participate in duplicate-pair and max-open-position checks, account heat, daily-loss remaining-room calculations, and portfolio pair/broker concentration plus correlation sizing.
-- Reservations survive event-store restart and link both market and pending OPENs to broker order IDs. Market-order release requires exact position-ticket equality or verified MT5 entry-deal order→position attribution. Pending-order reservations remain active through partial fills while an unfilled remainder is live and release only on broker-confirmed terminal reconciliation/explicit rejection. An unrelated same-symbol/same-side position cannot release another order's reservation.
+- Origination check→size→reserve→submit is serialized. Reservations participate in duplicate-pair and max-open-position checks, account heat, and daily-loss budget remaining-room calculations.
+- Reservations survive event-store restart, link to broker pending-order IDs, release on broker-confirmed position visibility or explicit rejection, and release after broker-confirmed terminal pending-order reconciliation. Ambiguous broker outcomes retain the reservation.
 - **Still not accepted:** full supported-account owner-limit matrix, concurrency stress, portfolio correlation/whole-book fault injection, and owner-connected evidence.
 
 ### System 6 — execution integrity and broker mutation boundaries
 - The static broker mutation audit now covers entry, pending entry, close, modify and cancel operations rather than entry calls alone.
-- Broker position snapshots retain per-connector identity. The execution lifecycle maps MT5 tickets to `mt5_<connector_index>` so close, partial-close and SL/TP mutation use the connector that actually owns the ticket; generic `mt5` routing is no longer used for these management actions.
 - Final OPEN validation rejects unverified, provisional, cross-symbol, duplicate or unreferenced decision features before the broker call.
 - **Still not accepted:** complete per-adapter order/modify/close/cancel mutation matrix, acknowledgement ambiguity, reconnect, restart and broker-history reconciliation across every supported platform.
 
 ### System 7 — position lifecycle and reconciliation
-- A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. A partial fill is also retained when the broker has not yet supplied a position ID: release now requires explicit broker volume evidence that the order was wholly unfilled, or exact fill attribution.
-- A durable reservation is released only after exact market-fill order→position attribution or terminal pending-order reconciliation; unresolved partial fills and unlinked market acknowledgements retain both lineage and reserved capacity.
+- A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. If the position identity or fill attribution is unresolved, the pending projection remains for subsequent broker reconciliation.
+- A durable reservation linked to a pending order is released only after terminal broker reconciliation; unresolved partial fills retain both lineage and reserved capacity.
 - **Still not accepted:** full market/pending/partial-fill/manual-close/partial-close/restart/reconciliation matrix against owner broker history.
 
 ### System 8 — learning and statistical validation
 - Calibration producer now enforces the explicit as-of cutoff on both outcome observation and outcome quote timestamps, and requires source module, domain, data basis and non-empty measurements for every point-in-time feature.
-- The chronological 80/20 development/holdout cut is now persisted as a durable event-sourced manifest per symbol/direction/family/horizon. The manifest freezes its dataset digest and start/end epochs; late historical additions or corrections invalidate the manifest, while post-cutoff data cannot silently roll the holdout forward. Artifacts carry the manifest key and holdout window.
 - Calibration outputs remain historical fixed-horizon summaries, not calibrated probabilities or demonstrated current-regime edge.
-- **Still not accepted:** independently authenticated external data manifests, complete selection coverage on real provider history, an independently sourced external holdout, multiple-testing controls and independent walk-forward reproduction. The internal chronological holdout is now immutable and event-sourced; it is not a substitute for independent external validation.
+- **Still not accepted:** independently authenticated data manifests, complete selection coverage on real provider history, immutable untouched holdout, multiple-testing controls and independent walk-forward reproduction.
 
 ### System 9 — governance and observability
 - Existing silent-exception AST audit remains a mandatory CI gate. The broker mutation audit is broadened to management as well as entry routes.
@@ -659,3 +655,107 @@ PR #902 has expanded the exact-ticket management increment to close additional i
 **Validation snapshot:** final implementation head `cf53f109aa89213d8d8e6c2d664b10499c895d61` passed 4,485 tests on Python 3.11 and 3.12, lint, generated concept-coverage verification, canonical identity/safety audit and import checks. Gold Desk focused tests and frontend build also passed. This head includes exact-ticket lifecycle, confidence isolation, removal of no-op re-entry, production hard-disable of mechanical discretionary exits, retirement of disconnected cross-instrument helpers and queue controls, removal of the unused proximity setting, and removal of the unconsumed execution-quality sizing toggle.
 
 **Still not accepted:** System 2's broker/calendar/financing and independent holdout gates; owner-connected broker execution acceptance; full ten-system acceptance. No live broker orders, .env access, runtime database changes or credential changes were made.
+
+
+---
+
+## Critical infrastructure work package — WP-T: MT5 clock authority and tick-stream integrity
+
+**Status: IMPLEMENTING — implementation and acceptance remain open.**  
+**Priority:** Critical — production market-data integrity.  
+**Primary system:** System 2 — Market intelligence and evidence integrity.  
+**Cross-system dependencies:** System 6 broker adapter/execution boundaries; System 7 lifecycle, restart and reconciliation; System 9 observability and fault recovery; System 10 integrated validation.  
+**Dedicated branch:** `fix/mt5-clock-holdover-tick-integrity`  
+**Baseline commit:** `c3d2f1c1a900a70f6c1baecee77b7c74304e6481`  
+**Safety:** No live broker order placement, modification or cancellation. Do not access or modify `.env`, credentials, runtime databases, broker account selection or production trading settings.
+
+### Objective
+
+Establish a machine-independent, provenance-preserving time and tick pipeline from MT5 source through ingestion, normalization, storage, routing, history recovery, completed-bar construction and every downstream market-data consumer. Broker timestamps must remain interpretable across hosts with different local wall clocks. Missing, stale, contradictory or unverifiable data must remain explicitly unknown and must never enter Brain analysis as verified evidence.
+
+This package does not replace System 2 provenance or System 6/7 acceptance. It is a critical prerequisite and must be integrated with their contracts.
+
+### Work breakdown
+
+#### WP-T1 — Unified time authority
+- Separate host UTC wall time, monotonic elapsed time and broker-server time into explicit clock domains and typed provenance.
+- Use monotonic time for durations, freshness, retries, deadlines and latency; never use host wall-clock deltas for elapsed-time decisions.
+- Bind broker clock state to an explicit broker/server/terminal identity and retain offset, uncertainty, witness identity, sample age and verification provenance.
+- Model independent time witnesses and their independence; reject correlated or unverified witnesses as independent corroboration.
+- Tolerate temporary witness disagreement using bounded outlier handling without accepting an unverified estimate or discarding a still-valid verified state without reason.
+- Provide bounded holdover from the last verified state with age- and drift-dependent uncertainty growth. Expiry must transition to explicitly unsynchronized/degraded state and block source-time normalization that requires verified broker time.
+- Never modify the operating-system clock to compensate for broker timezone/offset differences.
+
+#### WP-T2 — MT5 broker clock lifecycle
+- Trace and repair `_synchronize_server_clock_state`, `platforms/mt5/clock.py`, clock publisher/diagnostic paths and every state consumer.
+- Replace fragile dependence on repeated latest-quote polling for synchronization progress with explicit advancing-tick evidence and independent witnesses where available.
+- Distinguish no quote, stale quote, repeated/non-advancing quote, broker disconnect, publisher absence, witness disagreement and broker identity change.
+- Define deterministic startup → acquiring → synchronized → holdover → expired/unsynchronized → retry → recovered transitions.
+- Invalidate incompatible cached clock state on broker/server/terminal identity change and across restart unless persisted provenance and age are revalidated.
+- Expose offset, uncertainty, age, evidence sources, broker identity, transition and failure reason without leaking credentials.
+
+#### WP-T3 — Tick timestamp integrity
+- Preserve MT5 source timestamp precision end-to-end; remove lossy pandas nanosecond-to-Python-`datetime` conversions in active paths.
+- Preserve raw `time` and `time_msc` values and validate their consistency without inventing sub-millisecond precision.
+- Distinguish source timestamp, normalized UTC timestamp, local receipt wall time, monotonic receipt instant and processing time.
+- Normalize broker timestamps exactly once using the verified broker clock model; reject malformed, contradictory, future-dated or unverifiable records under explicit provenance rules.
+- Keep ordering and deduplication precision stable through storage, routing and event publication.
+
+#### WP-T4 — Complete tick ingestion and gap recovery
+- Trace MT5 tick delivery through adapter, poller, router, store, history recovery, event bus and all consumers; prove whether the current poller returns all eligible ticks or only latest observations.
+- Detect duplicate, out-of-order, stalled, delayed, missing and overlapping-history events with explicit counters and durable gap records.
+- Recover gaps using broker history only when source identity, source time and normalization are verified. Make overlapping recovery idempotent and ordering deterministic.
+- Never synthesize ticks. Record irrecoverable gaps and their interval/extent as unknown.
+- Keep MT5 ingestion independent of Deriv and external AI/advisor availability.
+
+#### WP-T5 — Downstream data and candle integrity
+- Audit every clock/timestamp consumer, including tick microstructure, candle aggregators, multi-timeframe orchestration, observers and WorldModel.
+- Build candles only from correctly normalized, source-ordered ticks; prove completed-bar boundaries and prevent partial bars from entering Brain closed-bar analysis.
+- Verify warmup, timeframe alignment, event ordering, stale-data rejection and data-gap propagation.
+- Distinguish “no pattern observed” from “insufficient/unavailable tick evidence”; expose feed health separately from analytical observations.
+
+#### WP-T6 — Restart, multi-host and failure recovery
+- Test no initial tick, delayed first tick, stale persisted state, NTP unavailable, temporary witness disagreement, outlier witness, broker identity change, holdover and expiry.
+- Test multiple hosts with deliberately different wall-clock offsets while preserving a common monotonic/freshness contract.
+- Test process restart during a feed gap and overlapping history recovery; prove no stale replay is presented as current and no event is duplicated.
+- Preserve broker truth as authority for orders, positions and reconciliation. Clock recovery must never alter execution state or bypass System 6/7 boundaries.
+
+### Required implementation sequence
+
+1. Recover branch/HEAD/worktree and preserve all existing changes; read `AGENTS.md`, Constitution, this roadmap, delivery contract and MT5 data capability contract.
+2. Inventory the complete production call graph for clock state, MT5 ticks, timestamp conversion, poller cadence, tick history, stores, routers, event bus, candle builders and consumers. Identify every active lossy conversion and alternate/legacy path.
+3. Record baseline tests and observed behavior before editing; compare all failures against this base commit.
+4. Implement the unified clock contract and lifecycle, then precision-preserving tick normalization, complete ingestion/recovery, and downstream propagation. Keep each boundary typed and provenance-bearing.
+5. Add regression, adversarial, integration, restart and multi-host tests. Use synthetic broker adapters that cannot connect to real accounts.
+6. Rewire production consumers to the repaired path; retire obsolete active paths only after call-site proof and replacement tests.
+7. Synchronize generated coverage and update `.env.example` only for genuinely implemented operator settings. Never access the real `.env`.
+8. Run focused suites, Python 3.11/3.12 matrix, lint, compile/import, identity/safety audits, static route audit and end-to-end synthetic replay/recovery tests.
+9. Record actual evidence, failures and owner-host dependencies. Do not mark acceptance based on unit tests, a diagnostic script or code presence.
+
+### Acceptance gates
+
+| Gate | Required evidence | Status |
+|---|---|---|
+| T-A1 Clock domains | Explicit UTC/monotonic/broker domains; no elapsed-time use of wall-clock deltas | OPEN |
+| T-A2 Clock trust | Independent witness provenance, bounded uncertainty, safe disagreement handling, holdover and expiry | OPEN |
+| T-A3 Broker lifecycle | Identity-bound startup/refresh/holdover/expiry/retry/recovery; restart-safe cache validation | OPEN |
+| T-A4 Timestamp precision | No lossy conversion in active ingestion/consumer paths; raw and normalized timestamps retained | OPEN |
+| T-A5 Ingestion completeness | Eligible tick delivery, gap/stall/duplicate/order detection, idempotent verified history recovery | OPEN |
+| T-A6 Consumer integrity | All production consumers use normalized evidence; completed bars only; missingness preserved | OPEN |
+| T-A7 Recovery | No-tick, delayed-tick, NTP fault, witness disagreement, broker change, restart and multi-host tests | OPEN |
+| T-A8 Architecture retirement | No obsolete clock/tick path remains active; no alternate data authority | OPEN |
+| T-A9 Documentation and evidence | Roadmap, coverage, delivery ledger, operations docs and configuration template synchronized | OPEN |
+| T-A10 Safety | No live broker mutation; Brain authority, risk controls and broker-truth reconciliation preserved | OPEN |
+
+### Acceptance semantics and external dependencies
+
+Implementation, integration, automated validation and production acceptance are separate decisions. Owner-host acceptance still requires observed MT5 terminal/broker behavior, actual publisher availability, broker history depth/rate limits and sustained runtime evidence on the supported host fleet. Do not infer these from synthetic tests or a one-time offset diagnostic. If the broker cannot provide a verifiable server-time witness or complete historical range, mark the affected capability DATA-GATED and fail closed for source-time-dependent analysis.
+
+### Initial verified baseline (2026-11-11)
+
+- Dedicated branch exists at baseline `c3d2f1c1a900a70f6c1baecee77b7c74304e6481`; no code changes or tests are recorded on this branch at package start.
+- Existing repository contract states that MT5 historical tick range fetch exists but replay ingestion and Brain attribution remain incomplete (`docs/APEX_MT5_DATA_CAPABILITY_CONTRACT.md`).
+- Existing files include `platforms/mt5/clock.py`, `platforms/mt5/mt5_connector.py`, `tick/tick_sources.py`, `tick/tick_router.py`, `tick/tick_store.py`, `tick/live_candle_aggregator.py`, `scripts/diagnose_mt5_clock.py` and `scripts/mt5_clock_publisher.mq5`. Presence does not prove production integration.
+- Prior work reports monotonic anchoring, uncertainty, broker identity binding and fail-closed validation; those changes must be inspected and reused, not assumed complete.
+- Prior live diagnostic context reported intermittent stale/non-advancing quote observations and a 10-second diagnostic wait. This is not sustained feed acceptance.
+- No test execution, code integration, runtime verification or production acceptance is claimed by this plan entry.

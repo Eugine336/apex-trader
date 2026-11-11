@@ -269,3 +269,113 @@ def test_duplicate_quote_polls_do_not_reset_advancing_tick_clock_baseline(monkey
     assert state is not None
     assert state.server == "JustMarkets-Demo"
     assert abs(state.offset_seconds - 7199.9) < 0.2
+
+
+
+def test_clock_holdover_grows_uncertainty_without_moving_verified_anchor():
+    from platforms.mt5.clock import MT5ServerClockState
+
+    state = MT5ServerClockState(
+        server="JustMarkets-Demo",
+        offset_seconds=7200.0,
+        observed_server_epoch=1_800_007_200,
+        observed_gmt_epoch=1_800_000_000,
+        file_age_seconds=0.0,
+        observed_monotonic=50.0,
+        uncertainty_seconds=0.8,
+        sources=("ntp:one", "ntp:two"),
+    )
+
+    holdover = state.as_holdover(12.0)
+
+    assert holdover.synchronization_status == "holdover"
+    assert holdover.holdover_age_seconds == 12.0
+    assert holdover.uncertainty_seconds == 0.812
+    assert holdover.offset_seconds == state.offset_seconds
+    assert holdover.observed_monotonic == state.observed_monotonic
+    assert holdover.server_now_epoch(50.0) == state.server_now_epoch(50.0)
+
+
+def test_clock_holdover_rejects_negative_or_non_finite_age():
+    import math
+    import pytest
+    from platforms.mt5.clock import MT5ServerClockState
+
+    state = MT5ServerClockState(
+        server="JustMarkets-Demo",
+        offset_seconds=7200.0,
+        observed_server_epoch=1_800_007_200,
+        observed_gmt_epoch=1_800_000_000,
+        file_age_seconds=0.0,
+        observed_monotonic=50.0,
+        uncertainty_seconds=0.8,
+        sources=("ntp:one", "ntp:two"),
+    )
+
+    for age in (-0.1, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="holdover age"):
+            state.as_holdover(age)
+
+
+def test_connector_returns_growing_holdover_only_after_identity_revalidation(monkeypatch):
+    from types import SimpleNamespace
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import MT5ServerClockState
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    state = MT5ServerClockState(
+        server="JustMarkets-Demo",
+        offset_seconds=7200.0,
+        observed_server_epoch=1_800_007_200,
+        observed_gmt_epoch=1_800_000_000,
+        file_age_seconds=0.0,
+        observed_monotonic=10.0,
+        uncertainty_seconds=0.8,
+        sources=("ntp:one", "ntp:two"),
+    )
+    connector = MT5Connector.__new__(MT5Connector)
+    connector._server_clock_state_cache = state
+    connector._server_clock_state_cache_at = 10.0
+    connector._server_clock_retry_after = 20.0
+    connector._clock_tick_observations = {}
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: 15.0)
+    monkeypatch.setattr(
+        connector_module, "mt5",
+        SimpleNamespace(account_info=lambda: SimpleNamespace(server="JustMarkets-Demo")),
+    )
+
+    holdover = connector._synchronize_server_clock_state()
+
+    assert holdover is not None
+    assert holdover.synchronization_status == "holdover"
+    assert holdover.holdover_age_seconds == 5.0
+    assert holdover.uncertainty_seconds == 0.805
+
+
+def test_connector_does_not_use_holdover_when_broker_identity_is_unavailable(monkeypatch):
+    from types import SimpleNamespace
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import MT5ServerClockState
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    state = MT5ServerClockState(
+        server="JustMarkets-Demo",
+        offset_seconds=7200.0,
+        observed_server_epoch=1_800_007_200,
+        observed_gmt_epoch=1_800_000_000,
+        file_age_seconds=0.0,
+        observed_monotonic=10.0,
+        uncertainty_seconds=0.8,
+        sources=("ntp:one", "ntp:two"),
+    )
+    connector = MT5Connector.__new__(MT5Connector)
+    connector._server_clock_state_cache = state
+    connector._server_clock_state_cache_at = 10.0
+    connector._server_clock_retry_after = 20.0
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: 15.0)
+    monkeypatch.setattr(
+        connector_module, "mt5",
+        SimpleNamespace(account_info=lambda: None),
+    )
+
+    assert connector._synchronize_server_clock_state() is None
