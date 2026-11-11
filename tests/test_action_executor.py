@@ -96,7 +96,10 @@ def _open_intent(symbol: str = "V50_1S", *, brain_provenance: bool = True, **ove
             "evidence_ids": ["test-evidence-1"],
             "features": [{
                 "evidence_id": "test-evidence-1",
+                "symbol": str(values["symbol"]),
                 "source_timestamp_epoch": now,
+                "source_timestamp_verified": True,
+                "provisional": False,
                 "measurements": {"synthetic_fixture": True},
             }],
             "validation_status": "unvalidated",
@@ -1258,3 +1261,45 @@ def test_cancel_pending_dispatch_uses_order_ticket_and_symbol():
     result = executor._dispatch(intent, {})
     assert result.success is True
     assert calls == [("901", "EURUSD")]
+
+
+def test_open_rejects_unverified_snapshot_feature_before_broker_call():
+    broker = FakeBroker()
+    intent = _open_intent("XAUUSD")
+    intent.decision_feature_snapshot["features"][0]["source_timestamp_verified"] = False
+    result = ActionExecutor(broker, _fast_cfg()).execute(intent, {})
+    assert not result.success and result.rejected_by_gate
+    assert "unverified_or_mismatched_feature" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_provisional_snapshot_feature_before_broker_call():
+    broker = FakeBroker()
+    intent = _open_intent("XAUUSD")
+    intent.decision_feature_snapshot["features"][0]["provisional"] = True
+    result = ActionExecutor(broker, _fast_cfg()).execute(intent, {})
+    assert not result.success and result.rejected_by_gate
+    assert "unverified_or_mismatched_feature" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_wrong_symbol_snapshot_feature_before_broker_call():
+    broker = FakeBroker()
+    intent = _open_intent("XAUUSD")
+    intent.decision_feature_snapshot["features"][0]["symbol"] = "EURUSD"
+    result = ActionExecutor(broker, _fast_cfg()).execute(intent, {})
+    assert not result.success and result.rejected_by_gate
+    assert "unverified_or_mismatched_feature" in result.gate_reason
+    assert broker.open_calls == []
+
+
+def test_open_rejects_duplicate_snapshot_features():
+    broker = FakeBroker()
+    intent = _open_intent("XAUUSD")
+    feature = dict(intent.decision_feature_snapshot["features"][0])
+    intent.decision_feature_snapshot["features"].append(feature)
+    intent.decision_feature_snapshot["evidence_count"] = 2
+    result = ActionExecutor(broker, _fast_cfg()).execute(intent, {})
+    assert not result.success and result.rejected_by_gate
+    assert "evidence_lineage_mismatch" in result.gate_reason
+    assert broker.open_calls == []
