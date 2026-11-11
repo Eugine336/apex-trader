@@ -49,7 +49,7 @@ def test_mt5_positions_keep_their_exact_connector_account_identity():
     assert snapshot.confirmed_platforms == {"mt5"}
     assert [position.account_key for position in snapshot.positions] == [
         "ICMarkets:1001",
-        "pepperstone:2002",
+        "Pepperstone:2002",
     ]
     assert [position.connector_index for position in snapshot.positions] == [0, 1]
     assert all(position.platform == "mt5" for position in snapshot.positions)
