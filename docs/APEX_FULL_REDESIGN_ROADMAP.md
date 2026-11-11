@@ -241,7 +241,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 
 ### System 5 — compliance and portfolio allocation
 - PR #904 adds a durable portfolio admission reservation ledger for Brain-approved but not-yet-broker-confirmed OPEN intents.
-- Origination check→size→reserve→submit is serialized. Reservations participate in duplicate-pair and max-open-position checks, account heat, and daily-loss budget remaining-room calculations.
+- Origination check→size→reserve→submit is serialized. Reservation-ledger lazy initialization is itself guarded so concurrent first-use cannot create separate locks/ledgers. Reservations participate in duplicate-pair and max-open-position checks, account heat, and daily-loss budget remaining-room calculations.
 - Reservations survive event-store restart, link to broker pending-order IDs, release on broker-confirmed position visibility or explicit rejection, and release after broker-confirmed terminal pending-order reconciliation. Ambiguous broker outcomes retain the reservation.
 - **Still not accepted:** full supported-account owner-limit matrix, concurrency stress, portfolio correlation/whole-book fault injection, and owner-connected evidence.
 
