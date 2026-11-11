@@ -83,3 +83,18 @@ The current Apex implementation has a competing assumption: it estimates a broke
 **Potential production consequence requiring proof:** if returned historical tick epochs are already UTC, subtracting a non-zero broker offset shifts them outside the requested UTC range. The poller then rejects rows outside its query window and routes only the latest quote fallback. This is a concrete test hypothesis, not yet an owner-host-confirmed runtime finding.
 
 Do not silently treat broker chart display timezone, MQL5 `TimeTradeServer()`, MT5 Python `time`/`time_msc`, and UTC epoch as interchangeable.
+
+
+### Evidence qualification update — 2026-11-11
+
+The timestamp convention is **not conclusively settled for Apex's supported terminal/broker combinations**. MetaQuotes' official Python documentation for tick history says returned data have UTC time and requires UTC-aware request datetimes. The official `symbol_info_tick` reference lists raw `time` and `time_msc` fields but does not itself state their timezone semantics in the field description. MQL5 forum discussions contain conflicting user interpretations: some repeat the documented UTC interpretation; others report raw values matching broker-server civil time and disagree with the documentation. These reports are not authoritative specifications, but they are sufficient to reject an untested blanket assumption.
+
+Evidence:
+- Official `symbol_info_tick` reference: https://www.mql5.com/en/docs/python_metatrader5/mt5symbolinfotick_py
+- Official `copy_ticks_range` reference: https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py
+- Official `copy_ticks_from` reference: https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksfrom_py
+- Conflicting field reports: https://www.mql5.com/en/forum/517344 and https://www.mql5.com/en/forum/519808
+
+Do not convert this ambiguity into a hardcoded UTC or broker-server rule. Keep raw integer fields unchanged and distinguish API request-bound semantics from returned snapshot/history field semantics. The new read-only `scripts/diagnose_mt5_timestamp_semantics.py` captures raw live and historical samples, API/package/terminal version, server identity, host wall/monotonic readings, independent UTC witnesses and exact UTC request bounds. Run it on each supported host and preserve outputs. A source contract change requires correlated samples across hosts and versions, with no unexplained offset residual or DST discontinuity.
+
+Until evidence resolves the contract, any timestamp conversion requiring the disputed interpretation must remain explicitly gated; do not silently apply the estimated broker offset twice or treat a wall-clock comparison as proof.
