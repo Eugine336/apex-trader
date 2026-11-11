@@ -1439,7 +1439,7 @@ class PlatformManager:
             if self._mt5_connected_flags[i]:
                 try:
                     positions = connector.get_open_positions()
-                    broker_name = str(getattr(connector, "_broker_name", "") or "").strip().lower()
+                    broker_name = str(getattr(connector, "_broker_name", "") or "").strip()
                     if not broker_name or broker_name == "auto":
                         server = str(getattr(connector, "_server", "") or "")
                         broker_name = server.split("-")[0].lower() if server else "mt5"
