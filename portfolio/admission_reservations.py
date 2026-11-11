@@ -11,11 +11,13 @@ import math
 import threading
 from typing import Any, Callable
 
+from persistence import domain_events as DE
+
 
 class PortfolioAdmissionReservations:
-    RESERVED_EVENT = "PORTFOLIO_OPEN_RESERVATION"
-    LINKED_EVENT = "PORTFOLIO_OPEN_RESERVATION_ORDER_LINKED"
-    RELEASED_EVENT = "PORTFOLIO_OPEN_RESERVATION_RELEASED"
+    RESERVED_EVENT = DE.PORTFOLIO_OPEN_RESERVATION
+    LINKED_EVENT = DE.PORTFOLIO_OPEN_RESERVATION_ORDER_LINKED
+    RELEASED_EVENT = DE.PORTFOLIO_OPEN_RESERVATION_RELEASED
 
     def __init__(self, store_provider: Callable[[], Any] | None = None) -> None:
         self._store_provider = store_provider or self._existing_store
