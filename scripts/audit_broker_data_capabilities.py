@@ -342,6 +342,7 @@ def audit_connector(
                 "broker_session_timezone_verified": spec.get("broker_session_timezone_verified") is True,
                 "broker_holiday_calendar_verified": spec.get("broker_holiday_calendar_verified") is True,
                 "swap_schedule": spec.get("swap_schedule"),
+                "financing_cash_model": spec.get("financing_cash_model"),
                 "error": spec_result["error"],
             }
 
