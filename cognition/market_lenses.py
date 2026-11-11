@@ -90,6 +90,9 @@ def _rows(
         and attrs.get("source_timestamp_unit") == "unix_seconds"
         and source_origin == "broker_ohlcv"
         and bool(source_broker)
+        and attrs.get("source_timezone") == "UTC"
+        and attrs.get("completed_bars_verified") is True
+        and attrs.get("forming_bar_included") is False
     )
     try:
         if getattr(frame, "empty", False):
