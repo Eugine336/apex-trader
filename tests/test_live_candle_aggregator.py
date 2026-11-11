@@ -130,14 +130,25 @@ def _seed_df(start_epoch: float, tf_secs: int, n: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
 
 
+def _attest_completed(frame: pd.DataFrame, symbol: str = "EURUSD") -> pd.DataFrame:
+    frame.attrs.update({
+        "completed_bars_verified": True,
+        "forming_bar_included": False,
+        "source_timestamp_verified": True,
+        "source_symbol": symbol,
+        "source_timezone": "UTC",
+        "source_timestamp_unit": "unix_seconds",
+        "source_timestamp_origin": "broker_ohlcv",
+    })
+    return frame
+
+
 def test_warmup_seeding():
     agg = LiveCandleAggregator()
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        frame = _seed_df(base, 300, 5)
-        frame.attrs["completed_bars_verified"] = True
-        return frame
+        return _attest_completed(_seed_df(base, 300, 5))
 
     seeded = agg.warmup(["EURUSD"], ["M5"], fetcher)
     assert seeded == 1
@@ -165,9 +176,7 @@ def test_warmup_then_live_ticks():
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        frame = _seed_df(base, tf_secs, 5)
-        frame.attrs["completed_bars_verified"] = True
-        return frame
+        return _attest_completed(_seed_df(base, tf_secs, 5))
 
     agg.warmup(["EURUSD"], ["M5"], fetcher)
     # First live tick in a NEW period (after the 5 seeded bars) starts bar #6.
@@ -260,7 +269,7 @@ def test_warmup_rejects_naive_timestamps_even_with_frame_completion_attestation(
     agg = LiveCandleAggregator()
     frame = _seed_df(1_700_000_000, 300, 5)
     frame["time"] = frame["time"].dt.tz_localize(None)
-    frame.attrs["completed_bars_verified"] = True
+    _attest_completed(frame)
 
     assert agg.warmup(
         ["EURUSD"], ["M5"],
@@ -271,7 +280,7 @@ def test_warmup_rejects_naive_timestamps_even_with_frame_completion_attestation(
 def test_warmup_rejects_unordered_rows_even_with_completion_attestation():
     agg = LiveCandleAggregator()
     frame = _seed_df(1_700_000_000, 300, 5).iloc[::-1].copy()
-    frame.attrs["completed_bars_verified"] = True
+    _attest_completed(frame)
 
     assert agg.warmup(
         ["EURUSD"], ["M5"],
