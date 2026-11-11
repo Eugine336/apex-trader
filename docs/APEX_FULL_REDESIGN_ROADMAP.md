@@ -259,6 +259,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 
 ### System 8 — learning and statistical validation
 - Calibration producer now enforces the explicit as-of cutoff on both outcome observation and outcome quote timestamps, and requires source module, domain, data basis and non-empty measurements for every point-in-time feature.
+- The chronological 80/20 development/holdout cut is now persisted as a durable event-sourced manifest per symbol/direction/family/horizon. The manifest freezes its dataset digest and start/end epochs; late historical additions or corrections invalidate the manifest, while post-cutoff data cannot silently roll the holdout forward. Artifacts carry the manifest key and holdout window.
 - Calibration outputs remain historical fixed-horizon summaries, not calibrated probabilities or demonstrated current-regime edge.
 - **Still not accepted:** independently authenticated data manifests, complete selection coverage on real provider history, immutable untouched holdout, multiple-testing controls and independent walk-forward reproduction.
 
