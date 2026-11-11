@@ -33,10 +33,7 @@ def test_position_evaluator_does_not_build_scan_direction_or_score_context():
 
 
 def test_market_context_contains_only_non_directional_spread_facts():
-    fields = {
-        node.target.id
-        for node in MarketContext.__dataclass_fields__.values()
-    }
+    fields = set(MarketContext.__dataclass_fields__)
     assert fields == {"typical_spread", "current_spread"}
 
 
