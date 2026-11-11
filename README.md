@@ -46,11 +46,7 @@ apex-trader/
 │   ├── entry_patterns.py     # Legacy M1 confirmations; shared Brain observer is separate
 │   └── entry_validator.py    # 7 safety checks: spread, R:R, drawdown, expiry, max trades
 │
-├── management/               # Trade lifecycle
-│   ├── trade_manager.py      # SL → TP1 → breakeven → trail → TP2, timeframe-aware stall
-│   ├── trailing_stop.py      # Structure-based trailing (M5 swing lows/highs)
-│   ├── partial_close.py      # 50% partial at TP1 + breakeven
-│   └── re_entry.py           # Re-entry after breakeven stops (15-min cooldown)
+├── management/               # Management data contracts and audit helpers
 │
 ├── risk/                     # Risk utilities; verify the authoritative live path
 │   ├── risk_engine.py        # Multi-stage gate: drawdown, correlation, EV, sizing
