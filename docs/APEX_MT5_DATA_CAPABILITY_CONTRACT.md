@@ -62,3 +62,24 @@ The owner chooses the desired trading universe. The broker catalogue reports
 what exists; instrument capability checks report what can be measured; the
 Brain decides what is analytically relevant; the execution and owner-risk layers
 decide whether a specific action is permitted. These are separate decisions.
+
+
+## Critical timestamp-semantics reconciliation — WP-T (2026-11-11)
+
+**Do not assume MT5 Python tick epochs are broker-local wall time.** The official MetaQuotes Python integration documentation for `copy_ticks_range` and `copy_ticks_from` explicitly states that MT5 stores tick and bar open times in UTC and that returned data has UTC time:
+
+- https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksrange_py
+- https://www.mql5.com/en/docs/python_metatrader5/mt5copyticksfrom_py
+
+The current Apex implementation has a competing assumption: it estimates a broker offset from the tick epoch and subtracts that offset from `time` and `time_msc` in `MT5Connector.get_ticks`; `get_price` likewise normalizes the latest tick by subtracting the estimated offset. The live diagnostic has previously reported an approximately +2-hour offset. These observations and the official API documentation are not yet reconciled by a captured raw terminal sample with an independent UTC witness.
+
+**Required resolution before any normalization rewrite:**
+1. Capture raw `time`, `time_msc`, terminal/account/server identity, independent UTC witnesses and monotonic receipt instants from the actual supported MT5 terminal without modifying its clock.
+2. Repeat across multiple hosts with different local wall-clock settings and across broker server/DST transitions where possible.
+3. Verify request-bound semantics for `copy_ticks_range` against the official UTC contract and compare returned raw epochs to the exact requested UTC window.
+4. Add contract tests proving whether the live `symbol_info_tick` and historical `copy_ticks_range` surfaces share the documented UTC semantics for the supported terminal/package versions.
+5. Until resolved, do not label an offset-adjusted timestamp as verified UTC merely because an offset estimate exists. Keep source semantics explicit and fail closed for consumers requiring normalized source time.
+
+**Potential production consequence requiring proof:** if returned historical tick epochs are already UTC, subtracting a non-zero broker offset shifts them outside the requested UTC range. The poller then rejects rows outside its query window and routes only the latest quote fallback. This is a concrete test hypothesis, not yet an owner-host-confirmed runtime finding.
+
+Do not silently treat broker chart display timezone, MQL5 `TimeTradeServer()`, MT5 Python `time`/`time_msc`, and UTC epoch as interchangeable.
