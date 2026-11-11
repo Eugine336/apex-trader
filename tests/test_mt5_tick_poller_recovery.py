@@ -289,6 +289,9 @@ def test_latest_quote_and_utc_history_share_normalized_dedup_identity():
     pm = _PlatformManager(lambda _symbol, left, right: _verified_frame(left, right))
     router = _Router()
     poller = MT5TickPoller(pm, router, ["XAUUSD"])
+    # Pin the replay start so the fixture's event is the exact history event
+    # represented by the latest quote below.
+    poller._history_cursor["XAUUSD"] = start + timedelta(milliseconds=1)
 
     history_latest = SimpleNamespace(
         time=event_time,
