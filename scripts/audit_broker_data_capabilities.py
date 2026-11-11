@@ -145,12 +145,69 @@ def _acceptance_summary(
             )
             for timeframe in timeframes
         }
+        spec = row.get("instrument_specification", {})
+        spec_epoch = _finite(spec.get("source_timestamp_epoch"))
+        spec_timestamp_verified = bool(
+            spec.get("source_timestamp_verified") is True
+            and spec_epoch is not None and spec_epoch > 0.0
+        )
+        session_calendar_verified = bool(
+            spec.get("broker_session_timezone_verified") is True
+            and spec.get("broker_holiday_calendar_verified") is True
+            and str(spec.get("broker_session_timezone") or "").strip()
+        )
+        swap_mode = str(spec.get("swap_mode_name") or "").strip().lower()
+        valid_swap_modes = {
+            "disabled", "points", "currency_symbol", "currency_margin",
+            "currency_deposit", "currency_profit", "interest_current",
+            "interest_open", "reopen_current", "reopen_bid",
+        }
+        schedule = spec.get("swap_schedule")
+        schedule = schedule if isinstance(schedule, dict) else {}
+        schedule_verified = (
+            len(schedule) == 7
+            and all(_finite(schedule.get(day)) in {0.0, 1.0, 3.0} for day in (
+                "sunday", "monday", "tuesday", "wednesday",
+                "thursday", "friday", "saturday",
+            ))
+        )
+        rollover_day = _finite(spec.get("swap_rollover3days"))
+        financing_terms_verified = bool(
+            spec.get("source_verified") is True
+            and spec.get("specification_verified") is True
+            and swap_mode in valid_swap_modes
+            and (
+                swap_mode == "disabled"
+                or (
+                    _finite(spec.get("swap_long")) is not None
+                    and _finite(spec.get("swap_short")) is not None
+                    and schedule_verified
+                    and rollover_day is not None
+                    and rollover_day.is_integer()
+                    and 0 <= rollover_day <= 6
+                )
+            )
+        )
+        financing_cash_model = spec.get("financing_cash_model")
+        financing_cash_projection_verified = bool(
+            isinstance(financing_cash_model, dict)
+            and financing_cash_model.get("source_verified") is True
+            and financing_cash_model.get("source_timestamp_verified") is True
+            and _finite(financing_cash_model.get("source_timestamp_epoch")) is not None
+            and _finite(financing_cash_model.get("amount_account_ccy_per_lot_round_trip")) is not None
+            and _finite(financing_cash_model.get("holding_period_seconds"),) is not None
+            and _finite(financing_cash_model.get("holding_period_seconds")) > 0.0
+        )
         symbol_checks[symbol] = {
             "unique_broker_mapping": row.get("status") == "PARTIAL" and bool(row.get("broker_symbol")),
             "instrument_specification_verified": (
-                row.get("instrument_specification", {}).get("source_verified") is True
-                and row.get("instrument_specification", {}).get("specification_verified") is True
+                spec.get("source_verified") is True
+                and spec.get("specification_verified") is True
             ),
+            "instrument_specification_timestamp_verified": spec_timestamp_verified,
+            "broker_session_calendar_verified": session_calendar_verified,
+            "financing_terms_verified": financing_terms_verified,
+            "financing_cash_projection_verified": financing_cash_projection_verified,
             "timeframes": timeframe_checks,
         }
     checks["configured_symbol_catalogue_complete"] = bool(configured_symbols) and all(
@@ -158,6 +215,18 @@ def _acceptance_summary(
     )
     checks["instrument_specifications_complete"] = bool(configured_symbols) and all(
         row["instrument_specification_verified"] for row in symbol_checks.values()
+    )
+    checks["instrument_specification_timestamps_complete"] = bool(configured_symbols) and all(
+        row["instrument_specification_timestamp_verified"] for row in symbol_checks.values()
+    )
+    checks["broker_session_calendars_complete"] = bool(configured_symbols) and all(
+        row["broker_session_calendar_verified"] for row in symbol_checks.values()
+    )
+    checks["financing_terms_complete"] = bool(configured_symbols) and all(
+        row["financing_terms_verified"] for row in symbol_checks.values()
+    )
+    checks["financing_cash_projection_complete"] = bool(configured_symbols) and all(
+        row["financing_cash_projection_verified"] for row in symbol_checks.values()
     )
     checks["completed_ohlcv_complete"] = bool(configured_symbols and timeframes) and all(
         all(row["timeframes"].values()) for row in symbol_checks.values()
@@ -253,6 +322,8 @@ def audit_connector(
                 "source_verified": spec.get("source_verified") is True,
                 "specification_verified": spec.get("specification_verified") is True,
                 "source_timestamp_epoch": spec.get("source_timestamp_epoch"),
+                "source_timestamp_verified": spec.get("source_timestamp_verified") is True,
+                "broker_session_timezone": spec.get("broker_session_timezone"),
                 "currency_base": spec.get("currency_base"),
                 "currency_profit": spec.get("currency_profit"),
                 "currency_margin": spec.get("currency_margin"),
