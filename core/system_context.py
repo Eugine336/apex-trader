@@ -1369,6 +1369,7 @@ class SystemContext:
                             symbols=list(symbols),
                             timeframes=list(_concept_timeframes),
                             count=_concept_history_bars + 1,
+                            include_forming=False,
                         )
                         _concept_market_cycle_snapshot.update({
                             str(key or "").strip().upper(): value
@@ -1411,7 +1412,7 @@ class SystemContext:
                             symbol,
                             timeframes=list(_concept_timeframes),
                             count=_concept_history_bars + 1,
-                            include_forming=True,
+                            include_forming=False,
                         )
                     # Broker symbol_info is an independent specification
                     # source. Do not substitute config defaults when the
@@ -1482,7 +1483,7 @@ class SystemContext:
                     return analyze_market_frames(
                         symbol,
                         frames,
-                        source_includes_forming_bar=True,
+                        source_includes_forming_bar=False,
                         concept_context={
                             "symbol_spec": symbol_spec,
                             "market_depth": market_depth,
@@ -1491,7 +1492,7 @@ class SystemContext:
                             "multi_symbol_snapshot_available": bool(_concept_market_cycle_snapshot),
                             "multi_symbol_snapshot_cutoff_epoch": _concept_market_cycle_meta.get("cutoff_epoch"),
                             "multi_symbol_specs": dict(_concept_market_cycle_specs),
-                            "multi_symbol_source_includes_forming_bar": True,
+                            "multi_symbol_source_includes_forming_bar": False,
                             "data_source_registry": ctx.data_source_registry,
                         },
                     )
