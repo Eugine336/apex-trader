@@ -832,3 +832,8 @@ Full CI run #4378 passed lint and identity/safety audit and failed one technical
 ### Indicator warmup correction — follow-up test contract
 
 The 32-row-to-200-row bounded indicator tail correction exposed an obsolete performance test expectation. The test now expects 200 rows while continuing to enforce exactly one frame conversion. Commit `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`. Fresh full CI is pending; implementation remains unverified until the current head passes both Python versions and the Gold Desk matrix.
+
+
+### Indicator warmup / bounded conversion correction — superseding implementation
+
+The final design keeps the normal market-lens conversion tail at 32 bars and derives a separate 200-completed-bar indicator window from the same already-converted full history. The forming bar is removed before the 200-bar slice. This preserves one conversion per provider frame and the 32-row bounded contract while providing sufficient history for EMA-50/100/200 and MACD signal measurements. Production commit `a95ee4246169d3352d24b76454957ef706eb1938`; performance assertion restored to 32 in `fb260292c280045903ad9d44bef1ba4ffbf4f400`. Fresh full CI on the current head is required; prior CI failures were on superseded implementations. WP-T remains OPEN.
