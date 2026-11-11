@@ -278,17 +278,22 @@ class LiveCandleAggregator:
         for row in df.to_dict(orient="records"):
             try:
                 row_time = row["time"]
+                tzinfo = getattr(row_time, "tzinfo", None)
                 utcoffset = (
                     row_time.utcoffset()
                     if callable(getattr(row_time, "utcoffset", None))
                     else None
                 )
+                timezone_label = str(tzinfo or "").strip().upper()
                 if (
-                    getattr(row_time, "tzinfo", None) is None
+                    tzinfo is None
                     or utcoffset is None
                     or utcoffset.total_seconds() != 0
+                    or timezone_label not in {"UTC", "UTC+00:00"}
                 ):
-                    raise ValueError("completed-bar warmup timestamp is not UTC-aware")
+                    raise ValueError(
+                        "completed-bar warmup timestamp must carry explicit UTC timezone"
+                    )
                 row_epoch = float(row_time.timestamp())
                 if not math.isfinite(row_epoch):
                     raise ValueError("completed-bar warmup timestamp is non-finite")
