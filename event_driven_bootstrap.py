@@ -7360,9 +7360,7 @@ class EventDrivenSystem:
                     float(utc_lower_bound), tz=timezone.utc,
                 )
                 return ctx.session_engine.get_status(utc_now).current_session == "WEEKEND"
-            except Exception:
-                # SAFE-FALLBACK: an unverified candidate clock cannot confirm
-                # a weekend; continue checking candidates and otherwise poll.
+            except Exception:  # SAFE-FALLBACK: an unverified clock cannot confirm weekend; keep polling.
                 continue
         return False
 
