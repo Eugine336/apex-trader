@@ -289,8 +289,8 @@ class LiveCandleAggregator:
                 # or non-UTC row safe: timestamp conversion would otherwise
                 # depend on the host timezone. Reject the whole warmup batch.
                 logger.warning(
-                    "[live-candles] warmup {} {} rejected — invalid UTC row timestamp: {}",
-                    symbol, tf, type(exc).__name__,
+                    "[live-candles] warmup {} {} rejected — invalid UTC row timestamp: {} ({})",
+                    symbol, tf, type(exc).__name__, exc,
                 )
                 return False
             seeded_rows.append(
