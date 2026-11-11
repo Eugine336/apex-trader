@@ -697,7 +697,10 @@ class TestPendingOrderLifecycle:
         }
         system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
             "status": "CANCELLED", "broker_confirmed": True,
-            "record": {"ticket": "ORDER-CANCELLED", "state": 2},
+            "record": {
+                "ticket": "ORDER-CANCELLED", "state": 2,
+                "volume_initial": 0.10, "volume_current": 0.10,
+            },
         })
         store = MagicMock()
 
@@ -723,7 +726,10 @@ class TestPendingOrderLifecycle:
         }
         system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
             "status": "EXPIRED", "broker_confirmed": True,
-            "record": {"ticket": "ORDER-EXPIRED", "state": 6},
+            "record": {
+                "ticket": "ORDER-EXPIRED", "state": 6,
+                "volume_initial": 0.10, "volume_current": 0.10,
+            },
         })
         store = MagicMock()
 
