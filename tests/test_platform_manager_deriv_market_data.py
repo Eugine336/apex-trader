@@ -61,3 +61,25 @@ def test_deriv_closed_bar_fetch_attests_utc_completion(monkeypatch):
     assert len(forming) == 2
     assert forming.attrs["completed_bars_verified"] is False
     assert forming.attrs["forming_bar_included"] is True
+
+
+
+def test_deriv_single_latest_candle_is_not_misclassified_as_completed(monkeypatch):
+    from platforms.deriv.deriv_connector import DerivConnector
+
+    connector = DerivConnector.__new__(DerivConnector)
+    connector._require_connection = lambda: None
+    connector.symbol_map = lambda symbol: symbol
+    connector.timeframe_map = lambda timeframe: 60
+    connector._sync_send = lambda request: {
+        "candles": [
+            {"epoch": 1_800_000_000, "open": "1.0", "high": "1.2",
+             "low": "0.9", "close": "1.1", "volume": 10},
+        ],
+    }
+
+    closed = connector.get_ohlcv("EURUSD", "M1", count=1, include_forming=False)
+
+    assert closed.empty
+    assert closed.attrs["completed_bars_verified"] is False
+    assert closed.attrs["forming_bar_included"] is False
