@@ -253,7 +253,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 - **Still not accepted:** complete per-adapter order/modify/close/cancel mutation matrix, acknowledgement ambiguity, reconnect, restart and broker-history reconciliation across every supported platform.
 
 ### System 7 — position lifecycle and reconciliation
-- A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. If the position identity or fill attribution is unresolved, the pending projection remains for subsequent broker reconciliation.
+- A broker-cancelled pending order that still carries a broker position ID is no longer discarded merely because the pending order is terminal. A partial fill is also retained when the broker has not yet supplied a position ID: release now requires explicit broker volume evidence that the order was wholly unfilled, or exact fill attribution.
 - A durable reservation linked to a pending order is released only after terminal broker reconciliation; unresolved partial fills retain both lineage and reserved capacity.
 - **Still not accepted:** full market/pending/partial-fill/manual-close/partial-close/restart/reconciliation matrix against owner broker history.
 
