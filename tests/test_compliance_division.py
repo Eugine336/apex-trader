@@ -360,3 +360,43 @@ def test_pending_daily_loss_reservation_is_account_scoped():
         _account(balance=10_000.0),
     )
     assert verdict.approved
+
+
+def test_broker_buy_direction_is_normalized_for_same_account_duplicate_check():
+    position = SimpleNamespace(
+        symbol="EURUSD", direction="BUY", account_key="mt5:123",
+    )
+    verdict = _full_division().permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([position]),
+        _account("mt5:123"),
+    )
+    assert verdict.rejected
+    assert any("duplicate" in reason for reason in verdict.reasons)
+
+
+def test_same_pair_in_another_account_does_not_trigger_duplicate():
+    position = SimpleNamespace(
+        symbol="EURUSD", direction="BUY", account_key="deriv:other",
+    )
+    verdict = _full_division().permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([position]),
+        _account("mt5:123"),
+    )
+    assert verdict.approved
+
+
+def test_max_positions_is_scoped_to_current_account():
+    positions = [
+        SimpleNamespace(
+            symbol=f"SYM{i}", direction="LONG", account_key="deriv:other",
+        )
+        for i in range(8)
+    ]
+    verdict = _full_division(max_open_positions=1).permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook(positions),
+        _account("mt5:123"),
+    )
+    assert verdict.approved
