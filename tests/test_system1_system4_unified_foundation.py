@@ -1427,3 +1427,48 @@ def test_calibration_holdout_manifest_freezes_dataset_cut_and_digest():
         "EURUSD", "LONG", "continuation", 300, late_historical,
         now_epoch=start + 300_000,
     ) is None
+
+
+def test_calibration_holdout_manifest_survives_event_store_restart(tmp_path):
+    from cognition.calibration_artifacts import CalibrationProducer
+    from persistence.domain_events import CALIBRATION_HOLDOUT_MANIFEST
+    from persistence.event_store import EventStore
+
+    start = 1_700_000_000.0
+    groups = [
+        {
+            "decision_id": f"decision-{index}",
+            "decision_epoch": start + index * 600.0,
+            "label": index % 2,
+            "return_r": 0.2 if index % 2 == 0 else -0.1,
+            "candidate_ids": [f"decision-{index}:opportunity:opp-{index}"],
+        }
+        for index in range(150)
+    ]
+    database = str(tmp_path / "calibration-holdout-manifest.db")
+    first_store = EventStore(db_path=database)
+    first_producer = CalibrationProducer(first_store)
+    first = first_producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups,
+        now_epoch=start + 100_000,
+    )
+    assert first is not None
+    first_store.close()
+
+    reopened = EventStore(db_path=database)
+    second_producer = CalibrationProducer(reopened)
+    second = second_producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups,
+        now_epoch=start + 200_000,
+    )
+    assert second is not None
+    assert second["manifest_key"] == first["manifest_key"]
+    assert second["source_dataset_digest"] == first["source_dataset_digest"]
+    manifests = reopened.query_events(
+        event_types=[CALIBRATION_HOLDOUT_MANIFEST],
+        symbol="EURUSD",
+        severity_min="DEBUG",
+        limit=100,
+    )
+    assert len(manifests) == 1
+    reopened.close()
