@@ -334,3 +334,26 @@ def test_market_open_result_links_reservation_to_broker_order(tmp_path, monkeypa
 
     assert reservations.snapshot()[0]["broker_order_id"] == "broker-order-1"
     store.close()
+
+
+def test_pending_partial_fill_does_not_release_remaining_order_reservation(tmp_path):
+    database = str(tmp_path / "pending-partial-reservation.db")
+    store = EventStore(db_path=database)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload(order_type="LIMIT"))
+    assert reservations.link_order("idem-1", "broker-order-1")
+
+    # Exact order attribution proves a fill exists, but a pending order can
+    # still have unfilled remainder. The reservation remains until terminal
+    # broker reconciliation accounts for that remainder.
+    assert reservations.reconcile(
+        [
+            SimpleNamespace(
+                symbol="XAUUSD", direction="BUY", order_id="position-9",
+                account_key="mt5:account-a",
+            ),
+        ],
+        position_order_ids={"position-9": {"broker-order-1"}},
+    ) == 0
+    assert len(reservations.snapshot()) == 1
+    store.close()
