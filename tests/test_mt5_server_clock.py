@@ -292,9 +292,13 @@ def test_clock_holdover_grows_uncertainty_without_moving_verified_anchor():
     assert holdover.holdover_age_seconds == 12.0
     assert holdover.uncertainty_seconds == 0.812
     assert holdover.offset_seconds == state.offset_seconds
+    assert holdover.observed_server_epoch == state.observed_server_epoch
+    assert holdover.observed_gmt_epoch == state.observed_gmt_epoch
     assert holdover.observed_monotonic == state.observed_monotonic
     import pytest
-    assert holdover.server_now_epoch(50.0) == pytest.approx(state.server_now_epoch(50.0))
+    assert holdover.server_now_epoch() == pytest.approx(
+        state.server_now_epoch(), rel=0.0, abs=1e-5,
+    )
 
 
 def test_clock_holdover_rejects_negative_or_non_finite_age():
