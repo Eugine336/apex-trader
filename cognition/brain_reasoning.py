@@ -318,13 +318,23 @@ class BrainReasoner:
         *, now: Optional[float] = None,
     ) -> EvidenceAnalysis:
         """Read the evidence fresh at the caller's decision-time cutoff. Never raises."""
-        decision_cutoff_epoch = _num(now)
-        if decision_cutoff_epoch is None or decision_cutoff_epoch <= 0.0:
+        if now is None:
+            # Direct/offline callers retain the historical local cutoff. The
+            # production CognitionLoop always supplies a verified UTC cutoff,
+            # including 0.0 when no authority exists.
             decision_cutoff_epoch = time.time()
-        try:
-            fresh = list(market_state.fresh_evidence(decision_cutoff_epoch))
-        except Exception:  # noqa: BLE001 — analysis must never break reasoning
+        else:
+            decision_cutoff_epoch = _num(now)
+        if decision_cutoff_epoch is None or decision_cutoff_epoch <= 0.0:
+            # An explicit unknown cutoff must not be replaced with host time:
+            # no evidence can be proven fresh at an unknown decision instant.
+            decision_cutoff_epoch = None
             fresh = []
+        else:
+            try:
+                fresh = list(market_state.fresh_evidence(decision_cutoff_epoch))
+            except Exception:  # noqa: BLE001 — analysis must never break reasoning
+                fresh = []
         consolidation = consolidation or {}
 
         # Confidence and measurement coverage are separate. A high-confidence
