@@ -398,3 +398,14 @@ Resolve the PR's non-mergeable state after refreshing GitHub metadata, obtain a 
 
 ### Exact next action
 Poll PR #908 for workflows attached to `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. Require Python 3.11/3.12 full suite, Gold Desk 3.11/3.12 and lint to pass. If another failure appears, trace the producer contract and fix without weakening tests. Then resume WP-T runtime owner-host evidence (second independent MT5 host, sustained replay continuity, DST, clock lifecycle, Systems 2/6/7).
+
+
+### Indicator warmup performance-contract follow-up — 2026-11-11
+
+- CI run #4379 reproduced one follow-on failure on both Python versions in `test_market_lenses_converts_each_broker_frame_once`. The producer correctly requested a 200-row bounded tail after the indicator warmup fix, while the performance test still asserted the former 32-row value. The invariant under test is one conversion per broker frame, not a fixed tail length.
+- Updated the performance assertion and its explanation to expect 200 while retaining the exactly-once conversion assertion. No production code, performance protection, indicator logic or safety guard was weakened. Commit: `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`.
+- Run #4380 was launched against the prior production correction commit before the test update and therefore cannot verify this follow-up. Fresh CI for the current branch head is pending.
+- Current branch head at this checkpoint: `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`; PR #908 remains open/draft. No merge or broker mutation performed.
+
+### Exact next action
+Verify fresh CI on the latest branch head. Require full Python 3.11/3.12, Gold Desk 3.11/3.12 and lint. Confirm the indicator-emission regression and exactly-once conversion test both pass. Then continue WP-T owner-host operational evidence and the remaining System 2/6/7 integration gates. Do not close WP-T from CI alone.
