@@ -278,9 +278,13 @@ class CalibrationProducer:
                 return False
             evidence_id = str(item.get("evidence_id", "") or "")
             evidence_symbol = str(item.get("symbol", "") or "").strip().upper()
+            source_module = str(item.get("source_module", "") or "").strip()
+            domain = str(item.get("domain", "") or "").strip()
+            data_basis = str(item.get("data_basis", "") or "").strip()
             if (
                 not evidence_id or evidence_id in seen_ids
                 or evidence_symbol != symbol
+                or not source_module or not domain or not data_basis
                 or item.get("source_timestamp_verified") is not True
                 or item.get("provisional") is True
             ):
