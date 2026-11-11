@@ -114,7 +114,9 @@ def test_round_trip_cost_fails_closed_when_spread_is_zero_or_unknown():
 
 
 def test_measured_cross_asset_evidence_is_classified_as_verified_association():
-    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=31)
+    # The final timestamp is the open time of the last completed H1 bar;
+    # keep it one full hour behind the current UTC boundary.
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=32)
     xau = _frame(start, [2000 + i * (1 + (i % 3) * 0.1) for i in range(32)], symbol="XAUUSD")
     usd_jpy = _frame(start, [140 + i * (0.2 + (i % 4) * 0.03) for i in range(32)], symbol="USDJPY")
     evidence = _system(usd_jpy)._cognition_cross_asset_evidence("XAUUSD", {"H1": xau})
