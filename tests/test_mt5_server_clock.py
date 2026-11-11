@@ -379,3 +379,34 @@ def test_connector_does_not_use_holdover_when_broker_identity_is_unavailable(mon
     )
 
     assert connector._synchronize_server_clock_state() is None
+
+def test_connector_rejects_delayed_tick_burst_as_clock_witness(monkeypatch):
+    from types import SimpleNamespace
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import NTPClockSample
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    class _MT5:
+        def account_info(self):
+            return SimpleNamespace(server="JustMarkets-Demo")
+
+    times = iter((10.0, 20.0, 30.0))
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(connector_module, "mt5", _MT5())
+    monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
+        NTPClockSample(1011.0, 30.0, 0.55, "ntp:a"),
+        NTPClockSample(1011.1, 30.0, 0.55, "ntp:b"),
+    ))
+    connector = MT5Connector.__new__(MT5Connector)
+    first = SimpleNamespace(time=8200, time_msc=8_200_000)
+    delayed = SimpleNamespace(time=8201, time_msc=8_201_000)
+    current = SimpleNamespace(time=8211, time_msc=8_211_000)
+
+    assert connector._read_server_clock_state(tick=first, symbol="XAUUSD") is None
+    # The source advanced only one second over ten seconds of monotonic time.
+    # It is newer, but cannot safely anchor the broker clock.
+    assert connector._read_server_clock_state(tick=delayed, symbol="XAUUSD") is None
+    state = connector._read_server_clock_state(tick=current, symbol="XAUUSD")
+
+    assert state is not None
+    assert abs(state.offset_seconds - 7200.0) < 0.2
