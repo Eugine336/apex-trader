@@ -1,6 +1,6 @@
 # Apex Trader — Full Redesign Roadmap and Acceptance Gates
 
-**Status:** planning baseline; not a completion claim.  
+**Status:** living planning baseline; implementation status must be reconciled against current mainline commits. This document is not a completion or production-acceptance claim.  
 **Canonical identity authority:** `cognition/identity.py::IDENTITY_STATEMENT`, with the Constitution and identity documentation binding all implementations.  
 **Scope:** end-to-end architecture, market reasoning, execution, capital protection, learning, operations and release verification.
 
@@ -216,8 +216,16 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 - **System 2 remains IMPLEMENTED / INTEGRATED but NOT ACCEPTED.** Its open gates remain decision-time feature snapshots linked through broker close, authoritative connector specifications and calendars, verified financing costs, and independent chronological walk-forward plus untouched-holdout evidence. These must not be inferred from downstream implementation or a green unit suite.
 - **System 3 implementation is merged but NOT ACCEPTED** (PR #796, commit `94a01c793d7418357f81adf7c8989f965c2c3e5b`). **System 4 implementation is merged but NOT ACCEPTED** (PR #797, merge commit `b141881641746f9f64e94cbe246d59684bb3c3f5`). Their implementation records below retain their separate validation and data gates.
 - Later-system work may be implemented or audited in parallel only where it does not assume unaccepted upstream evidence. No downstream system may be marked accepted while System 2 and its required dependencies remain open.
-- **Active engineering increment:** PR #902, exact-ticket Brain management and campaign lineage. It is extending Systems 1, 3, 4, 5, 6, 7 and 10 with exact broker identity, durable management idempotency, campaign multi-ticket lifecycle correctness, confidence isolation from management/economic ranking, retirement of the no-op breakeven re-entry path, and removal of disconnected cross-instrument heuristics and uninitialized queue controls. This PR remains unmerged pending the full CI matrix and final diff review.
+- **Completed engineering increment (2026-11-11):** PR #902, exact-ticket Brain management and campaign lineage, merged to `main` at `c3d2f1c1a900a70f6c1baecee77b7c74304e6481` (PR head `2159f443f49bb8e2eb541e3d6cdfcf484c0b5f4c`). Its implementation covers exact broker identity, durable management idempotency, campaign multi-ticket lifecycle correctness, confidence isolation from management/economic ranking, retirement of the no-op breakeven re-entry path, production hard-disable of discretionary mechanical exits, and removal of disconnected cross-instrument heuristics and uninitialized queue controls. Validation recorded by the merge commit: 4,485 tests passed on Python 3.11 and 3.12; lint, identity/safety audit, generated concept coverage, imports, Gold Desk and frontend build passed. This is implementation validation, not ten-system or live-broker acceptance.
 - No broker orders are to be sent during engineering. Do not access or change actual `.env`, runtime databases, credentials, account selection or broker settings.
+
+## Current mainline reconciliation — 2026-11-11
+
+- Mainline is `c3d2f1c1a900a70f6c1baecee77b7c74304e6481`, the merge commit for PR #902. The earlier PR #902 open/unmerged statements in historical records are superseded.
+- PR #902 final validated head: `2159f443f49bb8e2eb541e3d6cdfcf484c0b5f4c`. Merge-recorded validation: Python 3.11 and 3.12 each 4,485 passed; lint, generated concept-coverage verification, canonical identity/safety audit, import checks, Gold Desk and frontend build passed.
+- No current open PR was returned by the repository's open-PR listing at this checkpoint. No live-broker acceptance is claimed; no live orders were sent.
+- **Immediate priority remains System 2 acceptance**, not declaring downstream systems complete: decision-time snapshot-to-close lineage and restart recovery, authoritative broker/connector calendars and instrument capabilities, verified financing costs, inherited silent-exception audit, and independent chronological walk-forward plus untouched-holdout evidence. The dedicated `apex-trader-data` repository remains an owner setup dependency; its topology guard must not be weakened.
+- Systems 3 and 4 remain implemented/integrated but not accepted. PR #902 advances Systems 1, 3, 4, 5, 6, 7 and 10 but does not satisfy their complete system-level acceptance gates. Systems 5–10 require explicit source audits and acceptance evidence; do not infer completion from the PR scope.
 
 ## Per-system completion record
 
@@ -227,7 +235,7 @@ For every system, record: branch/PR and merge SHA; changed files; acceptance cri
 
 PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc. It implements decision-time feature capture in both Brain origination paths, snapshot propagation through campaign translation and the shared OPEN intent, an execution-boundary snapshot gate, and ticket-linked entry/outcome events. The implementation remains NOT ACCEPTED: focused tests and scripts/identity_audit.py have not been executed, exact-ticket restart recovery has not been integration-tested, and calendar, connector, financing and independent historical-validation gates remain open. Follow-up branch redesign/system2-durable-provenance adds synchronous commits for entry/outcome provenance, exact parent-ticket querying and detached deep copies of snapshots into intents. Its tests are added but not executed. Do not start System 3 before System 2 acceptance.
 
-## Roadmap progress register (updated 2026-10-30)
+## Historical roadmap progress register (2026-10-30; superseded by the 2026-11-11 mainline reconciliation below)
 
 | System | Status | Acceptance evidence |
 |---|---|---|
@@ -235,12 +243,12 @@ PR #792 merged to main at 74e0b845390cebe8385b2812003da8344b59e0cc. It implement
 | 2. Market intelligence and evidence integrity | **IN PROGRESS — NOT ACCEPTED** | PR #793 merged; durable entry/outcome provenance and exact-ticket recovery are on main. Full acceptance remains open: inherited silent-exception audit, broker-agnostic calendar/connector capabilities, verified financing and independent historical validation. |
 | 3. Native market reasoning | **IMPLEMENTED AND MERGED — ACCEPTANCE GATES TRACKED** | PR #796 merged at 94a01c7. Python 3.11/3.12 each reported 3,963 passed and the same inherited 180-handler audit failure as the pre-merge baseline. No new test regression in the baseline comparison. |
 | 4. Opportunity discovery and payoff geometry | **IMPLEMENTATION MERGED — NOT ACCEPTED** | PR #797 merged to `main` at `b141881`. Geometry and qualification changes are integrated. Lint and Gold desk Python 3.11/3.12 pass; full suites each report 3,990 passed and one inherited failure: 180 unclassified silent exception handlers, identical to the pre-merge `main` baseline. Acceptance remains blocked on the durable selection-aware outcome/calibration producer, producer attestation, and full identity/adversarial audit. |
-| 5. Compliance and portfolio allocation | **NOT STARTED — gated on System 4** | No acceptance evidence recorded. Existing code must be audited when reached. |
-| 6. Execution integrity and broker adapters | **NOT STARTED — gated on System 5** | Some shared executor protections already exist; system-wide acceptance is not recorded. |
-| 7. Position operations and trade lifecycle | **NOT STARTED — gated on System 6** | No end-to-end lifecycle acceptance evidence recorded. |
-| 8. Learning and statistical validation | **NOT STARTED — gated on System 7** | Validation guards exist; no verified point-in-time dataset or independent performance evidence recorded. |
-| 9. Governance, observability and recovery | **NOT STARTED — gated on System 8** | No full fault-injection/recovery acceptance evidence recorded. |
-| 10. Integration and release readiness | **NOT STARTED — gated on Systems 1–9** | No final integrated acceptance decision. |
+| 5. Compliance and portfolio allocation | **PARTIALLY IMPLEMENTED / INTEGRATED — NOT ACCEPTED** | PR #902 changes management/campaign allocation boundaries; complete permit, sizing, concurrency and correlated-exposure acceptance remains unproven. |
+| 6. Execution integrity and broker adapters | **PARTIALLY IMPLEMENTED / INTEGRATED — NOT ACCEPTED** | Exact-ticket management dispatch and durable idempotency are integrated by PR #902; full broker adapter, acknowledgement, restart and reconciliation matrix remains open. |
+| 7. Position operations and trade lifecycle | **PARTIALLY IMPLEMENTED / INTEGRATED — NOT ACCEPTED** | Campaign multi-ticket lineage, exact close binding and management lifecycle hardening are integrated; complete entry-to-close/manual-close/restart acceptance remains open. |
+| 8. Learning and statistical validation | **IMPLEMENTED COMPONENTS / DATA-GATED — NOT ACCEPTED** | Snapshot and outcome provenance, quote provenance and calibration safeguards exist; verified independent walk-forward/untouched-holdout evidence remains absent. |
+| 9. Governance, observability and recovery | **PARTIALLY IMPLEMENTED — NOT ACCEPTED** | Safety/degradation, event durability and reconciliation controls exist; full fault-injection, restart, storage/queue failure and operational acceptance remains open. |
+| 10. Integration and release readiness | **IN PROGRESS — NOT ACCEPTED** | PR #902 integrated and validated on main; full ten-system matrix, supported-broker acceptance, owner-host evidence and release review remain outstanding. |
 
 A status can move to **COMPLETE** only when the acceptance evidence is linked in the table or accompanying audit, all critical tests have actually run, and unresolved limitations are either closed or explicitly accepted by the owner. A merge alone never changes the status to COMPLETE.
 
