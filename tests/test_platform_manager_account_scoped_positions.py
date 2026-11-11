@@ -67,3 +67,14 @@ def test_deriv_positions_keep_their_exact_account_identity():
     assert snapshot.confirmed_platforms == {"deriv"}
     assert snapshot.positions[0].account_key == "deriv:VRTC12345"
     assert snapshot.positions[0].connector_index == 0
+
+
+def test_platform_manager_resolves_exact_mt5_connector_index():
+    manager = _manager()
+    first = object()
+    second = object()
+    manager.mt5_connectors = [first, second]
+    manager._mt5_connected_flags = [True, True]
+
+    assert manager._connector_by_platform_str("mt5_0") is first
+    assert manager._connector_by_platform_str("mt5_1") is second
