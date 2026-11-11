@@ -923,6 +923,7 @@ class MT5Connector(BaseConnector):
         raw_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
         raw_fields.update({
             "source_adapter": "mt5",
+            "broker_server_identity": str(getattr(clock, "server", "") or ""),
             "source_timezone": "broker_server",
             "source_utc_offset_seconds": clock.offset_seconds,
             "source_utc_offset_uncertainty_seconds": clock.uncertainty_seconds,
@@ -987,21 +988,24 @@ class MT5Connector(BaseConnector):
     ) -> pd.DataFrame:
         self._require_connection()
         mapped = self.symbol_map(symbol)
-        # None means already confirmed not on this broker — skip immediately
         if mapped is None:
             raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
         tf_const = self.timeframe_map(timeframe)
-        rates = mt5.copy_rates_from_pos(mapped, tf_const, 0, count)
+        # MT5 position zero is the current, still-forming bar. Position one is
+        # the most recent completed bar. Use the provider's explicit positional
+        # contract instead of inferring completion from a broker/host clock.
+        start_position = 0 if include_forming else 1
+        rates = mt5.copy_rates_from_pos(mapped, tf_const, start_position, count)
         if rates is None or len(rates) == 0:
             raise RuntimeError(
                 f"No OHLCV for {mapped}/{timeframe}: {mt5.last_error()}"
             )
         df = pd.DataFrame(rates)
+        df["time_source_epoch"] = df["time"]
+        # Retain the historical column name for downstream compatibility; the
+        # value is the raw provider epoch, documented as UTC by MetaQuotes.
         df["time_server_epoch"] = df["time"]
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        # Preserve every broker-provided bar field used by market analysis.
-        # "volume" remains a compatibility alias for tick_volume; it is never
-        # silently described as exchange-traded volume.
         if "tick_volume" in df.columns:
             df["volume"] = df["tick_volume"]
         else:
@@ -1012,54 +1016,22 @@ class MT5Connector(BaseConnector):
         if "spread" not in df.columns:
             df["spread"] = 0
         out = df[[
-            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
-            "tick_volume", "real_volume", "spread",
+            "time", "time_source_epoch", "time_server_epoch", "open", "high",
+            "low", "close", "volume", "tick_volume", "real_volume", "spread",
         ]].copy()
-        out.attrs["volume_basis"] = "tick_volume_alias_with_real_volume_preserved"
-        # MT5 copy_rates_from_pos(..., 0, count) returns the in-progress bar as
-        # the last row. Callers that need confirmed-closed data can request the
-        # forming bar dropped here (default keeps it for the established
-        # closed-bar dual-view: structural modules drop it themselves, live
-        # observational reads legitimately keep it).
-        if not include_forming:
-            live_tick = mt5.symbol_info_tick(mapped)
-            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            if clock is None:
-                raise RuntimeError(
-                    "MT5 server clock offset unavailable; completed-bar status "
-                    "cannot be verified without automatic broker-clock synchronization"
-                )
-            # The DataFrame time column is a broker-server wall-clock label until
-            # a historical offset series is available. Compare it to the matching
-            # broker-server clock, never to the host UTC clock.
-            server_now_label = datetime.fromtimestamp(
-                clock.server_now_epoch() - clock.uncertainty_seconds, tz=timezone.utc,
-            )
-            seconds_by_tf = {
-                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
-                "M6": 360, "M10": 600, "M12": 720, "M15": 900, "M20": 1200,
-                "M30": 1800, "H1": 3600, "H2": 7200, "H3": 10800,
-                "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
-                "D1": 86400, "W1": 604800,
-            }
-            if timeframe.upper() == "MN1":
-                close_times = out["time"] + pd.offsets.MonthBegin(1)
-                out = out.loc[close_times <= server_now_label].copy()
-            else:
-                duration = seconds_by_tf.get(timeframe.upper())
-                if duration is not None:
-                    close_times = out["time"] + pd.to_timedelta(duration, unit="s")
-                    out = out.loc[close_times <= server_now_label].copy()
         out.attrs.update({
+            "source": "mt5.copy_rates_from_pos",
             "source_timestamp_verified": True,
             "source_symbol": str(symbol or "").strip().upper(),
             "source_timestamp_unit": "unix_seconds",
             "source_timestamp_origin": "broker_ohlcv",
             "source_broker": "mt5",
-            "source_timezone": "broker_server",
-            "source_utc_offset_seconds": None,
-            "utc_normalization": "historical_offset_required",
-            "volume_basis": out.attrs.get("volume_basis"),
+            "source_timezone": "UTC",
+            "utc_normalization": "provider_utc_documented",
+            "completed_bars_verified": not include_forming,
+            "forming_bar_included": bool(include_forming),
+            "bar_completion_basis": "mt5_start_position_contract",
+            "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
         return out
@@ -1068,7 +1040,7 @@ class MT5Connector(BaseConnector):
         self, symbol: str, timeframe: str, from_dt: datetime, to_dt: datetime,
         *, include_forming: bool = False,
     ) -> pd.DataFrame:
-        """Fetch a bounded historical bar range with native MT5 volume/spread fields."""
+        """Fetch UTC-timestamped MT5 bars and verify completion when requested."""
         self._require_connection()
         if from_dt.tzinfo is None or to_dt.tzinfo is None:
             raise ValueError("MT5 bar history requires timezone-aware datetimes")
@@ -1087,15 +1059,30 @@ class MT5Connector(BaseConnector):
             frame.attrs.update({
                 "source": "mt5.copy_rates_range",
                 "source_timestamp_verified": True,
-                "source_symbol": mapped,
-                "source_timezone": "broker_server",
-                "source_utc_offset_seconds": None,
-                "utc_normalization": "historical_offset_required",
+                "source_symbol": str(symbol or "").strip().upper(),
+                "source_broker_symbol": mapped,
+                "source_timezone": "UTC",
+                "utc_normalization": "provider_utc_documented",
+                "completed_bars_verified": False,
+                "forming_bar_included": bool(include_forming),
                 "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             })
             return frame
-        frame["time_server_epoch"] = frame["time"]
-        frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+
+        source_epochs = pd.to_numeric(frame["time"], errors="coerce")
+        if (
+            source_epochs.isna().any()
+            or any(not math.isfinite(float(value)) for value in source_epochs.tolist())
+            or (source_epochs <= 0).any()
+            or (source_epochs < start.timestamp() - 1.0).any()
+            or (source_epochs > end.timestamp() + 1.0).any()
+        ):
+            raise RuntimeError(
+                f"MT5 OHLCV timestamps for {mapped}/{timeframe} contradict the UTC request bounds"
+            )
+        frame["time_source_epoch"] = source_epochs
+        frame["time_server_epoch"] = source_epochs  # compatibility alias; raw provider epoch
+        frame["time"] = pd.to_datetime(source_epochs, unit="s", utc=True)
         if "tick_volume" in frame.columns:
             frame["volume"] = frame["tick_volume"]
         else:
@@ -1106,10 +1093,12 @@ class MT5Connector(BaseConnector):
         if "spread" not in frame.columns:
             frame["spread"] = 0
         columns = [
-            "time", "time_server_epoch", "open", "high", "low", "close", "volume",
-            "tick_volume", "real_volume", "spread",
+            "time", "time_source_epoch", "time_server_epoch", "open", "high",
+            "low", "close", "volume", "tick_volume", "real_volume", "spread",
         ]
         frame = frame[[column for column in columns if column in frame.columns]].copy()
+
+        completed_verified = False
         if not include_forming:
             seconds_by_tf = {
                 "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300,
@@ -1118,46 +1107,111 @@ class MT5Connector(BaseConnector):
                 "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
                 "D1": 86400, "W1": 604800,
             }
-            duration = seconds_by_tf.get(timeframe.upper(), 31 * 86400)
-            # Use the synchronized broker clock for every range boundary.
-            # Host wall time must never decide whether a broker bar is complete.
             live_tick = mt5.symbol_info_tick(mapped)
             clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            if clock is None:
+            observed_monotonic = getattr(clock, "observed_monotonic", None) if clock else None
+            observed_utc = getattr(clock, "observed_gmt_epoch", None) if clock else None
+            uncertainty = getattr(clock, "uncertainty_seconds", None) if clock else None
+            if (
+                clock is None or observed_monotonic is None
+                or observed_utc is None or uncertainty is None
+            ):
                 raise RuntimeError(
-                    "MT5 broker clock unavailable; completed-bar status cannot be verified"
+                    "Independent UTC authority unavailable; completed-bar status cannot be verified"
                 )
-            server_now_label = datetime.fromtimestamp(
-                clock.server_now_epoch() - clock.uncertainty_seconds, tz=timezone.utc,
+            elapsed = _time.monotonic() - float(observed_monotonic)
+            if not math.isfinite(elapsed) or elapsed < 0:
+                raise RuntimeError("UTC monotonic anchor is invalid; completed-bar status cannot be verified")
+            utc_now_lower_bound = (
+                float(observed_utc) + elapsed - float(uncertainty)
             )
-            if server_now_label is not None:
-                if timeframe.upper() == "MN1":
-                    bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
-                    frame = frame.loc[bar_close_times <= server_now_label].copy()
-                else:
-                    bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
-                    frame = frame.loc[bar_close_times <= server_now_label].copy()
+            if not math.isfinite(utc_now_lower_bound):
+                raise RuntimeError("UTC lower bound is invalid; completed-bar status cannot be verified")
+            utc_now = datetime.fromtimestamp(utc_now_lower_bound, tz=timezone.utc)
+            if timeframe.upper() == "MN1":
+                bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
+            else:
+                duration = seconds_by_tf.get(timeframe.upper())
+                if duration is None:
+                    raise ValueError(
+                        f"Cannot verify completed-bar duration for timeframe {timeframe!r}"
+                    )
+                bar_close_times = frame["time"] + pd.to_timedelta(duration, unit="s")
+            frame = frame.loc[bar_close_times <= utc_now].copy()
+            completed_verified = True
+
         frame.attrs.update({
             "source": "mt5.copy_rates_range",
             "source_timestamp_verified": True,
-            "source_symbol": mapped,
-            "source_timezone": "broker_server",
-            "source_utc_offset_seconds": None,
-            "utc_normalization": "historical_offset_required",
+            "source_symbol": str(symbol or "").strip().upper(),
+            "source_broker_symbol": mapped,
+            "source_timestamp_unit": "unix_seconds",
+            "source_timestamp_origin": "broker_ohlcv",
+            "source_broker": "mt5",
+            "source_timezone": "UTC",
+            "utc_normalization": "provider_utc_documented",
+            "completed_bars_verified": completed_verified,
+            "forming_bar_included": bool(include_forming),
+            "bar_completion_basis": (
+                "independent_utc_lower_bound" if completed_verified else "not_requested"
+            ),
             "volume_basis": "tick_volume_alias_with_real_volume_preserved",
             "bar_fields": ["tick_volume", "real_volume", "spread"],
         })
         return frame
 
+    @staticmethod
+    def _history_rows_match_utc_request(frame: pd.DataFrame, start: datetime, end: datetime) -> bool:
+        """Attest a history batch only when raw provider epochs corroborate UTC bounds.
+
+        MT5 live quote timestamps and copy_ticks_range timestamps are treated as
+        separate API contracts. A live broker offset is never applied to history.
+        Seconds precision may floor a row by <1s; millisecond epochs must still
+        corroborate the requested UTC interval and agree with the seconds field.
+        """
+        if (
+            frame.empty
+            or (end - start).total_seconds() > 300.0
+            or not {"time", "time_msc"}.issubset(frame.columns)
+        ):
+            # Wide historical ranges can contain server-local epochs that
+            # coincidentally fall inside the broad UTC interval. Only bounded
+            # live/replay windows are eligible for request-bound attestation.
+            return False
+        start_epoch = start.timestamp()
+        end_epoch = end.timestamp()
+        try:
+            for seconds_value, milliseconds_value in zip(
+                frame["time"].tolist(), frame["time_msc"].tolist()
+            ):
+                seconds = float(seconds_value)
+                milliseconds = float(milliseconds_value)
+                if not (
+                    math.isfinite(seconds) and math.isfinite(milliseconds)
+                    and seconds > 0.0 and milliseconds > 0.0
+                ):
+                    return False
+                millisecond_epoch = milliseconds / 1000.0
+                if abs(millisecond_epoch - seconds) > 1.5:
+                    return False
+                if seconds < start_epoch - 1.5 or seconds > end_epoch + 1.5:
+                    return False
+                if millisecond_epoch < start_epoch - 0.25 or millisecond_epoch > end_epoch + 0.25:
+                    return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return True
+
     def get_ticks(
         self, symbol: str, from_dt: datetime, to_dt: datetime, *, flags: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Fetch the broker's historical tick tape without inventing aggressor flow.
+        """Fetch historical MT5 ticks, preserving source epochs and proving UTC per batch.
 
-        Request bounds must be timezone-aware and are normalized to UTC. Returned
-        epochs are broker-server time; only a short live window is converted to
-        UTC with a fresh automatically synchronized broker offset. Older history remains unnormalized.
-        BUY/SELL aggressor flags are exposed only when the broker supplies them.
+        Request bounds are timezone-aware and passed to MT5 as UTC. The live
+        broker-server offset is deliberately not applied to copy_ticks_range:
+        each returned batch must independently corroborate the exact UTC query
+        bounds using both provider time fields. Uncorroborated rows remain naive
+        source epochs and cannot enter verified replay.
         """
         self._require_connection()
         if from_dt.tzinfo is None or to_dt.tzinfo is None:
@@ -1174,55 +1228,40 @@ class MT5Connector(BaseConnector):
         if ticks is None:
             raise RuntimeError(f"No tick history for {mapped}: {mt5.last_error()}")
         frame = pd.DataFrame(ticks)
+        frame.attrs.update({
+            "source": "mt5.copy_ticks_range",
+            "source_verified": True,
+            "source_symbol": mapped,
+            "source_timezone": "unknown",
+            "source_timestamp_verified": False,
+            "source_utc_offset_seconds": None,
+            "utc_normalization": "unverified_source_epoch",
+            "utc_request_from": start.isoformat(),
+            "utc_request_to": end.isoformat(),
+        })
         if frame.empty:
-            frame.attrs.update({
-                "source": "mt5.copy_ticks_range",
-                "source_verified": True,
-                "source_symbol": mapped,
-                "source_timezone": "broker_server",
-                "source_timestamp_verified": False,
-                "source_utc_offset_seconds": None,
-                "utc_normalization": "historical_offset_required",
-            })
             return frame
-        # MT5 tick-history epochs are broker-server wall-clock values. A
-        # short window ending near now can be normalized with the live terminal
-        # offset; arbitrary historical ranges need an offset history and remain
-        # explicitly broker-server time.
-        clock = None
-        recent_window = (end - start).total_seconds() <= 300.0
-        if recent_window:
-            live_tick = mt5.symbol_info_tick(mapped)
-            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            if clock is not None:
-                utc_now = (
-                    clock.observed_gmt_epoch
-                    + (_time.monotonic() - clock.observed_monotonic)
-                    - clock.uncertainty_seconds
-                )
-                recent_window = -5.0 <= utc_now - end.timestamp() <= 120.0
-            if not recent_window:
-                # A live offset is not authority for a historical query window.
-                # Keep the provider epochs and mark their timezone unresolved.
-                clock = None
+
+        # Preserve exact provider fields before any datetime conversion. The
+        # legacy *_server_epoch aliases remain for compatibility; they are raw
+        # provider epochs and are not proof that the provider used server time.
         if "time" in frame.columns:
+            frame["time_source_epoch"] = frame["time"]
             frame["time_server_epoch"] = frame["time"]
-            if clock is not None:
-                frame["time"] = pd.to_datetime(
-                    frame["time"].astype("float64") - clock.offset_seconds,
-                    unit="s", utc=True,
-                )
-            else:
-                frame["time"] = pd.to_datetime(frame["time"], unit="s")
         if "time_msc" in frame.columns:
+            frame["time_msc_source_epoch"] = frame["time_msc"]
             frame["time_msc_server_epoch"] = frame["time_msc"]
-            if clock is not None:
-                frame["time_msc_datetime"] = pd.to_datetime(
-                    frame["time_msc"].astype("float64") - clock.offset_seconds * 1000,
-                    unit="ms", utc=True,
-                )
-            else:
-                frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms")
+
+        utc_verified = self._history_rows_match_utc_request(frame, start, end)
+        if "time" in frame.columns:
+            frame["time"] = pd.to_datetime(
+                frame["time"], unit="s", utc=True if utc_verified else False,
+            )
+        if "time_msc" in frame.columns:
+            frame["time_msc_datetime"] = pd.to_datetime(
+                frame["time_msc"], unit="ms", utc=True if utc_verified else False,
+            )
+
         raw_flags = frame["flags"] if "flags" in frame.columns else pd.Series(0, index=frame.index)
         buy_flag = getattr(mt5, "TICK_FLAG_BUY", 0)
         sell_flag = getattr(mt5, "TICK_FLAG_SELL", 0)
@@ -1232,13 +1271,12 @@ class MT5Connector(BaseConnector):
             for value in raw_flags
         ]
         frame.attrs.update({
-            "source": "mt5.copy_ticks_range",
-            "source_verified": True,
-            "source_symbol": mapped,
-            "source_timezone": "UTC" if clock is not None else "broker_server",
-            "source_timestamp_verified": clock is not None,
-            "source_utc_offset_seconds": clock.offset_seconds if clock is not None else None,
-            "utc_normalization": "live_server_offset" if clock is not None else "historical_offset_required",
+            "source_timezone": "UTC" if utc_verified else "unknown",
+            "source_timestamp_verified": utc_verified,
+            "utc_normalization": (
+                "utc_request_bounds_verified" if utc_verified
+                else "unverified_source_epoch"
+            ),
             "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
         })
         return frame
