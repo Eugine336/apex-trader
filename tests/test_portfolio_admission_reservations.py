@@ -82,3 +82,44 @@ def test_reservation_fails_closed_without_durable_event_store():
     reservations = PortfolioAdmissionReservations(lambda: None)
     assert reservations.snapshot() == []
     assert reservations.reserve(_payload()) is False
+
+
+def test_event_driven_compliance_book_includes_durable_pending_reservations(tmp_path):
+    from types import SimpleNamespace
+
+    from event_driven_bootstrap import EventDrivenSystem
+
+    database = str(tmp_path / "origination-compliance.db")
+    store = EventStore(db_path=database)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+
+    class _Compliance:
+        def __init__(self):
+            self.book = None
+
+        def permit(self, candidate, book, account):
+            self.book = book
+            return SimpleNamespace(approved=True)
+
+    compliance = _Compliance()
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._ctx = SimpleNamespace(
+        compliance=compliance,
+        account_key=lambda symbol, platform_manager: "mt5:account-a",
+    )
+    system._pm = SimpleNamespace(
+        get_platform_balance=lambda symbol: 1000.0,
+        get_all_open_positions=lambda: [],
+    )
+    system._portfolio_admission_reservations = reservations
+
+    assert system._compliance_permits("EURUSD", "LONG") is True
+    assert len(compliance.book.open_positions) == 1
+    pending = compliance.book.open_positions[0]
+    assert pending.is_pending_reservation is True
+    assert pending.symbol == "XAUUSD"
+    assert pending.direction == "LONG"
+    assert pending.account_key == "mt5:account-a"
+    assert pending.reserved_risk_pct == 0.01
+    store.close()
