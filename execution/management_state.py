@@ -1,9 +1,8 @@
 """APEX TRADER — Persistent position management state for event-driven mode.
 
-Without a TradingLoop/TradeManager, position management state (breakeven,
-trailing, partial close status, price extremes) is lost between evaluation
-cycles.  This store persists that state in-memory keyed by position ticket,
-with optional SQLite persistence for crash recovery.
+The event-driven execution plane persists per-ticket management and broker-
+confirmation state between evaluation cycles. State is keyed by exact position
+ticket, with optional SQLite persistence for crash recovery.
 
 Thread-safe: all mutations are guarded by an RLock.
 """
