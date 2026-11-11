@@ -289,9 +289,13 @@ class MT5Connector(BaseConnector):
                 self._server_clock_state_cache = None
                 self._server_clock_state_cache_at = None
                 self._clock_tick_observations = {}
-            if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
+            if (
+                cached is not None
+                and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS)
+                and tick is None
+            ):
                 return _holdover_state()
-            if now_mono < retry_after:
+            if now_mono < retry_after and cached is None:
                 return _holdover_state()
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
@@ -309,6 +313,54 @@ class MT5Connector(BaseConnector):
                 observations = {}
                 self._clock_tick_observations = observations
             previous = observations.get(key)
+
+            def _invalidate_clock_anchor(reason: str) -> None:
+                nonlocal cached, cache_age
+                self._server_clock_state_cache = None
+                self._server_clock_state_cache_at = None
+                self._server_clock_retry_after = now_mono
+                cached = None
+                cache_age = float("inf")
+                observations[key] = (tick_epoch, now_mono)
+                logger.warning(
+                    "[mt5] broker clock anchor invalidated for {}: {}",
+                    key[1], reason,
+                )
+
+            # Even while a synchronized clock is in short holdover, validate
+            # every advancing live tick against monotonic receipt progression.
+            # DST/server-clock steps must invalidate the old offset immediately,
+            # not continue stamping live quotes with it for the cache window.
+            if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
+                if previous is None:
+                    observations[key] = (tick_epoch, now_mono)
+                    return _holdover_state()
+                previous_epoch, previous_mono = previous
+                elapsed = now_mono - previous_mono
+                advance = tick_epoch - previous_epoch
+                discontinuity_tolerance = max(
+                    3.0, float(cached.uncertainty_seconds) * 2.0,
+                )
+                if advance < 0:
+                    expected_server_epoch = cached.server_now_epoch(now_mono)
+                    backward_step = expected_server_epoch - tick_epoch
+                    if backward_step > discontinuity_tolerance:
+                        _invalidate_clock_anchor(
+                            f"server timestamp moved backward by {backward_step:.3f}s"
+                        )
+                        return None
+                    return _holdover_state()
+                if advance == 0 or elapsed <= 0:
+                    return _holdover_state()
+                alignment_error = abs(advance - elapsed)
+                alignment_tolerance = max(3.0, elapsed * 0.01)
+                if alignment_error > alignment_tolerance:
+                    _invalidate_clock_anchor(
+                        f"source/monotonic progression diverged by {alignment_error:.3f}s"
+                    )
+                    return None
+                observations[key] = (tick_epoch, now_mono)
+                return _holdover_state()
             if previous is None:
                 # The first observation establishes a baseline only. A second,
                 # strictly advancing broker event is required before estimating
@@ -326,7 +378,33 @@ class MT5Connector(BaseConnector):
             # duplicates or out-of-order observations: doing so makes the next
             # real tick appear to have advanced several seconds in a fraction
             # of a second and permanently prevents clock synchronization.
-            if advance <= 0:
+            if advance < 0:
+                if cached is not None:
+                    expected_server_epoch = cached.server_now_epoch(now_mono)
+                    backward_step = expected_server_epoch - tick_epoch
+                    discontinuity_tolerance = max(
+                        3.0, float(cached.uncertainty_seconds) * 2.0,
+                    )
+                    if backward_step > discontinuity_tolerance:
+                        self._server_clock_state_cache = None
+                        self._server_clock_state_cache_at = None
+                        self._server_clock_retry_after = now_mono
+                        cached = None
+                        cache_age = float("inf")
+                        observations[key] = (tick_epoch, now_mono)
+                        logger.warning(
+                            "[mt5] broker clock anchor invalidated for {}: "
+                            "server timestamp moved backward by {:.3f}s",
+                            key[1], backward_step,
+                        )
+                        return None
+                else:
+                    # With no trusted anchor, a backward source step must reset
+                    # the baseline so a DST fallback cannot stall sync for an hour.
+                    observations[key] = (tick_epoch, now_mono)
+                return _holdover_state()
+
+            if advance == 0:
                 return _holdover_state()
 
             if elapsed <= 0:
@@ -348,6 +426,16 @@ class MT5Connector(BaseConnector):
                     "monotonic advance={:.3f}s tolerance={:.3f}s",
                     key[1], advance, elapsed, alignment_tolerance,
                 )
+                if cached is not None:
+                    self._server_clock_state_cache = None
+                    self._server_clock_state_cache_at = None
+                    self._server_clock_retry_after = now_mono
+                    cached = None
+                    cache_age = float("inf")
+                    logger.warning(
+                        "[mt5] broker clock anchor invalidated for {} after source-time discontinuity",
+                        key[1],
+                    )
                 return _holdover_state()
 
             # Advance the baseline only after a strictly newer, time-aligned
