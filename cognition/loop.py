@@ -1886,7 +1886,11 @@ class CognitionLoop:
         except (TypeError, ValueError, OverflowError):
             cutoff = 0.0
         if not math.isfinite(cutoff) or cutoff <= 0.0:
-            cutoff = 0.0
+            logger.warning(
+                "[cognition-loop] calibration evidence skipped for %s: verified UTC cutoff unknown",
+                symbol or "?",
+            )
+            return
         providers = []
         try:
             provider = self._calibration_provider
