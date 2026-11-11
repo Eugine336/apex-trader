@@ -7361,6 +7361,8 @@ class EventDrivenSystem:
                 )
                 return ctx.session_engine.get_status(utc_now).current_session == "WEEKEND"
             except Exception:
+                # SAFE-FALLBACK: an unverified candidate clock cannot confirm
+                # a weekend; continue checking candidates and otherwise poll.
                 continue
         return False
 
