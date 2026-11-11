@@ -1431,3 +1431,34 @@ def test_cognition_loop_explicit_replay_cutoff_is_preserved():
         utc_now_provider=lambda _symbol: 1_900_000_000.0,
     )
     assert loop._resolve_decision_utc("XAUUSD", 1_800_000_000.0) == 1_800_000_000.0
+
+
+def test_reasoning_cycle_uses_verified_utc_for_market_state_and_decision_timestamps():
+    cutoff = 1_800_000_123.5
+
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            self.market_state = market_state
+            self.now = now
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=0.0,
+                ),
+                decided_at_epoch=0.0,
+            )
+
+    brain = CapturingBrain()
+    loop = CognitionLoop(
+        brain, _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda symbol: cutoff if symbol == "XAUUSD" else None,
+    )
+
+    output = loop._reason_over_symbol("XAUUSD")
+
+    assert output is not None
+    assert brain.now == cutoff
+    assert brain.market_state.created_epoch == cutoff
+    assert output.decision.created_epoch == cutoff
+    assert output.decided_at_epoch == cutoff
