@@ -815,3 +815,10 @@ PR #908's Python 3.11/3.12, Gold Desk 3.11/3.12 and lint checks are queued. No t
 The first Gold Desk CI execution for PR #908 exposed three failures in legacy synthetic market-lens fixtures. The tests declared `source_includes_forming_bar=True` but omitted the explicit `forming_bar_included=True` frame attribute now required by the production provenance contract. Both fixture builders have been corrected to attest their actual synthetic shape. The production provenance guard remains strict; no acceptance threshold or test assertion was weakened.
 
 Correction commit: `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` on `fix/wp-t-timestamp-contract-recovery`. CI for this exact head is pending. This is a test-fixture correction, not WP-T acceptance. T-A1 through T-A10 remain OPEN; multi-host, sustained-feed, DST, clock lifecycle and Systems 2/6/7 integration evidence remain required.
+
+
+### WP-T full CI triage checkpoint — 2026-11-11
+
+The first full PR #908 matrix reported eight failures (4,545 passed in Python 3.11; lint and identity/safety audit passed). Root causes were isolated: three test fixtures omitted the explicit forming-bar attribute; two replay fixtures used the obsolete history-normalization label; one cross-asset fixture included a still-forming H1 bar while claiming completion; the completed-bar fetcher was defined on the wrong runtime class; and one technical-indicator fixture lacked DataFrame provenance. All identified corrections are committed on `fix/wp-t-timestamp-contract-recovery`. Production provenance guards remain strict; no tests or safeguards were weakened.
+
+Latest correction head at this checkpoint: `acfe7b5304c5b1224910a13432652f5a608d201f`. Static source inspection confirms the completed-bar fetcher is now on EventDrivenSystem and the test fixtures carry their explicit provenance. CI has not yet run for this exact head; this is implemented but not verified. PR #908 remains draft and currently reports mergeable=false. T-A1 through T-A10 remain OPEN, including independent-host, sustained-feed, DST, clock-lifecycle and Systems 2/6/7 integration acceptance.
