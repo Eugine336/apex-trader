@@ -6430,7 +6430,6 @@ class EventDrivenSystem:
             # Market fills are bound to a campaign only after the exact
             # broker-confirmed position snapshot is available. Pending orders
             # attach later in the reconciliation path.
-            self._attach_open_campaign_ticket(intent, result)
             ticket = ""
             if isinstance(response, dict):
                 ticket = str(
@@ -6459,6 +6458,7 @@ class EventDrivenSystem:
                         "[portfolio-reservations] market OPEN {} ticket link failed: {}",
                         intent.symbol, exc,
                     )
+            self._attach_open_campaign_ticket(intent, result)
             if not ticket:
                 logger.error(
                     "[decision-provenance] successful OPEN for {} has no broker ticket; "
