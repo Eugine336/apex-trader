@@ -331,13 +331,7 @@ def test_historical_range_completed_filter_uses_independent_utc_lower_bound(monk
 
     connector = _connected_connector(monkeypatch)
     now = time.time()
-    monotonic_now = time.monotonic()
-    clock = SimpleNamespace(
-        observed_gmt_epoch=now,
-        observed_monotonic=monotonic_now,
-        uncertainty_seconds=0.0,
-    )
-    connector._read_server_clock_state = lambda *args, **kwargs: clock
+    connector.get_utc_time_lower_bound = lambda: now - 0.5
     frame = connector.get_ohlcv_range(
         "EURUSD", "M1",
         datetime.fromtimestamp(now - 180, timezone.utc),
@@ -442,3 +436,19 @@ def test_stale_live_clock_is_not_applied_to_historical_tick_window(monkeypatch):
     assert frame.attrs["source_timestamp_verified"] is False
     assert frame.attrs["utc_normalization"] == "unverified_source_epoch"
     assert frame["time_msc_datetime"].dt.tz is None
+
+def test_historical_range_completed_filter_fails_closed_without_independent_utc(monkeypatch):
+    import time
+    import pytest
+
+    connector = _connected_connector(monkeypatch)
+    now = time.time()
+    connector.get_utc_time_lower_bound = lambda: None
+
+    with pytest.raises(RuntimeError, match="Independent UTC authority unavailable"):
+        connector.get_ohlcv_range(
+            "EURUSD", "M1",
+            datetime.fromtimestamp(now - 180, timezone.utc),
+            datetime.fromtimestamp(now + 10, timezone.utc),
+            include_forming=False,
+        )
