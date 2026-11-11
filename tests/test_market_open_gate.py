@@ -281,13 +281,16 @@ def _bind_permit(compliance, *, account_key="acct:1", positions=None, balance=10
     ns._ctx = types.SimpleNamespace(compliance=compliance, account_key=lambda s, p: account_key)
 
     class _EmptyReservations:
-        def reconcile(self, _positions):
+        def reconcile(self, _positions, **_kwargs):
             return 0
 
         def snapshot(self):
             return []
 
     ns._get_portfolio_admission_reservations = lambda: _EmptyReservations()
+    ns._reconcile_portfolio_admission_reservations = types.MethodType(
+        edb.EventDrivenSystem._reconcile_portfolio_admission_reservations, ns,
+    )
     return types.MethodType(edb.EventDrivenSystem._compliance_permits, ns)
 
 
