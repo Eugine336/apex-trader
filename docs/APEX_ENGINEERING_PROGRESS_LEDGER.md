@@ -386,3 +386,15 @@ Resolve the PR's non-mergeable state after refreshing GitHub metadata, obtain a 
 - After the roadmap checkpoint commit `3b8a7c035b70503f65b291d04134413df9b3efb2`, PR #908 metadata was refreshed: open, draft, base `main`, mergeable=true; branch is 55 commits ahead and 0 behind, with 35 changed files.
 - The exact refreshed head `3b8a7c035b70503f65b291d04134413df9b3efb2` has no associated PR workflow runs and no combined status checks reported. This remains an explicit verification blocker; do not report the fixes as tested or green.
 - No merge, live order, broker mutation, host clock change or protected runtime-file access was performed.
+
+
+### Full CI follow-up — technical indicator warmup correction — 2026-11-11
+
+- Latest full CI run #4378 on HEAD `27660986cd7a4119318f5f77e25393bc54c4faed`: Python 3.11 **4,552 passed, 1 failed**; Python 3.12 **4,552 passed, 1 failed**; lint passed; identity/safety audit passed. Both failures were the same assertion in `test_market_lenses_emit_causal_indicator_families_with_volume_provenance`. The focused Gold Desk run #2436 passed on Python 3.11 and 3.12, including compile and focused lint.
+- Root cause: `analyze_market_frames` limited the technical indicator tail to 32 bars, while the same producer exposes EMA-50/100/200 and requires at least 35 observations for MACD plus its signal line. The test's 240 attested completed bars were reduced to 32 before indicator calculation, so the long-period measurements were correctly omitted by the existing guards. This is a producer input-window defect, not a bad test expectation.
+- Correction: increase the bounded indicator tail to 200 completed bars, sufficient to warm the longest EMA/SMA family without changing indicator formulas, thresholds, authority or full-history concept path. Commit: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`.
+- Verification for this correction: pending. No workflow runs were visible for this exact new head at the initial metadata poll. Do not mark this fix verified until the fresh full matrix and focused test complete.
+- Latest branch head at this entry: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. No merge or broker mutation performed.
+
+### Exact next action
+Poll PR #908 for workflows attached to `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. Require Python 3.11/3.12 full suite, Gold Desk 3.11/3.12 and lint to pass. If another failure appears, trace the producer contract and fix without weakening tests. Then resume WP-T runtime owner-host evidence (second independent MT5 host, sustained replay continuity, DST, clock lifecycle, Systems 2/6/7).
