@@ -33,6 +33,7 @@ import logging
 import math
 import threading
 import time as _time
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
@@ -1886,7 +1887,10 @@ class CognitionLoop:
         """Supply producer-owned learning context; it never authorizes a decision."""
         symbol = str(getattr(market_state, "symbol", "") or "")
         try:
-            cutoff = float(now if now is not None else getattr(market_state, "created_epoch", 0.0) or 0.0)
+            cutoff = float(
+                now if now is not None
+                else getattr(market_state, "created_epoch", 0.0) or 0.0
+            )
         except (TypeError, ValueError, OverflowError):
             cutoff = 0.0
         if not math.isfinite(cutoff) or cutoff <= 0.0:
@@ -1962,15 +1966,20 @@ class CognitionLoop:
             # ingestion clock. Unknown UTC remains explicit and yields no fresh
             # evidence in downstream Brain reasoning.
             ms.created_epoch = decision_now
+            if decision_now > 0.0:
+                ms.created_iso = datetime.fromtimestamp(
+                    decision_now, tz=timezone.utc,
+                ).isoformat()
             self._inject_calibration_evidence(ms, now=decision_now)
             output = self._brain.reason(ms, now=decision_now)
             decision = getattr(output, "decision", None)
             if decision is not None:
                 decision.created_epoch = decision_now
-            try:
-                output.decided_at_epoch = decision_now
-            except Exception:
-                pass
+                if decision_now > 0.0:
+                    decision.created_iso = datetime.fromtimestamp(
+                        decision_now, tz=timezone.utc,
+                    ).isoformat()
+            output.decided_at_epoch = decision_now
             self._record_candidate_snapshot(output, ms)
             self._label_due_candidate_horizons(ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
@@ -2661,18 +2670,34 @@ class CognitionLoop:
         management decision was produced, else 0 (throttled / faulted)."""
         try:
             symbol = getattr(pos, "symbol", "") or ""
-            t = self._clock() if now is None else float(now)
+            # Throttling is process-local scheduling and therefore uses only
+            # monotonic time. Market freshness and decision timestamps use UTC.
+            t = self._clock()
             if symbol and self.event_min_interval_seconds > 0.0:
                 last = self._last_manage_at.get(symbol, 0.0)
                 if (t - last) < self.event_min_interval_seconds:
                     return 0
-            ms = self._consolidator.build(symbol, now=now)
-            output = self._brain.manage(pos, ms, now=now)
+            decision_now = self._resolve_decision_utc(symbol, now)
+            ms = self._consolidator.build(symbol, now=decision_now)
+            ms.created_epoch = decision_now
+            if decision_now > 0.0:
+                ms.created_iso = datetime.fromtimestamp(
+                    decision_now, tz=timezone.utc,
+                ).isoformat()
+            output = self._brain.manage(pos, ms, now=decision_now)
+            decision = getattr(output, "decision", None)
+            if decision is not None:
+                decision.created_epoch = decision_now
+                if decision_now > 0.0:
+                    decision.created_iso = datetime.fromtimestamp(
+                        decision_now, tz=timezone.utc,
+                    ).isoformat()
+            output.decided_at_epoch = decision_now
             if symbol:
                 self._last_manage_at[symbol] = t
             self._managed += 1
             # Part XVIII Art 12 — fold this verdict into live campaign health.
-            self._campaign_record(pos, output, now=now)
+            self._campaign_record(pos, output, now=decision_now)
             # Article X — a close (EXIT / REVERSE / TERMINATE) resolves the
             # originated patterns' outcomes so the tracker learns their edge.
             self._record_pattern_outcome_on_close(pos, output)
