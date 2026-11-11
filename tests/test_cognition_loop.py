@@ -536,6 +536,7 @@ def test_loop_records_open_snapshot_to_memory():
     loop = CognitionLoop(
         _OpenBrain(), _EvidenceConsolidator(), lambda: ["EURUSD"],
         origination_mode="off", memory=store,
+        utc_now_provider=lambda _symbol: 1_800_000_000.0,
     )
     loop.run_once()
     st = loop.get_status()
@@ -977,6 +978,7 @@ def test_management_records_campaign_health():
         _ManageBrain(DecisionType.TIGHTEN_RISK), _StubConsolidator(), lambda: [],
         position_source=lambda: [_mgmt_pos("XAUUSD", "LONG")],
         management_mode="live", campaign_registry=reg,
+        utc_now_provider=lambda _symbol: 1_800_000_000.0,
     )
     loop.set_management_sink(lambda action, pos: None)
     loop.run_once()
