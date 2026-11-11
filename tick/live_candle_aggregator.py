@@ -254,10 +254,19 @@ class LiveCandleAggregator:
         if df is None or getattr(df, "empty", True):
             return False
         attrs = getattr(df, "attrs", {})
-        if not isinstance(attrs, dict) or attrs.get("completed_bars_verified") is not True:
+        attrs = attrs if isinstance(attrs, dict) else {}
+        if not (
+            attrs.get("completed_bars_verified") is True
+            and attrs.get("forming_bar_included") is False
+            and attrs.get("source_timestamp_verified") is True
+            and str(attrs.get("source_symbol") or "").strip().upper()
+                == str(symbol or "").strip().upper()
+            and str(attrs.get("source_timezone") or "").upper() == "UTC"
+            and attrs.get("source_timestamp_unit") == "unix_seconds"
+            and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+        ):
             logger.warning(
-                "[live-candles] warmup {} {} skipped — provider did not attest "
-                "that every returned bar is complete",
+                "[live-candles] warmup {} {} skipped — completed-bar/source-time attestation missing",
                 symbol, tf,
             )
             return False
