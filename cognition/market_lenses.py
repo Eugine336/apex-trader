@@ -708,7 +708,7 @@ def analyze_market_frames(
     except (TypeError, ValueError, OverflowError):
         snapshot_cutoff_epoch = None
     context_analysis_epoch = (
-        concept_context.get("analysis_epoch")
+        concept_context.get("analysis_epoch", snapshot_cutoff_epoch)
         if isinstance(concept_context, dict) else snapshot_cutoff_epoch
     )
     try:
