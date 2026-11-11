@@ -637,9 +637,8 @@ def _record(
     sampled_at = (
         supplied_analysis_epoch
         if supplied_analysis_epoch is not None and supplied_analysis_epoch > 0
-        else _safe_float(source_epoch)
+        else 0.0
     )
-    sampled_at = sampled_at if sampled_at is not None and sampled_at > 0 else 0.0
     timestamp_iso = (
         datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
         if sampled_at > 0 else ""
@@ -708,6 +707,16 @@ def analyze_market_frames(
             snapshot_cutoff_epoch = None
     except (TypeError, ValueError, OverflowError):
         snapshot_cutoff_epoch = None
+    context_analysis_epoch = (
+        concept_context.get("analysis_epoch")
+        if isinstance(concept_context, dict) else snapshot_cutoff_epoch
+    )
+    try:
+        analysis_epoch = float(context_analysis_epoch)
+        if not math.isfinite(analysis_epoch) or analysis_epoch <= 0:
+            analysis_epoch = None
+    except (TypeError, ValueError, OverflowError):
+        analysis_epoch = None
 
     for raw_tf, frame in (frames or {}).items():
         timeframe = str(raw_tf or "").upper()
@@ -762,9 +771,7 @@ def analyze_market_frames(
             "analysis_epoch": snapshot_cutoff_epoch,
             "evidence_timestamp_basis": (
                 "verified_utc_analysis_cutoff"
-                if snapshot_cutoff_epoch is not None else
-                "verified_source_bar_time" if source_epoch is not None else
-                "unknown"
+                if analysis_epoch is not None else "unknown"
             ),
         }
         timeframe_observations.append({
