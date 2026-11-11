@@ -827,3 +827,8 @@ Latest correction head at this checkpoint: `acfe7b5304c5b1224910a13432652f5a608d
 ### WP-T CI follow-up — indicator warmup defect — 2026-11-11
 
 Full CI run #4378 passed lint and identity/safety audit and failed one technical-indicator assertion on both Python 3.11 and 3.12 (4,552 passed per runtime). The root cause was the technical-lens 32-bar tail truncation, incompatible with its own EMA-50/100/200 and MACD signal warmup requirements. The producer now retains 200 completed bars for the bounded indicator calculation; formulas and guards are unchanged. Correction commit: `da6eb1822ce43bf996996b5084feb8bd169b6b9c`. Fresh CI is pending; this is implemented, not yet verified. All T-A1–T-A10 remain OPEN.
+
+
+### Indicator warmup correction — follow-up test contract
+
+The 32-row-to-200-row bounded indicator tail correction exposed an obsolete performance test expectation. The test now expects 200 rows while continuing to enforce exactly one frame conversion. Commit `7933688a2b0c4365da163a7d6b50a1d56eb3ef2b`. Fresh full CI is pending; implementation remains unverified until the current head passes both Python versions and the Gold Desk matrix.
