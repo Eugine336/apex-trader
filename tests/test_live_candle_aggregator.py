@@ -143,7 +143,14 @@ def _attest_completed(frame: pd.DataFrame, symbol: str = "EURUSD") -> pd.DataFra
     return frame
 
 
-def test_warmup_seeding():
+def test_warmup_seeding(monkeypatch):
+    import tick.live_candle_aggregator as aggregator_module
+
+    warnings = []
+    monkeypatch.setattr(
+        aggregator_module, "logger",
+        type("WarmupLogger", (), {"warning": staticmethod(lambda *args: warnings.append(args))})(),
+    )
     agg = LiveCandleAggregator()
     base = 1_700_000_000
 
@@ -159,7 +166,7 @@ def test_warmup_seeding():
         return frame
 
     # Isolate the attestation/row parser from the threaded warmup coordinator.
-    assert agg._warmup_one("EURUSD", "M5", fetcher) is True
+    assert agg._warmup_one("EURUSD", "M5", fetcher) is True, warnings
     seeded = agg.warmup(["EURUSD"], ["M5"], fetcher)
     assert seeded == 1
     confirmed = agg.get_confirmed_dataframe("EURUSD", "M5")
