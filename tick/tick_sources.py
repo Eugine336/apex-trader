@@ -312,6 +312,10 @@ class MT5TickPoller:
                     self._history_cursor.pop(symbol, None)
                     self._history_seen.pop(symbol, None)
                     self._history_seen_order.pop(symbol, None)
+                    # The durable checkpoint cursor is broker-server scoped
+                    # too. Never let an old server's cursor suppress the first
+                    # checkpoint for the newly connected server.
+                    self._last_checkpoint_cursor.pop(symbol, None)
                     self._checkpoint_restore_attempted.discard(symbol)
                     self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
                     logger.error(
