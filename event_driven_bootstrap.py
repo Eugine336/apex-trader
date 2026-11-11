@@ -6300,6 +6300,7 @@ class EventDrivenSystem:
                         math.isfinite(initial_volume)
                         and math.isfinite(remaining_volume)
                         and initial_volume > 0.0
+                        and 0.0 <= remaining_volume <= initial_volume + 1e-9
                         and remaining_volume >= initial_volume - 1e-9
                     )
                 except (AttributeError, TypeError, ValueError, OverflowError):
