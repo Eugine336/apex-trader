@@ -122,6 +122,7 @@ def test_event_driven_compliance_book_includes_durable_pending_reservations(tmp_
     assert pending.direction == "LONG"
     assert pending.account_key == "mt5:account-a"
     assert pending.reserved_risk_pct == 0.01
+    assert pending.reserved_max_loss == 10.0
     store.close()
 
 
