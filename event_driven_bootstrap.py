@@ -1793,7 +1793,6 @@ class EventDrivenSystem:
             ("position_sizer", None),
             ("orchestrator", ctx.orchestrator),
             ("portfolio_governor", ctx.portfolio_governor),
-            ("trade_manager", None),
         ]
         for name, comp in _consumer_entries:
             try:
