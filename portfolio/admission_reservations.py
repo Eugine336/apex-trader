@@ -205,8 +205,14 @@ class PortfolioAdmissionReservations:
             ]
             return sum(1 for key in keys if self.release(key, reason=reason))
 
-    def reconcile(self, open_positions: list[Any]) -> int:
-        """Release reservations only when a matching broker position is visible."""
+    def reconcile(
+        self,
+        open_positions: list[Any],
+        *,
+        position_order_ids: dict[str, set[str]] | None = None,
+    ) -> int:
+        """Release only after exact broker order-to-position attribution."""
+        verified_order_links = position_order_ids if isinstance(position_order_ids, dict) else {}
         positions = list(open_positions or [])
         released = 0
         with self._lock:
@@ -220,9 +226,13 @@ class PortfolioAdmissionReservations:
                     if isinstance(position, dict):
                         symbol = str(position.get("symbol") or "").strip().upper()
                         direction = str(position.get("direction") or "").strip().upper()
+                        position_ticket = str(position.get("order_id") or position.get("ticket") or "").strip()
                     else:
                         symbol = str(getattr(position, "symbol", "") or "").strip().upper()
                         direction = str(getattr(position, "direction", "") or "").strip().upper()
+                        position_ticket = str(
+                            getattr(position, "order_id", getattr(position, "ticket", "")) or ""
+                        ).strip()
                     direction = "LONG" if direction in {"BUY", "LONG"} else (
                         "SHORT" if direction in {"SELL", "SHORT"} else ""
                     )
@@ -231,8 +241,20 @@ class PortfolioAdmissionReservations:
                         if isinstance(position, dict)
                         else str(getattr(position, "account_key", "") or "")
                     )
+                    linked_order_id = str(item.get("broker_order_id") or "").strip()
+                    attributed_order_ids = verified_order_links.get(position_ticket, set())
+                    if not isinstance(attributed_order_ids, set):
+                        attributed_order_ids = set(attributed_order_ids or [])
+                    exact_order_attribution = bool(
+                        linked_order_id and position_ticket
+                        and (
+                            position_ticket == linked_order_id
+                            or linked_order_id in attributed_order_ids
+                        )
+                    )
                     if (
-                        symbol == wanted_symbol
+                        exact_order_attribution
+                        and symbol == wanted_symbol
                         and direction == wanted_direction
                         and position_account == str(item.get("account_key") or "")
                     ):
