@@ -1442,7 +1442,7 @@ class PlatformManager:
                     broker_name = str(getattr(connector, "_broker_name", "") or "").strip()
                     if not broker_name or broker_name == "auto":
                         server = str(getattr(connector, "_server", "") or "")
-                        broker_name = server.split("-")[0].lower() if server else "mt5"
+                        broker_name = server.split("-")[0] if server else "mt5"
                     login = str(getattr(connector, "_login", "") or "")
                     account_key = f"{broker_name}:{login}" if login else broker_name
                     for position in positions:
