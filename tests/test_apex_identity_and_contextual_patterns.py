@@ -369,6 +369,8 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
     })
     evidence = analyze_market_frames(
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
