@@ -72,7 +72,7 @@ class TestBuildPositionSnapshot:
             entry_type="MARKET", open_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             tp1_hit=False, at_breakeven=False, trailing=False,
             last_update=datetime.now(timezone.utc),
-            tm_trade_id="tm_001",
+            
             stake_usd=0.0, multiplier=100, broker_pnl=0.0,
             broker_lots=0.1, scale_in_count=0, idempotency_key="",
             revalidation_pending=False, unconfirmed_cycles=0,
@@ -124,10 +124,10 @@ class TestBuildPositionSnapshot:
         assert snap.is_long is True
         assert isinstance(snap.confluences, tuple)
 
-    def test_with_tm_trade(self):
+    def test_with_management_state(self):
         pos = self._make_pos()
         tm = self._make_trade(pnl_pips=25.0, breakeven_active=True)
-        snap = build_position_snapshot(pos, tm_trade=tm, current_price=1.105)
+        snap = build_position_snapshot(pos, management_state=tm, current_price=1.105)
         assert snap.pnl_pips == 25.0
         assert snap.sl_original == 1.09900
         assert snap.candles_since_entry == 10
@@ -142,7 +142,7 @@ class TestBuildPositionSnapshot:
         )
         assert snap.score_history == (90, 87, 84, 80)
 
-    def test_without_tm_trade_uses_pos_values(self):
+    def test_without_management_state_uses_pos_values(self):
         pos = self._make_pos(sl=1.098, tp1=1.115)
         snap = build_position_snapshot(pos, current_price=1.105)
         assert snap.sl == 1.098
