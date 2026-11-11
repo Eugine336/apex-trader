@@ -24,7 +24,8 @@ from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
 from platforms.mt5.clock import (
-    CLOCK_MAX_AGE_SECONDS, estimate_mt5_server_clock, query_ntp_sources,
+    CLOCK_MAX_AGE_SECONDS, CLOCK_MAX_UNCERTAINTY_SECONDS,
+    estimate_mt5_server_clock, query_ntp_sources,
 )
 from platforms.base_connector import (
     AccountInfo,
@@ -685,6 +686,31 @@ class MT5Connector(BaseConnector):
             si = mt5.symbol_info(mapped)
             if si is None:
                 return {}
+            # Timestamp the broker specification observation using the
+            # independently synchronized MT5 server clock already maintained
+            # by the live tick path. Do not call the network synchronizer here:
+            # absent/stale clock evidence leaves the source timestamp unknown.
+            clock = getattr(self, "_server_clock_state_cache", None)
+            clock_cached_at = getattr(self, "_server_clock_state_cache_at", None)
+            clock_age = (
+                _time.monotonic() - float(clock_cached_at)
+                if clock_cached_at is not None else float("inf")
+            )
+            source_timestamp_epoch = None
+            source_timestamp_verified = False
+            source_timestamp_uncertainty = None
+            if (
+                clock is not None
+                and math.isfinite(clock_age)
+                and 0.0 <= clock_age <= CLOCK_MAX_AGE_SECONDS
+                and math.isfinite(float(getattr(clock, "uncertainty_seconds", float("inf"))))
+                and 0.0 <= float(clock.uncertainty_seconds) <= CLOCK_MAX_UNCERTAINTY_SECONDS
+            ):
+                observed_epoch = float(clock.server_now_epoch())
+                if math.isfinite(observed_epoch) and observed_epoch > 0.0:
+                    source_timestamp_epoch = observed_epoch
+                    source_timestamp_verified = True
+                    source_timestamp_uncertainty = float(clock.uncertainty_seconds)
             return {
                 "symbol": symbol,
                 "broker_symbol": mapped,
@@ -693,6 +719,13 @@ class MT5Connector(BaseConnector):
                 "source": "mt5.symbol_info",
                 "source_verified": True,
                 "specification_verified": True,
+                "source_timestamp_epoch": source_timestamp_epoch,
+                "source_timestamp_verified": source_timestamp_verified,
+                "source_timestamp_semantics": (
+                    "broker_server_observation_time" if source_timestamp_verified else ""
+                ),
+                "source_timestamp_uncertainty_seconds": source_timestamp_uncertainty,
+                "broker_server_clock_verified": source_timestamp_verified,
                 "swap_long": getattr(si, "swap_long", None),
                 "swap_short": getattr(si, "swap_short", None),
                 "swap_mode": getattr(si, "swap_mode", None),
