@@ -228,6 +228,8 @@ def test_market_lenses_live_ohlc_path_delivers_method_evidence_to_brain():
         "source_symbol": "XAUUSD",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "mt5",
+        "source_timezone": "UTC", "completed_bars_verified": True,
+        "forming_bar_included": False,
         "source_timestamp_verified": True,
         "source_timestamp_unit": "unix_seconds",
     })
