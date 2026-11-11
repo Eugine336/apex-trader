@@ -1,11 +1,11 @@
 """APEX TRADER — Position Snapshot (Phase 4).
 
 A frozen, point-in-time copy of a ManagedPosition plus its associated
-TradeManager ManagedTrade state.  Workers receive snapshots so they never
+persistent management state.  Workers receive snapshots so they never
 touch live mutable state — all broker interaction is deferred to the
 Action Executor (Phase 6) via Intent objects.
 
-Built from ``ManagedPosition`` + ``ManagedTrade`` each cycle; the snapshot
+Built from ``ManagedPosition`` + ``ManagementState`` each cycle; the snapshot
 is discarded after evaluation.
 """
 
@@ -101,7 +101,7 @@ class PositionSnapshot:
     # volume), so TP1 must fall back to SL→breakeven protection instead.
     volume_min: float = 0.01
 
-    # ── P&L (from TradeManager) ───────────────────────────────────────
+    # ── P&L (broker mark-to-market / management state) ───────────────────────────────────────
     pnl_pips: float = 0.0
     pnl_dollars: float = 0.0
     pip_size: float = 0.0001
@@ -115,9 +115,8 @@ class PositionSnapshot:
     highest_since_entry: float = 0.0
     lowest_since_entry: float = 0.0
 
-    # ── Trade status string (from TradeManager) ──────────────────────
+    # ── Lifecycle status ──────────────────────
     trade_status: str = "OPEN"
-    tm_trade_id: str = ""
 
     # ── Trade Planner overrides ──────────────────────────────────────
     plan_be_trigger_r: Optional[float] = None
@@ -163,7 +162,7 @@ class PositionSnapshot:
 
 def build_position_snapshot(
     pos,
-    tm_trade=None,
+    management_state=None,
     current_price: float = 0.0,
     score_history: tuple[int, ...] = (),
 ) -> PositionSnapshot:
@@ -188,7 +187,6 @@ def build_position_snapshot(
     highest = current_price
     lowest = current_price
     trade_status = "OPEN"
-    tm_trade_id = getattr(pos, "tm_trade_id", "") or ""
     tp3 = None
     tp3_hit = False
     partial_closed = getattr(pos, "tp1_hit", False)
@@ -200,34 +198,34 @@ def build_position_snapshot(
     strat_align = None
     strat_time = None
 
-    if tm_trade is not None:
-        sl_original = getattr(tm_trade, "original_stop_loss", sl)
-        tp2_original = getattr(tm_trade, "original_tp2", tp2)
-        remaining_lots = getattr(tm_trade, "remaining_size_lots", remaining_lots)
-        pnl_pips = getattr(tm_trade, "pnl_pips", 0.0) or 0.0
-        pnl_dollars = getattr(tm_trade, "pnl_dollars", 0.0) or 0.0
-        pip_size = getattr(tm_trade, "pip_size", 0.0001) or 0.0001
-        pip_value_per_lot = getattr(tm_trade, "pip_value_per_lot", 10.0) or 10.0
-        candles_since_entry = getattr(tm_trade, "candles_since_entry", 0)
-        entry_timeframe = getattr(tm_trade, "entry_timeframe", "M5")
-        highest = getattr(tm_trade, "highest_price_since_entry", current_price)
-        lowest = getattr(tm_trade, "lowest_price_since_entry", current_price)
-        trade_status = getattr(tm_trade, "status", "OPEN")
+    if management_state is not None:
+        sl_original = getattr(management_state, "original_stop_loss", sl)
+        tp2_original = getattr(management_state, "original_tp2", tp2)
+        remaining_lots = getattr(management_state, "remaining_size_lots", remaining_lots)
+        pnl_pips = getattr(management_state, "pnl_pips", 0.0) or 0.0
+        pnl_dollars = getattr(management_state, "pnl_dollars", 0.0) or 0.0
+        pip_size = getattr(management_state, "pip_size", 0.0001) or 0.0001
+        pip_value_per_lot = getattr(management_state, "pip_value_per_lot", 10.0) or 10.0
+        candles_since_entry = getattr(management_state, "candles_since_entry", 0)
+        entry_timeframe = getattr(management_state, "entry_timeframe", "M5")
+        highest = getattr(management_state, "highest_price_since_entry", current_price)
+        lowest = getattr(management_state, "lowest_price_since_entry", current_price)
+        trade_status = getattr(management_state, "status", "OPEN")
         if hasattr(trade_status, "value"):
             trade_status = trade_status.value
-        tp3 = getattr(tm_trade, "tp3", None)
-        tp3_hit = getattr(tm_trade, "tp3_hit", False)
-        partial_closed = getattr(tm_trade, "partial_closed", False)
-        plan_be_trigger_r = getattr(tm_trade, "plan_be_trigger_r", None)
-        plan_trail_activation_r = getattr(tm_trade, "plan_trail_activation_r", None)
-        plan_trail_strategy = getattr(tm_trade, "plan_trail_strategy", None)
-        plan_partial_ratio = getattr(tm_trade, "plan_partial_ratio", None)
-        strat_integrity = getattr(tm_trade, "strategic_structure_integrity", None)
-        strat_align = getattr(tm_trade, "strategic_tf_alignment", None)
-        strat_time = getattr(tm_trade, "strategic_assessment_time", None)
-        sl = getattr(tm_trade, "stop_loss", sl)
-        tp1 = getattr(tm_trade, "tp1", tp1)
-        tp2 = getattr(tm_trade, "tp2", tp2)
+        tp3 = getattr(management_state, "tp3", None)
+        tp3_hit = getattr(management_state, "tp3_hit", False)
+        partial_closed = getattr(management_state, "partial_closed", False)
+        plan_be_trigger_r = getattr(management_state, "plan_be_trigger_r", None)
+        plan_trail_activation_r = getattr(management_state, "plan_trail_activation_r", None)
+        plan_trail_strategy = getattr(management_state, "plan_trail_strategy", None)
+        plan_partial_ratio = getattr(management_state, "plan_partial_ratio", None)
+        strat_integrity = getattr(management_state, "strategic_structure_integrity", None)
+        strat_align = getattr(management_state, "strategic_tf_alignment", None)
+        strat_time = getattr(management_state, "strategic_assessment_time", None)
+        sl = getattr(management_state, "stop_loss", sl)
+        tp1 = getattr(management_state, "tp1", tp1)
+        tp2 = getattr(management_state, "tp2", tp2)
 
     return PositionSnapshot(
         order_id=getattr(pos, "order_id", ""),
@@ -250,7 +248,7 @@ def build_position_snapshot(
         at_breakeven=getattr(pos, "at_breakeven", False),
         trailing=getattr(pos, "trailing", False),
         partial_closed=partial_closed,
-        sl_pending_confirmation=getattr(tm_trade, "sl_pending_confirmation", False),
+        sl_pending_confirmation=getattr(management_state, "sl_pending_confirmation", False),
         current_price=current_price,
         broker_pnl=_pos_pnl(pos),
         broker_lots=_pos_lots(pos),
@@ -264,7 +262,6 @@ def build_position_snapshot(
         highest_since_entry=highest,
         lowest_since_entry=lowest,
         trade_status=trade_status,
-        tm_trade_id=tm_trade_id,
         plan_be_trigger_r=plan_be_trigger_r,
         plan_trail_activation_r=plan_trail_activation_r,
         plan_trail_strategy=plan_trail_strategy,
