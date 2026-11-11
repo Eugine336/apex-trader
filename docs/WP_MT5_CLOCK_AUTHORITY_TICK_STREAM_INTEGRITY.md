@@ -301,3 +301,16 @@ The previous implementation note that aggregator warmup remained unavailable is 
 - The separate developing observer remains isolated to the existing position-management advisory; it is not admitted as Brain evidence or a Brain wake source.
 
 This does not close the remaining full consumer audit, clock lifecycle, multi-host, EventStore failure, or integrated System 2/6/7 gates.
+
+
+## Rebased implementation status — 2026-11-11
+
+The earlier note that production warmup skipped due to missing provider attestation is superseded. The current branch now implements the provider contract:
+
+- `get_ohlcv(include_forming=False)` calls `copy_rates_from_pos(start_pos=1)`, which excludes the current forming bar by MT5's positional contract.
+- `get_ohlcv_range` validates raw UTC bar epochs against request bounds and uses an independent UTC lower bound to filter completed bars.
+- The canonical event-driven fetcher, CandleCloseHandler warmup and LiveCandleAggregator warmup now use the completed-only fetch path.
+- Cross-asset context rejects unverified, provisional, wrong-symbol, non-UTC or non-completed frames.
+- Forming-bar updates are no longer connected to CognitionLoop wake callbacks. The developing observer remains isolated to the position-management advisory.
+
+PR #908 is based on main including PR #907. Current HEAD is `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`. CI is queued; implementation and tests are not yet accepted. All T-A1 through T-A10 remain OPEN.
