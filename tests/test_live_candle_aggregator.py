@@ -135,7 +135,9 @@ def test_warmup_seeding():
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        return _seed_df(base, 300, 5)
+        frame = _seed_df(base, 300, 5)
+        frame.attrs["completed_bars_verified"] = True
+        return frame
 
     seeded = agg.warmup(["EURUSD"], ["M5"], fetcher)
     assert seeded == 1
@@ -146,13 +148,26 @@ def test_warmup_seeding():
     assert confirmed.iloc[0]["volume"] == pytest.approx(100)
 
 
+def test_warmup_rejects_unattested_potentially_forming_last_bar():
+    agg = LiveCandleAggregator()
+    base = 1_700_000_000
+
+    def fetcher(symbol, tf, count):
+        return _seed_df(base, 300, 5)
+
+    assert agg.warmup(["EURUSD"], ["M5"], fetcher) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+
 def test_warmup_then_live_ticks():
     agg = LiveCandleAggregator()
     tf_secs = 300
     base = 1_700_000_000
 
     def fetcher(symbol, tf, count):
-        return _seed_df(base, tf_secs, 5)
+        frame = _seed_df(base, tf_secs, 5)
+        frame.attrs["completed_bars_verified"] = True
+        return frame
 
     agg.warmup(["EURUSD"], ["M5"], fetcher)
     # First live tick in a NEW period (after the 5 seeded bars) starts bar #6.
