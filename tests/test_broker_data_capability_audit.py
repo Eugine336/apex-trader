@@ -105,6 +105,10 @@ def test_broker_acceptance_requires_verified_account_books_and_every_requested_s
                 "financing_cash_model": {
                     "source_verified": True, "source_timestamp_verified": True,
                     "source_timestamp_epoch": 120.0,
+                    "symbol": "XAUUSD", "source": "broker_history",
+                    "source_record_id": "swap-sample-1",
+                    "account_currency": "USD",
+                    "calculation_method": "verified_closed_position_swap_per_lot",
                     "amount_account_ccy_per_lot_round_trip": 1.0,
                     "holding_period_seconds": 86400.0,
                 },
