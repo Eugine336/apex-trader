@@ -91,8 +91,6 @@ def _rows(
         and source_origin == "broker_ohlcv"
         and bool(source_broker)
         and attrs.get("source_timezone") == "UTC"
-        and attrs.get("completed_bars_verified") is True
-        and attrs.get("forming_bar_included") is False
     )
     try:
         if getattr(frame, "empty", False):
@@ -695,6 +693,16 @@ def analyze_market_frames(
             continue
         # Convert each provider frame once. The bounded raw-lens window and the
         # full concept history are views of the same completed-bar rows.
+        frame_attrs = getattr(frame, "attrs", {})
+        frame_attrs = frame_attrs if isinstance(frame_attrs, dict) else {}
+        if source_includes_forming_bar:
+            if frame_attrs.get("forming_bar_included") is not True:
+                continue
+        elif not (
+            frame_attrs.get("completed_bars_verified") is True
+            and frame_attrs.get("forming_bar_included") is False
+        ):
+            continue
         full_rows, raw_window_rows = _rows(
             frame,
             limit=1_000_000,
