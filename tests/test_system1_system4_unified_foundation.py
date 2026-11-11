@@ -517,7 +517,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
     class Store:
         def __init__(self, events):
-            self.events = events
+            self.events = list(events)
 
         def query_events(self, *, event_types, symbol, limit=10000, offset=0, **kwargs):
             rows = [
@@ -529,6 +529,14 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 {**row, "_event_seq": row["seq"]}
                 for row in rows[offset:offset + limit]
             ]
+
+        def emit(self, *, event_type, severity, symbol=None, payload=None, **kwargs):
+            seq = max((int(row.get("seq") or 0) for row in self.events), default=0) + 1
+            self.events.append({
+                "seq": seq, "event_type": event_type, "severity": severity,
+                "symbol": symbol, "payload_json": json.dumps(payload or {}),
+            })
+            return f"manifest-{seq}"
 
     events = []
     start = 1_700_000_000.0
@@ -585,6 +593,9 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "point_in_time_evidence": [
                 {
                     "evidence_id": f"feature-{index}",
+                    "source_module": "market_lens.price_structure",
+                    "domain": "structure",
+                    "data_basis": "completed_ohlc",
                     "symbol": "EURUSD",
                     "source_timestamp_epoch": decision_epoch - 3600.0,
                     "source_timestamp_verified": True,
@@ -605,6 +616,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                     "evidence_id": f"quote-{index}",
                     "symbol": "EURUSD",
                     "source_module": "market.live_quote",
+                    "domain": "execution_quality",
+                    "data_basis": "live_bid_ask_quote",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
                     "relevance_horizon_seconds": 90.0,
@@ -725,7 +738,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             })
 
     now = start + 149 * 600.0 + 300.0
-    producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
+    store = Store(events)
+    producer = CalibrationProducer(store, refresh_interval_seconds=30.0)
     artifacts = producer.refresh("EURUSD", now=now)
     artifact = next(
         item for item in artifacts
@@ -739,6 +753,20 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     )
     assert artifact.sample_count == 30
     assert artifact.walk_forward_folds == 3
+    assert artifact.holdout_manifest_key
+    assert artifact.holdout_start_epoch > 0.0
+    assert artifact.holdout_end_epoch >= artifact.holdout_start_epoch
+    manifest_events = [
+        row for row in store.events
+        if row["event_type"] == "CALIBRATION_HOLDOUT_MANIFEST"
+    ]
+    assert len(manifest_events) == 2
+    manifest_payload = next(
+        json.loads(row["payload_json"]) for row in manifest_events
+        if json.loads(row["payload_json"]).get("candidate_family") == "continuation"
+    )
+    assert manifest_payload["untouched_holdout"] is True
+    assert manifest_payload["source_dataset_digest"] == artifact.dataset_digest
     assert artifact.selection_coverage == 1.0
     assert artifact.expected_return_r == 0.05
     assert artifact.holdout_expected_return_r == 0.05
@@ -766,6 +794,33 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     assert resolve_calibration_artifact(
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
+
+    # Outcomes observed after the producer's as-of cutoff are future data,
+    # even when their adapter provenance is otherwise internally consistent.
+    future_outcome_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if (
+            row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
+            and ":opportunity:opp-" in str(payload.get("candidate_id", ""))
+            and int(str(payload.get("candidate_id")).rsplit("-", 1)[-1]) >= 140
+        ):
+            future_epoch = now + 1.0
+            payload["observed_at_epoch"] = future_epoch
+            payload["outcome_quote"]["source_timestamp_epoch"] = future_epoch
+            payload["outcome_quote"]["timestamp_epoch"] = future_epoch
+            payload["outcome_quote"]["raw_fields"] = mt5_quote_provenance(future_epoch)
+            copied["payload_json"] = json.dumps(payload)
+        future_outcome_events.append(copied)
+    future_artifacts = CalibrationProducer(
+        Store(future_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now)
+    assert not any(
+        item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "continuation"
+        for item in future_artifacts
+    )
 
     # A bare source_timestamp_verified boolean is not enough to mint an
     # artifact. Both decision-time and horizon quotes need adapter provenance.
@@ -798,6 +853,19 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         wrong_source_module_events.append(copied)
     assert CalibrationProducer(
         Store(wrong_source_module_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    incomplete_feature_lineage = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["point_in_time_evidence"][0].pop("source_module", None)
+            payload["point_in_time_evidence"][0].pop("data_basis", None)
+        copied["payload_json"] = json.dumps(payload)
+        incomplete_feature_lineage.append(copied)
+    assert CalibrationProducer(
+        Store(incomplete_feature_lineage), refresh_interval_seconds=30.0,
     ).refresh("EURUSD", now=now) == []
 
     duplicate_snapshot_events = [dict(row) for row in events]
@@ -1285,3 +1353,122 @@ def test_calibration_counts_only_non_overlapping_decision_horizons():
     ]
     selected = CalibrationProducer._non_overlapping_decision_groups(groups, 300)
     assert [item["decision_id"] for item in selected] == ["d0", "d3"]
+
+
+def test_calibration_holdout_manifest_freezes_dataset_cut_and_digest():
+    from cognition.calibration_artifacts import CalibrationProducer
+
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def query_events(self, *, event_types, symbol, limit=10000, offset=0, **kwargs):
+            rows = [
+                row for row in self.events
+                if row["event_type"] in event_types and row["symbol"] == symbol
+            ]
+            rows.sort(key=lambda row: row["seq"], reverse=True)
+            return rows[offset:offset + limit]
+
+        def emit(self, *, event_type, severity, symbol=None, payload=None, **kwargs):
+            seq = max((row["seq"] for row in self.events), default=0) + 1
+            self.events.append({
+                "seq": seq,
+                "event_type": event_type,
+                "severity": severity,
+                "symbol": symbol,
+                "payload_json": json.dumps(payload or {}),
+            })
+            return f"manifest-{seq}"
+
+    start = 1_700_000_000.0
+    groups = [
+        {
+            "decision_id": f"decision-{index}",
+            "decision_epoch": start + index * 600.0,
+            "label": index % 2,
+            "return_r": 0.2 if index % 2 == 0 else -0.1,
+            "candidate_ids": [f"decision-{index}:opportunity:opp-{index}"],
+        }
+        for index in range(150)
+    ]
+    store = Store()
+    producer = CalibrationProducer(store)
+    initial = producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups, now_epoch=start + 100_000,
+    )
+    assert initial is not None
+    assert len(initial["groups"]) == 150
+
+    post_cutoff = groups + [{
+        "decision_id": "decision-after-cutoff",
+        "decision_epoch": initial["holdout_end_epoch"] + 600.0,
+        "label": 1,
+        "return_r": 0.3,
+        "candidate_ids": ["decision-after-cutoff:opportunity:opp"],
+    }]
+    repeated = producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, post_cutoff,
+        now_epoch=start + 200_000,
+    )
+    assert repeated is not None
+    assert len(repeated["groups"]) == 150
+    assert repeated["source_dataset_digest"] == initial["source_dataset_digest"]
+
+    late_historical = post_cutoff + [{
+        "decision_id": "late-historical-decision",
+        "decision_epoch": start + 119 * 600.0 + 300.0,
+        "label": 0,
+        "return_r": -0.2,
+        "candidate_ids": ["late-historical-decision:opportunity:opp"],
+    }]
+    late_historical.sort(key=lambda item: item["decision_epoch"])
+    assert producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, late_historical,
+        now_epoch=start + 300_000,
+    ) is None
+
+
+def test_calibration_holdout_manifest_survives_event_store_restart(tmp_path):
+    from cognition.calibration_artifacts import CalibrationProducer
+    from persistence.domain_events import CALIBRATION_HOLDOUT_MANIFEST
+    from persistence.event_store import EventStore
+
+    start = 1_700_000_000.0
+    groups = [
+        {
+            "decision_id": f"decision-{index}",
+            "decision_epoch": start + index * 600.0,
+            "label": index % 2,
+            "return_r": 0.2 if index % 2 == 0 else -0.1,
+            "candidate_ids": [f"decision-{index}:opportunity:opp-{index}"],
+        }
+        for index in range(150)
+    ]
+    database = str(tmp_path / "calibration-holdout-manifest.db")
+    first_store = EventStore(db_path=database)
+    first_producer = CalibrationProducer(first_store)
+    first = first_producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups,
+        now_epoch=start + 100_000,
+    )
+    assert first is not None
+    first_store.close()
+
+    reopened = EventStore(db_path=database)
+    second_producer = CalibrationProducer(reopened)
+    second = second_producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups,
+        now_epoch=start + 200_000,
+    )
+    assert second is not None
+    assert second["manifest_key"] == first["manifest_key"]
+    assert second["source_dataset_digest"] == first["source_dataset_digest"]
+    manifests = reopened.query_events(
+        event_types=[CALIBRATION_HOLDOUT_MANIFEST],
+        symbol="EURUSD",
+        severity_min="DEBUG",
+        limit=100,
+    )
+    assert len(manifests) == 1
+    reopened.close()

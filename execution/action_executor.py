@@ -375,9 +375,18 @@ class ActionExecutor:
         features = snapshot.get("features")
         if not isinstance(ids, list) or not ids or not isinstance(features, list) or not features:
             return "decision_feature_snapshot_has_no_features"
-        if not set(str(value) for value in ids if str(value)) <= {
-            str(row.get("evidence_id") or "") for row in features if isinstance(row, dict)
-        }:
+        feature_ids = [
+            str(row.get("evidence_id") or "") if isinstance(row, dict) else ""
+            for row in features
+        ]
+        normalized_ids = [str(value or "") for value in ids]
+        if (
+            any(not value for value in normalized_ids)
+            or len(normalized_ids) != len(set(normalized_ids))
+            or any(not value for value in feature_ids)
+            or len(feature_ids) != len(set(feature_ids))
+            or set(normalized_ids) != set(feature_ids)
+        ):
             return "decision_feature_snapshot_evidence_lineage_mismatch"
         try:
             decision_epoch = float(snapshot.get("decision_timestamp_epoch"))
@@ -388,9 +397,16 @@ class ActionExecutor:
                 return "decision_feature_snapshot_stale_or_future"
             if int(snapshot.get("evidence_count", -1)) != len(features):
                 return "decision_feature_snapshot_evidence_count_mismatch"
+            expected_symbol = str(getattr(intent, "symbol", "") or "").strip().upper()
             for row in features:
                 if not isinstance(row, dict):
                     return "decision_feature_snapshot_feature_invalid"
+                if (
+                    row.get("source_timestamp_verified") is not True
+                    or row.get("provisional") is True
+                    or str(row.get("symbol") or "").strip().upper() != expected_symbol
+                ):
+                    return "decision_feature_snapshot_unverified_or_mismatched_feature"
                 source_epoch = float(row.get("source_timestamp_epoch"))
                 if (
                     not math.isfinite(source_epoch)

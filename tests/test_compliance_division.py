@@ -29,12 +29,18 @@ class _AccountRisk:
         self._heat_blocked = heat_blocked
         self._heat = heat
         self._pct = pct
+        self.heat_block_pct = 2.0
+        self.daily_loss_cap_pct = 3.0
+        self._daily_pnl = 0.0
 
     def daily_loss_halted(self, account):  # noqa: ARG002
         return self._halted
 
     def combined_pnl_pct(self, account):  # noqa: ARG002
         return self._pct
+
+    def combined_pnl(self, account):  # noqa: ARG002
+        return self._daily_pnl
 
     def heat_blocked(self, account):  # noqa: ARG002
         return self._heat_blocked
@@ -277,3 +283,120 @@ class TestGovernorExposureOnly:
         # … exposure-only skips it (Compliance owns max-positions now).
         exposure = gov.check_exposure_only("EURUSD", "LONG", positions, 10_000.0)
         assert exposure.allowed is True
+
+
+def test_pending_portfolio_reservation_is_included_in_account_heat():
+    div = _full_division(account_risk=_AccountRisk(heat=1.5))
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="mt5:123",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.01,
+        reserved_max_loss=10.0,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(),
+    )
+    assert verdict.rejected
+    assert any("reserved=1.00%" in reason for reason in verdict.reasons)
+
+
+def test_pending_portfolio_reservation_is_account_scoped():
+    div = _full_division(account_risk=_AccountRisk(heat=1.5))
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="deriv:other",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.01,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(),
+    )
+    assert verdict.approved
+
+
+def test_pending_portfolio_reservations_consume_daily_loss_room():
+    risk = _AccountRisk()
+    risk._daily_pnl = -290.0
+    div = _full_division(account_risk=risk)
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="mt5:123",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.005,
+        reserved_max_loss=10.01,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(balance=10_000.0),
+    )
+    assert verdict.rejected
+    assert any("pending reservations consume daily-loss room" in reason for reason in verdict.reasons)
+
+
+def test_pending_daily_loss_reservation_is_account_scoped():
+    risk = _AccountRisk()
+    risk._daily_pnl = -290.0
+    div = _full_division(account_risk=risk)
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="deriv:other",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.005,
+        reserved_max_loss=100.0,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(balance=10_000.0),
+    )
+    assert verdict.approved
+
+
+def test_broker_buy_direction_is_normalized_for_same_account_duplicate_check():
+    position = SimpleNamespace(
+        symbol="EURUSD", direction="BUY", account_key="mt5:123",
+    )
+    verdict = _full_division().permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([position]),
+        _account("mt5:123"),
+    )
+    assert verdict.rejected
+    assert any("duplicate" in reason for reason in verdict.reasons)
+
+
+def test_same_pair_in_another_account_does_not_trigger_duplicate():
+    position = SimpleNamespace(
+        symbol="EURUSD", direction="BUY", account_key="deriv:other",
+    )
+    verdict = _full_division().permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([position]),
+        _account("mt5:123"),
+    )
+    assert verdict.approved
+
+
+def test_max_positions_is_scoped_to_current_account():
+    positions = [
+        SimpleNamespace(
+            symbol=f"SYM{i}", direction="LONG", account_key="deriv:other",
+        )
+        for i in range(8)
+    ]
+    verdict = _full_division(max_open_positions=1).permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook(positions),
+        _account("mt5:123"),
+    )
+    assert verdict.approved

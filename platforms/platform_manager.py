@@ -1428,9 +1428,9 @@ class PlatformManager:
         its positions are unknown — not absent.
 
         MT5 is marked confirmed only when **all** connected brokers
-        respond.  If any single MT5 broker fails, "mt5" is failed
-        (conservative — we cannot distinguish which broker owns which
-        position since all carry ``platform="mt5"``).
+        respond. If any single MT5 broker fails, "mt5" is failed. Individual
+        positions retain connector index and account risk-silo identity while
+        keeping ``platform="mt5"`` for the existing platform lifecycle contract.
         """
         snap = BrokerPositionsSnapshot()
 
@@ -1438,7 +1438,21 @@ class PlatformManager:
         for i, connector in enumerate(self.mt5_connectors):
             if self._mt5_connected_flags[i]:
                 try:
-                    snap.positions.extend(connector.get_open_positions())
+                    positions = connector.get_open_positions()
+                    broker_name = str(getattr(connector, "_broker_name", "") or "").strip()
+                    if not broker_name or broker_name == "auto":
+                        server = str(getattr(connector, "_server", "") or "")
+                        broker_name = server.split("-")[0].lower() if server else "mt5"
+                    login = str(getattr(connector, "_login", "") or "")
+                    account_key = f"{broker_name}:{login}" if login else broker_name
+                    for position in positions:
+                        if isinstance(position, dict):
+                            position["account_key"] = account_key
+                            position["connector_index"] = i
+                        else:
+                            position.account_key = account_key
+                            position.connector_index = i
+                    snap.positions.extend(positions)
                 except Exception as exc:
                     mt5_all_ok = False
                     label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
@@ -1454,7 +1468,17 @@ class PlatformManager:
 
         if self._deriv_connected:
             try:
-                snap.positions.extend(self.deriv.get_open_positions())
+                positions = self.deriv.get_open_positions()
+                account_id = str(getattr(self.deriv, "_account_id", "") or "")
+                account_key = f"deriv:{account_id}" if account_id else "deriv"
+                for position in positions:
+                    if isinstance(position, dict):
+                        position["account_key"] = account_key
+                        position["connector_index"] = 0
+                    else:
+                        position.account_key = account_key
+                        position.connector_index = 0
+                snap.positions.extend(positions)
                 snap.confirmed_platforms.add("deriv")
                 if self._deriv_reconnect_warned:
                     logger.info("Deriv positions fetch recovered (snapshot)")

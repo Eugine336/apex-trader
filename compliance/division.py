@@ -40,6 +40,7 @@ Design rules:
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional
 
 from loguru import logger
@@ -223,13 +224,27 @@ class ComplianceDivision:
         return CheckOutcome("spread_ok", False, why)
 
     def _check_duplicate(
-        self, c: ComplianceCandidate, b: ComplianceBook, _a: ComplianceAccount
+        self, c: ComplianceCandidate, b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
         sym = c.symbol.upper()
-        direction = c.direction.upper()
+        direction_raw = c.direction.upper()
+        direction = "LONG" if direction_raw in {"BUY", "LONG"} else (
+            "SHORT" if direction_raw in {"SELL", "SHORT"} else direction_raw
+        )
         for pos in b.open_positions:
-            psym = str(getattr(pos, "symbol", "") or getattr(pos, "pair", "")).upper()
-            pdir = str(getattr(pos, "direction", "")).upper()
+            if isinstance(pos, dict):
+                position_account = str(pos.get("account_key") or "")
+                psym = str(pos.get("symbol") or pos.get("pair") or "").upper()
+                pdir_raw = str(pos.get("direction") or "").upper()
+            else:
+                position_account = str(getattr(pos, "account_key", "") or "")
+                psym = str(getattr(pos, "symbol", "") or getattr(pos, "pair", "")).upper()
+                pdir_raw = str(getattr(pos, "direction", "")).upper()
+            if position_account and position_account != a.account_key:
+                continue
+            pdir = "LONG" if pdir_raw in {"BUY", "LONG"} else (
+                "SHORT" if pdir_raw in {"SELL", "SHORT"} else pdir_raw
+            )
             if psym == sym and pdir == direction:
                 return CheckOutcome(
                     "duplicate",
@@ -253,21 +268,108 @@ class ComplianceDivision:
                 False,
                 f"account {a.account_key} daily-loss halt ({pct:.2f}% incl. open)",
             )
-        return CheckOutcome("daily_loss", True, "daily loss within cap")
+        reserved_loss = 0.0
+        for position in _b.open_positions:
+            pending = (
+                position.get("is_pending_reservation") is True
+                if isinstance(position, dict)
+                else getattr(position, "is_pending_reservation", False) is True
+            )
+            if not pending:
+                continue
+            reserved_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if reserved_account != str(a.account_key):
+                continue
+            raw_loss = (
+                position.get("reserved_max_loss")
+                if isinstance(position, dict)
+                else getattr(position, "reserved_max_loss", None)
+            )
+            try:
+                max_loss = float(raw_loss)
+            except (TypeError, ValueError, OverflowError):
+                return CheckOutcome("daily_loss", False, "pending reservation has invalid max-loss provenance")
+            if not math.isfinite(max_loss) or max_loss <= 0.0:
+                return CheckOutcome("daily_loss", False, "pending reservation has unknown/non-positive max loss")
+            reserved_loss += max_loss
+        if reserved_loss > 0.0:
+            balance = float(a.balance or 0.0)
+            cap_pct = float(getattr(self._account_risk, "daily_loss_cap_pct", 0.0) or 0.0)
+            current_pnl = float(self._account_risk.combined_pnl(a.account_key))
+            if (
+                not math.isfinite(balance) or balance <= 0.0
+                or not math.isfinite(cap_pct) or cap_pct <= 0.0
+                or not math.isfinite(current_pnl)
+            ):
+                return CheckOutcome("daily_loss", False, "cannot validate pending reservations against daily-loss budget")
+            remaining = cap_pct / 100.0 * balance + current_pnl
+            if reserved_loss >= remaining:
+                return CheckOutcome(
+                    "daily_loss", False,
+                    f"pending reservations consume daily-loss room "
+                    f"(${reserved_loss:.2f} reserved / ${max(remaining, 0.0):.2f} remaining)",
+                )
+        return CheckOutcome("daily_loss", True, "daily loss within cap and pending reservations")
 
     def _check_heat(
         self, c: ComplianceCandidate, _b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
         if self._account_risk is None:
             return CheckOutcome("heat_ok", False, "no account-risk silo (fail-closed)")
-        if self._account_risk.heat_blocked(a.account_key):
-            heat = self._account_risk.heat(a.account_key)
+        heat = float(self._account_risk.heat(a.account_key))
+        reserved_heat = 0.0
+        for position in _b.open_positions:
+            pending = (
+                position.get("is_pending_reservation") is True
+                if isinstance(position, dict)
+                else getattr(position, "is_pending_reservation", False) is True
+            )
+            if not pending:
+                continue
+            reserved_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if reserved_account != str(a.account_key):
+                continue
+            raw_risk = (
+                position.get("reserved_risk_pct")
+                if isinstance(position, dict)
+                else getattr(position, "reserved_risk_pct", None)
+            )
+            try:
+                risk_fraction = float(raw_risk)
+            except (TypeError, ValueError, OverflowError):
+                return CheckOutcome(
+                    "heat_ok", False,
+                    "pending portfolio reservation has invalid risk provenance",
+                )
+            if not math.isfinite(risk_fraction) or risk_fraction <= 0.0:
+                return CheckOutcome(
+                    "heat_ok", False,
+                    "pending portfolio reservation has unknown/non-positive risk",
+                )
+            reserved_heat += risk_fraction * 100.0
+        effective_heat = heat + reserved_heat
+        cap = float(getattr(self._account_risk, "heat_block_pct", 0.0) or 0.0)
+        if self._account_risk.heat_blocked(a.account_key) or (
+            reserved_heat > 0.0 and (not math.isfinite(cap) or cap <= 0.0)
+        ) or (cap > 0.0 and effective_heat >= cap):
             return CheckOutcome(
                 "heat_ok",
                 False,
-                f"account {a.account_key} heat {heat:.2f}% at/over block cap",
+                f"account {a.account_key} heat {effective_heat:.2f}% "
+                f"(live={heat:.2f}% reserved={reserved_heat:.2f}%) at/over block cap",
             )
-        return CheckOutcome("heat_ok", True, "heat under block cap")
+        return CheckOutcome(
+            "heat_ok", True,
+            f"heat under block cap (live={heat:.2f}% reserved={reserved_heat:.2f}%)",
+        )
 
     def _check_drawdown_frozen(
         self, _c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
@@ -290,9 +392,20 @@ class ComplianceDivision:
         return CheckOutcome("drawdown_not_frozen", True, f"drawdown mode={status.mode}")
 
     def _check_max_positions(
-        self, _c: ComplianceCandidate, b: ComplianceBook, _a: ComplianceAccount
+        self, _c: ComplianceCandidate, b: ComplianceBook, a: ComplianceAccount
     ) -> CheckOutcome:
-        open_count = len(b.open_positions)
+        # The broker book is aggregated across connected accounts. Position
+        # limits are account-scoped; unknown account identity remains included
+        # conservatively rather than being silently excluded.
+        open_count = 0
+        for position in b.open_positions:
+            position_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if not position_account or position_account == a.account_key:
+                open_count += 1
         if open_count >= self._max_open_positions:
             return CheckOutcome(
                 "max_positions",

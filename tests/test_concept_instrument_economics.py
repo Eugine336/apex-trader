@@ -119,7 +119,7 @@ def test_broker_verified_contract_spec_is_read_as_independent_neutral_evidence()
     assert facts["trade_mode_interpretation"] == "full"
     assert facts["swap"]["unit_interpreted"] is False
     assert facts["execution_authorization_emitted"] is False
-    assert any("provider-originated specification timestamp" in item for item in reading.unknowns)
+    assert any("broker-server observation timestamp" in item for item in reading.unknowns)
 
 
 def test_unavailable_or_unverified_broker_spec_stays_unknown_without_config_defaults():
@@ -250,7 +250,7 @@ def test_carry_points_mode_interprets_units_without_fabricating_cash_cost():
     assert facts["rollover"]["daily_multiplier"]["wednesday"] == 3.0
     assert facts["cash_carry_cost_calculated"] is False
     assert facts["execution_authorization_emitted"] is False
-    assert any("provider-originated financing specification timestamp" in item for item in _carry(_spec()).unknowns)
+    assert any("broker-server observation timestamp" in item for item in _carry(_spec()).unknowns)
 
 
 def test_carry_currency_modes_keep_the_declared_currency_denominator():
@@ -315,3 +315,47 @@ def test_disabled_carry_mode_is_explicitly_no_charge():
     assert facts["swap_units"] == "no_swap_charge"
     assert facts["long"]["charge"] == "none"
     assert facts["short"]["charge"] == "none"
+
+
+def test_fresh_synchronized_broker_clock_timestamp_reaches_brain_evidence():
+    from cognition.concepts.base import reading_to_evidence
+
+    observed_at = time.time()
+    spec = _spec(
+        source_timestamp_epoch=observed_at,
+        source_timestamp_verified=True,
+        source_timestamp_semantics="broker_server_observation_time",
+        source_timestamp_uncertainty_seconds=0.5,
+        broker_server_clock_verified=True,
+    )
+    readings = InstrumentEconomicsReadings().read_with_context(
+        "XAUUSD", {},
+        {"symbol_spec": spec, "analysis_epoch": observed_at + 1.0},
+    )
+
+    assert len(readings) == 2
+    for reading in readings:
+        assert reading.source_timestamp_verified is True
+        assert reading.source_timestamp_epoch == observed_at
+        evidence = reading_to_evidence("XAUUSD", reading)
+        assert evidence.source_timestamp_verified is True
+        assert evidence.source_timestamp_epoch == observed_at
+        assert evidence.measurements["source_timestamp_known"] is True
+
+
+def test_future_broker_spec_observation_is_not_point_in_time_evidence():
+    observed_at = time.time()
+    spec = _spec(
+        source_timestamp_epoch=observed_at,
+        source_timestamp_verified=True,
+        source_timestamp_semantics="broker_server_observation_time",
+        source_timestamp_uncertainty_seconds=0.5,
+        broker_server_clock_verified=True,
+    )
+    readings = InstrumentEconomicsReadings().read_with_context(
+        "XAUUSD", {},
+        {"symbol_spec": spec, "analysis_epoch": observed_at - 1.0},
+    )
+    assert all(reading.source_timestamp_verified is False for reading in readings)
+    assert all(reading.source_timestamp_epoch is None for reading in readings)
+    assert any("broker-server observation timestamp" in item for item in readings[0].unknowns)
