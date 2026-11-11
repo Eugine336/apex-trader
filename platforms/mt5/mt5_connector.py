@@ -1140,26 +1140,12 @@ class MT5Connector(BaseConnector):
                 "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200,
                 "D1": 86400, "W1": 604800,
             }
-            live_tick = mt5.symbol_info_tick(mapped)
-            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            observed_monotonic = getattr(clock, "observed_monotonic", None) if clock else None
-            observed_utc = getattr(clock, "observed_gmt_epoch", None) if clock else None
-            uncertainty = getattr(clock, "uncertainty_seconds", None) if clock else None
-            if (
-                clock is None or observed_monotonic is None
-                or observed_utc is None or uncertainty is None
-            ):
+            utc_now_lower_bound = self.get_utc_time_lower_bound()
+            if utc_now_lower_bound is None or not math.isfinite(float(utc_now_lower_bound)):
                 raise RuntimeError(
                     "Independent UTC authority unavailable; completed-bar status cannot be verified"
                 )
-            elapsed = _time.monotonic() - float(observed_monotonic)
-            if not math.isfinite(elapsed) or elapsed < 0:
-                raise RuntimeError("UTC monotonic anchor is invalid; completed-bar status cannot be verified")
-            utc_now_lower_bound = (
-                float(observed_utc) + elapsed - float(uncertainty)
-            )
-            if not math.isfinite(utc_now_lower_bound):
-                raise RuntimeError("UTC lower bound is invalid; completed-bar status cannot be verified")
+            utc_now_lower_bound = float(utc_now_lower_bound)
             utc_now = datetime.fromtimestamp(utc_now_lower_bound, tz=timezone.utc)
             if timeframe.upper() == "MN1":
                 bar_close_times = frame["time"] + pd.offsets.MonthBegin(1)
