@@ -7287,14 +7287,22 @@ class EventDrivenSystem:
             pass
         try:
             session_engine = ctx.session_engine
-            status = session_engine.get_status()
+            utc_epoch = self._pm.get_utc_time_lower_bound(symbol)
+            if utc_epoch is None or not math.isfinite(float(utc_epoch)):
+                logger.warning(
+                    "[session-gate] {} — blocking new exposure because verified UTC is unavailable",
+                    symbol,
+                )
+                return False
+            utc_now = datetime.fromtimestamp(float(utc_epoch), tz=timezone.utc)
+            status = session_engine.get_status(utc_now)
             if not status.is_tradeable:
                 return False
             # Weekend-edge buffers only apply to session-gated (FX) instruments.
             if is_session_gated(symbol):
                 risk_cfg = getattr(self._config, "risk", None)
                 close_buffer = int(getattr(risk_cfg, "weekend_close_buffer_minutes", 15))
-                mins_to_close = session_engine.minutes_to_fx_close()
+                mins_to_close = session_engine.minutes_to_fx_close(utc_now)
                 if mins_to_close < close_buffer:
                     logger.info(
                         "[session-gate] {} — blocking entry, {}min to FX weekend close",
