@@ -707,7 +707,10 @@ def analyze_market_frames(
             frame,
             limit=1_000_000,
             expected_symbol=symbol,
-            return_tail_limit=32,
+            # Retain enough completed bars to warm the longest native
+            # EMA/SMA family (200) and MACD signal line without inventing
+            # values from a short rolling window.
+            return_tail_limit=200,
         )
         completed_rows = (
             full_rows[:-1]
