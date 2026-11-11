@@ -345,3 +345,24 @@ def test_durable_gap_write_failure_remains_retryable():
 
     assert len(store.rows) == 1
     assert poller._history_gap_reported
+
+def test_server_identity_change_allows_new_server_checkpoint_to_be_written():
+    end = datetime(2026, 11, 11, 10, 5, tzinfo=timezone.utc)
+    store = _CheckpointStore()
+    pm = _PlatformManager(lambda _symbol, left, right: _verified_frame(left, right))
+    poller = MT5TickPoller(
+        pm, _Router(), ["XAUUSD"], checkpoint_store=store,
+    )
+    poller._history_broker_identity["XAUUSD"] = "Old-Demo"
+    poller._history_cursor["XAUUSD"] = end - timedelta(seconds=1)
+    poller._last_checkpoint_cursor["XAUUSD"] = end + timedelta(seconds=60)
+    latest = type("Quote", (), {
+        "time": end,
+        "raw_fields": {"broker_server_identity": "JustMarkets-Demo"},
+    })()
+
+    assert poller._route_history_quotes("XAUUSD", latest) is True
+    assert len(store.rows) == 1
+    payload = json.loads(store.rows[0]["payload_json"])
+    assert payload["broker_server"] == "JustMarkets-Demo"
+    assert payload["cursor_utc"] == (pm.calls[0][0] + timedelta(seconds=1)).isoformat()
