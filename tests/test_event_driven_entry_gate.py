@@ -42,7 +42,7 @@ def test_session_entry_gate_uses_verified_utc_for_session_and_weekend_buffer():
         risk=SimpleNamespace(weekend_close_buffer_minutes=15),
     )
 
-    assert system._check_session_active("XAUUSD") is True
+    assert system._check_session_active("EURUSD") is True
     assert observed["status_time"].tzinfo == timezone.utc
     assert observed["close_time"] == observed["status_time"]
 
