@@ -6,6 +6,7 @@ no real order is sent, and no persistent store is opened.
 from __future__ import annotations
 
 import time
+import threading
 from types import SimpleNamespace
 
 from cognition.identity import IDENTITY_STATEMENT, IDENTITY_VERSION
@@ -131,6 +132,7 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
     )
     system._aggregator = _FakeAggregator()
     system._get_portfolio_admission_reservations = lambda: SimpleNamespace(
+        lock=threading.RLock(),
         snapshot=lambda: list(reservations or []),
     )
     system._safe_pip_size = lambda _symbol: 0.0001
