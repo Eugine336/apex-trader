@@ -108,3 +108,50 @@ Create a draft PR from this dedicated branch to main to trigger repository CI wi
 
 ### Exact next action
 Poll CI run #4316 (and any subsequent run for the latest HEAD) until both Python test matrices finish. Fix every failure without weakening tests. Then run the read-only timestamp capture on at least two supported Windows MT5 hosts with distinct local clock/timezone configurations and compare raw snapshot/history epochs to independent UTC witnesses and exact UTC request bounds. Only after that evidence may get_price/get_ticks normalization be changed. Continue with durable replay cursor/gap persistence and the complete downstream consumer/candle audit. No live broker mutations.
+
+
+## 2026-11-11 — WP-T2 through WP-T6 continuation checkpoint
+
+- **Repository:** `Eugine336/apex-trader`
+- **Completed predecessor PR:** #905 merged to `main` as `b5c1c34996d95509bd2eb0fba115e276b61f268d`.
+- **Predecessor CI:** workflow run `43000951533` completed successfully; lint, Python 3.11 and Python 3.12 jobs all report success.
+- **Continuation branch:** `phase2/wp-t2-t6-tick-recovery`, created from the merged main commit above.
+- **Current branch HEAD:** branch created; no source changes committed in this continuation checkpoint.
+- **Working-tree / CLI:** local clone attempt failed because this execution environment cannot resolve `github.com`. GitHub connector can inspect and update tracked files, but no local command/test execution is available in this environment.
+- **Safety:** no live broker mutations; no real `.env`, credentials, account selection, production settings or runtime DBs accessed or modified.
+
+### Recovered production findings (still open)
+1. `tick/tick_sources.py` keeps replay cursor, fingerprint deduplication and gap count in process memory only.
+2. A replay window exceeding 300 seconds is not recovered: it increments an in-memory gap counter, jumps the cursor to the current quote and resumes. This is a known data-loss boundary, not complete recovery.
+3. Historical replay requires dataframe attributes `source_timestamp_verified=True`, `source_timezone=UTC`, and `utc_normalization=live_server_offset`; this remains coupled to an unresolved MT5 timestamp semantics question.
+4. `TickRouter` publishes raw/verified events and invokes raw callbacks before its coalesced TickStore path. TickStore is not a durable raw tape.
+5. `LiveCandleAggregator.warmup` currently treats every fetched broker row as closed, including the broker's potentially forming final bar. This is a confirmed source-level violation requiring a contract-safe correction and regression tests.
+6. Live candle aggregation closes one prior forming candle when a tick crosses a boundary and does not synthesize empty bars. This is preferable to fabricating data, but gap state must be represented separately and consumers must distinguish missing data from no pattern.
+7. Broker clock state and poller replay state are process-local. No verified restart-safe clock authority or replay cursor has yet been integrated.
+8. MT5 timestamp semantics must not be globally rewritten until sanitized raw diagnostic captures from at least two owner hosts establish behavior for the supported terminal/broker combinations.
+
+### Verified vs unverified
+- **Verified:** PR #905 is merged; predecessor CI run #4317 is green for lint and both Python versions.
+- **Implemented in predecessor:** bounded clock holdover uncertainty, broker identity revalidation, stale-live-clock exclusion for non-recent history requests, read-only timestamp diagnostic.
+- **Not implemented/accepted:** complete WP-T2 lifecycle, WP-T3 timestamp contract resolution, durable WP-T4 gap/cursor recovery, full WP-T5 consumer/candle integrity, WP-T6 restart/multi-host recovery.
+- **Not verified:** owner-host timestamp captures, sustained live feed continuity, restart recovery against real terminal behavior, complete end-to-end consumer delivery.
+- **No acceptance gates T-A1 through T-A10 are marked complete by this checkpoint.**
+
+### Exact next actions
+1. Obtain sanitized output from `scripts/diagnose_mt5_timestamp_semantics.py` on at least two supported Windows MT5 hosts; compare raw `time`/`time_msc`, UTC query bounds, independent UTC witnesses, terminal/package versions and broker server identity.
+2. Inspect the existing canonical persistence lifecycle and choose a durable per-symbol cursor/gap checkpoint that does not create a second event authority or store every tick in the generic event log.
+3. Implement broker-identity-scoped cursor persistence, transactional checkpoint advancement only after successful routed replay, bounded overlap deduplication, paginated history recovery and durable unrecoverable-gap records. Never advance past unverified ranges.
+4. Complete WP-T2 state transitions and observable failure/uncertainty/age evidence; test restart and identity changes.
+5. Correct warmup so only provider-attested completed bars seed the closed-bar collection; preserve forming-bar state separately and test all market-open/market-closed edge cases.
+6. Inventory every consumer of raw ticks, verified ticks, TickStore events, candles and cognition wakes; prove completed-bar-only Brain consumption and explicit gap/missingness propagation.
+7. Run focused and full CI in a supported checkout, then obtain owner-host multi-host acceptance. Do not merge or mark WP-T accepted before these gates pass.
+
+
+## 2026-11-11 — MT5 diagnostic direct-launch import fix
+
+- **Branch:** `phase2/wp-t2-t6-tick-recovery`
+- **Change:** `scripts/diagnose_mt5_timestamp_semantics.py` now resolves the repository root from its own file location and inserts it at the front of `sys.path` before importing the `MetaTrader5` package or Apex modules. This supports the documented direct invocation from the repository root and from other working directories.
+- **Regression coverage:** `tests/test_mt5_timestamp_diagnostic.py` loads the diagnostic module without importing MT5, removes the repository root from a controlled `sys.path`, calls the bootstrap helper, and asserts the root is restored at index zero. Existing read-only safety assertions remain.
+- **User-reported failure:** direct invocation raised `ModuleNotFoundError: No module named 'platforms'` at the import of `platforms.mt5.clock`. Root cause was Python's script-directory import path, not MT5 connectivity.
+- **Status:** implementation committed via GitHub contents API; local pytest/lint not run in this execution environment. CI must verify.
+- **Next action:** rerun the exact documented PowerShell command after pulling this commit. If it advances beyond import and fails, diagnose that next failure separately; do not conflate it with the import-path defect.
