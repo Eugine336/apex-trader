@@ -194,3 +194,32 @@ The read-only diagnostic now records a minimal non-sensitive `symbol_info` snaps
 - Multi-host comparison: not performed; a second independent host capture is still required.
 - CI for the expanded symbol diagnostic: pending.
 - All T-A1 through T-A10 acceptance gates remain OPEN.
+
+
+## Owner-host diagnostic evidence — broker-native symbol and timestamp domains (2026-11-11)
+
+A third capture on the same Windows 11 / JustMarkets-Demo terminal was run against the discovered broker-native symbol `XAUUSD.ecn`. It resolves successfully and proves that the earlier empty-feed captures were caused by querying the non-existent exact symbol `XAUUSD` in the diagnostic, not by a terminal-wide absence of market data.
+
+Observed facts:
+- `symbol_info("XAUUSD.ecn")` returned metadata; `visible=true`, `select=true`, `trade_mode=4`, Bid 4049.70 / Ask 4049.79.
+- `symbol_info_tick("XAUUSD.ecn")` returned Bid 4049.70 / Ask 4049.79, `time=1794404576`, `time_msc=1794404576984`.
+- `copy_ticks_range` for UTC `11:41:57.117621` through `11:42:57.117621` returned 203 rows with API result `[1, "Success"]`. The last returned raw tick had `time=1794397376`, `time_msc=1794397376835`, which lies inside the requested UTC interval.
+- The latest quote's raw epoch is approximately 7,200 seconds ahead of the capture's UTC witness projection; history row epochs align with the UTC request interval. This is direct single-host evidence that the two API surfaces may expose different timestamp domains (latest quote: broker-server wall clock; history range: UTC epoch). It is not yet a fleet-wide contract.
+- Host wall epoch was approximately 1794397376.52; UTC witnesses projected approximately 1794397377.1 with ~0.55–0.59 second uncertainty. No host-clock correction is supported.
+- Safety flags confirm no credentials read, host clock modification, terminal setting modification or orders submitted.
+
+### Engineering implication — do not normalize by assumption
+
+The current `MT5Connector.get_ticks` implementation documents range-returned epochs as broker-server time and subtracts the live broker offset for recent ranges. If this capture's history epoch semantics are confirmed, that subtraction would incorrectly move already-UTC history rows by approximately two hours. Do not change production normalization based on one host capture; add a regression fixture that preserves raw fields and compares both API surfaces against independent UTC witnesses, then obtain repeat captures and a second independent host. Until then, source-time-dependent consumers must retain raw epochs and unresolved provenance rather than silently asserting one shared timestamp domain.
+
+### Symbol resolution implication
+
+The connector's existing `_COMMON_SUFFIXES` includes `.ecn`; its `symbol_map("XAUUSD")` path should resolve the broker-native `XAUUSD.ecn` when connected and the symbol metadata is available. The diagnostic intentionally queried exact names and does not invoke connector mapping. Verify the live Apex call graph actually passes the canonical `XAUUSD` through `MT5Connector.symbol_map`, and that no caller bypasses the mapped symbol for tick/history requests. Do not rename the canonical instrument or apply a global suffix rewrite.
+
+### Evidence status
+
+- Broker-native symbol and market data: OBSERVED on one owner host.
+- Connector suffix resolution: IMPLEMENTED in source; runtime integration not yet proven by this capture.
+- Latest-quote vs history timestamp domains: STRONG SINGLE-HOST EVIDENCE; DATA-GATED pending repeat and second-host comparison.
+- Clock offset and global normalization contract: OPEN.
+- All T-A1 through T-A10 acceptance gates remain OPEN.
