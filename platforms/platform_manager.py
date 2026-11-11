@@ -1310,37 +1310,39 @@ class PlatformManager:
         return list(snapshot.positions)
 
     def get_utc_time_lower_bound(self, symbol: str) -> Optional[float]:
-        """Return the selected venue's verified UTC lower bound, or unknown.
+        """Return a conservative verified UTC lower bound, or unknown.
 
-        The selected connector's broker clock is preferred when available;
-        otherwise independent NTP/HTTPS UTC witnesses are used. The returned
-        value is a conservative lower bound anchored to monotonic time. Callers
-        must never substitute host wall time when all authorities are unknown.
+        A finite positive venue-clock result is preferred. Missing, exceptional,
+        non-finite or non-positive venue results fall back to independent
+        NTP/HTTPS witnesses; host wall time is never an authority.
         """
+        value = None
         try:
             connector = self.get_connector(symbol)
             provider = getattr(connector, "get_utc_time_lower_bound", None)
             value = provider() if callable(provider) else None
-            if value is None:
-                # Non-MT5 adapters and expired broker-clock holdover still use
-                # independent NTP/HTTPS UTC witnesses, never host wall time.
-                from platforms.mt5.clock import independent_utc_lower_bound
-                value = independent_utc_lower_bound()
-            if value is None:
-                return None
-            result = float(value)
-            return result if math.isfinite(result) else None
+            if value is not None:
+                result = float(value)
+                if math.isfinite(result) and result > 0.0:
+                    return result
         except Exception as exc:
             _pm_logger.debug(
-                "[platform_manager] venue UTC lookup unavailable for {}: {}; "
-                "falling back to independent UTC authorities",
+                "[platform_manager] venue UTC lookup unavailable for {}: {}",
                 symbol, exc,
             )
-            try:
-                from platforms.mt5.clock import independent_utc_lower_bound
-                return independent_utc_lower_bound()
-            except Exception:
+        try:
+            from platforms.mt5.clock import independent_utc_lower_bound
+            fallback = independent_utc_lower_bound()
+            if fallback is None:
                 return None
+            result = float(fallback)
+            return result if math.isfinite(result) and result > 0.0 else None
+        except Exception as exc:
+            _pm_logger.debug(
+                "[platform_manager] independent UTC authorities unavailable for {}: {}",
+                symbol, exc,
+            )
+            return None
 
     def get_tick_history(self, symbol: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
         """Fetch historical ticks from the owning connector when supported."""
