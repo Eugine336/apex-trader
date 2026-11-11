@@ -501,3 +501,64 @@ def test_clock_state_without_monotonic_anchor_never_uses_host_wall_time():
     with pytest.raises(ValueError, match="host wall time is not an authority"):
         state.server_now_epoch()
     assert state.server_now_epoch(now_epoch=1_800_000_010.0) == 1_800_007_210.0
+
+
+def test_cached_clock_invalidates_and_recovers_after_forward_and_backward_dst_steps(monkeypatch):
+    from types import SimpleNamespace
+    import platforms.mt5.mt5_connector as connector_module
+    from platforms.mt5.clock import MT5ServerClockState, NTPClockSample
+    from platforms.mt5.mt5_connector import MT5Connector
+
+    class _MT5:
+        def account_info(self):
+            return SimpleNamespace(server="JustMarkets-Demo")
+
+    for jump_seconds, expected_offset in ((3600, 10800.0), (-3600, 3600.0)):
+        times = iter((10.1, 10.2))
+        monkeypatch.setattr(
+            connector_module._time, "monotonic", lambda: next(times),
+        )
+        monkeypatch.setattr(connector_module, "mt5", _MT5())
+        monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
+            NTPClockSample(1000.2, 10.2, 0.55, "ntp:a"),
+            NTPClockSample(1000.3, 10.2, 0.55, "ntp:b"),
+        ))
+        connector = MT5Connector.__new__(MT5Connector)
+        cached = MT5ServerClockState(
+            server="JustMarkets-Demo",
+            offset_seconds=7200.0,
+            observed_server_epoch=8200.0,
+            observed_gmt_epoch=1000.0,
+            file_age_seconds=0.0,
+            observed_monotonic=10.0,
+            uncertainty_seconds=0.8,
+            sources=("ntp:a", "ntp:b"),
+        )
+        connector._server_clock_state_cache = cached
+        connector._server_clock_state_cache_at = 10.0
+        connector._server_clock_retry_after = 20.0
+        connector._clock_tick_observations = {
+            ("JustMarkets-Demo", "XAUUSD"): (8200.0, 10.0),
+        }
+
+        jumped_epoch = 8200.0 + jump_seconds
+        jumped = SimpleNamespace(
+            time=int(jumped_epoch),
+            time_msc=int(jumped_epoch * 1000),
+        )
+        assert connector._read_server_clock_state(
+            tick=jumped, symbol="XAUUSD",
+        ) is None
+        assert connector._server_clock_state_cache is None
+
+        recovered_epoch = jumped_epoch + 0.1
+        recovered = SimpleNamespace(
+            time=int(recovered_epoch),
+            time_msc=int(recovered_epoch * 1000),
+        )
+        state = connector._read_server_clock_state(
+            tick=recovered, symbol="XAUUSD",
+        )
+
+        assert state is not None
+        assert abs(state.offset_seconds - expected_offset) < 0.2
