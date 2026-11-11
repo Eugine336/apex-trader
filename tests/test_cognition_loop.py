@@ -1462,3 +1462,31 @@ def test_reasoning_cycle_uses_verified_utc_for_market_state_and_decision_timesta
     assert brain.market_state.created_epoch == cutoff
     assert output.decision.created_epoch == cutoff
     assert output.decided_at_epoch == cutoff
+
+
+def test_unknown_utc_does_not_leak_host_timestamps_into_decision():
+    class CapturingBrain:
+        def reason(self, market_state, now=None):
+            self.now = now
+            self.market_state = market_state
+            return SimpleNamespace(
+                decision=SimpleNamespace(
+                    symbol=market_state.symbol,
+                    authorises_action=False,
+                    created_epoch=1_800_000_000.0,
+                    created_iso="host-derived",
+                ),
+                decided_at_epoch=1_800_000_000.0,
+            )
+
+    brain = CapturingBrain()
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: [])
+    output = loop._reason_over_symbol("XAUUSD")
+
+    assert output is not None
+    assert brain.now == 0.0
+    assert brain.market_state.created_epoch == 0.0
+    assert brain.market_state.created_iso == ""
+    assert output.decision.created_epoch == 0.0
+    assert output.decision.created_iso == ""
+    assert output.decided_at_epoch == 0.0
