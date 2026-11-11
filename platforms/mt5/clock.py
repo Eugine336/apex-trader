@@ -57,10 +57,15 @@ class MT5ServerClockState:
         )
 
     def server_now_epoch(self, now_epoch: float | None = None) -> float:
-        if now_epoch is None and self.observed_monotonic is not None:
-            return float(self.observed_server_epoch) + (time.monotonic() - self.observed_monotonic)
-        now = time.time() if now_epoch is None else float(now_epoch)
-        return float(self.observed_server_epoch) + (now - float(self.observed_gmt_epoch))
+        if self.observed_monotonic is not None:
+            return float(self.observed_server_epoch) + (
+                time.monotonic() - self.observed_monotonic
+            )
+        if now_epoch is None:
+            raise ValueError("clock state has no monotonic anchor; host wall time is not an authority")
+        return float(self.observed_server_epoch) + (
+            float(now_epoch) - float(self.observed_gmt_epoch)
+        )
 
     def to_utc_epoch(self, server_epoch: float) -> float:
         return float(server_epoch) - float(self.offset_seconds)
