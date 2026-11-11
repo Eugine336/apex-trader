@@ -2059,7 +2059,16 @@ class EventDrivenSystem:
 
             # get_all_open_positions raises if any connected platform cannot
             # confirm its book. Never size from a partial or unknown portfolio.
-            book = list(platform_manager.get_all_open_positions())
+            all_account_positions = list(platform_manager.get_all_open_positions())
+            book = []
+            for position in all_account_positions:
+                position_account = (
+                    str(position.get("account_key") or "")
+                    if isinstance(position, dict)
+                    else str(getattr(position, "account_key", "") or "")
+                )
+                if not position_account or position_account == account_key:
+                    book.append(position)
             daily_pnl = float(account_risk.combined_pnl(account_key))
             # Unfilled Brain-approved OPENs already consume daily-loss capacity.
             # Subtract their max-loss reservations before sizing another intent.
@@ -2518,7 +2527,19 @@ class EventDrivenSystem:
                 logger.error("[compliance] {} {} blocked — account risk silo unresolved", symbol, direction)
                 return False
             balance = float(platform_manager.get_platform_balance(symbol) or 0.0)
-            book = list(platform_manager.get_all_open_positions())
+            all_positions = list(platform_manager.get_all_open_positions())
+            book = []
+            for position in all_positions:
+                position_account = (
+                    str(position.get("account_key") or "")
+                    if isinstance(position, dict)
+                    else str(getattr(position, "account_key", "") or "")
+                )
+                # Unknown account identity is included conservatively. Known
+                # positions from other account silos do not consume this
+                # account's duplicate/position-count limits.
+                if not position_account or position_account == account_key:
+                    book.append(position)
             reservation_book = self._get_portfolio_admission_reservations()
             reservation_book.reconcile(book)
             for reservation in reservation_book.snapshot():
