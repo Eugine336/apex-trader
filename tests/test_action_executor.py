@@ -223,6 +223,16 @@ def test_trading_disabled_still_allows_risk_reducing_close(monkeypatch):
 # ── Close execution ──────────────────────────────────────────────────
 
 class TestCloseExecution:
+    def test_close_preserves_exact_mt5_connector_route(self):
+        broker = FakeBroker()
+        executor = ActionExecutor(broker, _fast_cfg())
+        result = executor.execute(
+            _close_intent(),
+            _positions(platform="mt5_1"),
+        )
+        assert result.success
+        assert broker.close_calls[0]["platform"] == "mt5_1"
+
     def test_successful_close(self):
         broker = FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
@@ -245,6 +255,16 @@ class TestCloseExecution:
 # ── Modify SL execution ─────────────────────────────────────────────
 
 class TestModifySL:
+    def test_modify_preserves_exact_mt5_connector_route(self):
+        broker = FakeBroker()
+        executor = ActionExecutor(broker, _fast_cfg())
+        result = executor.execute(
+            _sl_intent(),
+            _positions(platform="mt5_1"),
+        )
+        assert result.success
+        assert broker.modify_calls[0]["platform"] == "mt5_1"
+
     def test_successful_modify_sl(self):
         broker = FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
