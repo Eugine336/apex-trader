@@ -799,3 +799,12 @@ Regression tests have been added for the timestamp contract, shifted/inconsisten
 ## WP-T implementation update — 2026-11-11 (supersedes earlier WP-T warmup note)
 
 Branch `fix/wp-t-timestamp-contract-recovery` now separates live MT5 quote snapshots from UTC history APIs, validates bounded historical tick batches, performs 300-second gap recovery without cursor jumps, persists broker-scoped replay checkpoints and durable gap records through EventStore, and uses provider-backed completed-bar semantics. `copy_rates_from_pos(start_pos=1)` is now the closed-bar source for normal OHLCV reads; the event-driven confirmed candle fetcher and LiveCandleAggregator warmup both request completed bars. Cross-asset analysis requires explicit completed-bar provenance. Forming-bar WorldModel updates no longer wake cognition. Tests for these paths are committed but the correction branch still requires full CI and owner-host verification. All T-A1–T-A10 remain OPEN.
+
+
+## WP-T rebased implementation status — 2026-11-11
+
+The WP-T correction branch has been rebased onto main after PR #907 merged. Current PR #908 HEAD is `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`.
+
+The implementation now separates `symbol_info_tick` live quote normalization from UTC historical tick APIs, validates bounded history batches without subtracting the live offset, recovers long gaps in 300-second batches, and persists broker-scoped checkpoints and unrecoverable gap records in the existing EventStore. MT5 OHLCV uses provider UTC semantics; `copy_rates_from_pos(start_pos=1)` supplies completed bars, and range reads use independent UTC completion checks. Confirmed candle analysis and warmup require completed-bar attestation. Forming-bar WorldModel updates no longer wake cognition.
+
+PR #908's Python 3.11/3.12, Gold Desk 3.11/3.12 and lint checks are queued. No test result or acceptance is claimed. A second independent MT5 host, DST transition coverage, full clock lifecycle and integrated Systems 2/6/7 acceptance remain open. T-A1 through T-A10 remain OPEN.
