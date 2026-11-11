@@ -11,7 +11,6 @@ price-action evidence.
 from __future__ import annotations
 
 import math
-import time
 from datetime import datetime, timezone
 from math import isfinite, sqrt
 from typing import Any, Optional
@@ -685,7 +684,19 @@ def analyze_market_frames(
     timeframe_scores: list[float] = []
     timeframe_observations: list[dict[str, Any]] = []
     bars_by_timeframe: dict[str, list[dict[str, Any]]] = {}
-    snapshot_cutoff_epoch = time.time()
+    context_cutoff = (
+        concept_context.get(
+            "multi_symbol_snapshot_cutoff_epoch",
+            concept_context.get("analysis_epoch"),
+        )
+        if isinstance(concept_context, dict) else None
+    )
+    try:
+        snapshot_cutoff_epoch = float(context_cutoff)
+        if not math.isfinite(snapshot_cutoff_epoch) or snapshot_cutoff_epoch <= 0:
+            snapshot_cutoff_epoch = None
+    except (TypeError, ValueError, OverflowError):
+        snapshot_cutoff_epoch = None
 
     for raw_tf, frame in (frames or {}).items():
         timeframe = str(raw_tf or "").upper()
@@ -978,9 +989,13 @@ def analyze_market_frames(
             ) < 1e-6
             for item in timestamped
         )
-        eligible = bool(timestamped) and all(
-            item["bar_close_epoch"] <= snapshot_cutoff_epoch
-            for item in timestamped
+        eligible = (
+            snapshot_cutoff_epoch is not None
+            and bool(timestamped)
+            and all(
+                item["bar_close_epoch"] <= snapshot_cutoff_epoch
+                for item in timestamped
+            )
         )
         synchronized = (
             len(timestamped) >= 2
@@ -1018,9 +1033,10 @@ def analyze_market_frames(
     try:
         from cognition.concepts import run_concepts
         reader_context = dict(concept_context or {})
-        # Local analysis time bounds internal plans; it is not presented as a
-        # provider timestamp or market-data attestation.
-        reader_context.setdefault("analysis_epoch", time.time())
+        # Calendar/provider readers receive only a verified common UTC cutoff.
+        # When no independent clock authority exists, analysis time stays
+        # unknown instead of inheriting the host machine's wall clock.
+        reader_context.setdefault("analysis_epoch", snapshot_cutoff_epoch)
         output.extend(run_concepts(symbol, bars_by_timeframe, context=reader_context))
         pipeline_metrics = reader_context.get("pipeline_metrics")
         if isinstance(pipeline_metrics, dict):
