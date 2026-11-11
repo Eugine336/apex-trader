@@ -170,6 +170,8 @@ def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
         "source_symbol": "EURUSD",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
         "source_timestamp_verified": True,
         "source_timestamp_unit": "unix_seconds",
     })
