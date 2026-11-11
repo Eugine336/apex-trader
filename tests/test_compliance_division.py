@@ -29,6 +29,7 @@ class _AccountRisk:
         self._heat_blocked = heat_blocked
         self._heat = heat
         self._pct = pct
+        self.heat_block_pct = 2.0
 
     def daily_loss_halted(self, account):  # noqa: ARG002
         return self._halted
@@ -277,3 +278,38 @@ class TestGovernorExposureOnly:
         # … exposure-only skips it (Compliance owns max-positions now).
         exposure = gov.check_exposure_only("EURUSD", "LONG", positions, 10_000.0)
         assert exposure.allowed is True
+
+
+def test_pending_portfolio_reservation_is_included_in_account_heat():
+    div = _full_division(account_risk=_AccountRisk(heat=1.5))
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="mt5:123",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.01,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(),
+    )
+    assert verdict.rejected
+    assert any("reserved=1.00%" in reason for reason in verdict.reasons)
+
+
+def test_pending_portfolio_reservation_is_account_scoped():
+    div = _full_division(account_risk=_AccountRisk(heat=1.5))
+    pending = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="LONG",
+        account_key="deriv:other",
+        is_pending_reservation=True,
+        reserved_risk_pct=0.01,
+    )
+    verdict = div.permit(
+        _candidate("EURUSD", "LONG"),
+        ComplianceBook([pending]),
+        _account(),
+    )
+    assert verdict.approved
