@@ -561,6 +561,7 @@ class CognitionLoop:
         event_driven: bool = False,
         event_min_interval_seconds: float = 8.0,
         clock: Optional[Callable[[], float]] = None,
+        utc_now_provider: Optional[Callable[[str], Optional[float]]] = None,
         campaign_registry: Optional[Any] = None,
         reallocation_enabled: bool = False,
         reallocation_max_per_component: int = 2,
@@ -617,6 +618,10 @@ class CognitionLoop:
         self.event_driven = bool(event_driven)
         self.event_min_interval_seconds = max(0.0, float(event_min_interval_seconds))
         self._clock = clock or _time.monotonic
+        # Market-time authority is separate from the monotonic scheduler clock.
+        # The provider returns a conservative UTC lower bound; it must never be
+        # replaced by the machine wall clock when unavailable.
+        self._utc_now_provider = utc_now_provider
         self._wake = threading.Event()
         self._pending: set = set()
         self._pending_lock = threading.Lock()
@@ -772,6 +777,48 @@ class CognitionLoop:
         applied at order-placement time. Fail-safe — a missing or faulting
         source means every symbol is reasoned over, matching prior behavior."""
         self._is_market_open = is_market_open
+
+    def _resolve_decision_utc(self, symbol: str, supplied: Optional[float]) -> float:
+        """Resolve a point-in-time UTC cutoff without consulting host wall time.
+
+        Explicit supplied values are caller-owned test/replay cutoffs. Live
+        production cycles use the injected per-symbol broker/platform authority,
+        then the independent NTP/HTTPS UTC consensus. Unknown remains 0.0 so
+        freshness checks fail closed rather than projecting host time.
+        """
+        try:
+            value = float(supplied) if supplied is not None else None
+        except (TypeError, ValueError, OverflowError):
+            value = None
+        if value is not None and math.isfinite(value) and value > 0.0:
+            return value
+        if callable(self._utc_now_provider):
+            try:
+                value = self._utc_now_provider(str(symbol or ""))
+                numeric = float(value) if value is not None else None
+                if numeric is not None and math.isfinite(numeric) and numeric > 0.0:
+                    return numeric
+            except Exception as exc:
+                logger.debug(
+                    "[cognition-loop] venue UTC authority unavailable for {}: {}",
+                    symbol, type(exc).__name__,
+                )
+        try:
+            from platforms.mt5.clock import independent_utc_lower_bound
+            value = independent_utc_lower_bound()
+            numeric = float(value) if value is not None else None
+            if numeric is not None and math.isfinite(numeric) and numeric > 0.0:
+                return numeric
+        except Exception as exc:
+            logger.debug(
+                "[cognition-loop] independent UTC authority unavailable for {}: {}",
+                symbol, type(exc).__name__,
+            )
+        logger.warning(
+            "[cognition-loop] {} reasoning cutoff unknown — host wall time will not be substituted",
+            symbol,
+        )
+        return 0.0
 
     @property
     def running(self) -> bool:
@@ -1833,11 +1880,13 @@ class CognitionLoop:
                 "[cognition-loop] candidate disposition persistence failed: %s", exc,
             )
 
-    def _inject_calibration_evidence(self, market_state: MarketState) -> None:
+    def _inject_calibration_evidence(
+        self, market_state: MarketState, *, now: Optional[float] = None,
+    ) -> None:
         """Supply producer-owned learning context; it never authorizes a decision."""
         symbol = str(getattr(market_state, "symbol", "") or "")
         try:
-            cutoff = float(getattr(market_state, "created_epoch", 0.0) or 0.0)
+            cutoff = float(now if now is not None else getattr(market_state, "created_epoch", 0.0) or 0.0)
         except (TypeError, ValueError, OverflowError):
             cutoff = 0.0
         if not math.isfinite(cutoff) or cutoff <= 0.0:
@@ -1906,10 +1955,22 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001
                 # Fail-open: a faulting check must never block reasoning.
                 logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
+        decision_now = self._resolve_decision_utc(symbol, now)
         try:
-            ms = self._consolidator.build(symbol, now=now)
-            self._inject_calibration_evidence(ms)
-            output = self._brain.reason(ms, now=now)
+            ms = self._consolidator.build(symbol, now=decision_now)
+            # MarketState creation time is a market-time cutoff, not the host's
+            # ingestion clock. Unknown UTC remains explicit and yields no fresh
+            # evidence in downstream Brain reasoning.
+            ms.created_epoch = decision_now
+            self._inject_calibration_evidence(ms, now=decision_now)
+            output = self._brain.reason(ms, now=decision_now)
+            decision = getattr(output, "decision", None)
+            if decision is not None:
+                decision.created_epoch = decision_now
+            try:
+                output.decided_at_epoch = decision_now
+            except Exception:
+                pass
             self._record_candidate_snapshot(output, ms)
             self._label_due_candidate_horizons(ms)
             # Visibility (Part XII): surface the one reasoner's decision at INFO
