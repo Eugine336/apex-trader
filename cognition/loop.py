@@ -2025,14 +2025,14 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001 — logging must never break the cycle
                 logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)
             if self._memory is not None:
-                self._record_open_memory(output, ms, now=now)
+                self._record_open_memory(output, ms, now=decision_now)
             # Part XVIII Art 13 — management is continuous and event-driven, not
             # clock-gated: the instant a symbol's evidence is re-reasoned (on a
             # periodic pass OR an event wake), immediately manage that symbol's
             # open campaign too. The periodic _manage_open_positions remains a
             # backstop for positions whose symbol wasn't in this pass's slice.
             if self.management_mode != "off":
-                self._manage_symbol(symbol, now=now)
+                self._manage_symbol(symbol, now=decision_now)
             return output
         except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
             logger.warning("[cognition-loop] reason(%s) FAILED: %s", symbol, exc)
