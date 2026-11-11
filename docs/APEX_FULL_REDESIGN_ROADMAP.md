@@ -759,3 +759,10 @@ Implementation, integration, automated validation and production acceptance are 
 - Prior work reports monotonic anchoring, uncertainty, broker identity binding and fail-closed validation; those changes must be inspected and reused, not assumed complete.
 - Prior live diagnostic context reported intermittent stale/non-advancing quote observations and a 10-second diagnostic wait. This is not sustained feed acceptance.
 - No test execution, code integration, runtime verification or production acceptance is claimed by this plan entry.
+
+
+### Owner-host evidence update — 2026-11-11
+
+Two successful diagnostic captures on the same Windows 11 / JustMarkets-Demo host returned no latest XAUUSD tick fields and zero rows for a 60-second UTC history range while the terminal reported connected. This is repeatable but not yet attributable to broker feed absence, symbol resolution/visibility, or query semantics because the earlier diagnostic did not include `symbol_info` state. The diagnostic has therefore been extended with read-only symbol metadata, API error tuples, explicit history result state and filtered candidate names when the exact symbol is unresolved. It does not call `symbol_select` or modify terminal state.
+
+The host wall clock appeared about 0.7 seconds behind the independent UTC projection, but witness uncertainty was about 0.56–0.59 seconds; no clock correction is supported. Timestamp normalization remains DATA-GATED, and all WP-T acceptance gates remain OPEN pending expanded diagnostic execution and a second independent host capture.
