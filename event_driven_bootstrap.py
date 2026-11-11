@@ -3389,11 +3389,10 @@ class EventDrivenSystem:
                 return []
             tfs = ["D1", "H4", "H1", "M15", "M5", "M1"]
             try:
-                # Thirty-two bars support the native rolling range/volume
-                # measurements and the legacy M1 pattern vocabulary. The chart
-                # snapshot below still caps per-timeframe payload size separately.
+                # Brain price snapshots and concept evidence consume completed
+                # bars only. Current quote/tick evidence is supplied separately.
                 data = self._pm.fetch_market_data(
-                    symbol, tfs, count=32, include_forming=True,
+                    symbol, tfs, count=32, include_forming=False,
                 ) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition] price fetch failed for {}: {}", symbol, exc)
@@ -3437,17 +3436,17 @@ class EventDrivenSystem:
             try:
                 from cognition.market_lenses import analyze_market_frames
                 evidence.extend(analyze_market_frames(
-                    symbol, data, source_includes_forming_bar=True,
+                    symbol, data, source_includes_forming_bar=False,
                 ))
             except Exception as exc:  # noqa: BLE001 — one observer cannot break cognition
                 logger.debug("[cognition] universal market-lens evidence failed for {}: {}", symbol, exc)
-            # Retain the legacy M1 pattern vocabulary as provisional contextual
+            # Retain the M1 pattern vocabulary as completed-bar contextual
             # evidence for all supported instruments, not as a second entry path.
             try:
                 from cognition.price_action_patterns import evidence_from_m1_candles
                 m1_frame = data.get("M1")
                 m1_evidence = evidence_from_m1_candles(
-                    symbol, m1_frame, provisional=True,
+                    symbol, m1_frame, provisional=False,
                 )
                 if m1_evidence is not None:
                     evidence.append(m1_evidence)
