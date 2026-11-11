@@ -1219,3 +1219,67 @@ class TestPendingOrderLifecycle:
         ]
         assert reconciled
         assert reconciled[-1]["broker_record"]["volume_current"] == 0.06
+
+
+    def test_restart_recovery_preserves_cancelled_partial_fill_without_position_id(self, tmp_path, monkeypatch):
+        import threading
+
+        import event_driven_bootstrap as bootstrap_module
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+        from persistence.event_store import EventStore
+
+        store = EventStore(db_path=str(tmp_path / "partial-fill-restart.db"))
+        monkeypatch.setattr(bootstrap_module, "get_event_store", lambda: store)
+        ticket = "ORDER-CANCEL-PARTIAL-RESTART"
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        store.emit(
+            event_type=DE.ORDER_PENDING,
+            severity="INFO",
+            symbol="EURUSD",
+            parent_id=ticket,
+            source_module="test.pending_order",
+            durable=True,
+            payload={
+                "order_id": ticket,
+                "symbol": "EURUSD",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "lots": 0.10,
+                "submitted_at": submitted_at,
+                "idempotency_key": "idem-partial-restart",
+            },
+        )
+        store.emit(
+            event_type=DE.ORDER_RECONCILED,
+            severity="WARNING",
+            symbol="EURUSD",
+            parent_id=ticket,
+            source_module="test.pending_order_reconciliation",
+            durable=True,
+            payload={
+                "order_id": ticket,
+                "status": "CANCELLED",
+                "attribution_status": "unresolved_position_ticket",
+                "broker_confirmed": True,
+                "broker_record": {
+                    "ticket": ticket,
+                    "state": 2,
+                    "volume_initial": 0.10,
+                    "volume_current": 0.06,
+                    "source_verified": True,
+                },
+            },
+        )
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        system._restore_pending_orders()
+
+        assert ticket in system._pending_orders
+        recovered = system._pending_orders[ticket]
+        assert recovered["status"] == "CANCELLED"
+        assert recovered["attribution_status"] == "unresolved_position_ticket"
+        assert recovered["broker_record"]["volume_current"] == 0.06
+        store.close()
