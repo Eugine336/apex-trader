@@ -767,6 +767,33 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         artifact.artifact_id, "EURUSD", "SHORT", "continuation", 300, now=now,
     ) is None
 
+    # Outcomes observed after the producer's as-of cutoff are future data,
+    # even when their adapter provenance is otherwise internally consistent.
+    future_outcome_events = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if (
+            row["event_type"] == "COGNITIVE_CANDIDATE_HORIZON_OUTCOME"
+            and ":opportunity:opp-" in str(payload.get("candidate_id", ""))
+            and int(str(payload.get("candidate_id")).rsplit("-", 1)[-1]) >= 140
+        ):
+            future_epoch = now + 1.0
+            payload["observed_at_epoch"] = future_epoch
+            payload["outcome_quote"]["source_timestamp_epoch"] = future_epoch
+            payload["outcome_quote"]["timestamp_epoch"] = future_epoch
+            payload["outcome_quote"]["raw_fields"] = mt5_quote_provenance(future_epoch)
+            copied["payload_json"] = json.dumps(payload)
+        future_outcome_events.append(copied)
+    future_artifacts = CalibrationProducer(
+        Store(future_outcome_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now)
+    assert not any(
+        item.direction == "LONG" and item.horizon_seconds == 300
+        and item.candidate_family == "continuation"
+        for item in future_artifacts
+    )
+
     # A bare source_timestamp_verified boolean is not enough to mint an
     # artifact. Both decision-time and horizon quotes need adapter provenance.
     unattested_events = []
