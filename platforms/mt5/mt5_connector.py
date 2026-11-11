@@ -373,7 +373,7 @@ class MT5Connector(BaseConnector):
         except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
             self._server_clock_retry_after = now_mono + 3.0
             logger.warning("[mt5] automatic broker-clock synchronization unavailable: {}", exc)
-            return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+            return _holdover_state() if identity_verified else None
 
     @staticmethod
     def _tick_server_epoch(tick: Any) -> float:
