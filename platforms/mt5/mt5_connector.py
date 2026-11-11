@@ -397,7 +397,8 @@ class MT5Connector(BaseConnector):
         try:
             state = self._read_server_clock_state()
             if state is None:
-                return None
+                from platforms.mt5.clock import independent_utc_lower_bound
+                return independent_utc_lower_bound()
             lower_bound = (
                 float(state.server_now_epoch())
                 - float(state.offset_seconds)
