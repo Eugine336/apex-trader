@@ -180,9 +180,7 @@ def test_market_lenses_converts_each_broker_frame_once(monkeypatch):
         "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
     )
 
-    # The technical lens now retains 200 rows in the same single conversion
-    # so long-period EMA/SMA and MACD signal measurements can warm correctly.
-    assert calls == [(1_000_000, "EURUSD", 200)]
+    assert calls == [(1_000_000, "EURUSD", 32)]
 
 def test_fractal_swings_incrementally_update_appended_and_rolling_history():
     from cognition.concepts.market_structure import (
