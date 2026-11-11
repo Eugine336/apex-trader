@@ -174,3 +174,23 @@ The script requires at least two independent UTC authorities to establish query 
 ### Exact next action
 
 Open a draft PR to main to trigger CI. Review all checks before source normalization changes. Run the read-only capture on two owner hosts, compare the raw `time`/`time_msc` values and history rows against UTC witnesses and exact UTC request bounds, then settle the live and historical timestamp contract together. Continue durable tick history recovery, gap ledger persistence and complete downstream consumer audit. No acceptance gate may be marked complete until tests and owner-host evidence exist.
+
+
+## Owner-host diagnostic evidence — 2026-11-11
+
+Two captures from the same Windows 11 host and JustMarkets-Demo terminal completed successfully after the direct-launch import fix. Both reported `symbol_info_tick("XAUUSD")` with null `time`/`time_msc` and a 60-second `copy_ticks_range` result with zero rows. The second capture repeated the same result at 15:51 local time. Terminal connectivity was true in both captures. These observations establish a repeatable empty-data symptom on this host, but do not prove that the broker has no ticks or settle timestamp semantics: the prior diagnostic omitted symbol metadata, Market Watch visibility/selection and quote fields from `symbol_info`.
+
+The captures also showed host wall time approximately 0.7 seconds behind the UTC witness projection. Witness uncertainty was approximately 0.56–0.59 seconds, so this is not sufficient evidence for a sub-second clock correction. No host clock changes are authorized.
+
+### Follow-up diagnostic increment
+
+The read-only diagnostic now records a minimal non-sensitive `symbol_info` snapshot (`visible`, `select`, Bid/Ask/Last, source time/time_msc, spread and instrument precision), the symbol-info and tick API error tuples, and whether history is unavailable, empty or populated. If the exact symbol cannot be resolved, it performs a read-only wildcard `symbols_get` lookup and returns only matching symbol names. It deliberately does not call `symbol_select`; it does not change Market Watch or terminal settings. Regression tests cover field selection, candidate filtering and the no-selection/no-order safety boundary.
+
+### Current evidence status
+
+- Direct diagnostic launch: owner-host execution succeeded.
+- Symbol/feed cause: unresolved pending the expanded symbol diagnostics.
+- Timestamp semantics: DATA-GATED; no normalization change is justified by empty history.
+- Multi-host comparison: not performed; a second independent host capture is still required.
+- CI for the expanded symbol diagnostic: pending.
+- All T-A1 through T-A10 acceptance gates remain OPEN.
