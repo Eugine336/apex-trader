@@ -377,7 +377,13 @@ def test_market_lens_evidence_expires_from_original_broker_candle_time():
         "forming_bar_included": True,
     })
     evidence = analyze_market_frames(
-        "EURUSD", {"M5": frame}, source_includes_forming_bar=True,
+        "EURUSD",
+        {"M5": frame},
+        source_includes_forming_bar=True,
+        concept_context={
+            "analysis_epoch": now.timestamp(),
+            "multi_symbol_snapshot_cutoff_epoch": now.timestamp(),
+        },
     )
     structure = next(
         item for item in evidence
