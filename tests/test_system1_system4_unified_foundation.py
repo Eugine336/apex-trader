@@ -753,6 +753,17 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
     )
     assert artifact.sample_count == 30
     assert artifact.walk_forward_folds == 3
+    assert artifact.holdout_manifest_key
+    assert artifact.holdout_start_epoch > 0.0
+    assert artifact.holdout_end_epoch >= artifact.holdout_start_epoch
+    manifest_events = [
+        row for row in store.events
+        if row["event_type"] == "CALIBRATION_HOLDOUT_MANIFEST"
+    ]
+    assert len(manifest_events) == 2
+    manifest_payload = json.loads(manifest_events[0]["payload_json"])
+    assert manifest_payload["untouched_holdout"] is True
+    assert manifest_payload["source_dataset_digest"] == artifact.dataset_digest
     assert artifact.selection_coverage == 1.0
     assert artifact.expected_return_r == 0.05
     assert artifact.holdout_expected_return_r == 0.05
