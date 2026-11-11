@@ -626,6 +626,7 @@ class CalibrationProducer:
                                     or outcome.get("outcome_source_timestamp_verified") is not True
                                     or not math.isfinite(observed_at)
                                     or observed_at < due_at
+                                    or observed_at > current
                                     or str(outcome.get("reference_evidence_id", "") or "")
                                         != str((member.get("payload", {}).get("reference_quote") or {}).get("evidence_id", "") or "")
                                 ):
@@ -664,6 +665,7 @@ class CalibrationProducer:
                                     or not math.isfinite(outcome_quote_bid)
                                     or not math.isfinite(outcome_quote_ask)
                                     or not math.isfinite(outcome_quote_epoch)
+                                    or outcome_quote_epoch > current
                                     or outcome_quote_bid <= 0.0
                                     or outcome_quote_ask < outcome_quote_bid
                                     or abs(outcome_quote_mid - ((outcome_quote_bid + outcome_quote_ask) / 2.0))
