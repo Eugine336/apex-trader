@@ -243,7 +243,7 @@ Some work can be audited in parallel, but integration and acceptance follow thes
 ### System 5 — compliance and portfolio allocation
 - PR #904 adds a durable portfolio admission reservation ledger for Brain-approved but not-yet-broker-confirmed OPEN intents.
 - Origination check→size→reserve→submit is serialized. Reservation-ledger lazy initialization is itself guarded so concurrent first-use cannot create separate locks/ledgers. Reservations participate in duplicate-pair and max-open-position checks, account heat, daily-loss remaining-room calculations, and portfolio pair/broker concentration plus correlation sizing.
-- Reservations survive event-store restart and link both market and pending OPENs to broker order IDs. Release requires exact position-ticket equality, verified MT5 entry-deal order→position attribution, or broker-confirmed terminal pending-order reconciliation/explicit rejection. An unrelated same-symbol/same-side position cannot release another order's reservation; ambiguous broker outcomes retain capacity.
+- Reservations survive event-store restart and link both market and pending OPENs to broker order IDs. Market-order release requires exact position-ticket equality or verified MT5 entry-deal order→position attribution. Pending-order reservations remain active through partial fills while an unfilled remainder is live and release only on broker-confirmed terminal reconciliation/explicit rejection. An unrelated same-symbol/same-side position cannot release another order's reservation.
 - **Still not accepted:** full supported-account owner-limit matrix, concurrency stress, portfolio correlation/whole-book fault injection, and owner-connected evidence.
 
 ### System 6 — execution integrity and broker mutation boundaries
