@@ -352,6 +352,22 @@ class PositionWorker:
                     )
 
     @staticmethod
+    def _breakeven_level(
+        entry_price: float,
+        direction: str,
+        buffer_pips: float,
+        pip_size: float,
+    ) -> float:
+        if direction == "LONG":
+            return round(entry_price + buffer_pips * pip_size, 5)
+        return round(entry_price - buffer_pips * pip_size, 5)
 
     @staticmethod
+    def _be_move_is_valid(snap: PositionSnapshot, be_level: float) -> bool:
+        """Allow only profitable stop improvements; never loosen the broker SL."""
+        if snap.pnl_pips <= 2.0:
+            return False
+        if snap.is_long:
+            return be_level > snap.sl
+        return be_level < snap.sl
 
