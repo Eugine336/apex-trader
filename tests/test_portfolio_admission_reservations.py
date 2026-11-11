@@ -133,10 +133,12 @@ def test_pending_open_reservation_releases_only_after_broker_confirmed_cancel(tm
 
     import event_driven_bootstrap as bootstrap_module
     from event_driven_bootstrap import EventDrivenSystem
+    from persistence import event_store as event_store_module
 
     database = str(tmp_path / "pending-order-reservation.db")
     store = EventStore(db_path=database)
     monkeypatch.setattr(bootstrap_module, "get_event_store", lambda: store)
+    monkeypatch.setattr(event_store_module, "get_event_store", lambda: store)
     reservations = PortfolioAdmissionReservations(lambda: store)
     assert reservations.reserve(_payload())
 
