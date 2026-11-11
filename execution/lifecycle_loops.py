@@ -229,7 +229,18 @@ class FlushLoop:
                 "symbol": getattr(pos, "symbol", ""),
                 "direction": getattr(pos, "direction", ""),
                 "sl": getattr(pos, "sl", 0.0),
-                "platform": getattr(pos, "platform", ""),
+                # Route every MT5 mutation through the exact connector
+                # that supplied this ticket. "mt5" alone selects connector 0
+                # and can mutate the wrong account when several MT5 logins
+                # trade the same symbol.
+                "platform": (
+                    f"mt5_{int(pos.connector_index)}"
+                    if str(getattr(pos, "platform", "")).lower() == "mt5"
+                    and getattr(pos, "connector_index", None) is not None
+                    else getattr(pos, "platform", "")
+                ),
+                "account_key": getattr(pos, "account_key", ""),
+                "connector_index": getattr(pos, "connector_index", None),
                 "lots": getattr(pos, "lots", 0.0),
                 "remaining_lots": getattr(pos, "remaining_lots", getattr(pos, "lots", 0.0)),
                 "volume_min": getattr(pos, "volume_min", 0.0),
