@@ -69,14 +69,21 @@ def test_reservation_releases_only_after_matching_broker_position(tmp_path):
     store = EventStore(db_path=database)
     reservations = PortfolioAdmissionReservations(lambda: store)
     assert reservations.reserve(_payload())
+    assert reservations.link_order("idem-1", "broker-order-1")
 
     assert reservations.reconcile([
-        SimpleNamespace(symbol="EURUSD", direction="LONG"),
+        SimpleNamespace(
+            symbol="EURUSD", direction="LONG", order_id="broker-order-1",
+            account_key="mt5:account-a",
+        ),
     ]) == 0
     assert len(reservations.snapshot()) == 1
 
     assert reservations.reconcile([
-        SimpleNamespace(symbol="XAUUSD", direction="BUY", account_key="mt5:account-a"),
+        SimpleNamespace(
+            symbol="XAUUSD", direction="BUY", order_id="broker-order-1",
+            account_key="mt5:account-a",
+        ),
     ]) == 1
     assert reservations.snapshot() == []
     store.close()
@@ -87,17 +94,20 @@ def test_position_from_another_account_does_not_release_reservation(tmp_path):
     store = EventStore(db_path=database)
     reservations = PortfolioAdmissionReservations(lambda: store)
     assert reservations.reserve(_payload())
+    assert reservations.link_order("idem-1", "broker-order-1")
 
     assert reservations.reconcile([
         SimpleNamespace(
-            symbol="XAUUSD", direction="BUY", account_key="deriv:other",
+            symbol="XAUUSD", direction="BUY", order_id="broker-order-1",
+            account_key="deriv:other",
         ),
     ]) == 0
     assert len(reservations.snapshot()) == 1
 
     assert reservations.reconcile([
         SimpleNamespace(
-            symbol="XAUUSD", direction="BUY", account_key="mt5:account-a",
+            symbol="XAUUSD", direction="BUY", order_id="broker-order-1",
+            account_key="mt5:account-a",
         ),
     ]) == 1
     assert reservations.snapshot() == []
@@ -216,5 +226,33 @@ def test_pending_open_reservation_releases_only_after_broker_confirmed_cancel(tm
     system._reconcile_pending_orders([])
 
     assert system._pending_orders == {}
+    assert reservations.snapshot() == []
+    store.close()
+
+
+def test_same_symbol_position_cannot_release_unrelated_linked_order(tmp_path):
+    database = str(tmp_path / "portfolio-order-attribution.db")
+    store = EventStore(db_path=database)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+    assert reservations.link_order("idem-1", "broker-order-1")
+
+    assert reservations.reconcile([
+        SimpleNamespace(
+            symbol="XAUUSD", direction="BUY", order_id="manual-position-9",
+            account_key="mt5:account-a",
+        ),
+    ]) == 0
+    assert len(reservations.snapshot()) == 1
+
+    assert reservations.reconcile(
+        [
+            SimpleNamespace(
+                symbol="XAUUSD", direction="BUY", order_id="position-9",
+                account_key="mt5:account-a",
+            ),
+        ],
+        position_order_ids={"position-9": {"broker-order-1"}},
+    ) == 1
     assert reservations.snapshot() == []
     store.close()
