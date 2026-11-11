@@ -425,13 +425,15 @@ def test_connector_utc_lower_bound_subtracts_offset_and_uncertainty(monkeypatch)
     assert connector.get_utc_time_lower_bound() == 1_800_000_004.2
 
 
-def test_connector_utc_lower_bound_is_unknown_without_verified_clock():
+def test_connector_utc_lower_bound_uses_independent_authority_when_broker_clock_is_unknown(monkeypatch):
+    import platforms.mt5.clock as clock_module
     from platforms.mt5.mt5_connector import MT5Connector
 
     connector = MT5Connector.__new__(MT5Connector)
     connector._read_server_clock_state = lambda: None
+    monkeypatch.setattr(clock_module, "independent_utc_lower_bound", lambda: 1_800_000_000.0)
 
-    assert connector.get_utc_time_lower_bound() is None
+    assert connector.get_utc_time_lower_bound() == 1_800_000_000.0
 
 def test_independent_utc_estimator_requires_two_corroborating_authorities():
     from platforms.mt5.clock import NTPClockSample, estimate_utc_clock
