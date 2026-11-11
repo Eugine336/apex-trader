@@ -43,9 +43,7 @@ from tick.structural_interaction_detector import StructuralInteractionDetector
 from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator, AggregatorConfig
 from execution.action_executor import ActionExecutor, ExecutorConfig
-from execution.position_worker import (
-    PositionWorker, WorkerConfig, ScanContext, MarketContext,
-)
+from execution.position_worker import PositionWorker, WorkerConfig, MarketContext
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
 from execution.management_state import ManagementStateStore
 from execution.management_scheduler import ManagementScheduler
@@ -219,7 +217,6 @@ class PositionEvaluator:
         # ONE map. Defaulted here so the evaluator is safe standalone / in tests.
         self._pending_reversals: dict[str, dict[str, Any]] = {}
         self._fast_opposition: dict[str, int] = {}
-        self._last_h1_close: dict[str, datetime] = {}
         # Per-ticket candidate provenance (Session 4 multi-opportunity). The
         # owning EventDrivenSystem aliases its own dict onto this field after
         # construction so the fill-time recorder, the close-time cleanup, the
@@ -416,13 +413,9 @@ class PositionEvaluator:
                 mgmt.lowest_price_since_entry = price
             mgmt.last_eval_time = now
 
-            # Live mark-to-market P&L in pips.  The management state's
-            # ``pnl_pips`` was never refreshed, so every PositionWorker check
-            # that gates on P&L (invalidation's ``pnl_pips <= 0``, breakeven,
-            # profit protection, stall flat-threshold) saw a permanent 0.0 —
-            # making "low score with negative P&L" fire on freshly opened
-            # positions.  Feed the broker-truth entry price + latest tick so
-            # those checks evaluate against reality.
+            # Refresh broker-truth mark-to-market P&L for the independent
+            # capital-protection checks. No scan direction or score is derived
+            # or passed into PositionWorker.
             entry_px = _broker_entry_price(pos, price)
             if pip_size > 0 and entry_px > 0:
                 if direction.upper() in ("BUY", "LONG"):
@@ -430,14 +423,7 @@ class PositionEvaluator:
                 else:
                     mgmt.pnl_pips = (entry_px - price) / pip_size
 
-            scan_ctx = self._build_scan_context(symbol, direction)
             market_ctx = self._build_market_context(symbol, now)
-
-            if scan_ctx is not None:
-                current_score = scan_ctx.score
-                mgmt.score_history.append(current_score)
-                if len(mgmt.score_history) > 20:
-                    mgmt.score_history = mgmt.score_history[-20:]
 
             # Resolve the per-cycle "SL modify in flight" flag from the monotonic
             # deadline set when a worker-path SL move was last submitted (and
@@ -476,7 +462,7 @@ class PositionEvaluator:
                 pos, tm_trade=mgmt, current_price=price,
                 score_history=tuple(mgmt.score_history),
             )
-            intents = self._worker.evaluate(snap, now, scan=scan_ctx, market=market_ctx)
+            intents = self._worker.evaluate(snap, now, market=market_ctx)
 
             # Collapse multiple MODIFY_SL intents for this ticket to the single
             # tightest one BEFORE any optimistic mutation, mirroring the
@@ -565,10 +551,6 @@ class PositionEvaluator:
                             },
                         )
 
-            self._run_decision_engine_management(
-                pos, price, now, now_mono, mgmt, order_id, snap,
-            )
-
             # Persist the in-place mutations from this cycle (trailing SL,
             # breakeven / partial / tp1 flags, price extremes) so they survive
             # a crash — otherwise recovery reloads stale flags and could, e.g.,
@@ -583,56 +565,10 @@ class PositionEvaluator:
                 getattr(pos, "symbol", "?"), exc,
             )
 
-    def _build_scan_context(
-        self, symbol: str, position_direction: str,
-    ) -> Optional[ScanContext]:
-        """Build ScanContext from WorldModel data. Returns None if unavailable.
-
-        Violation V5 — the ScanContext direction is derived from STRUCTURAL
-        observations (StructureAnalysis trend) at evaluation time, never from a
-        pre-computed directional bias stored on the WorldModel. The world model
-        now carries only non-directional facts; the Brain is the sole authority
-        that forms direction, and this safety-floor direction for the
-        PositionWorker is a live read of structure, not a stored conclusion.
-        """
-        try:
-            wm = self._wm_store.get(symbol)
-            if wm is None:
-                return None
-
-            score = 0
-            scan_direction = ""
-            opposing_boost = 0
-
-            structs = wm.structure_by_tf()
-            for tf in ("H1", "H4", "M5"):
-                sa = structs.get(tf)
-                if sa is not None:
-                    trend = getattr(sa, "trend", "")
-                    if trend:
-                        scan_direction = "LONG" if "BULL" in str(trend).upper() else (
-                            "SHORT" if "BEAR" in str(trend).upper() else ""
-                        )
-                    s = int(round(float(getattr(sa, "confidence", 0.0) or 0.0) * 100))
-                    if s:
-                        score = int(s)
-                    break
-
-            if score == 0:
-                return None
-
-            return ScanContext(
-                direction=scan_direction,
-                score=score,
-                opposing_score_boost=opposing_boost,
-            )
-        except Exception:
-            return None
-
     def _build_market_context(
         self, symbol: str, now: datetime,
     ) -> Optional[MarketContext]:
-        """Build MarketContext from TickStore + INSTRUMENT_REGISTRY + WorldModel."""
+        """Build non-directional spread conditions for operational protection."""
         try:
             tick = self._tick_store.get_latest(symbol)
             current_spread_pips: Optional[float] = None
@@ -640,50 +576,18 @@ class PositionEvaluator:
 
             info = INSTRUMENT_REGISTRY.get(symbol)
             pip_size = self._safe_pip_size(symbol)
-            if info is not None:
-                typical_spread_pips = info.typical_spread_pips if info.typical_spread_pips else None
+            if info is not None and info.typical_spread_pips:
+                typical_spread_pips = info.typical_spread_pips
 
             if tick is not None and tick.ask and tick.bid and pip_size > 0:
                 current_spread_pips = (tick.ask - tick.bid) / pip_size
 
-            m5_df = None
-            try:
-                data = self._pm.fetch_market_data(symbol, ["M5"], 120)
-                if isinstance(data, dict):
-                    m5_df = data.get("M5")
-            except Exception as exc:
-                logger.debug("[pos-eval] {} M5 fetch failed: {}", symbol, exc)
-
-            h1_open = h1_close = h1_high = h1_low = h1_time = None
-            last_h1 = self._last_h1_close.get(symbol)
-            wm = self._wm_store.get(symbol)
-            if wm is not None:
-                structs = wm.structure_by_tf()
-                h1_sa = structs.get("H1")
-                if h1_sa is not None:
-                    h1_open = getattr(h1_sa, "last_candle_open", None)
-                    h1_close = getattr(h1_sa, "last_candle_close", None)
-                    h1_high = getattr(h1_sa, "last_candle_high", None)
-                    h1_low = getattr(h1_sa, "last_candle_low", None)
-                    h1_time = getattr(h1_sa, "last_candle_time", None)
-
-            ctx = MarketContext(
+            return MarketContext(
                 typical_spread=typical_spread_pips,
                 current_spread=current_spread_pips,
-                h1_last_closed_open=h1_open,
-                h1_last_closed_close=h1_close,
-                h1_last_closed_high=h1_high,
-                h1_last_closed_low=h1_low,
-                h1_last_closed_time=h1_time,
-                last_seen_h1_close=last_h1,
-                m5_df=m5_df,
             )
-
-            if h1_time is not None:
-                self._last_h1_close[symbol] = h1_time
-
-            return ctx
-        except Exception:
+        except Exception as exc:
+            logger.debug("[pos-eval] {} spread context unavailable: {}", symbol, exc)
             return None
 
     def _safe_pip_size(self, symbol: str) -> float:
@@ -941,18 +845,6 @@ class PositionEvaluator:
                 symbol, direction, exc,
             )
             return None
-
-    def _run_decision_engine_management(
-        self, pos, price: float, now: datetime, now_mono: float,
-        mgmt, order_id: str, snap: PositionSnapshot,
-    ) -> None:
-        """Legacy DecisionEngine management — RETIRED.
-
-        The single Cognitive Brain is the sole market manager (Constitution
-        Part VI/X). The deterministic protectors (PositionWorker trailing/
-        breakeven/TP + portfolio heat) remain as the Part X safety floor.
-        """
-        return
 
     # ── Phase 5: developing-structure management advisory ────────────
     def _apply_developing_advisory(
@@ -7113,15 +7005,7 @@ class EventDrivenSystem:
         system with a MagicMock config, which would otherwise inject mocks).
         """
         cfg = WorkerConfig()
-        # Native thesis-based management owns discretionary exits regardless of
-        # external provider availability. The mechanical suite is enabled only by
-        # the explicit RiskConfig fallback flag, never merely because cognition is off.
         risk_cfg = getattr(self._config, "risk", None)
-        # The live event-driven runtime is Brain-only for discretionary
-        # management. No environment or RiskConfig flag can re-enable the
-        # retired deterministic TP/BE/trailing/stall/scan-exit fallback.
-        cfg.discretionary_exits_enabled = False
-        cfg.scan_directional_exits_enabled = False
         if risk_cfg is None:
             return cfg
         enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
@@ -7136,8 +7020,6 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
-        # Directional mechanical exits are constrained by the explicit
-        # legacy fallback flag evaluated above.
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:
