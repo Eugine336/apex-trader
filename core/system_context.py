@@ -1357,29 +1357,32 @@ class SystemContext:
                 # parallel broker batch API into the native concept readers.
                 _concept_market_cycle_snapshot: dict[str, Any] = {}
                 _concept_market_cycle_specs: dict[str, Any] = {}
-                _concept_market_cycle_meta: dict[str, Any] = {"cutoff_epoch": None}
+                _concept_market_cycle_meta: dict[str, Any] = {
+                    "cutoff_epoch": None,
+                    "per_symbol_cutoff_epochs": {},
+                }
 
                 def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
                     _concept_market_cycle_snapshot.clear()
                     _concept_market_cycle_specs.clear()
                     # A common multi-symbol cutoff must come from verified
                     # per-venue UTC authorities, never the machine wall clock.
-                    # Use the earliest lower bound so every selected venue's
-                    # completed data is evaluated against a conservative cut.
-                    cutoffs = []
+                    # Retain per-symbol bounds even if one venue is unavailable;
+                    # only the shared cross-symbol cutoff then remains unknown.
+                    per_symbol_cutoffs: dict[str, float] = {}
                     for selected_symbol in symbols:
                         try:
                             value = platform_manager.get_utc_time_lower_bound(selected_symbol)
                             numeric = float(value) if value is not None else None
-                            if numeric is None or not math.isfinite(numeric):
-                                cutoffs = []
-                                break
-                            cutoffs.append(numeric)
+                            if numeric is not None and math.isfinite(numeric) and numeric > 0:
+                                per_symbol_cutoffs[selected_symbol] = numeric
                         except Exception:
-                            cutoffs = []
-                            break
+                            continue
+                    _concept_market_cycle_meta["per_symbol_cutoff_epochs"] = per_symbol_cutoffs
                     _concept_market_cycle_meta["cutoff_epoch"] = (
-                        min(cutoffs) if len(cutoffs) == len(symbols) and cutoffs else None
+                        min(per_symbol_cutoffs.values())
+                        if len(per_symbol_cutoffs) == len(symbols) and per_symbol_cutoffs
+                        else None
                     )
                     try:
                         batch = platform_manager.fetch_all_market_data(
@@ -1467,13 +1470,16 @@ class SystemContext:
                             symbol, type(exc).__name__,
                         )
                         market_depth = {}
-                    analysis_utc_epoch = None
+                    analysis_utc_epoch = _concept_market_cycle_meta.get(
+                        "per_symbol_cutoff_epochs", {},
+                    ).get(symbol)
                     try:
                         from datetime import datetime, timedelta, timezone
-                        utc_lower_bound = platform_manager.get_utc_time_lower_bound(symbol)
-                        if utc_lower_bound is None or not math.isfinite(float(utc_lower_bound)):
-                            raise RuntimeError("verified UTC clock authority unavailable")
-                        analysis_utc_epoch = float(utc_lower_bound)
+                        if analysis_utc_epoch is None:
+                            utc_lower_bound = platform_manager.get_utc_time_lower_bound(symbol)
+                            if utc_lower_bound is None or not math.isfinite(float(utc_lower_bound)):
+                                raise RuntimeError("verified UTC clock authority unavailable")
+                            analysis_utc_epoch = float(utc_lower_bound)
                         tick_window_end = datetime.fromtimestamp(
                             analysis_utc_epoch, tz=timezone.utc,
                         )
