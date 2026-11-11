@@ -1320,9 +1320,12 @@ class PlatformManager:
         try:
             connector = self.get_connector(symbol)
             provider = getattr(connector, "get_utc_time_lower_bound", None)
-            if not callable(provider):
-                return None
-            value = provider()
+            value = provider() if callable(provider) else None
+            if value is None:
+                # Non-MT5 adapters and expired broker-clock holdover still use
+                # independent NTP/HTTPS UTC witnesses, never host wall time.
+                from platforms.mt5.clock import independent_utc_lower_bound
+                value = independent_utc_lower_bound()
             if value is None:
                 return None
             result = float(value)
