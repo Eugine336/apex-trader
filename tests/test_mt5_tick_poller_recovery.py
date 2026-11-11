@@ -369,3 +369,50 @@ def test_server_identity_change_allows_new_server_checkpoint_to_be_written():
     payload = json.loads(store.rows[0]["payload_json"])
     assert payload["broker_server"] == "JustMarkets-Demo"
     assert payload["cursor_utc"] == (pm.calls[0][0] + timedelta(seconds=1)).isoformat()
+
+def test_history_processing_exception_does_not_block_live_quote_delivery():
+    from types import SimpleNamespace
+
+    stamp = datetime(2026, 11, 11, 10, 0, tzinfo=timezone.utc)
+
+    class _MalformedHistory:
+        attrs = {
+            "source_timestamp_verified": True,
+            "source_timezone": "UTC",
+            "utc_normalization": "utc_request_bounds_verified",
+        }
+        empty = False
+
+        def iterrows(self):
+            raise RuntimeError("injected malformed history iterator")
+
+    class _PM:
+        def get_price(self, _symbol):
+            return SimpleNamespace(
+                symbol="XAUUSD",
+                bid=2000.0,
+                ask=2000.1,
+                time=stamp,
+                source_timestamp_verified=True,
+                quote_kind="bid_ask",
+                spread_unit="ticks",
+                raw_fields={
+                    "time": int(stamp.timestamp()) + 7200,
+                    "time_msc": int(stamp.timestamp() * 1000) + 7_200_000,
+                    "timestamp_utc_epoch": stamp.timestamp(),
+                    "broker_server_identity": "JustMarkets-Demo",
+                    "flags": 0,
+                },
+            )
+
+        def get_tick_history(self, _symbol, _start, _end):
+            return _MalformedHistory()
+
+    router = _Router()
+    poller = MT5TickPoller(_PM(), router, ["XAUUSD"])
+
+    poller._poll_symbol("XAUUSD")
+
+    assert len(router.ticks) == 1
+    assert router.ticks[0].source_timestamp_verified is True
+    assert router.ticks[0].timestamp == stamp
