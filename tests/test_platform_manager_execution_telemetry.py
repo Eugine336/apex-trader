@@ -140,4 +140,9 @@ def test_platform_manager_uses_independent_utc_fallback_for_adapters_without_clo
     manager.get_connector = lambda _symbol: SimpleNamespace(
         get_utc_time_lower_bound=lambda: float("nan"),
     )
-    assert manager.get_utc_time_lower_bound("XAUUSD") is None
+    assert manager.get_utc_time_lower_bound("XAUUSD") == 1_800_000_001.0
+
+    manager.get_connector = lambda _symbol: SimpleNamespace(
+        get_utc_time_lower_bound=lambda: float("inf"),
+    )
+    assert manager.get_utc_time_lower_bound("XAUUSD") == 1_800_000_001.0
