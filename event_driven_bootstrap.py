@@ -3375,7 +3375,14 @@ class EventDrivenSystem:
                 utc_value = self._pm.get_utc_time_lower_bound(symbol)
                 if utc_value is not None and math.isfinite(float(utc_value)):
                     utc_now_epoch = float(utc_value)
-            except Exception:
+            except Exception as exc:
+                # SAFE-FALLBACK: no session-derived evidence is emitted without
+                # an independent UTC authority; the price snapshot remains
+                # available with its timestamp basis explicitly unverified.
+                logger.debug(
+                    "[cognition] UTC authority unavailable for developing snapshot {}: {}",
+                    symbol, type(exc).__name__,
+                )
                 utc_now_epoch = None
             tick = None
             recent_ticks: list = []
