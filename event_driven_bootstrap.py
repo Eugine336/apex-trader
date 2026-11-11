@@ -2546,6 +2546,74 @@ class EventDrivenSystem:
                 self._portfolio_admission_reservations = reservations
             return reservations
 
+    def _reconcile_portfolio_admission_reservations(
+        self, reservation_book: Any, positions: list[Any],
+    ) -> int:
+        """Release queued exposure only after exact broker order→position attribution."""
+        try:
+            reservations = reservation_book.snapshot()
+            get_entry_orders = getattr(self._pm, "get_position_entry_order_ids", None)
+            verified_links: dict[str, set[str]] = {}
+            now_utc = datetime.now(timezone.utc)
+            earliest = datetime.fromtimestamp(0.0, tz=timezone.utc)
+            for reservation in reservations:
+                order_id = str(reservation.get("broker_order_id") or "").strip()
+                if not order_id:
+                    continue
+                wanted_symbol = str(reservation.get("symbol") or "").strip().upper()
+                wanted_account = str(reservation.get("account_key") or "")
+                wanted_direction = str(reservation.get("direction") or "").strip().upper()
+                for position in positions:
+                    if isinstance(position, dict):
+                        symbol = str(position.get("symbol") or "").strip().upper()
+                        direction_raw = str(position.get("direction") or "").strip().upper()
+                        account = str(position.get("account_key") or "")
+                        ticket = str(position.get("order_id") or position.get("ticket") or "").strip()
+                        platform = str(position.get("platform") or "").strip().lower()
+                        connector_index = position.get("connector_index")
+                    else:
+                        symbol = str(getattr(position, "symbol", "") or "").strip().upper()
+                        direction_raw = str(getattr(position, "direction", "") or "").strip().upper()
+                        account = str(getattr(position, "account_key", "") or "")
+                        ticket = str(getattr(position, "order_id", getattr(position, "ticket", "")) or "").strip()
+                        platform = str(getattr(position, "platform", "") or "").strip().lower()
+                        connector_index = getattr(position, "connector_index", None)
+                    direction = "LONG" if direction_raw in {"BUY", "LONG"} else (
+                        "SHORT" if direction_raw in {"SELL", "SHORT"} else ""
+                    )
+                    if (
+                        not ticket or symbol != wanted_symbol
+                        or direction != wanted_direction or account != wanted_account
+                    ):
+                        continue
+                    if ticket == order_id:
+                        verified_links.setdefault(ticket, set()).add(order_id)
+                        break
+                    # MT5 order and position tickets can differ. Verify the
+                    # exact contributing entry order from broker deal history.
+                    if platform == "mt5" and callable(get_entry_orders):
+                        try:
+                            route = f"mt5_{int(connector_index)}"
+                            order_ids = get_entry_orders(
+                                ticket,
+                                symbol=symbol,
+                                platform=route,
+                                from_dt=earliest,
+                                to_dt=now_utc,
+                            )
+                        except (TypeError, ValueError, IndexError, RuntimeError, OSError):
+                            continue
+                        if order_id in set(order_ids or []):
+                            verified_links.setdefault(ticket, set()).add(order_id)
+                            break
+                    # Deriv releases only on exact contract/position ID equality.
+            return reservation_book.reconcile(
+                positions, position_order_ids=verified_links,
+            )
+        except Exception as exc:  # noqa: BLE001 — unknown attribution retains reservations
+            logger.warning("[portfolio-reservations] exact broker attribution unavailable: {}", exc)
+            return 0
+
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
         """Ask Compliance against broker positions plus durable queued-open reservations."""
         try:
@@ -2581,7 +2649,7 @@ class EventDrivenSystem:
                 if not position_account or position_account == account_key:
                     book.append(position)
             reservation_book = self._get_portfolio_admission_reservations()
-            reservation_book.reconcile(book)
+            self._reconcile_portfolio_admission_reservations(reservation_book, book)
             for reservation in reservation_book.snapshot():
                 book.append(SimpleNamespace(
                     symbol=str(reservation.get("symbol") or ""),
@@ -6357,6 +6425,21 @@ class EventDrivenSystem:
                     or getattr(response, "position_id", "")
                     or ""
                 )
+            if ticket:
+                try:
+                    linked = self._get_portfolio_admission_reservations().link_order(
+                        str(getattr(intent, "idempotency_key", "") or ""), ticket,
+                    )
+                    if not linked:
+                        logger.error(
+                            "[portfolio-reservations] successful market OPEN {} could not link reservation to broker ticket {}",
+                            intent.symbol, ticket,
+                        )
+                except Exception as exc:  # noqa: BLE001 — retain unlinked reservation on ambiguity
+                    logger.error(
+                        "[portfolio-reservations] market OPEN {} ticket link failed: {}",
+                        intent.symbol, exc,
+                    )
             if not ticket:
                 logger.error(
                     "[decision-provenance] successful OPEN for {} has no broker ticket; "
