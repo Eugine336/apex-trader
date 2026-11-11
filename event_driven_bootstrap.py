@@ -3477,6 +3477,7 @@ class EventDrivenSystem:
                         measurements["specification_verified"] = True
                     if spec.get("source_verified") is True:
                         measurements["source_verified"] = True
+                    measurements["evidence_timestamp_basis"] = evidence_timestamp_basis
                     evidence.append(Evidence(
                         source_module="broker.instrument_spec",
                         domain=EvidenceDomain.OTHER,
@@ -3521,7 +3522,6 @@ class EventDrivenSystem:
                             "broker_holiday_calendar_verified": (
                                 spec.get("broker_holiday_calendar_verified") is True
                             ),
-                            "evidence_timestamp_basis": evidence_timestamp_basis,
                             "clock_timezone": "broker_server_time",
                         },
                         timestamp_epoch=evidence_ingested_at,
@@ -3567,7 +3567,7 @@ class EventDrivenSystem:
                         confidence=0.5,
                         uncertainty=0.5,
                         measurements=session_measurements,
-                        timestamp_epoch=_time.time(),
+                        timestamp_epoch=utc_now_epoch,
                         relevance_horizon_seconds=60.0,
                     ))
             except Exception as exc:  # noqa: BLE001 — session context is optional
