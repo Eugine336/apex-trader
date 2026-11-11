@@ -1331,8 +1331,16 @@ class PlatformManager:
             result = float(value)
             return result if math.isfinite(result) else None
         except Exception as exc:
-            _pm_logger.debug("[platform_manager] UTC lower bound unavailable for {}: {}", symbol, exc)
-            return None
+            _pm_logger.debug(
+                "[platform_manager] venue UTC lookup unavailable for {}: {}; "
+                "falling back to independent UTC authorities",
+                symbol, exc,
+            )
+            try:
+                from platforms.mt5.clock import independent_utc_lower_bound
+                return independent_utc_lower_bound()
+            except Exception:
+                return None
 
     def get_tick_history(self, symbol: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
         """Fetch historical ticks from the owning connector when supported."""
