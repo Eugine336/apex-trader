@@ -353,7 +353,7 @@ def test_stale_live_clock_is_not_applied_to_historical_tick_window(monkeypatch):
     connector._read_server_clock_state = lambda *args, **kwargs: SimpleNamespace(
         offset_seconds=offset,
         uncertainty_seconds=0.0,
-        observed_gmt_epoch=now - 3600,
+        observed_gmt_epoch=now,
         observed_monotonic=time.monotonic(),
         sources=("ntp:one", "ntp:two"),
     )
