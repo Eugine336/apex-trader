@@ -1166,6 +1166,9 @@ class EventDrivenSystem:
         self._pm = platform_manager
         self._running = False
         self._ctx = ctx
+        # Serialize lazy construction of the durable reservation ledger before
+        # any concurrent origination sink can acquire its shared transaction lock.
+        self._portfolio_admission_reservations_lock = threading.Lock()
 
         # ── Core infrastructure ──────────────────────────────────────
         self._event_bus = EventBus()
@@ -2508,12 +2511,14 @@ class EventDrivenSystem:
 
     def _get_portfolio_admission_reservations(self):
         """Return the durable reservation ledger shared by concurrent origination calls."""
-        reservations = getattr(self, "_portfolio_admission_reservations", None)
-        if reservations is None:
-            from portfolio.admission_reservations import PortfolioAdmissionReservations
-            reservations = PortfolioAdmissionReservations()
-            self._portfolio_admission_reservations = reservations
-        return reservations
+        lock = self._portfolio_admission_reservations_lock
+        with lock:
+            reservations = getattr(self, "_portfolio_admission_reservations", None)
+            if reservations is None:
+                from portfolio.admission_reservations import PortfolioAdmissionReservations
+                reservations = PortfolioAdmissionReservations()
+                self._portfolio_admission_reservations = reservations
+            return reservations
 
     def _compliance_permits(self, symbol: str, direction: str) -> bool:
         """Ask Compliance against broker positions plus durable queued-open reservations."""
