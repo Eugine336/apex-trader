@@ -285,6 +285,8 @@ class CalibrationProducer:
                 not evidence_id or evidence_id in seen_ids
                 or evidence_symbol != symbol
                 or not source_module or not domain or not data_basis
+                or not isinstance(item.get("measurements"), dict)
+                or not item.get("measurements")
                 or item.get("source_timestamp_verified") is not True
                 or item.get("provisional") is True
             ):
