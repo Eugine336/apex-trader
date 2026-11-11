@@ -63,12 +63,26 @@ def main() -> int:
         witness_before = time.monotonic()
         witnesses_before = query_ntp_sources()
         witness_after = time.monotonic()
-        if len(witnesses_before) < 2:
-            raise RuntimeError("fewer than two independent UTC witnesses; cannot form trusted query bounds")
+        def _authority(server: str) -> str:
+            endpoint = str(server or "").split(":", 1)[-1].split("/", 1)[0]
+            endpoint = endpoint.split(":", 1)[0].strip().lower()
+            for domain in ("cloudflare.com", "google.com", "ntp.org"):
+                if endpoint == domain or endpoint.endswith("." + domain):
+                    return domain
+            return endpoint
+
+        independent = {}
+        for sample in witnesses_before:
+            authority = _authority(sample.server)
+            previous = independent.get(authority)
+            if previous is None or sample.uncertainty_seconds < previous.uncertainty_seconds:
+                independent[authority] = sample
+        if len(independent) < 2:
+            raise RuntimeError("fewer than two independent UTC authorities; cannot form trusted query bounds")
         witness_midpoint = (witness_before + witness_after) / 2.0
         projected_utc = sorted(
             sample.utc_epoch + (witness_midpoint - sample.monotonic_epoch)
-            for sample in witnesses_before
+            for sample in independent.values()
         )
         middle = len(projected_utc) // 2
         trusted_utc_now = (
