@@ -918,8 +918,8 @@ class RiskConfig:
 
     # ── P8: portfolio-heat-aware trailing (mechanical manager) ────────────
     # The portfolio-heat state machine reacts to heat at the BOOK level
-    # (DEFENSIVE/REDUCING/EMERGENCY trims/closes). The mechanical TradeManager,
-    # however, trails every runner at the same width regardless of how stressed
+    # (DEFENSIVE/REDUCING/EMERGENCY trims/closes). The retired mechanical manager
+    # previously trailed every runner at the same width regardless of how stressed
     # the book is. When the book is hot, a runner in profit should lock gains
     # faster: multiply the structure-trail buffer by a heat-dependent factor so
     # the stop sits CLOSER to structure (tighter). A smaller factor → tighter
