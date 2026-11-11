@@ -585,6 +585,9 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             "point_in_time_evidence": [
                 {
                     "evidence_id": f"feature-{index}",
+                    "source_module": "market_lens.price_structure",
+                    "domain": "structure",
+                    "data_basis": "completed_ohlc",
                     "symbol": "EURUSD",
                     "source_timestamp_epoch": decision_epoch - 3600.0,
                     "source_timestamp_verified": True,
@@ -605,6 +608,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                     "evidence_id": f"quote-{index}",
                     "symbol": "EURUSD",
                     "source_module": "market.live_quote",
+                    "domain": "execution_quality",
+                    "data_basis": "live_bid_ask_quote",
                     "source_timestamp_epoch": decision_epoch,
                     "source_timestamp_verified": True,
                     "relevance_horizon_seconds": 90.0,
@@ -825,6 +830,19 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         wrong_source_module_events.append(copied)
     assert CalibrationProducer(
         Store(wrong_source_module_events), refresh_interval_seconds=30.0,
+    ).refresh("EURUSD", now=now) == []
+
+    incomplete_feature_lineage = []
+    for row in events:
+        copied = dict(row)
+        payload = json.loads(row["payload_json"])
+        if row["event_type"] == "COGNITIVE_CANDIDATE_SNAPSHOT":
+            payload["point_in_time_evidence"][0].pop("source_module", None)
+            payload["point_in_time_evidence"][0].pop("data_basis", None)
+        copied["payload_json"] = json.dumps(payload)
+        incomplete_feature_lineage.append(copied)
+    assert CalibrationProducer(
+        Store(incomplete_feature_lineage), refresh_interval_seconds=30.0,
     ).refresh("EURUSD", now=now) == []
 
     duplicate_snapshot_events = [dict(row) for row in events]
