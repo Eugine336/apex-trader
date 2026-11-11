@@ -1168,6 +1168,10 @@ class MT5Connector(BaseConnector):
                     - clock.uncertainty_seconds
                 )
                 recent_window = -5.0 <= utc_now - end.timestamp() <= 120.0
+            if not recent_window:
+                # A live offset is not authority for a historical query window.
+                # Keep the provider epochs and mark their timezone unresolved.
+                clock = None
         if "time" in frame.columns:
             frame["time_server_epoch"] = frame["time"]
             if clock is not None:
