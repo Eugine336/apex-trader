@@ -22,6 +22,7 @@ from cognition.contracts import (
     CANDIDATE_FAMILIES, Evidence, EvidenceDomain, candidate_family_from,
 )
 from cognition.quote_provenance import verify_quote_source_provenance
+from persistence import domain_events as DE
 
 _REGISTRY: dict[str, "CalibrationArtifact"] = {}
 _REGISTRY_LOCK = threading.RLock()
@@ -306,6 +307,134 @@ class CalibrationProducer:
             ):
                 return False
         return True
+
+    @staticmethod
+    def _dataset_digest(family: str, groups: list[dict]) -> str:
+        digest_input = [
+            (
+                family,
+                item["decision_id"],
+                item["decision_epoch"],
+                item["label"],
+                item["return_r"],
+                item["candidate_ids"],
+            )
+            for item in groups
+        ]
+        return hashlib.sha256(
+            json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _resolve_holdout_manifest(
+        self,
+        symbol: str,
+        direction: str,
+        family: str,
+        horizon: int,
+        groups: list[dict],
+        *,
+        now_epoch: float,
+    ) -> Optional[dict]:
+        """Load or durably freeze one chronological development/holdout dataset."""
+        if len(groups) < self.min_samples * 5:
+            return None
+        manifest_key = (
+            f"{symbol}|{direction}|{family}|{int(horizon)}|"
+            "chronological_holdout_manifest_v1"
+        )
+        store = self._event_store()
+        rows, complete = self._query_all(DE.CALIBRATION_HOLDOUT_MANIFEST, symbol)
+        if not complete:
+            return None
+
+        def _matching_manifest(items: list[dict]) -> Optional[dict]:
+            matches = []
+            for row in items:
+                payload = self._payload(row)
+                if (
+                    str(payload.get("manifest_key") or "") == manifest_key
+                    and str(payload.get("symbol") or "").strip().upper() == symbol
+                    and str(payload.get("direction") or "").strip().upper() == direction
+                    and str(payload.get("candidate_family") or "").strip().lower() == family
+                    and payload.get("horizon_seconds") == int(horizon)
+                ):
+                    matches.append((int(row.get("_event_seq") or row.get("seq") or 0), payload))
+            matches.sort(key=lambda item: item[0])
+            return dict(matches[0][1]) if matches else None
+
+        manifest = _matching_manifest(rows)
+        if manifest is None:
+            emit = getattr(store, "emit", None)
+            if not callable(emit):
+                return None
+            ordered = sorted(
+                groups,
+                key=lambda item: (float(item["decision_epoch"]), str(item["decision_id"])),
+            )
+            split_index = int(len(ordered) * 0.80)
+            if split_index <= 0 or split_index >= len(ordered):
+                return None
+            emit(
+                event_type=DE.CALIBRATION_HOLDOUT_MANIFEST,
+                severity="INFO",
+                symbol=symbol,
+                correlation_id=manifest_key,
+                parent_id=manifest_key,
+                source_module="calibration_producer.holdout_manifest",
+                durable=True,
+                payload={
+                    "manifest_key": manifest_key,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "candidate_family": family,
+                    "horizon_seconds": int(horizon),
+                    "split_protocol": "chronological_80_20_purged_fixed_horizon_v1",
+                    "holdout_start_epoch": float(ordered[split_index]["decision_epoch"]),
+                    "holdout_end_epoch": float(ordered[-1]["decision_epoch"]),
+                    "source_dataset_digest": self._dataset_digest(family, ordered),
+                    "source_decision_count": len(ordered),
+                    "created_at_epoch": float(now_epoch),
+                    "untouched_holdout": True,
+                },
+            )
+            rows, complete = self._query_all(DE.CALIBRATION_HOLDOUT_MANIFEST, symbol)
+            if not complete:
+                return None
+            manifest = _matching_manifest(rows)
+            if manifest is None:
+                return None
+
+        try:
+            start_epoch = float(manifest.get("holdout_start_epoch"))
+            end_epoch = float(manifest.get("holdout_end_epoch"))
+            source_digest = str(manifest.get("source_dataset_digest") or "")
+            source_count = int(manifest.get("source_decision_count"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not math.isfinite(start_epoch) or not math.isfinite(end_epoch)
+            or start_epoch <= 0.0 or end_epoch < start_epoch
+            or not source_digest or source_count < self.min_samples * 5
+            or manifest.get("untouched_holdout") is not True
+            or manifest.get("split_protocol") != "chronological_80_20_purged_fixed_horizon_v1"
+        ):
+            return None
+        frozen_groups = [
+            item for item in groups
+            if float(item["decision_epoch"]) <= end_epoch
+        ]
+        if (
+            len(frozen_groups) != source_count
+            or self._dataset_digest(family, frozen_groups) != source_digest
+        ):
+            return None
+        return {
+            "holdout_start_epoch": start_epoch,
+            "holdout_end_epoch": end_epoch,
+            "source_dataset_digest": source_digest,
+            "groups": frozen_groups,
+            "manifest_key": manifest_key,
+        }
 
     def refresh(self, symbol: str, *, now: Optional[float] = None) -> list[CalibrationArtifact]:
         current = time.time() if now is None else float(now)
@@ -779,19 +908,30 @@ class CalibrationProducer:
                         )
                         if len(eligible_groups) < self.min_samples * 5:
                             continue
-                        n = len(eligible_groups)
-                        holdout_start = int(n * 0.80)
-                        holdout = eligible_groups[holdout_start:]
-                        if len(holdout) < self.min_samples:
+                        manifest = self._resolve_holdout_manifest(
+                            sym, direction, family, horizon, eligible_groups,
+                            now_epoch=current,
+                        )
+                        if manifest is None:
                             continue
-                        holdout_start_epoch = holdout[0]["decision_epoch"]
-                        # Purge development rows whose fixed-horizon outcome could
-                        # overlap the untouched holdout decision window.
-                        development = [
-                            item for item in eligible_groups[:holdout_start]
-                            if item["decision_epoch"] + horizon < holdout_start_epoch
+                        frozen_groups = manifest["groups"]
+                        holdout_start_epoch = manifest["holdout_start_epoch"]
+                        holdout_end_epoch = manifest["holdout_end_epoch"]
+                        # The manifest freezes both the development data cut and
+                        # untouched holdout window; later observations cannot roll it.
+                        holdout = [
+                            item for item in frozen_groups
+                            if holdout_start_epoch <= item["decision_epoch"] <= holdout_end_epoch
                         ]
-                        if len(development) < self.min_samples * 3:
+                        development = [
+                            item for item in frozen_groups
+                            if item["decision_epoch"] < holdout_start_epoch
+                            and item["decision_epoch"] + horizon < holdout_start_epoch
+                        ]
+                        if (
+                            len(holdout) < self.min_samples
+                            or len(development) < self.min_samples * 3
+                        ):
                             continue
 
                         # Three expanding chronological folds. Each training sample
@@ -845,20 +985,7 @@ class CalibrationProducer:
                             or expected_return_gap > 0.50
                         ):
                             continue
-                        digest_input = [
-                            (
-                                family,
-                                item["decision_id"],
-                                item["decision_epoch"],
-                                item["label"],
-                                item["return_r"],
-                                item["candidate_ids"],
-                            )
-                            for item in eligible_groups
-                        ]
-                        digest = hashlib.sha256(
-                            json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                        ).hexdigest()
+                        digest = manifest["source_dataset_digest"]
                         artifact_id = hashlib.sha256(
                             f"{sym}|{direction}|{family}|{horizon}|{digest}|conditional_family_fixed_horizon_v1".encode("utf-8")
                         ).hexdigest()
