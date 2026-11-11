@@ -759,3 +759,19 @@ Implementation, integration, automated validation and production acceptance are 
 - Prior work reports monotonic anchoring, uncertainty, broker identity binding and fail-closed validation; those changes must be inspected and reused, not assumed complete.
 - Prior live diagnostic context reported intermittent stale/non-advancing quote observations and a 10-second diagnostic wait. This is not sustained feed acceptance.
 - No test execution, code integration, runtime verification or production acceptance is claimed by this plan entry.
+
+
+### Owner-host evidence update — 2026-11-11
+
+Two successful diagnostic captures on the same Windows 11 / JustMarkets-Demo host returned no latest XAUUSD tick fields and zero rows for a 60-second UTC history range while the terminal reported connected. This is repeatable but not yet attributable to broker feed absence, symbol resolution/visibility, or query semantics because the earlier diagnostic did not include `symbol_info` state. The diagnostic has therefore been extended with read-only symbol metadata, API error tuples, explicit history result state and filtered candidate names when the exact symbol is unresolved. It does not call `symbol_select` or modify terminal state.
+
+The host wall clock appeared about 0.7 seconds behind the independent UTC projection, but witness uncertainty was about 0.56–0.59 seconds; no clock correction is supported. Timestamp normalization remains DATA-GATED, and all WP-T acceptance gates remain OPEN pending expanded diagnostic execution and a second independent host capture.
+
+
+### Owner-host evidence update — broker-native symbol and MT5 timestamp domains (2026-11-11)
+
+A follow-up read-only capture using `XAUUSD.ecn` on the same Windows 11 / JustMarkets-Demo terminal resolved symbol metadata and returned a live quote (Bid 4049.70 / Ask 4049.79) plus 203 historical ticks for the requested 60-second UTC interval. The prior empty results for exact `XAUUSD` were caused by querying a symbol name not present on this broker; the broker-native symbol is `XAUUSD.ecn`.
+
+The raw latest quote epoch (`1794404576`, milliseconds `1794404576984`) was approximately two hours ahead of the independent UTC witness projection, while the last history row (`1794397376`, milliseconds `1794397376835`) fell within the UTC query interval. This is strong single-host evidence that latest-quote and historical-range API timestamp domains differ. The active `get_ticks` path currently assumes history rows are broker-server time and can subtract the live offset; if the observed history semantics are confirmed, this would shift UTC history by two hours. No normalization change is made until repeated and second-host captures establish the contract. Preserve raw timestamps and unresolved provenance in the meantime.
+
+The connector's existing suffix scan includes `.ecn`, but production integration must be traced to prove all Apex market-data callers pass canonical `XAUUSD` through `MT5Connector.symbol_map` and consume the mapped `XAUUSD.ecn` consistently. Do not rename the canonical instrument. Host wall-time discrepancy remains within the reported witness uncertainty; no clock correction is supported. All WP-T acceptance gates remain OPEN.

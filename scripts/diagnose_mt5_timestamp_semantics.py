@@ -1,4 +1,4 @@
-"""Read-only MT5 timestamp semantics capture for WP-T.
+"""Read-only MT5 timestamp and symbol-feed diagnostic for WP-T.
 
 Uses an already-running terminal session. It never submits or modifies orders,
 writes terminal settings, changes the host clock, or reads Apex credentials.
@@ -46,6 +46,42 @@ def _ensure_repository_root_on_path() -> Path:
     return repository_root
 
 
+def _symbol_snapshot(info: Any) -> dict[str, Any] | None:
+    """Return only non-sensitive fields needed to diagnose symbol/feed state."""
+    fields = (
+        "name",
+        "visible",
+        "select",
+        "custom",
+        "trade_mode",
+        "bid",
+        "ask",
+        "last",
+        "volume",
+        "time",
+        "time_msc",
+        "spread",
+        "digits",
+        "point",
+    )
+    if info is None:
+        return None
+    return {name: getattr(info, name, None) for name in fields}
+
+
+def _matching_symbol_names(symbols: Any, requested: str, limit: int = 50) -> list[str]:
+    """Filter broker symbol names without returning unrelated terminal metadata."""
+    if symbols is None:
+        return []
+    needle = requested.casefold()
+    names = []
+    for item in symbols:
+        name = getattr(item, "name", None)
+        if isinstance(name, str) and needle in name.casefold():
+            names.append(name)
+    return sorted(set(names))[:limit]
+
+
 def main() -> int:
     _ensure_repository_root_on_path()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -70,11 +106,21 @@ def main() -> int:
         if account is None or terminal is None:
             raise RuntimeError("MT5 account_info or terminal_info unavailable")
 
+        # Read symbol metadata without selecting or changing Market Watch state.
+        symbol_info = mt5.symbol_info(args.symbol)
+        symbol_info_error = mt5.last_error()
+        symbol_candidates = []
+        if symbol_info is None:
+            # This lookup is read-only; Market Watch selection is not changed.
+            matches = mt5.symbols_get(group=f"*{args.symbol}*")
+            symbol_candidates = _matching_symbol_names(matches, args.symbol)
+
         # Use independent UTC witnesses to form the history query bounds. Host
         # wall time is captured for comparison only and never drives the query.
         witness_before = time.monotonic()
         witnesses_before = query_ntp_sources()
         witness_after = time.monotonic()
+
         def _authority(server: str) -> str:
             endpoint = str(server or "").split(":", 1)[-1].split("/", 1)[0]
             endpoint = endpoint.split(":", 1)[0].strip().lower()
@@ -106,6 +152,7 @@ def main() -> int:
         mono_before = time.monotonic()
         wall_before = time.time()
         tick = mt5.symbol_info_tick(args.symbol)
+        tick_error = mt5.last_error()
         wall_after = time.time()
         mono_after = time.monotonic()
 
@@ -116,6 +163,8 @@ def main() -> int:
             args.symbol, request_start, request_end,
             getattr(mt5, "COPY_TICKS_ALL", 0),
         )
+        history_error = mt5.last_error()
+
         latest_tick_fields = _record(tick) or {}
         latest_tick_fields.setdefault("time", getattr(tick, "time", None))
         latest_tick_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
@@ -153,13 +202,26 @@ def main() -> int:
                 "broker_server": getattr(account, "server", None),
                 "symbol": args.symbol,
             },
+            "symbol_diagnostics": {
+                "symbol_info_available": symbol_info is not None,
+                "symbol_info": _symbol_snapshot(symbol_info),
+                "symbol_info_last_error": symbol_info_error,
+                "matching_symbol_names": symbol_candidates,
+                "selection_changed": False,
+            },
             "latest_tick": latest_tick_fields,
+            "latest_tick_last_error": tick_error,
             "history_query": {
                 "from_utc": request_start.isoformat(),
                 "to_utc": request_end.isoformat(),
+                "result_state": (
+                    "unavailable" if history is None
+                    else "empty" if len(history) == 0
+                    else "populated"
+                ),
                 "row_count": 0 if history is None else len(history),
                 "last_rows": history_rows,
-                "last_error": mt5.last_error() if history is None else None,
+                "last_error": history_error,
             },
             "independent_utc_witnesses": [
                 {
