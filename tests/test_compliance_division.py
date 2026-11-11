@@ -293,6 +293,7 @@ def test_pending_portfolio_reservation_is_included_in_account_heat():
         account_key="mt5:123",
         is_pending_reservation=True,
         reserved_risk_pct=0.01,
+        reserved_max_loss=10.0,
     )
     verdict = div.permit(
         _candidate("EURUSD", "LONG"),
