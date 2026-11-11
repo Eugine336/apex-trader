@@ -801,14 +801,14 @@ class CognitionLoop:
                     return numeric
             except Exception as exc:
                 logger.debug(
-                    "[cognition-loop] venue UTC authority unavailable for {}: {}",
+                    "[cognition-loop] venue UTC authority unavailable for %s: %s",
                     symbol, type(exc).__name__,
                 )
         # No provider means no market-time authority. Production injects the
         # PlatformManager provider, which itself falls back to independent
         # NTP/HTTPS consensus; test/replay callers must supply an explicit cutoff.
         logger.warning(
-            "[cognition-loop] {} reasoning cutoff unknown — host wall time will not be substituted",
+            "[cognition-loop] %s reasoning cutoff unknown — host wall time will not be substituted",
             symbol,
         )
         return 0.0
