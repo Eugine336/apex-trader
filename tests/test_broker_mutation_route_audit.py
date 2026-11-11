@@ -1,4 +1,4 @@
-"""Static guard against live broker-entry bypasses.
+"""Static guard against live broker mutation bypasses.
 
 This audit is intentionally AST-only: it runs without broker SDKs, credentials,
 or market connectivity. Broker protocol adapters and the simulated backtest
@@ -59,7 +59,8 @@ def _broker_mutation_calls(path: Path) -> list[tuple[int, str]]:
             # not a broker mutation. Calls through a broker/connector attribute
             # are still detected and must remain inside the approved gateway.
             if (
-                func.attr in {"close_trade", "modify_trade"}
+                path.relative_to(ROOT) == Path("management/trade_manager.py")
+                and func.attr == "close_trade"
                 and isinstance(func.value, ast.Name)
                 and func.value.id == "self"
             ):
