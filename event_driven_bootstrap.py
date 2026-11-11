@@ -3370,6 +3370,13 @@ class EventDrivenSystem:
                     candles_by_tf[tf] = rows
             if not candles_by_tf:
                 return []
+            utc_now_epoch = None
+            try:
+                utc_value = self._pm.get_utc_time_lower_bound(symbol)
+                if utc_value is not None and math.isfinite(float(utc_value)):
+                    utc_now_epoch = float(utc_value)
+            except Exception:
+                utc_now_epoch = None
             tick = None
             recent_ticks: list = []
             try:
@@ -3391,7 +3398,7 @@ class EventDrivenSystem:
             position = self._cognition_live_position(symbol)
             snap = build_price_snapshot(
                 symbol, candles_by_tf, tick=tick, position=position,
-                ticks=recent_ticks, depth=depth, now_epoch=_time.time(),
+                ticks=recent_ticks, depth=depth, now_epoch=utc_now_epoch,
                 max_bars=6,
             )
             evidence = snapshot_to_evidence(symbol, snap)
@@ -3427,13 +3434,6 @@ class EventDrivenSystem:
             # System 2 — ingest live broker-truth instrument economics as neutral
             # evidence. Missing fields stay absent; registry/config fallbacks are
             # not mislabeled as broker-verified specifications.
-            utc_now_epoch = None
-            try:
-                utc_value = self._pm.get_utc_time_lower_bound(symbol)
-                if utc_value is not None and math.isfinite(float(utc_value)):
-                    utc_now_epoch = float(utc_value)
-            except Exception:
-                utc_now_epoch = None
             evidence_ingested_at = (
                 utc_now_epoch if utc_now_epoch is not None else _time.time()
             )
