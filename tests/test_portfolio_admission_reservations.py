@@ -123,3 +123,71 @@ def test_event_driven_compliance_book_includes_durable_pending_reservations(tmp_
     assert pending.account_key == "mt5:account-a"
     assert pending.reserved_risk_pct == 0.01
     store.close()
+
+
+def test_pending_open_reservation_releases_only_after_broker_confirmed_cancel(tmp_path, monkeypatch):
+    import threading
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from event_driven_bootstrap import EventDrivenSystem
+    from persistence import event_store as event_store_module
+
+    database = str(tmp_path / "pending-order-reservation.db")
+    store = EventStore(db_path=database)
+    monkeypatch.setattr(event_store_module, "get_event_store", lambda: store)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+
+    system = EventDrivenSystem.__new__(EventDrivenSystem)
+    system._pending_orders_lock = threading.Lock()
+    system._pending_orders = {}
+    system._portfolio_admission_reservations = reservations
+    submitted_at = datetime.now(timezone.utc)
+    intent = SimpleNamespace(
+        symbol="XAUUSD",
+        direction="BUY",
+        order_type="LIMIT",
+        lots=0.10,
+        entry_price=2300.0,
+        new_sl=2290.0,
+        new_tp=2320.0,
+        idempotency_key="idem-1",
+        decision_id="decision-1",
+        campaign_id="campaign-1",
+        opportunity_id="opportunity-1",
+        decision_feature_snapshot={"snapshot_id": "snapshot-1"},
+        timestamp=submitted_at,
+    )
+    result = SimpleNamespace(
+        success=True,
+        broker_response=SimpleNamespace(
+            order_id="BROKER-ORDER-1",
+            order_status="PENDING",
+            timestamp=submitted_at,
+            platform="mt5",
+            lots=0.10,
+        ),
+    )
+    system._handle_open_result(intent, result)
+    assert reservations.snapshot()[0]["broker_order_id"] == "BROKER-ORDER-1"
+
+    system._pm = SimpleNamespace(
+        reconcile_pending_order=lambda *args, **kwargs: {
+            "status": "CANCELLED",
+            "broker_confirmed": True,
+            "record": {
+                "ticket": "BROKER-ORDER-1",
+                "state": 2,
+                "volume_initial": 0.10,
+                "volume_current": 0.10,
+            },
+        },
+    )
+    with monkeypatch.context() as patcher:
+        patcher.setattr("event_driven_bootstrap.get_event_store", lambda: store)
+        system._reconcile_pending_orders([])
+
+    assert system._pending_orders == {}
+    assert reservations.snapshot() == []
+    store.close()
