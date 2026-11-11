@@ -107,6 +107,8 @@ def test_m1_price_action_uses_source_bar_time_and_does_not_refresh_stale_data():
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
     })
     evidence = evidence_from_m1_candles("XAUUSD", frame, provisional=True)
     assert evidence is not None
