@@ -130,3 +130,14 @@ This document is the execution checklist for the WP-T roadmap entry. The roadmap
 
 ### Execution limitation in this session
 The available GitHub connector can inspect and commit repository files but does not provide a local checkout or command runner. No source code has been changed and no tests have been executed in this pass. Source changes must not be marked validated without an actual supported-runtime test run.
+
+
+## Follow-on implementation — holdover and diagnostic capture (2026-11-11)
+
+- Implemented immutable clock holdover views in `platforms/mt5/clock.py`. Holdover age is measured from monotonic cache age; uncertainty grows at the explicit conservative bound `CLOCK_HOLDOVER_DRIFT_PPM = 1,000` (1 ms/s). The verified offset and original monotonic anchor are preserved. Invalid/negative ages raise.
+- Rewired `MT5Connector._synchronize_server_clock_state` cache returns to expose `synchronization_status="holdover"` and growing uncertainty. Negative monotonic cache age invalidates the cached state. The existing maximum cache age remains the expiry boundary.
+- Added regression tests in `tests/test_mt5_server_clock.py` for uncertainty growth, anchor preservation and invalid ages. Tests are committed but not executed.
+- Added `scripts/diagnose_mt5_timestamp_semantics.py`, a read-only terminal capture. It uses independent UTC witnesses (deduplicated by authority) for exact history query bounds, captures host wall and monotonic readings, raw latest tick and last historical rows, API/package/terminal version and broker-server identity. It does not access credentials, alter host clock/settings or submit orders.
+- Added `tests/test_mt5_timestamp_diagnostic.py` static read-only safety checks. Tests are committed but not executed.
+- Timestamp research was qualified: official MetaQuotes Python docs describe history data as UTC, while official snapshot docs omit explicit timezone semantics and forum reports conflict. No global UTC/server-local rewrite has been made. The raw capture is required before altering active normalization.
+- No test, lint, import, integration or runtime execution has occurred in this environment. Source implementation is committed; verification remains open.
