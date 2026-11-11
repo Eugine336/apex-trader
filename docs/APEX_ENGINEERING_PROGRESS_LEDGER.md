@@ -317,3 +317,34 @@ Two owner-host captures on the same Windows 11 MT5 terminal (JustMarkets-Demo, p
 - Removed the forming-bar WorldModel publish callback into CognitionLoop. Brain reasoning now wakes on verified tick-change observations and completed candle-close events; provisional developing bars remain isolated to the position-management advisory.
 - Added regression coverage for completed-bar position semantics, UTC range filtering, completed-only fetch wiring and cross-asset attestation.
 - No tests on this branch have yet been executed. CI must validate the rebased branch.
+
+
+## 2026-11-11 — Rebased WP-T integration state (supersedes earlier base/PR notes)
+
+- **Base main:** `8e316a3a6a6d303c6f576807473797e551aca8ae` (includes merged PR #907).
+- **Branch:** `fix/wp-t-timestamp-contract-recovery`.
+- **PR:** #908, draft, base main.
+- **Current branch HEAD:** `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`.
+- **Changed production paths:** `platforms/mt5/mt5_connector.py`, `tick/tick_sources.py`, `event_driven_bootstrap.py`, `tick/live_candle_aggregator.py`, `persistence/domain_events.py`.
+- **Changed tests:** `tests/test_mt5_market_data.py`, `tests/test_mt5_tick_poller_recovery.py`, `tests/test_live_candle_aggregator.py`, `tests/test_market_context_cross_asset.py`.
+- **Changed docs:** `docs/APEX_MT5_DATA_CAPABILITY_CONTRACT.md`, `docs/MT5_CLOCK_BRIDGE.md`, `docs/WP_MT5_CLOCK_AUTHORITY_TICK_STREAM_INTEGRITY.md`, `docs/APEX_FULL_REDESIGN_ROADMAP.md`, this ledger, and `AUDIT_CONSTITUTIONAL.md`.
+
+### Current implementation status
+- Historical `copy_ticks_range` no longer has the live broker offset subtracted. UTC is attested only for bounded batches (≤300 seconds) when raw seconds/milliseconds agree and corroborate the exact UTC request bounds.
+- Long recovery is split into bounded requests. Failed/empty/unverified ranges do not advance the cursor; durable gap events are recorded when EventStore is available.
+- Existing EventStore stores broker-server-scoped cursors and bounded fingerprint overlap. Writes are rate-limited to five seconds per symbol; write failure blocks durable cursor advancement.
+- MT5 bars follow documented UTC semantics. Position-one reads exclude the current forming bar; range reads validate UTC bounds and use an independent UTC lower bound for completion.
+- Confirmed CandleCloseHandler reads, LiveCandleAggregator warmup and cross-asset analysis require completed-bar provenance.
+- Forming-bar WorldModel publications no longer wake cognition. Verified tick-change wakes and completed candle closes remain.
+- No live broker orders, terminal setting changes, host clock changes or protected-path access occurred.
+
+### Verification state
+- PR #907 diagnostic CI passed Python 3.11, Python 3.12 and lint.
+- PR #908 CI for rebased HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4` is queued: Python 3.11, Python 3.12, Gold Desk 3.11/3.12 and lint. No result is claimed yet.
+- No local test/lint/compile command was executed.
+- Same-host timestamp evidence: two captures, one host. A second independent host and DST-transition evidence remain outstanding.
+- Durable EventStore restart test has been added using a temporary SQLite database; it is not yet executed.
+- All T-A1 through T-A10 remain OPEN. WP-T is not accepted.
+
+### Exact next action
+Poll PR #908's full CI matrix for HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4`. Fix every failure without weakening assertions. Then obtain a second independent MT5 host capture, exercise sustained owner-host tick recovery, and complete the remaining clock lifecycle and Systems 2/6/7 integration gates.
