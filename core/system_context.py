@@ -1732,6 +1732,7 @@ class SystemContext:
                         getattr(cog_cfg, "max_symbols_per_cycle", 12)
                         if cog_cfg is not None else 12
                     ),
+                    utc_now_provider=platform_manager.get_utc_time_lower_bound,
                     action_bridge=_bridge,
                     position_source=_cognition_positions,
                     origination_mode=str(
