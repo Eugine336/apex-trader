@@ -224,32 +224,43 @@ class CandleCloseDetector:
         Unknown/expired clock evidence skips the watchdog close instead of
         consulting the host wall clock. The host-clock fallback is retained
         only for standalone detectors that have no provider configured.
+        Clock providers are called outside the detector lock so slow terminal
+        metadata reads cannot stall tick ingestion.
         """
-        events: list[CandleClose] = []
+        with self._lock:
+            symbols = {symbol for symbol, _timeframe in self._next_close}
 
+        now_by_symbol: dict[str, Optional[float]] = {}
+        for symbol in symbols:
+            if now is not None:
+                try:
+                    pair_now = float(now)
+                except (TypeError, ValueError, OverflowError):
+                    pair_now = None
+            elif self._utc_lower_bound_provider is not None:
+                try:
+                    value = self._utc_lower_bound_provider(symbol)
+                    pair_now = float(value) if value is not None else None
+                except Exception as exc:
+                    logger.debug(
+                        "[candle-close] UTC authority unavailable for {}: {}",
+                        symbol, exc,
+                    )
+                    pair_now = None
+            else:
+                pair_now = time.time()
+            now_by_symbol[symbol] = (
+                pair_now if pair_now is not None and math.isfinite(pair_now) else None
+            )
+
+        events: list[CandleClose] = []
         with self._lock:
             for key, nc in list(self._next_close.items()):
                 if nc is None:
                     continue
                 symbol, tf = key
-                if now is not None:
-                    pair_now = float(now)
-                elif self._utc_lower_bound_provider is not None:
-                    try:
-                        value = self._utc_lower_bound_provider(symbol)
-                        pair_now = float(value) if value is not None else None
-                    except Exception as exc:
-                        logger.debug(
-                            "[candle-close] UTC authority unavailable for {}: {}",
-                            symbol, exc,
-                        )
-                        pair_now = None
-                    if pair_now is None or not math.isfinite(pair_now):
-                        continue
-                else:
-                    pair_now = time.time()
-
-                if not math.isfinite(pair_now) or pair_now < nc:
+                pair_now = now_by_symbol.get(symbol)
+                if pair_now is None or pair_now < nc:
                     continue
                 tf_secs = _TF_SECONDS[tf]
                 overdue = int((pair_now - nc) // tf_secs) + 1
