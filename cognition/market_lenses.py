@@ -707,10 +707,10 @@ def analyze_market_frames(
             frame,
             limit=1_000_000,
             expected_symbol=symbol,
-            # Retain enough completed bars to warm the longest native
-            # EMA/SMA family (200) and MACD signal line without inventing
-            # values from a short rolling window.
-            return_tail_limit=200,
+            # Keep the bounded market-lens window small. Long-period
+            # indicator warmup is sliced from the already-converted full
+            # history below, avoiding a second frame conversion.
+            return_tail_limit=32,
         )
         completed_rows = (
             full_rows[:-1]
@@ -722,6 +722,10 @@ def analyze_market_frames(
             if source_includes_forming_bar and len(raw_window_rows) > 1
             else raw_window_rows
         )
+        # The general lens uses a 32-row rolling window. Long-period
+        # indicators receive up to 200 completed rows sliced from the same
+        # single-pass conversion; no provider frame is converted twice.
+        indicator_bars = completed_rows[-200:]
         if len(bars) < 5:
             continue
         bars_by_timeframe[timeframe] = completed_rows
@@ -916,7 +920,7 @@ def analyze_market_frames(
         # Broad technical measurements are emitted as evidence only. They
         # never select a side or authorize an opportunity.
         output.extend(_technical_indicator_evidence(
-            symbol, timeframe, bars, source_epoch, source_metadata,
+            symbol, timeframe, indicator_bars, source_epoch, source_metadata,
         ))
 
         # Volume is included only when the selected broker actually supplies it.
