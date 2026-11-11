@@ -459,7 +459,7 @@ class PositionEvaluator:
                 mgmt.sl_modify_pending_until = 0.0
 
             snap = build_position_snapshot(
-                pos, tm_trade=mgmt, current_price=price,
+                pos, management_state=mgmt, current_price=price,
                 score_history=tuple(mgmt.score_history),
             )
             intents = self._worker.evaluate(snap, now, market=market_ctx)
