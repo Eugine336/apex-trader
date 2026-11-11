@@ -40,6 +40,7 @@ Design rules:
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional
 
 from loguru import logger
@@ -260,14 +261,56 @@ class ComplianceDivision:
     ) -> CheckOutcome:
         if self._account_risk is None:
             return CheckOutcome("heat_ok", False, "no account-risk silo (fail-closed)")
-        if self._account_risk.heat_blocked(a.account_key):
-            heat = self._account_risk.heat(a.account_key)
+        heat = float(self._account_risk.heat(a.account_key))
+        reserved_heat = 0.0
+        for position in _b.open_positions:
+            pending = (
+                position.get("is_pending_reservation") is True
+                if isinstance(position, dict)
+                else getattr(position, "is_pending_reservation", False) is True
+            )
+            if not pending:
+                continue
+            reserved_account = (
+                str(position.get("account_key") or "")
+                if isinstance(position, dict)
+                else str(getattr(position, "account_key", "") or "")
+            )
+            if reserved_account != str(a.account_key):
+                continue
+            raw_risk = (
+                position.get("reserved_risk_pct")
+                if isinstance(position, dict)
+                else getattr(position, "reserved_risk_pct", None)
+            )
+            try:
+                risk_fraction = float(raw_risk)
+            except (TypeError, ValueError, OverflowError):
+                return CheckOutcome(
+                    "heat_ok", False,
+                    "pending portfolio reservation has invalid risk provenance",
+                )
+            if not math.isfinite(risk_fraction) or risk_fraction <= 0.0:
+                return CheckOutcome(
+                    "heat_ok", False,
+                    "pending portfolio reservation has unknown/non-positive risk",
+                )
+            reserved_heat += risk_fraction * 100.0
+        effective_heat = heat + reserved_heat
+        cap = float(getattr(self._account_risk, "heat_block_pct", 0.0) or 0.0)
+        if self._account_risk.heat_blocked(a.account_key) or (
+            reserved_heat > 0.0 and (not math.isfinite(cap) or cap <= 0.0)
+        ) or (cap > 0.0 and effective_heat >= cap):
             return CheckOutcome(
                 "heat_ok",
                 False,
-                f"account {a.account_key} heat {heat:.2f}% at/over block cap",
+                f"account {a.account_key} heat {effective_heat:.2f}% "
+                f"(live={heat:.2f}% reserved={reserved_heat:.2f}%) at/over block cap",
             )
-        return CheckOutcome("heat_ok", True, "heat under block cap")
+        return CheckOutcome(
+            "heat_ok", True,
+            f"heat under block cap (live={heat:.2f}% reserved={reserved_heat:.2f}%)",
+        )
 
     def _check_drawdown_frozen(
         self, _c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
