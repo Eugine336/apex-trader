@@ -2085,11 +2085,28 @@ class EventDrivenSystem:
                     continue
                 try:
                     reserved_max_loss = float(reservation.get("max_loss"))
+                    reserved_risk_pct = float(reservation.get("risk_pct"))
                 except (TypeError, ValueError, OverflowError):
                     return None
-                if not math.isfinite(reserved_max_loss) or reserved_max_loss <= 0.0:
+                if (
+                    not math.isfinite(reserved_max_loss) or reserved_max_loss <= 0.0
+                    or not math.isfinite(reserved_risk_pct) or reserved_risk_pct <= 0.0
+                ):
                     return None
                 reserved_loss += reserved_max_loss
+                # Queued Brain-approved exposure is part of the portfolio book,
+                # not only the daily-loss budget. Include it in pair/broker
+                # concentration and correlation calculations before sizing the
+                # next decision from the same asynchronous broker snapshot.
+                from types import SimpleNamespace
+                book.append(SimpleNamespace(
+                    symbol=str(reservation.get("symbol") or ""),
+                    direction=str(reservation.get("direction") or ""),
+                    broker=str(reservation.get("broker") or ""),
+                    risk_pct=reserved_risk_pct,
+                    account_key=account_key,
+                    is_pending_reservation=True,
+                ))
             daily_pnl -= reserved_loss
             daily_loss_cap_pct = float(account_risk.daily_loss_cap_pct)
             if not math.isfinite(daily_pnl) or not math.isfinite(daily_loss_cap_pct):
