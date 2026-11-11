@@ -6,7 +6,7 @@ from persistence.event_store import EventStore
 from portfolio.admission_reservations import PortfolioAdmissionReservations
 
 
-def _payload(reservation_id="idem-1", *, symbol="XAUUSD", direction="LONG"):
+def _payload(reservation_id="idem-1", *, symbol="XAUUSD", direction="LONG", order_type="MARKET"):
     return {
         "reservation_id": reservation_id,
         "account_key": "mt5:account-a",
@@ -18,6 +18,7 @@ def _payload(reservation_id="idem-1", *, symbol="XAUUSD", direction="LONG"):
         "campaign_id": "campaign-1",
         "opportunity_id": "opportunity-1",
         "broker": "mt5",
+        "order_type": order_type,
     }
 
 
@@ -176,7 +177,7 @@ def test_pending_open_reservation_releases_only_after_broker_confirmed_cancel(tm
     monkeypatch.setattr(bootstrap_module, "get_event_store", lambda: store)
     monkeypatch.setattr(event_store_module, "get_event_store", lambda: store)
     reservations = PortfolioAdmissionReservations(lambda: store)
-    assert reservations.reserve(_payload())
+    assert reservations.reserve(_payload(order_type="LIMIT"))
 
     system = EventDrivenSystem.__new__(EventDrivenSystem)
     system._pending_orders_lock = threading.Lock()
