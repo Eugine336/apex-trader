@@ -421,3 +421,14 @@ Verify fresh CI on the latest branch head. Require full Python 3.11/3.12, Gold D
 
 ### Exact next action
 Trigger a fresh PR CI run against `fb260292c280045903ad9d44bef1ba4ffbf4f400` using a normal branch push/PR synchronize event (the available GitHub workflow-run reader currently reports no run for this head). Require both full Python versions, Gold Desk 3.11/3.12 and lint. Verify both indicator-family emission and the 32-row exactly-once conversion contract. Then continue independent-host MT5 capture, sustained tick continuity, DST, restart recovery, consumer audit and Systems 2/6/7 acceptance. Keep T-A1–T-A10 OPEN until evidence exists.
+
+
+### Current branch checkpoint — 2026-11-11 18:10 IST
+
+- Final single-pass indicator-window architecture is committed and present on the PR branch: `a95ee4246169d3352d24b76454957ef706eb1938`. The 32-row conversion contract is restored by `fb260292c280045903ad9d44bef1ba4ffbf4f400`. Documentation correction commits: `22ffb86c961de6dd2f37f171961c32585ae677dc`, `b6a3c149159ea9e5ba7024a10c1af1e80b516992`. A no-tree-change CI trigger commit is `5d6ed3890b5c8a741152187acffbae36f980b39d`.
+- PR #908 head at this checkpoint: `5d6ed3890b5c8a741152187acffbae36f980b39d`; open, draft, mergeable state pending GitHub recomputation. The run reader and combined-status endpoint return no PR workflow runs/statuses for this exact head. This is an infrastructure/verification blocker, not a pass.
+- The last full CI runs #4379/#4380 were against superseded code and failed on the tail-size mismatch (and earlier #4378 failed because the 32-row indicator window lacked long-period warmup). Their results must not be attributed to the final design.
+- Final design is implemented and statically inspected; local execution and fresh CI are not verified in this environment. No broker orders, account mutations, host clock changes or runtime database changes were made. T-A1–T-A10 remain OPEN.
+
+### Exact next action
+Obtain a genuine PR synchronize/push event from the owner's authenticated CLI or another workflow-capable credential so Actions run against the exact current head. Require full Python 3.11/3.12, Gold Desk 3.11/3.12, lint, coverage generation and identity/safety audit. If no Actions capacity is available, run the same repository CI commands in the owner's Windows checkout and capture full output. Only after this gate proceed to multi-host MT5 and integrated Systems 2/6/7 acceptance. Do not merge or mark WP-T accepted.
