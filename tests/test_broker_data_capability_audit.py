@@ -92,6 +92,9 @@ def test_broker_acceptance_requires_verified_account_books_and_every_requested_s
             "instrument_specification": {
                 "source_verified": True, "specification_verified": True,
                 "source_timestamp_epoch": 120.0, "source_timestamp_verified": True,
+                "source_timestamp_semantics": "broker_server_observation_time",
+                "source_timestamp_uncertainty_seconds": 0.5,
+                "broker_server_clock_verified": True,
                 "broker_session_timezone": "Europe/London",
                 "broker_session_timezone_verified": True,
                 "broker_holiday_calendar_verified": True,
