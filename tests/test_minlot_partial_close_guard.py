@@ -1,23 +1,8 @@
-"""Tests for the micro-lot partial-close guard.
+"""Executor min-lot behavior and broker-volume snapshot normalization.
 
-A position already at the broker minimum lot (typically 0.01) cannot be split:
-``0.01 × 0.5 = 0.005`` rounds to ``0.0`` at the volume step. Before the guard
-this produced an infinite retry loop — the executor returned a hard failure,
-``_handle_manage_result`` rolled back the optimistic ``partial_closed`` /
-``tp1_hit`` flags, and the doomed ``PARTIAL_CLOSE`` re-fired every eval cycle.
-
-The fix has two layers, both validated here:
-
-1. **Executor fallback** (``action_executor.py``): when the computed close
-   volume is zero, return ``success=True`` with a ``min_lot_skip`` marker. A
-   success result is NOT rolled back by ``_handle_manage_result`` (which only
-   rolls back on failure), so the flag sticks and the loop ends. The position
-   then relies on SL-based protection (breakeven / trailing).
-
-2. **Worker guard** (``position_worker.py`` ``_check_tp1``): when the position
-   is at the broker minimum lot or is an atomic Deriv contract, emit a full
-   ``CLOSE`` at TP1 to bank the realized win instead of creating an impossible
-   ``PARTIAL_CLOSE`` or waiting for a runner that cannot exist.
+The PositionWorker no longer creates discretionary TP1 partial-close intents.
+This suite therefore validates the shared executor's min-lot contract and
+broker volume normalization only; it does not test a retired TP1 worker path.
 """
 
 from __future__ import annotations
@@ -27,9 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from execution.action_executor import ActionExecutor, ExecutorConfig
-from execution.intents import Intent, IntentType
-from execution.position_snapshot import PositionSnapshot
-from execution.position_worker import PositionWorker, WorkerConfig
+from execution.intents import Intent
 from execution.risk_gate import GateConfig
 
 # ── Shared recording fake broker (never connects to a live platform) ─────
@@ -80,165 +63,6 @@ def _partial_intent(fraction: float = 0.5) -> Intent:
         source="test",
         reason="test",
     )
-
-
-# ── Worker snapshot helper ───────────────────────────────────────────
-
-NOW = datetime(2025, 6, 15, 14, 0, tzinfo=timezone.utc)
-
-
-def _snap(
-    *,
-    remaining_lots: float,
-    volume_min: float = 0.01,
-    platform: str = "mt5",
-    at_breakeven: bool = False,
-    **kw,
-) -> PositionSnapshot:
-    # LONG hitting TP1: entry 1.10, tp1 1.105, price past it.
-    return PositionSnapshot(
-        order_id="T1",
-        platform=platform,
-        symbol="EURUSD",
-        direction="BUY",
-        entry_price=1.10000,
-        lots=remaining_lots,
-        remaining_lots=remaining_lots,
-        open_time=NOW,
-        score=85,
-        sl=1.09900,
-        sl_original=1.09900,
-        tp1=1.10500,
-        tp2=1.12000,
-        tp2_original=1.12000,
-        at_breakeven=at_breakeven,
-        partial_closed=False,
-        current_price=1.10600,
-        pnl_pips=60.0,
-        pip_size=0.0001,
-        pip_value_per_lot=10.0,
-        volume_min=volume_min,
-        broker_lots=remaining_lots,
-        **kw,
-    )
-
-
-# ── Executor-level fallback ──────────────────────────────────────────
-
-
-class TestExecutorMinLotFallback:
-    def test_minlot_partial_returns_success_skip(self):
-        broker = _FakeBroker()
-        executor = ActionExecutor(broker, _fast_cfg())
-        result = executor.execute(_partial_intent(), _positions(0.01))
-        assert result.success is True
-        assert "min_lot_skip" in (result.error or "")
-        # The impossible split is never sent to the broker.
-        assert broker.close_calls == []
-
-    def test_zero_remaining_volume_is_rejected_as_unverified(self):
-        broker = _FakeBroker()
-        executor = ActionExecutor(broker, _fast_cfg())
-        result = executor.execute(_partial_intent(), _positions(0.0))
-        assert result.success is False
-        assert "broker-verified" in (result.error or "")
-        assert broker.close_calls == []
-
-    def test_success_result_does_not_trigger_rollback(self):
-        """A success result must NOT roll back the optimistic flags.
-
-        ``_handle_manage_result`` only rolls back when ``result.success`` is
-        False. By returning success, the min-lot skip keeps ``partial_closed``
-        set so the doomed PARTIAL_CLOSE never re-fires — proven here by the
-        contract that the executor reports success.
-        """
-        broker = _FakeBroker()
-        executor = ActionExecutor(broker, _fast_cfg())
-        result = executor.execute(_partial_intent(), _positions(0.01))
-        # The rollback guard keys off `not result.success`; success here means
-        # no rollback, so the loop ends.
-        assert result.success is True
-
-    def test_normal_lot_still_partial_closes(self):
-        """Regression: a normal-sized position is still split and executed."""
-        broker = _FakeBroker()
-        executor = ActionExecutor(broker, _fast_cfg())
-        result = executor.execute(_partial_intent(), _positions(0.10))
-        assert result.success is True
-        assert "min_lot_skip" not in (result.error or "")
-        assert broker.close_calls[0]["lots"] == 0.05
-
-    def test_higher_minimum_still_partial_closes_when_splittable(self):
-        """A 0.2-lot position with 0.1 step splits to 0.1 — executes normally."""
-        broker = _FakeBroker()
-        executor = ActionExecutor(broker, _fast_cfg())
-        result = executor.execute(
-            _partial_intent(),
-            _positions(0.20, volume_step=0.10),
-        )
-        assert result.success is True
-        assert broker.close_calls[0]["lots"] == 0.10
-
-
-# ── Worker-level guard (_check_tp1) ──────────────────────────────────
-
-
-
-
-def _legacy_worker() -> PositionWorker:
-    """Enable legacy discretionary mechanics only for these isolated tests."""
-    return PositionWorker(WorkerConfig(
-        discretionary_exits_enabled=True,
-        scan_directional_exits_enabled=True,
-    ))
-
-
-class TestWorkerTp1MinLotGuard:
-    def test_minlot_banks_tp1_with_full_close(self):
-        snap = _snap(remaining_lots=0.01, volume_min=0.01)
-        worker = _legacy_worker()
-        out = worker.evaluate(snap, NOW)
-        assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if (i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason) or "[legacy_source=tp1_minlot_close]" in i.reason]
-        assert len(close) == 1
-        assert close[0].intent_type == IntentType.CLOSE
-
-    def test_minlot_at_breakeven_still_banks_tp1(self):
-        # A TP1 hit is a realized exit, even if the stop has already moved.
-        snap = _snap(remaining_lots=0.01, volume_min=0.01, at_breakeven=True)
-        worker = _legacy_worker()
-        out = worker.evaluate(snap, NOW)
-        assert any(i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason for i in out)
-
-    def test_normal_lot_still_emits_partial(self):
-        snap = _snap(remaining_lots=0.10, volume_min=0.01)
-        worker = _legacy_worker()
-        out = worker.evaluate(snap, NOW)
-        partials = [i for i in out if i.source == "tp1_partial" or "[legacy_source=tp1_partial]" in i.reason]
-        assert len(partials) == 1
-        assert partials[0].intent_type == IntentType.PARTIAL_CLOSE
-        assert not any(i.source == "tp1_minlot_be" or "[legacy_source=tp1_minlot_be]" in i.reason for i in out)
-
-    def test_higher_broker_minimum_triggers_guard(self):
-        # A 0.10-lot position on an instrument whose minimum is 0.10 cannot be
-        # split — guard fires even though 0.10 > the FX default 0.01.
-        snap = _snap(remaining_lots=0.10, volume_min=0.10)
-        worker = _legacy_worker()
-        out = worker.evaluate(snap, NOW)
-        assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_minlot_close" or "[legacy_source=tp1_minlot_close]" in i.reason]
-        assert len(close) == 1
-        assert close[0].intent_type == IntentType.CLOSE
-
-    def test_deriv_path_banks_tp1_with_full_close(self):
-        # Deriv contracts are atomic; do not create a partial-close intent.
-        snap = _snap(remaining_lots=0.10, volume_min=0.01, platform="deriv")
-        worker = _legacy_worker()
-        out = worker.evaluate(snap, NOW)
-        assert not any(i.intent_type == IntentType.PARTIAL_CLOSE for i in out)
-        close = [i for i in out if i.source == "tp1_deriv_close" or "[legacy_source=tp1_deriv_close]" in i.reason]
-        assert len(close) == 1
-        assert close[0].intent_type == IntentType.CLOSE
 
 
 # ── Snapshot field ───────────────────────────────────────────────────
