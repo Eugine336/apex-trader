@@ -410,3 +410,35 @@ class TestWriterRecursionSafety:
             logger.remove(sid)
             _es_mod._global_store = original
             store.close()
+
+def test_query_events_can_order_recovery_by_durable_sequence_not_wall_clock(store):
+    first = store.emit(
+        "MT5_TICK_RECOVERY_CHECKPOINT", "INFO", symbol="XAUUSD",
+        payload={"cursor_utc": "2026-11-11T10:00:00+00:00"}, durable=True,
+    )
+    second = store.emit(
+        "MT5_TICK_RECOVERY_CHECKPOINT", "INFO", symbol="XAUUSD",
+        payload={"cursor_utc": "2026-11-11T10:05:00+00:00"}, durable=True,
+    )
+    # Simulate host-clock skew across a restart: the older event has a later
+    # wall-clock timestamp, but its durable sequence is still lower.
+    store._conn.execute(
+        "UPDATE events SET ts_utc_ms = ts_utc_ms + 3600000 WHERE event_id = ?",
+        (first,),
+    )
+    store._conn.execute(
+        "UPDATE events SET ts_utc_ms = ts_utc_ms - 3600000 WHERE event_id = ?",
+        (second,),
+    )
+    store._conn.commit()
+
+    rows = store.query_events(
+        severity_min="INFO",
+        event_types=["MT5_TICK_RECOVERY_CHECKPOINT"],
+        symbol="XAUUSD",
+        limit=10,
+        raise_on_error=True,
+        order_by_sequence=True,
+    )
+
+    assert [row["event_id"] for row in rows] == [second, first]
