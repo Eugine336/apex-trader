@@ -72,7 +72,29 @@ def test_reservation_releases_only_after_matching_broker_position(tmp_path):
     assert len(reservations.snapshot()) == 1
 
     assert reservations.reconcile([
-        SimpleNamespace(symbol="XAUUSD", direction="BUY"),
+        SimpleNamespace(symbol="XAUUSD", direction="BUY", account_key="mt5:account-a"),
+    ]) == 1
+    assert reservations.snapshot() == []
+    store.close()
+
+
+def test_position_from_another_account_does_not_release_reservation(tmp_path):
+    database = str(tmp_path / "portfolio-account-scope.db")
+    store = EventStore(db_path=database)
+    reservations = PortfolioAdmissionReservations(lambda: store)
+    assert reservations.reserve(_payload())
+
+    assert reservations.reconcile([
+        SimpleNamespace(
+            symbol="XAUUSD", direction="BUY", account_key="deriv:other",
+        ),
+    ]) == 0
+    assert len(reservations.snapshot()) == 1
+
+    assert reservations.reconcile([
+        SimpleNamespace(
+            symbol="XAUUSD", direction="BUY", account_key="mt5:account-a",
+        ),
     ]) == 1
     assert reservations.snapshot() == []
     store.close()
