@@ -388,11 +388,11 @@ class MT5Connector(BaseConnector):
             return _holdover_state() if identity_verified else None
 
     def get_utc_time_lower_bound(self) -> Optional[float]:
-        """Return a conservative UTC lower bound from the verified broker clock.
+        """Return a conservative UTC lower bound from broker or independent UTC evidence.
 
-        The candle watchdog uses this value only as a scheduling bound. It must
-        not use the machine wall clock to decide that a broker candle has closed.
-        Expired or unavailable clock evidence returns None (fail closed).
+        Prefer the identity-bound MT5 broker clock when its monotonic anchor is
+        valid. If it is unavailable or expired, use the corroborated independent
+        NTP/HTTPS UTC authority. Never consult host wall time for market timing.
         """
         try:
             state = self._read_server_clock_state()
