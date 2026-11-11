@@ -1376,7 +1376,15 @@ class SystemContext:
                             numeric = float(value) if value is not None else None
                             if numeric is not None and math.isfinite(numeric) and numeric > 0:
                                 per_symbol_cutoffs[str(selected_symbol or "").strip().upper()] = numeric
-                        except Exception:
+                        except Exception as exc:
+                            # SAFE-FALLBACK: an unavailable venue clock leaves
+                            # this symbol's UTC cutoff unknown; other verified
+                            # symbols remain usable and the common cutoff stays
+                            # unknown unless every selected venue is verified.
+                            logger.debug(
+                                "[cognition] UTC cutoff unavailable for {}: {}",
+                                selected_symbol, type(exc).__name__,
+                            )
                             continue
                     _concept_market_cycle_meta["per_symbol_cutoff_epochs"] = per_symbol_cutoffs
                     _concept_market_cycle_meta["cutoff_epoch"] = (
