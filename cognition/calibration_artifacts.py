@@ -67,8 +67,11 @@ class CalibrationArtifact:
     expires_at_epoch: float
     walk_forward_folds: int
     selection_coverage: float
-    producer_version: str = "candidate-calibration-v1"
-    protocol: str = "chronological_family_conditional_fixed_horizon_v1"
+    holdout_manifest_key: str = ""
+    holdout_start_epoch: float = 0.0
+    holdout_end_epoch: float = 0.0
+    producer_version: str = "candidate-calibration-v2"
+    protocol: str = "chronological_family_conditional_fixed_horizon_manifest_v2"
     producer_attested: bool = True
 
     def to_measurements(self) -> dict[str, Any]:
@@ -104,6 +107,10 @@ class CalibrationArtifact:
             "brier_score": self.brier_score,
             "reliability_gap": self.reliability_gap,
             "dataset_digest": self.dataset_digest,
+            "holdout_manifest_key": self.holdout_manifest_key,
+            "holdout_start_epoch": self.holdout_start_epoch,
+            "holdout_end_epoch": self.holdout_end_epoch,
+            "holdout_manifest_persisted": bool(self.holdout_manifest_key),
             "walk_forward_folds": self.walk_forward_folds,
             "selection_coverage": self.selection_coverage,
             "probability_calibration_verified": False,
@@ -987,7 +994,8 @@ class CalibrationProducer:
                             continue
                         digest = manifest["source_dataset_digest"]
                         artifact_id = hashlib.sha256(
-                            f"{sym}|{direction}|{family}|{horizon}|{digest}|conditional_family_fixed_horizon_v1".encode("utf-8")
+                            f"{sym}|{direction}|{family}|{horizon}|{digest}|"
+                            f"{manifest['manifest_key']}|conditional_family_fixed_horizon_manifest_v2".encode("utf-8")
                         ).hexdigest()
                         artifact = CalibrationArtifact(
                             artifact_id=artifact_id,
@@ -1007,6 +1015,9 @@ class CalibrationProducer:
                             expires_at_epoch=current + self.artifact_ttl,
                             walk_forward_folds=len(folds),
                             selection_coverage=coverage,
+                            holdout_manifest_key=manifest["manifest_key"],
+                            holdout_start_epoch=holdout_start_epoch,
+                            holdout_end_epoch=holdout_end_epoch,
                         )
                         _register_artifact(artifact)
                         artifacts.append(artifact)
