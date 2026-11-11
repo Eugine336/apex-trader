@@ -22,6 +22,16 @@ def _record(value: Any) -> dict[str, Any] | None:
         return dict(asdict())
     if isinstance(value, dict):
         return dict(value)
+    names = getattr(getattr(value, "dtype", None), "names", None)
+    if names:
+        return {
+            str(name): (
+                value[name].item()
+                if callable(getattr(value[name], "item", None))
+                else value[name]
+            )
+            for name in names
+        }
     return {"repr": repr(value)}
 
 
@@ -48,6 +58,24 @@ def main() -> int:
         if account is None or terminal is None:
             raise RuntimeError("MT5 account_info or terminal_info unavailable")
 
+        # Use independent UTC witnesses to form the history query bounds. Host
+        # wall time is captured for comparison only and never drives the query.
+        witness_before = time.monotonic()
+        witnesses_before = query_ntp_sources()
+        witness_after = time.monotonic()
+        if len(witnesses_before) < 2:
+            raise RuntimeError("fewer than two independent UTC witnesses; cannot form trusted query bounds")
+        witness_midpoint = (witness_before + witness_after) / 2.0
+        projected_utc = sorted(
+            sample.utc_epoch + (witness_midpoint - sample.monotonic_epoch)
+            for sample in witnesses_before
+        )
+        middle = len(projected_utc) // 2
+        trusted_utc_now = (
+            projected_utc[middle] if len(projected_utc) % 2
+            else (projected_utc[middle - 1] + projected_utc[middle]) / 2.0
+        )
+
         # Capture the latest quote bracketed by monotonic and host wall readings.
         mono_before = time.monotonic()
         wall_before = time.time()
@@ -55,9 +83,8 @@ def main() -> int:
         wall_after = time.time()
         mono_after = time.monotonic()
 
-        # The API request contract requires aware UTC datetimes. Preserve the
-        # exact bounds so an empty/shifted response can be diagnosed, not guessed.
-        request_end = datetime.fromtimestamp(wall_after, tz=timezone.utc)
+        # Preserve exact UTC bounds for diagnosis; do not infer timezone from host.
+        request_end = datetime.fromtimestamp(trusted_utc_now, tz=timezone.utc)
         request_start = request_end - timedelta(seconds=args.window_seconds)
         history = mt5.copy_ticks_range(
             args.symbol, request_start, request_end,
@@ -71,13 +98,14 @@ def main() -> int:
                     for key, value in _record(row).items()
                 })
 
-        witness_before = time.monotonic()
-        witnesses = query_ntp_sources()
-        witness_after = time.monotonic()
+        witness_after_capture_start = time.monotonic()
+        witnesses_after = query_ntp_sources()
+        witness_after_capture_end = time.monotonic()
 
         output = {
             "schema": "apex.mt5_timestamp_semantics_capture.v1",
-            "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+            "captured_host_wall_iso": datetime.now().astimezone().isoformat(),
+            "trusted_utc_query_anchor_epoch": trusted_utc_now,
             "host": {
                 "platform": platform.platform(),
                 "timezone_name": str(datetime.now().astimezone().tzinfo),
@@ -110,11 +138,11 @@ def main() -> int:
                     "uncertainty_seconds": sample.uncertainty_seconds,
                     "authority": sample.server,
                 }
-                for sample in witnesses
+                for sample in (*witnesses_before, *witnesses_after)
             ],
             "witness_collection_monotonic": {
-                "before": witness_before,
-                "after": witness_after,
+                "before": [witness_before, witness_after],
+                "after": [witness_after_capture_start, witness_after_capture_end],
             },
             "safety": {
                 "orders_submitted": False,
