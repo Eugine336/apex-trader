@@ -261,6 +261,18 @@ class MT5Connector(BaseConnector):
         cached = getattr(self, "_server_clock_state_cache", None)
         cached_at = getattr(self, "_server_clock_state_cache_at", None)
         cache_age = now_mono - cached_at if cached_at is not None else float("inf")
+        if cache_age < 0:
+            cached = None
+            cache_age = float("inf")
+            self._server_clock_state_cache = None
+            self._server_clock_state_cache_at = None
+        def _holdover_state():
+            if cached is None or not math.isfinite(cache_age) or cache_age > CLOCK_MAX_AGE_SECONDS:
+                return None
+            try:
+                return cached.as_holdover(cache_age)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                return None
         retry_after = getattr(self, "_server_clock_retry_after", 0.0)
 
         try:
@@ -275,14 +287,14 @@ class MT5Connector(BaseConnector):
                 self._server_clock_state_cache_at = None
                 self._clock_tick_observations = {}
             if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
-                return cached
+                return _holdover_state()
             if now_mono < retry_after:
-                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+                return _holdover_state()
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
                 now_mono = _time.monotonic()
             if tick is None:
-                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+                return _holdover_state()
             tick_epoch = self._tick_server_epoch(tick)
             if tick_epoch <= 0:
                 raise RuntimeError("MT5 tick timestamp unavailable")
@@ -298,7 +310,7 @@ class MT5Connector(BaseConnector):
                 # strictly advancing broker event is required before estimating
                 # the broker clock against independent UTC authorities.
                 observations[key] = (tick_epoch, now_mono)
-                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+                return _holdover_state()
 
             previous_epoch, previous_mono = previous
             elapsed = now_mono - previous_mono
@@ -311,7 +323,7 @@ class MT5Connector(BaseConnector):
             # real tick appear to have advanced several seconds in a fraction
             # of a second and permanently prevents clock synchronization.
             if advance <= 0:
-                return cached if cached is not None and cache_age <= CLOCK_MAX_AGE_SECONDS else None
+                return _holdover_state()
 
             # Tick arrival is event-driven and irregular. Comparing broker-event
             # time deltas to poll intervals rejects legitimate sparse/bursty
