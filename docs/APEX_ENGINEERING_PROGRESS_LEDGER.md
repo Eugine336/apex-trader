@@ -95,3 +95,16 @@ Resolve the timestamp semantics conflict with a focused executable test suite an
 
 ### Exact next action
 Create a draft PR from this dedicated branch to main to trigger repository CI without merging. Inspect the resulting checks and fix any regressions. Then run scripts/diagnose_mt5_timestamp_semantics.py on each supported Windows MT5 host (at minimum two hosts with differing local timezone/wall-clock settings), retain sanitized JSON captures, compare live and history raw epochs to independent UTC and exact UTC query bounds, and only then choose the timestamp normalization contract. Continue WP-T4 durable replay cursor/gap persistence and WP-T5 full consumer inventory after the timestamp contract is settled.
+
+
+### CI and integration update — 2026-11-11
+- PR #905 is open and marked ready for review; it remains unmerged. Base main is c3d2f1c1a900a70f6c1baecee77b7c74304e6481. Latest recorded source HEAD before this ledger update: 1a374d31e672d4bfd8188c0e16a210395511473e.
+- CI run #4312 identified a lint failure: F841 unused identity_verified. The connector exception path was corrected to actually require identity_verified before returning holdover.
+- CI run #4313 exposed a static diagnostic safety-test failure because the diagnostic serialized the raw tick tuple generically without explicitly naming time_msc. The diagnostic now explicitly preserves raw time and time_msc fields.
+- A further production-path defect was found: get_ticks computed a recent_window boolean but still applied the live offset even when the requested query window was not near the current verified UTC anchor. It now clears the live clock authority when the range is stale and leaves the records explicitly unverified broker-server time. Added regression coverage in tests/test_mt5_market_data.py.
+- Latest run #4316 is executing against source HEAD 1a374d31e672d4bfd8188c0e16a210395511473e. Lint has passed. Python 3.11 and 3.12 dependency installation succeeded and test collection is in progress. No full test result is available yet.
+- Previous CI failure evidence is retained; no test protections were weakened. The static test failure was corrected in a subsequent commit; acceptance awaits the latest full matrix.
+- PR #905 currently reports mergeable=true; do not merge until the latest CI and owner-host gates are satisfied.
+
+### Exact next action
+Poll CI run #4316 (and any subsequent run for the latest HEAD) until both Python test matrices finish. Fix every failure without weakening tests. Then run the read-only timestamp capture on at least two supported Windows MT5 hosts with distinct local clock/timezone configurations and compare raw snapshot/history epochs to independent UTC witnesses and exact UTC request bounds. Only after that evidence may get_price/get_ticks normalization be changed. Continue with durable replay cursor/gap persistence and the complete downstream consumer/candle audit. No live broker mutations.
