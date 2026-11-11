@@ -1362,8 +1362,25 @@ class SystemContext:
                 def _begin_concept_market_cycle(symbols: tuple[str, ...]) -> None:
                     _concept_market_cycle_snapshot.clear()
                     _concept_market_cycle_specs.clear()
-                    from datetime import datetime, timezone
-                    _concept_market_cycle_meta["cutoff_epoch"] = datetime.now(timezone.utc).timestamp()
+                    # A common multi-symbol cutoff must come from verified
+                    # per-venue UTC authorities, never the machine wall clock.
+                    # Use the earliest lower bound so every selected venue's
+                    # completed data is evaluated against a conservative cut.
+                    cutoffs = []
+                    for selected_symbol in symbols:
+                        try:
+                            value = platform_manager.get_utc_time_lower_bound(selected_symbol)
+                            numeric = float(value) if value is not None else None
+                            if numeric is None or not math.isfinite(numeric):
+                                cutoffs = []
+                                break
+                            cutoffs.append(numeric)
+                        except Exception:
+                            cutoffs = []
+                            break
+                    _concept_market_cycle_meta["cutoff_epoch"] = (
+                        min(cutoffs) if len(cutoffs) == len(symbols) and cutoffs else None
+                    )
                     try:
                         batch = platform_manager.fetch_all_market_data(
                             symbols=list(symbols),
@@ -1452,33 +1469,53 @@ class SystemContext:
                         market_depth = {}
                     try:
                         from datetime import datetime, timedelta, timezone
-                        tick_window_end = datetime.now(timezone.utc)
+                        utc_lower_bound = platform_manager.get_utc_time_lower_bound(symbol)
+                        if utc_lower_bound is None or not math.isfinite(float(utc_lower_bound)):
+                            raise RuntimeError("verified UTC clock authority unavailable")
+                        tick_window_end = datetime.fromtimestamp(
+                            float(utc_lower_bound), tz=timezone.utc,
+                        )
                         tick_window_start = tick_window_end - timedelta(seconds=10)
                         tick_frame = platform_manager.get_tick_history(
                             symbol, tick_window_start, tick_window_end,
                         )
                         tick_attrs = getattr(tick_frame, "attrs", {})
+                        tick_attrs = tick_attrs if isinstance(tick_attrs, dict) else {}
                         tick_rows = (
                             tick_frame.to_dict(orient="records")
                             if callable(getattr(tick_frame, "to_dict", None))
                             else []
                         )
+                        timestamp_verified = tick_attrs.get("source_timestamp_verified") is True
                         tick_history = {
                             "rows": tick_rows,
                             "source": tick_attrs.get("source"),
-                            "source_verified": tick_attrs.get("source_verified") is True,
+                            "source_verified": (
+                                tick_attrs.get("source_verified") is True
+                                and timestamp_verified
+                            ),
+                            "source_timestamp_verified": timestamp_verified,
+                            "utc_normalization": tick_attrs.get("utc_normalization"),
                             "source_symbol": tick_attrs.get("source_symbol"),
                             "source_timezone": tick_attrs.get("source_timezone"),
                             "aggressor_side_basis": tick_attrs.get("aggressor_side_basis"),
                             "window_start_epoch": tick_window_start.timestamp(),
                             "window_end_epoch": tick_window_end.timestamp(),
+                            "clock_basis": "verified_utc_lower_bound",
                         }
                     except Exception as exc:  # noqa: BLE001 — missing optional tick history must remain unknown
                         logger.warning(
                             "[cognition] broker tick history unavailable for %s: %s",
                             symbol, type(exc).__name__,
                         )
-                        tick_history = {}
+                        tick_history = {
+                            "rows": [],
+                            "source_verified": False,
+                            "source_timestamp_verified": False,
+                            "source_timezone": "unknown",
+                            "clock_basis": "unknown",
+                            "unavailable_reason": type(exc).__name__,
+                        }
                     from cognition.market_lenses import analyze_market_frames
                     return analyze_market_frames(
                         symbol,
