@@ -133,7 +133,7 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
     system._aggregator = _FakeAggregator()
     system._get_portfolio_admission_reservations = lambda: SimpleNamespace(
         lock=threading.RLock(),
-        reconcile=lambda _positions: 0,
+        reconcile=lambda _positions, **_kwargs: 0,
         reserve=lambda _payload: True,
         snapshot=lambda: list(reservations or []),
     )
