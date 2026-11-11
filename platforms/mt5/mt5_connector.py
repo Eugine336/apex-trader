@@ -388,6 +388,27 @@ class MT5Connector(BaseConnector):
             return _holdover_state() if identity_verified else None
 
     @staticmethod
+    def get_utc_time_lower_bound(self) -> Optional[float]:
+        """Return a conservative UTC lower bound from the verified broker clock.
+
+        The candle watchdog uses this value only as a scheduling bound. It must
+        not use the machine wall clock to decide that a broker candle has closed.
+        Expired or unavailable clock evidence returns None (fail closed).
+        """
+        try:
+            state = self._read_server_clock_state()
+            if state is None:
+                return None
+            lower_bound = (
+                float(state.server_now_epoch())
+                - float(state.offset_seconds)
+                - float(state.uncertainty_seconds)
+            )
+            return lower_bound if math.isfinite(lower_bound) else None
+        except Exception as exc:  # noqa: BLE001 — scheduling authority must fail closed
+            logger.debug("[mt5] UTC lower-bound unavailable: {}", exc)
+            return None
+
     def _tick_server_epoch(tick: Any) -> float:
         """Use MT5 millisecond precision when available; preserve seconds fallback."""
         milliseconds = float(getattr(tick, "time_msc", 0) or 0)
