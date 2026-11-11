@@ -517,7 +517,7 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
 
     class Store:
         def __init__(self, events):
-            self.events = events
+            self.events = list(events)
 
         def query_events(self, *, event_types, symbol, limit=10000, offset=0, **kwargs):
             rows = [
@@ -529,6 +529,14 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
                 {**row, "_event_seq": row["seq"]}
                 for row in rows[offset:offset + limit]
             ]
+
+        def emit(self, *, event_type, severity, symbol=None, payload=None, **kwargs):
+            seq = max((int(row.get("seq") or 0) for row in self.events), default=0) + 1
+            self.events.append({
+                "seq": seq, "event_type": event_type, "severity": severity,
+                "symbol": symbol, "payload_json": json.dumps(payload or {}),
+            })
+            return f"manifest-{seq}"
 
     events = []
     start = 1_700_000_000.0
@@ -730,7 +738,8 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
             })
 
     now = start + 149 * 600.0 + 300.0
-    producer = CalibrationProducer(Store(events), refresh_interval_seconds=30.0)
+    store = Store(events)
+    producer = CalibrationProducer(store, refresh_interval_seconds=30.0)
     artifacts = producer.refresh("EURUSD", now=now)
     artifact = next(
         item for item in artifacts
