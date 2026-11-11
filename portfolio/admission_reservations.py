@@ -226,7 +226,16 @@ class PortfolioAdmissionReservations:
                     direction = "LONG" if direction in {"BUY", "LONG"} else (
                         "SHORT" if direction in {"SELL", "SHORT"} else ""
                     )
-                    if symbol == wanted_symbol and direction == wanted_direction:
+                    position_account = (
+                        str(position.get("account_key") or "")
+                        if isinstance(position, dict)
+                        else str(getattr(position, "account_key", "") or "")
+                    )
+                    if (
+                        symbol == wanted_symbol
+                        and direction == wanted_direction
+                        and position_account == str(item.get("account_key") or "")
+                    ):
                         matches.append(key)
                         break
             for key in matches:
