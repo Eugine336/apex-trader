@@ -1,32 +1,7 @@
-"""
-APEX TRADER — Management Package
-The Hands. Protects every winner and cuts every loser.
+"""Management contracts and small helpers.
 
-.. deprecated::
-    ``TradeManager`` (and the ``EntrySignal`` / ``ManagedTrade`` / ``TradeStatus``
-    dataclasses it drives) is a retired legacy component — superseded by the
-    event-driven ``execution/`` management path (e.g. PositionWorker) and kept
-    only for the legacy loop, shadow/backtest replay and tests. Constructing a
-    ``TradeManager`` emits a ``DeprecationWarning``; do not use it in new code.
+Discretionary position decisions belong to cognition.CognitiveBrain. Legacy
+TradeManager exports have been retired; execution mechanics live under execution/.
 """
 
-from management.partial_close import PartialCloseCalculator
-from management.trailing_stop import StructureTrailingStop
-# Deprecated (retired legacy): TradeManager and its dataclasses — construction
-# emits a DeprecationWarning. See management/trade_manager.py.
-from management.trade_manager import (
-    EntrySignal,
-    ManagedTrade,
-    TradeManager,
-    TradeStatus,
-)
-__all__ = [
-    # ── DEPRECATED LEGACY (V-012) — backtests / legacy tooling only ──
-    "TradeManager",
-    "ManagedTrade",
-    "EntrySignal",
-    "TradeStatus",
-    # ── Active helpers ──
-    "PartialCloseCalculator",
-    "StructureTrailingStop",
-]
+__all__: list[str] = []
