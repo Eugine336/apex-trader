@@ -190,3 +190,21 @@ def test_market_lens_evidence_separates_ingestion_time_from_source_time():
     assert structure_verified.measurements["evidence_timestamp_basis"] == (
         "verified_utc_analysis_cutoff"
     )
+
+def test_per_symbol_cutoff_supports_timeframe_alignment_when_shared_venue_cut_is_unknown():
+    cutoff = time.time() + 1.0
+    evidence = analyze_market_frames(
+        "XAUUSD",
+        {"M1": _frame(60), "M5": _frame(300)},
+        source_includes_forming_bar=True,
+        concept_context={
+            "multi_symbol_snapshot_cutoff_epoch": None,
+            "analysis_epoch": cutoff,
+        },
+    )
+    alignment = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.MULTI_TIMEFRAME
+    )
+    assert alignment.measurements["synchronized_timestamps"] is True
+    assert alignment.measurements["snapshot_cutoff_epoch"] == cutoff
