@@ -1180,7 +1180,10 @@ class EventDrivenSystem:
         # buffer capacity explicitly (≥600 with headroom) so a future default
         # change can never silently truncate that window.
         self._tick_store = TickStore(max_ticks_per_symbol=1000, max_hz=15.0)
-        self._candle_detector = CandleCloseDetector(self._event_bus)
+        self._candle_detector = CandleCloseDetector(
+            self._event_bus,
+            utc_lower_bound_provider=self._pm.get_utc_time_lower_bound,
+        )
         self._tick_router = TickRouter(
             self._tick_store, self._candle_detector, self._event_bus,
         )
