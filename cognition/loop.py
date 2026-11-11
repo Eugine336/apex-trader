@@ -787,12 +787,12 @@ class CognitionLoop:
         then the independent NTP/HTTPS UTC consensus. Unknown remains 0.0 so
         freshness checks fail closed rather than projecting host time.
         """
-        try:
-            value = float(supplied) if supplied is not None else None
-        except (TypeError, ValueError, OverflowError):
-            value = None
-        if value is not None and math.isfinite(value) and value > 0.0:
-            return value
+        if supplied is not None:
+            try:
+                value = float(supplied)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+            return value if math.isfinite(value) and value > 0.0 else 0.0
         if callable(self._utc_now_provider):
             try:
                 value = self._utc_now_provider(str(symbol or ""))
@@ -812,6 +812,18 @@ class CognitionLoop:
             symbol,
         )
         return 0.0
+
+    def _resolve_cycle_utc(self, symbols: list[str], supplied: Optional[float]) -> float:
+        """Choose one conservative UTC cutoff for a multi-symbol reasoning pass."""
+        if supplied is not None:
+            return self._resolve_decision_utc("", supplied)
+        cutoffs = [
+            self._resolve_decision_utc(symbol, None)
+            for symbol in symbols
+        ]
+        if not cutoffs or any(value <= 0.0 for value in cutoffs):
+            return 0.0
+        return min(cutoffs)
 
     @property
     def running(self) -> bool:
@@ -838,13 +850,18 @@ class CognitionLoop:
             )
         made = 0
         cycle_outputs: list = []
+        selected_symbols = self._select_cycle_batch(symbols)
+        # A portfolio pass compares opportunities at one point in time. Use
+        # the oldest verified UTC lower bound across this cycle's selected
+        # symbols; if any authority is unknown, keep the whole cycle unknown.
+        cycle_now = self._resolve_cycle_utc(selected_symbols, now)
         begin_concept_cycle = getattr(self._consolidator, "begin_concept_cycle", None)
         end_concept_cycle = getattr(self._consolidator, "end_concept_cycle", None)
         try:
             if callable(begin_concept_cycle):
                 begin_concept_cycle(symbols)
-            for symbol in self._select_cycle_batch(symbols):
-                output = self._reason_over_symbol(symbol, now=now)
+            for symbol in selected_symbols:
+                output = self._reason_over_symbol(symbol, now=cycle_now)
                 if output is not None:
                     made += 1
                     cycle_outputs.append(output)
