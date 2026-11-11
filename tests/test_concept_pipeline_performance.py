@@ -296,6 +296,8 @@ def test_full_history_timestamp_fault_does_not_change_bounded_window_attestation
         "source_symbol": "EURUSD",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-broker",
+        "source_timezone": "UTC",
+        "forming_bar_included": True,
         "source_timestamp_verified": True,
         "source_timestamp_unit": "unix_seconds",
     })
