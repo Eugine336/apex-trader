@@ -373,7 +373,7 @@ def test_session_calendar_consumes_verified_provider_timezone_and_holiday_observ
             ),)
 
     reading = SessionCalendar().read_with_context(
-        "XAUUSD", {"M5": _range_bars(base=1_800_000_000)},
+        "XAUUSD", {"M5": _range_bars(base=1_799_996_400)},
         {"data_source_registry": _Registry(),
          "analysis_epoch": 1_800_000_020},
     )[0]
