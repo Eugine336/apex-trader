@@ -761,7 +761,10 @@ def test_calibration_producer_requires_complete_selection_aware_chronological_da
         if row["event_type"] == "CALIBRATION_HOLDOUT_MANIFEST"
     ]
     assert len(manifest_events) == 2
-    manifest_payload = json.loads(manifest_events[0]["payload_json"])
+    manifest_payload = next(
+        json.loads(row["payload_json"]) for row in manifest_events
+        if json.loads(row["payload_json"]).get("candidate_family") == "continuation"
+    )
     assert manifest_payload["untouched_holdout"] is True
     assert manifest_payload["source_dataset_digest"] == artifact.dataset_digest
     assert artifact.selection_coverage == 1.0
