@@ -70,3 +70,28 @@ Fetch and inspect, on `fix/mt5-clock-holdover-tick-integrity`, the full source o
 
 ### Exact next action
 Resolve the timestamp semantics conflict with a focused executable test suite and owner-host raw sample: capture symbol_info_tick (time, time_msc), copy_ticks_range raw epochs and query bounds, API/package/terminal versions, account server identity, independent UTC witness and monotonic receipt times on at least two hosts. Then correct get_price and get_ticks as one coherent contract, add regression tests for non-zero offset and history-window inclusion, and execute focused clock/market-data/poller/candle/Brain tests in Python 3.11 and 3.12. Do not use offset-adjusted timestamps as verified UTC until this gate passes.
+
+
+### WP-T implementation increment — 2026-11-11
+- **Current HEAD at update:** 049bf85e7770e8136f16d1a6c4457af88101fcab.
+- Added bounded holdover state to platforms/mt5/clock.py. The original verified offset and monotonic anchor remain unchanged; uncertainty grows at the explicit 1,000 ppm holdover bound (1 ms/s). The state now identifies holdover status and age.
+- Rewired MT5Connector cache returns to emit the holdover view, invalidate negative monotonic age, and require the currently connected broker server identity to be readable and match before reusing holdover. If identity is unavailable, cached state is not trusted.
+- Added tests for holdover uncertainty growth, anchor preservation, invalid ages, identity revalidation and fail-closed identity absence. These tests are committed but have not been run.
+- Added a read-only host diagnostic at scripts/diagnose_mt5_timestamp_semantics.py. It uses at least two independent UTC authorities to form query bounds, captures raw live and historical MT5 fields, host wall/monotonic readings, package/terminal versions and broker server identity. It does not place orders, modify the OS clock, alter terminal settings or read credentials.
+- Added static safety test at tests/test_mt5_timestamp_diagnostic.py. Tests are committed but have not been run.
+- Qualified earlier timestamp claims in the MT5 capability and clock bridge contracts. Official documentation for copy_ticks_range states UTC semantics, while official symbol_info_tick field documentation omits an explicit timezone description and public MQL5 forum reports conflict. This is unresolved evidence, not a basis to rewrite active timestamp semantics without host captures.
+- Main remains at c3d2f1c1a900a70f6c1baecee77b7c74304e6481; WP-T branch is based directly on main. PRs #903 and #904 remain separate and untouched.
+
+### Current verified state (do not overstate)
+- **Plan and tracking:** committed.
+- **Clock holdover implementation:** committed; not test-executed.
+- **Read-only timestamp capture tool:** committed; not owner-host executed.
+- **Timestamp normalization correction:** deliberately not made pending raw evidence.
+- **Full tick ingestion/recovery:** not implemented.
+- **Downstream consumer acceptance:** open.
+- **CI / Python 3.11 and 3.12:** not run.
+- **Production and multi-host acceptance:** not performed.
+- **Live broker mutations:** none.
+
+### Exact next action
+Create a draft PR from this dedicated branch to main to trigger repository CI without merging. Inspect the resulting checks and fix any regressions. Then run scripts/diagnose_mt5_timestamp_semantics.py on each supported Windows MT5 host (at minimum two hosts with differing local timezone/wall-clock settings), retain sanitized JSON captures, compare live and history raw epochs to independent UTC and exact UTC query bounds, and only then choose the timestamp normalization contract. Continue WP-T4 durable replay cursor/gap persistence and WP-T5 full consumer inventory after the timestamp contract is settled.
