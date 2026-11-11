@@ -181,7 +181,8 @@ class CalibrationProducer:
 
     The artifact is scoped to an explicit, pre-outcome candidate family, symbol,
     side and horizon. It uses chronological walk-forward checks and an untouched
-    holdout. It does not claim current-regime conditionality or profitability.
+    immutable, event-sourced chronological holdout manifest. It does not claim
+    current-regime conditionality or profitability.
     """
 
     def __init__(
