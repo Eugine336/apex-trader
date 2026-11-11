@@ -293,5 +293,9 @@ def test_explicit_unknown_decision_cutoff_does_not_project_host_wall_time(monkey
     analysis = BrainReasoner().analyze_evidence(state, now=0.0)
 
     assert analysis.decision_timestamp_epoch is None
-    assert analysis.observations == []
+    # Generic unknown-regime observations may still be emitted, but no
+    # evidence-derived observations, domains, patterns or concepts may survive.
     assert analysis.domain_coverage == {}
+    assert analysis.evidence_index == []
+    assert analysis.concept_readings == []
+    assert analysis.detected_patterns == []
