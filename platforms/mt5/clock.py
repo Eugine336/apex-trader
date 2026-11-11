@@ -363,18 +363,21 @@ def independent_utc_lower_bound() -> float | None:
                 if _UTC_CLOCK_CACHE is not None else None
             )
         try:
+            samples = query_ntp_sources()
+            observed_mono = time.monotonic()
             state = estimate_utc_clock(
-                query_ntp_sources(), observed_monotonic=now_mono,
+                samples, observed_monotonic=observed_mono,
             )
         except Exception:
             state = None
+            observed_mono = time.monotonic()
         if state is not None:
             _UTC_CLOCK_CACHE = state
-            _UTC_CLOCK_RETRY_AFTER = now_mono + UTC_CLOCK_REFRESH_SECONDS
-            return state.lower_bound(now_mono)
-        _UTC_CLOCK_RETRY_AFTER = now_mono + 5.0
+            _UTC_CLOCK_RETRY_AFTER = observed_mono + UTC_CLOCK_REFRESH_SECONDS
+            return state.lower_bound(observed_mono)
+        _UTC_CLOCK_RETRY_AFTER = observed_mono + 5.0
         return (
-            _UTC_CLOCK_CACHE.lower_bound(now_mono)
+            _UTC_CLOCK_CACHE.lower_bound(observed_mono)
             if _UTC_CLOCK_CACHE is not None else None
         )
 
