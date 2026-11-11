@@ -5,7 +5,7 @@ MT5 or Deriv — the interface is identical.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
