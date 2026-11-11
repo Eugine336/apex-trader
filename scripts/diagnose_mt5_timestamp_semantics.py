@@ -104,6 +104,10 @@ def main() -> int:
             args.symbol, request_start, request_end,
             getattr(mt5, "COPY_TICKS_ALL", 0),
         )
+        latest_tick_fields = _record(tick) or {}
+        latest_tick_fields.setdefault("time", getattr(tick, "time", None))
+        latest_tick_fields.setdefault("time_msc", getattr(tick, "time_msc", None))
+
         history_rows = []
         if history is not None:
             for row in history[-20:]:
@@ -137,7 +141,7 @@ def main() -> int:
                 "broker_server": getattr(account, "server", None),
                 "symbol": args.symbol,
             },
-            "latest_tick": _record(tick),
+            "latest_tick": latest_tick_fields,
             "history_query": {
                 "from_utc": request_start.isoformat(),
                 "to_utc": request_end.isoformat(),
