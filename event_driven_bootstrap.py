@@ -689,49 +689,6 @@ class PositionEvaluator:
         except Exception:
             return None
 
-    def _fetch_completed_candles(
-        self, symbol: str, timeframe: str, count: int,
-    ) -> Optional[pd.DataFrame]:
-        """Fetch only provider-attested completed bars for live-candle warmup."""
-        try:
-            data = self._pm.fetch_market_data(
-                symbol, [timeframe], count, include_forming=False,
-            )
-            frame = (data or {}).get(timeframe)
-            attrs = getattr(frame, "attrs", {}) if frame is not None else {}
-            if not (
-                isinstance(attrs, dict)
-                and frame is not None
-                and not getattr(frame, "empty", True)
-                and attrs.get("source_timestamp_verified") is True
-                and attrs.get("source_timezone") == "UTC"
-                and attrs.get("source_symbol") == str(symbol or "").strip().upper()
-                and attrs.get("source_timestamp_unit") == "unix_seconds"
-                and attrs.get("source_timestamp_origin") == "broker_ohlcv"
-                and bool(str(attrs.get("source_broker", "") or "").strip())
-                and attrs.get("completed_bars_verified") is True
-                and attrs.get("forming_bar_included") is False
-                and "time" in frame.columns
-                and pd.api.types.is_datetime64tz_dtype(frame["time"].dtype)
-                and str(frame["time"].dt.tz) == "UTC"
-                and not frame["time"].isna().any()
-                and not frame["time"].duplicated().any()
-                and frame["time"].is_monotonic_increasing
-            ):
-                logger.warning(
-                    "[event-driven] completed candle warmup unavailable for {}/{} — "
-                    "provider did not attest closed UTC bars",
-                    symbol, timeframe,
-                )
-                return None
-            return frame
-        except Exception as exc:
-            logger.warning(
-                "[event-driven] completed candle fetch failed {}/{}: {}",
-                symbol, timeframe, exc,
-            )
-            return None
-
     def _safe_pip_size(self, symbol: str) -> float:
         try:
             spec = (
@@ -7028,6 +6985,49 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug(
                 "[market-observer] confirmed candle fetch failed {}/{}: {}",
+                symbol, timeframe, exc,
+            )
+            return None
+
+    def _fetch_completed_candles(
+        self, symbol: str, timeframe: str, count: int,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch only provider-attested completed bars for live-candle warmup."""
+        try:
+            data = self._pm.fetch_market_data(
+                symbol, [timeframe], count, include_forming=False,
+            )
+            frame = (data or {}).get(timeframe)
+            attrs = getattr(frame, "attrs", {}) if frame is not None else {}
+            if not (
+                isinstance(attrs, dict)
+                and frame is not None
+                and not getattr(frame, "empty", True)
+                and attrs.get("source_timestamp_verified") is True
+                and attrs.get("source_timezone") == "UTC"
+                and attrs.get("source_symbol") == str(symbol or "").strip().upper()
+                and attrs.get("source_timestamp_unit") == "unix_seconds"
+                and attrs.get("source_timestamp_origin") == "broker_ohlcv"
+                and bool(str(attrs.get("source_broker", "") or "").strip())
+                and attrs.get("completed_bars_verified") is True
+                and attrs.get("forming_bar_included") is False
+                and "time" in frame.columns
+                and pd.api.types.is_datetime64tz_dtype(frame["time"].dtype)
+                and str(frame["time"].dt.tz) == "UTC"
+                and not frame["time"].isna().any()
+                and not frame["time"].duplicated().any()
+                and frame["time"].is_monotonic_increasing
+            ):
+                logger.warning(
+                    "[event-driven] completed candle warmup unavailable for {}/{} — "
+                    "provider did not attest closed UTC bars",
+                    symbol, timeframe,
+                )
+                return None
+            return frame
+        except Exception as exc:
+            logger.warning(
+                "[event-driven] completed candle fetch failed {}/{}: {}",
                 symbol, timeframe, exc,
             )
             return None
