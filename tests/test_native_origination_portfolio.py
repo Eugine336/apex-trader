@@ -86,7 +86,7 @@ class _FakeAggregator:
 
 def _system(monkeypatch, *, approved=True, approved_size=0.03,
             sizing_mode="lots", halted=False, flatten=False, margin_blocked=False,
-            book=None, book_error=None, compliance_approved=True):
+            book=None, book_error=None, compliance_approved=True, reservations=None):
     symbol = "EURUSD"
     internal = edb.resolve_to_internal(symbol)
     # Isolate the instrument lookup; no broker config or live context is read.
@@ -130,6 +130,9 @@ def _system(monkeypatch, *, approved=True, approved_size=0.03,
         ),
     )
     system._aggregator = _FakeAggregator()
+    system._get_portfolio_admission_reservations = lambda: SimpleNamespace(
+        snapshot=lambda: list(reservations or []),
+    )
     system._safe_pip_size = lambda _symbol: 0.0001
     system._effective_pip_value = lambda _symbol, _pip_size: 10.0
     system._opportunity_qualifies = lambda *_args, **_kwargs: True
@@ -359,3 +362,56 @@ def test_missing_compliance_division_blocks_origination(monkeypatch):
 
     assert system._make_origination_sink()(_origination()) is False
     assert system._aggregator.batches == []
+
+
+def test_portfolio_sizing_includes_pending_reservations_in_exposure_book(monkeypatch):
+    pending = {
+        "reservation_id": "pending-xau",
+        "account_key": "offline-demo:123",
+        "symbol": "XAUUSD",
+        "direction": "SHORT",
+        "broker": "offline-demo",
+        "risk_pct": 0.0025,
+        "max_loss": 25.0,
+    }
+    system, portfolio, _risk, _pm = _system(
+        monkeypatch, reservations=[pending],
+    )
+
+    sized = system._size_brain_origination_with_portfolio(
+        _origination(exposure=0.5), "EURUSD", "LONG", 1.0990,
+    )
+
+    assert sized is not None
+    _candidate, book, account, _factors = portfolio.calls[-1]
+    assert len(book) == 1
+    assert book[0].symbol == "XAUUSD"
+    assert book[0].direction == "SHORT"
+    assert book[0].broker == "offline-demo"
+    assert book[0].risk_pct == 0.0025
+    assert book[0].is_pending_reservation is True
+    assert account.daily_pnl == -50.0
+
+
+def test_portfolio_sizing_ignores_pending_reservations_from_other_accounts(monkeypatch):
+    pending = {
+        "reservation_id": "other-account",
+        "account_key": "other-broker:456",
+        "symbol": "XAUUSD",
+        "direction": "SHORT",
+        "broker": "other-broker",
+        "risk_pct": 0.01,
+        "max_loss": 100.0,
+    }
+    system, portfolio, _risk, _pm = _system(
+        monkeypatch, reservations=[pending],
+    )
+
+    sized = system._size_brain_origination_with_portfolio(
+        _origination(exposure=0.5), "EURUSD", "LONG", 1.0990,
+    )
+
+    assert sized is not None
+    _candidate, book, account, _factors = portfolio.calls[-1]
+    assert book == []
+    assert account.daily_pnl == -25.0
