@@ -149,4 +149,4 @@ def test_entry_snapshot_is_recovered_by_exact_ticket_and_linked_to_close(
     assert outcome["swap"] is None
     assert outcome["realized_costs_observed"] is False
 
-    store.close()
+    restarted_store.close()
