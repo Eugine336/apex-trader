@@ -1407,3 +1407,27 @@ def test_live_management_suppresses_when_exact_ticket_identity_is_missing():
         position,
     ) is False
     assert calls == []
+
+
+def test_cognition_loop_uses_injected_verified_utc_cutoff():
+    loop = CognitionLoop(
+        _StubBrain(), _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda symbol: 1_800_000_123.5 if symbol == "XAUUSD" else None,
+    )
+    assert loop._resolve_decision_utc("XAUUSD", None) == 1_800_000_123.5
+
+
+def test_cognition_loop_keeps_unknown_utc_unknown_without_host_clock(monkeypatch):
+    import platforms.mt5.clock as clock_module
+
+    monkeypatch.setattr(clock_module, "independent_utc_lower_bound", lambda: None)
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: [])
+    assert loop._resolve_decision_utc("XAUUSD", None) == 0.0
+
+
+def test_cognition_loop_explicit_replay_cutoff_is_preserved():
+    loop = CognitionLoop(
+        _StubBrain(), _StubConsolidator(), lambda: [],
+        utc_now_provider=lambda _symbol: 1_900_000_000.0,
+    )
+    assert loop._resolve_decision_utc("XAUUSD", 1_800_000_000.0) == 1_800_000_000.0
