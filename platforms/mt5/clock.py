@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 import math
 import secrets
 import socket
+import threading
 import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -212,6 +213,172 @@ def query_ntp_sources() -> tuple[NTPClockSample, ...]:
     return ntp + https
 
 
+@dataclass(frozen=True)
+class UTCClockState:
+    """Independent UTC estimate anchored to monotonic time, with uncertainty."""
+
+    observed_utc_epoch: float
+    observed_monotonic: float
+    uncertainty_seconds: float
+    sources: tuple[str, ...]
+
+    def lower_bound(self, now_monotonic: float | None = None) -> float | None:
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        age = now - float(self.observed_monotonic)
+        if not math.isfinite(age) or age < 0 or age > UTC_CLOCK_MAX_AGE_SECONDS:
+            return None
+        uncertainty = (
+            float(self.uncertainty_seconds)
+            + age * CLOCK_HOLDOVER_DRIFT_PPM / 1_000_000.0
+        )
+        if not math.isfinite(uncertainty) or uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
+            return None
+        estimate = float(self.observed_utc_epoch) + age
+        return estimate - uncertainty
+
+
+UTC_CLOCK_REFRESH_SECONDS = 30.0
+UTC_CLOCK_MAX_AGE_SECONDS = 60.0
+_UTC_CLOCK_CACHE: UTCClockState | None = None
+_UTC_CLOCK_CACHE_LOCK = threading.Lock()
+_UTC_CLOCK_RETRY_AFTER = 0.0
+
+
+def estimate_utc_clock(
+    samples: Iterable[NTPClockSample],
+    *,
+    observed_monotonic: float | None = None,
+) -> UTCClockState | None:
+    """Estimate UTC now from a corroborated cluster of independent authorities."""
+    now_mono = time.monotonic() if observed_monotonic is None else float(observed_monotonic)
+    if not math.isfinite(now_mono):
+        return None
+    by_authority: dict[str, NTPClockSample] = {}
+    for sample in tuple(samples or ()):
+        endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
+        endpoint = endpoint.split(":", 1)[0].strip().lower()
+        if not endpoint:
+            continue
+        authority = next(
+            (
+                domain for domain in ("cloudflare.com", "google.com", "ntp.org")
+                if endpoint == domain or endpoint.endswith("." + domain)
+            ),
+            endpoint,
+        )
+        current = by_authority.get(authority)
+        try:
+            quality = float(sample.uncertainty_seconds)
+            current_quality = (
+                float(current.uncertainty_seconds) if current is not None else float("inf")
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(quality) and quality >= 0 and quality < current_quality:
+            by_authority[authority] = sample
+
+    estimates: list[tuple[float, NTPClockSample, float]] = []
+    for sample in by_authority.values():
+        try:
+            uncertainty = float(sample.uncertainty_seconds)
+            estimate = (
+                float(sample.utc_epoch)
+                + now_mono - float(sample.monotonic_epoch)
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            math.isfinite(estimate)
+            and math.isfinite(uncertainty)
+            and uncertainty >= 0
+        ):
+            estimates.append((estimate, sample, uncertainty))
+    if len(estimates) < NTP_MIN_SOURCES:
+        return None
+
+    clusters: list[tuple[tuple[float, NTPClockSample, float], ...]] = []
+    for size in range(len(estimates), NTP_MIN_SOURCES - 1, -1):
+        for cluster in combinations(estimates, size):
+            lower = max(value - uncertainty for value, _, uncertainty in cluster)
+            upper = min(value + uncertainty for value, _, uncertainty in cluster)
+            if lower <= upper:
+                clusters.append(cluster)
+        if clusters:
+            break
+    if not clusters:
+        return None
+
+    medians: list[float] = []
+    for cluster in clusters:
+        ordered = sorted(value for value, _, _ in cluster)
+        middle = len(ordered) // 2
+        medians.append(
+            ordered[middle] if len(ordered) % 2
+            else (ordered[middle - 1] + ordered[middle]) / 2.0
+        )
+    if max(medians) - min(medians) > 0.25:
+        return None
+
+    selected = clusters[0]
+    ordered = sorted(value for value, _, _ in selected)
+    middle = len(ordered) // 2
+    median = (
+        ordered[middle] if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2.0
+    )
+    spread = max(abs(value - median) for value in ordered)
+    uncertainty = (
+        max(item[2] for item in selected) + spread + 0.15
+    )
+    if uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
+        return None
+    return UTCClockState(
+        observed_utc_epoch=median,
+        observed_monotonic=now_mono,
+        uncertainty_seconds=uncertainty,
+        sources=tuple(sample.server for _, sample, _ in selected),
+    )
+
+
+def clear_independent_utc_clock_cache() -> None:
+    """Clear the process UTC cache; intended for deterministic tests."""
+    global _UTC_CLOCK_CACHE, _UTC_CLOCK_RETRY_AFTER
+    with _UTC_CLOCK_CACHE_LOCK:
+        _UTC_CLOCK_CACHE = None
+        _UTC_CLOCK_RETRY_AFTER = 0.0
+
+
+def independent_utc_lower_bound() -> float | None:
+    """Return a conservative UTC lower bound without consulting host wall time."""
+    global _UTC_CLOCK_CACHE, _UTC_CLOCK_RETRY_AFTER
+    now_mono = time.monotonic()
+    with _UTC_CLOCK_CACHE_LOCK:
+        if _UTC_CLOCK_CACHE is not None:
+            age = now_mono - _UTC_CLOCK_CACHE.observed_monotonic
+            if age <= UTC_CLOCK_REFRESH_SECONDS:
+                return _UTC_CLOCK_CACHE.lower_bound(now_mono)
+        if now_mono < _UTC_CLOCK_RETRY_AFTER:
+            return (
+                _UTC_CLOCK_CACHE.lower_bound(now_mono)
+                if _UTC_CLOCK_CACHE is not None else None
+            )
+        try:
+            state = estimate_utc_clock(
+                query_ntp_sources(), observed_monotonic=now_mono,
+            )
+        except Exception:
+            state = None
+        if state is not None:
+            _UTC_CLOCK_CACHE = state
+            _UTC_CLOCK_RETRY_AFTER = now_mono + UTC_CLOCK_REFRESH_SECONDS
+            return state.lower_bound(now_mono)
+        _UTC_CLOCK_RETRY_AFTER = now_mono + 5.0
+        return (
+            _UTC_CLOCK_CACHE.lower_bound(now_mono)
+            if _UTC_CLOCK_CACHE is not None else None
+        )
+
+
 def estimate_mt5_server_clock(
     server: str,
     tick_server_epoch: float,
@@ -347,6 +514,10 @@ __all__ = [
     "MT5ServerClockState",
     "load_mt5_server_clock",
     "NTPClockSample",
+    "UTCClockState",
+    "estimate_utc_clock",
+    "independent_utc_lower_bound",
+    "clear_independent_utc_clock_cache",
     "CLOCK_MAX_UNCERTAINTY_SECONDS",
     "CLOCK_HOLDOVER_DRIFT_PPM",
     "estimate_mt5_server_clock",
