@@ -58,3 +58,12 @@ python scripts/diagnose_mt5_clock.py --symbols XAUUSD.ecn EURUSD.ecn
 For runtime diagnosis, inspect the MT5 connector log for
 `broker server clock synchronized`, the selected time sources, inferred
 offset, uncertainty, and any explicit synchronization failure.
+
+
+## WP-T timestamp-semantics qualification — 2026-11-11
+
+This document's earlier statement that broker timestamps are server-time labels is not yet accepted as a universal MT5 Python contract. MetaQuotes' official Python documentation for `copy_ticks_range` and `copy_ticks_from` states that returned tick and bar timestamps are UTC. The current Apex implementation applies a measured broker offset to live and historical tick epochs. That assumption must be reconciled against raw owner-terminal observations and the official API contract before further normalization changes.
+
+In particular, do not infer that the broker's displayed chart/server clock timezone is the timezone basis of the Python API's `time` and `time_msc` fields. Keep the raw epoch, API surface/version, broker identity, receipt wall time, receipt monotonic instant, independent UTC witness and any derived offset separately recorded. The offset estimate is not itself proof that the provider timestamp requires offset subtraction.
+
+See `docs/APEX_MT5_DATA_CAPABILITY_CONTRACT.md` and WP-T in `docs/APEX_FULL_REDESIGN_ROADMAP.md` for the required multi-host and historical-range verification. Until the discrepancy is resolved, affected source-time normalization remains DATA-GATED; do not assert production acceptance.
