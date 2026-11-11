@@ -24,6 +24,7 @@ def _frame(symbol, closes, base_epoch, *, source_symbol=None):
         "source_timestamp_unit": "unix_seconds",
         "source_timestamp_origin": "broker_ohlcv",
         "source_broker": "test-provider",
+        "source_timezone": "UTC",
         "volume_basis": "tick_volume_alias_with_real_volume_preserved",
     })
     return frame
