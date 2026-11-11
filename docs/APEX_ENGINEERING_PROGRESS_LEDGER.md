@@ -155,3 +155,40 @@ Poll CI run #4316 (and any subsequent run for the latest HEAD) until both Python
 - **User-reported failure:** direct invocation raised `ModuleNotFoundError: No module named 'platforms'` at the import of `platforms.mt5.clock`. Root cause was Python's script-directory import path, not MT5 connectivity.
 - **Status:** implementation committed via GitHub contents API; local pytest/lint not run in this execution environment. CI must verify.
 - **Next action:** rerun the exact documented PowerShell command after pulling this commit. If it advances beyond import and fails, diagnose that next failure separately; do not conflate it with the import-path defect.
+
+
+## 2026-11-11 — Repeated empty MT5 capture and symbol-feed diagnostic
+
+- **Repository:** `Eugine336/apex-trader`
+- **Main baseline:** `b417e349579adb9de210ede572b939cb87c75bee` (includes merged PR #906).
+- **Working branch:** `fix/mt5-symbol-feed-diagnostics`
+- **Branch base:** `b417e349579adb9de210ede572b939cb87c75bee`
+- **PR:** not yet opened at time of this entry.
+- **Protected paths:** real `.env`, credentials, runtime databases, broker account selection/settings remain untouched and off-limits.
+- **Live broker mutation:** none; prohibited during this work.
+
+### New owner-host evidence
+Two successful direct invocations on the user's Windows 11 host, MetaTrader5 package 5.0.6231 / terminal 500.6308, broker server JustMarkets-Demo, both returned:
+- terminal connected = true;
+- `symbol_info_tick("XAUUSD")`: `time=null`, `time_msc=null`;
+- `copy_ticks_range` for the preceding 60 seconds: zero rows;
+- history API last error: `[1, "Success"]`;
+- three independent NTP authorities sampled twice, each reporting roughly 0.56–0.59 seconds uncertainty;
+- host wall clock approximately 0.7 seconds behind the projected UTC anchor.
+
+Interpretation: this is a repeatable empty-data observation, not proof that the broker is not publishing ticks. The capture did not yet include symbol resolution, Market Watch visibility/selection or the quote fields available from `symbol_info`. The wall-clock difference is not a basis for correction at the reported witness uncertainty.
+
+### Implementation in this increment
+1. `scripts/diagnose_mt5_timestamp_semantics.py`: added read-only `symbol_info` snapshot fields, immediate error capture for symbol/tick/history calls, explicit history result state, and a wildcard candidate-name lookup only when exact symbol resolution fails. No `symbol_select` call is made; the diagnostic does not mutate Market Watch.
+2. `tests/test_mt5_timestamp_diagnostic.py`: added regression tests for safe symbol-field projection, matching-symbol filtering, and static prohibition of symbol selection/order mutation.
+3. `docs/WP_MT5_CLOCK_AUTHORITY_TICK_STREAM_INTEGRITY.md`: recorded both owner-host captures, their limits, and the follow-up diagnostic.
+
+### Verification
+- User executed the prior diagnostic successfully twice; this verifies the direct-launch fix on their host.
+- The expanded symbol diagnostic has been committed to the working branch but has not yet been executed on an MT5 host.
+- Local tests were not run in this execution environment.
+- CI for the expanded diagnostic is pending.
+- No timestamp normalization decision, feed-health acceptance or WP-T acceptance is claimed.
+
+### Exact next action
+Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and fix all failures without weakening tests. Then have the user pull the branch and rerun the exact command. Interpret `symbol_info`, visibility/selection, Bid/Ask/time fields, tick error and history state together. If the exact symbol is absent, use the reported candidate names to identify the broker-native suffix. Obtain a second independent host capture before deciding timestamp semantics. Continue WP-T2–T6 implementation after the diagnostic cause is narrowed; do not stall the independent durable cursor/gap, candle warmup and consumer-audit work on this evidence gate.
