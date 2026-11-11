@@ -341,3 +341,21 @@ def test_fresh_synchronized_broker_clock_timestamp_reaches_brain_evidence():
         assert evidence.source_timestamp_verified is True
         assert evidence.source_timestamp_epoch == observed_at
         assert evidence.measurements["source_timestamp_known"] is True
+
+
+def test_future_broker_spec_observation_is_not_point_in_time_evidence():
+    observed_at = time.time()
+    spec = _spec(
+        source_timestamp_epoch=observed_at,
+        source_timestamp_verified=True,
+        source_timestamp_semantics="broker_server_observation_time",
+        source_timestamp_uncertainty_seconds=0.5,
+        broker_server_clock_verified=True,
+    )
+    readings = InstrumentEconomicsReadings().read_with_context(
+        "XAUUSD", {},
+        {"symbol_spec": spec, "analysis_epoch": observed_at - 1.0},
+    )
+    assert all(reading.source_timestamp_verified is False for reading in readings)
+    assert all(reading.source_timestamp_epoch is None for reading in readings)
+    assert any("broker-server observation timestamp" in item for item in readings[0].unknowns)
