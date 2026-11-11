@@ -1353,3 +1353,77 @@ def test_calibration_counts_only_non_overlapping_decision_horizons():
     ]
     selected = CalibrationProducer._non_overlapping_decision_groups(groups, 300)
     assert [item["decision_id"] for item in selected] == ["d0", "d3"]
+
+
+def test_calibration_holdout_manifest_freezes_dataset_cut_and_digest():
+    from cognition.calibration_artifacts import CalibrationProducer
+
+    class Store:
+        def __init__(self):
+            self.events = []
+
+        def query_events(self, *, event_types, symbol, limit=10000, offset=0, **kwargs):
+            rows = [
+                row for row in self.events
+                if row["event_type"] in event_types and row["symbol"] == symbol
+            ]
+            rows.sort(key=lambda row: row["seq"], reverse=True)
+            return rows[offset:offset + limit]
+
+        def emit(self, *, event_type, severity, symbol=None, payload=None, **kwargs):
+            seq = max((row["seq"] for row in self.events), default=0) + 1
+            self.events.append({
+                "seq": seq,
+                "event_type": event_type,
+                "severity": severity,
+                "symbol": symbol,
+                "payload_json": json.dumps(payload or {}),
+            })
+            return f"manifest-{seq}"
+
+    start = 1_700_000_000.0
+    groups = [
+        {
+            "decision_id": f"decision-{index}",
+            "decision_epoch": start + index * 600.0,
+            "label": index % 2,
+            "return_r": 0.2 if index % 2 == 0 else -0.1,
+            "candidate_ids": [f"decision-{index}:opportunity:opp-{index}"],
+        }
+        for index in range(150)
+    ]
+    store = Store()
+    producer = CalibrationProducer(store)
+    initial = producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, groups, now_epoch=start + 100_000,
+    )
+    assert initial is not None
+    assert len(initial["groups"]) == 150
+
+    post_cutoff = groups + [{
+        "decision_id": "decision-after-cutoff",
+        "decision_epoch": initial["holdout_end_epoch"] + 600.0,
+        "label": 1,
+        "return_r": 0.3,
+        "candidate_ids": ["decision-after-cutoff:opportunity:opp"],
+    }]
+    repeated = producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, post_cutoff,
+        now_epoch=start + 200_000,
+    )
+    assert repeated is not None
+    assert len(repeated["groups"]) == 150
+    assert repeated["source_dataset_digest"] == initial["source_dataset_digest"]
+
+    late_historical = post_cutoff + [{
+        "decision_id": "late-historical-decision",
+        "decision_epoch": start + 119 * 600.0 + 300.0,
+        "label": 0,
+        "return_r": -0.2,
+        "candidate_ids": ["late-historical-decision:opportunity:opp"],
+    }]
+    late_historical.sort(key=lambda item: item["decision_epoch"])
+    assert producer._resolve_holdout_manifest(
+        "EURUSD", "LONG", "continuation", 300, late_historical,
+        now_epoch=start + 300_000,
+    ) is None
