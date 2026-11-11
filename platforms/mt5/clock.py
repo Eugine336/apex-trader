@@ -9,7 +9,7 @@ inconsistent evidence. A chart-attached MQL5 publisher is not required.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import secrets
 import socket
@@ -39,6 +39,21 @@ class MT5ServerClockState:
     observed_monotonic: float | None = None
     uncertainty_seconds: float = 0.0
     sources: tuple[str, ...] = ()
+    synchronization_status: str = "synchronized"
+    holdover_age_seconds: float = 0.0
+
+    def as_holdover(self, age_seconds: float) -> "MT5ServerClockState":
+        """Return a conservative holdover view without moving the verified anchor."""
+        age = float(age_seconds)
+        if not math.isfinite(age) or age < 0:
+            raise ValueError("holdover age must be finite and non-negative")
+        growth = age * CLOCK_HOLDOVER_DRIFT_PPM / 1_000_000.0
+        return replace(
+            self,
+            uncertainty_seconds=self.uncertainty_seconds + growth,
+            synchronization_status="holdover",
+            holdover_age_seconds=age,
+        )
 
     def server_now_epoch(self, now_epoch: float | None = None) -> float:
         if now_epoch is None and self.observed_monotonic is not None:
@@ -120,6 +135,8 @@ HTTPS_TIME_URLS = (
 NTP_EPOCH_DELTA = 2_208_988_800
 NTP_TIMEOUT_SECONDS = 0.65
 CLOCK_MAX_UNCERTAINTY_SECONDS = 2.5
+# Conservative holdover oscillator bound: 1 ms of added uncertainty per second.
+CLOCK_HOLDOVER_DRIFT_PPM = 1_000.0
 NTP_MIN_SOURCES = 2
 
 
@@ -331,6 +348,7 @@ __all__ = [
     "load_mt5_server_clock",
     "NTPClockSample",
     "CLOCK_MAX_UNCERTAINTY_SECONDS",
+    "CLOCK_HOLDOVER_DRIFT_PPM",
     "estimate_mt5_server_clock",
     "query_ntp_sources",
 ]
