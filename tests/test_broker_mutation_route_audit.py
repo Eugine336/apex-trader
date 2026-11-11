@@ -11,13 +11,27 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY_MUTATORS = {
+BROKER_MUTATORS = {
+    # Exposure-increasing entry operations.
     "place_order",
     "place_pending_order",
     "execute_entry",
+    "execute_pending_entry",
     "order_send",
     "buy",
     "sell",
+    # Existing-position and pending-order mutations.
+    "modify_order",
+    "close_order",
+    "cancel_pending_order",
+    "modify_trade",
+    "close_trade",
+    "cancel_order",
+    "modify_position",
+    "close_position",
+    "order_modify",
+    "order_close",
+    "order_delete",
 }
 
 # Explicit implementation boundaries, not orchestration routes. Keep this list
@@ -33,19 +47,28 @@ _ALLOWED_MUTATION_FILES = {
 }
 
 
-def _entry_mutation_calls(path: Path) -> list[tuple[int, str]]:
+def _broker_mutation_calls(path: Path) -> list[tuple[int, str]]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in ENTRY_MUTATORS:
+        if isinstance(func, ast.Attribute) and func.attr in BROKER_MUTATORS:
+            # TradeManager.close_trade is an in-memory legacy exit decision,
+            # not a broker mutation. Calls through a broker/connector attribute
+            # are still detected and must remain inside the approved gateway.
+            if (
+                func.attr in {"close_trade", "modify_trade"}
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "self"
+            ):
+                continue
             found.append((node.lineno, func.attr))
     return found
 
 
-def test_live_orchestration_has_no_direct_entry_mutation_calls() -> None:
+def test_live_orchestration_has_no_direct_broker_mutations() -> None:
     """No runtime coordinator may bypass the shared Brain/admission path."""
     roots = (
         ROOT / "event_driven_bootstrap.py",
@@ -57,16 +80,16 @@ def test_live_orchestration_has_no_direct_entry_mutation_calls() -> None:
     for path in roots:
         if not path.exists():
             continue
-        for line, method in _entry_mutation_calls(path):
+        for line, method in _broker_mutation_calls(path):
             violations.append(f"{path.relative_to(ROOT)}:{line} calls {method}()")
     assert not violations, (
-        "Direct exposure-increasing broker calls found outside the shared "
+        "Direct broker mutations found outside the shared "
         "ActionExecutor/PlatformManager boundary:\n" + "\n".join(violations)
     )
 
 
-def test_only_approved_gateway_files_call_live_entry_mutators() -> None:
-    """Catch new direct-entry call sites anywhere in production Python code."""
+def test_only_approved_gateway_files_call_broker_mutators() -> None:
+    """Catch new entry, close, modify and cancel call sites anywhere in production Python code."""
     excluded_dirs = {
         ".git", ".venv", "venv", "node_modules", "__pycache__", "tests",
     }
@@ -78,7 +101,7 @@ def test_only_approved_gateway_files_call_live_entry_mutators() -> None:
         if relative in _ALLOWED_MUTATION_FILES:
             continue
         try:
-            calls = _entry_mutation_calls(path)
+            calls = _broker_mutation_calls(path)
         except (SyntaxError, UnicodeDecodeError):
             # Parse errors are covered by the repository's compile/lint checks.
             continue
@@ -86,7 +109,7 @@ def test_only_approved_gateway_files_call_live_entry_mutators() -> None:
             f"{relative}:{line} calls {method}()" for line, method in calls
         )
     assert not violations, (
-        "Unexpected direct entry mutation call sites found. Route new entry "
+        "Unexpected broker mutation call sites found. Route entry, close, modify and cancel "
         "flows through CognitiveBrain → first-class opportunity/whole-book "
         "admission → shared RiskGate/ActionExecutor instead:\n"
         + "\n".join(violations)
