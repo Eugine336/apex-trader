@@ -154,6 +154,10 @@ class PositionInfo:
     volume_max: float = 0.0
     digits: int = 0
     tick_size: float = 0.0
+    # Account identity is attached by PlatformManager when aggregating
+    # positions from multiple connected logins; it is internal risk-silo data.
+    account_key: str = ""
+    connector_index: int | None = None
 
 
 TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "D1")
