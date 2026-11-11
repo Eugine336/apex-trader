@@ -808,3 +808,10 @@ The WP-T correction branch has been rebased onto main after PR #907 merged. Curr
 The implementation now separates `symbol_info_tick` live quote normalization from UTC historical tick APIs, validates bounded history batches without subtracting the live offset, recovers long gaps in 300-second batches, and persists broker-scoped checkpoints and unrecoverable gap records in the existing EventStore. MT5 OHLCV uses provider UTC semantics; `copy_rates_from_pos(start_pos=1)` supplies completed bars, and range reads use independent UTC completion checks. Confirmed candle analysis and warmup require completed-bar attestation. Forming-bar WorldModel updates no longer wake cognition.
 
 PR #908's Python 3.11/3.12, Gold Desk 3.11/3.12 and lint checks are queued. No test result or acceptance is claimed. A second independent MT5 host, DST transition coverage, full clock lifecycle and integrated Systems 2/6/7 acceptance remain open. T-A1 through T-A10 remain OPEN.
+
+
+### WP-T CI correction checkpoint — 2026-11-11
+
+The first Gold Desk CI execution for PR #908 exposed three failures in legacy synthetic market-lens fixtures. The tests declared `source_includes_forming_bar=True` but omitted the explicit `forming_bar_included=True` frame attribute now required by the production provenance contract. Both fixture builders have been corrected to attest their actual synthetic shape. The production provenance guard remains strict; no acceptance threshold or test assertion was weakened.
+
+Correction commit: `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` on `fix/wp-t-timestamp-contract-recovery`. CI for this exact head is pending. This is a test-fixture correction, not WP-T acceptance. T-A1 through T-A10 remain OPEN; multi-host, sustained-feed, DST, clock lifecycle and Systems 2/6/7 integration evidence remain required.
