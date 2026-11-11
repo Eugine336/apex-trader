@@ -141,3 +141,36 @@ The available GitHub connector can inspect and commit repository files but does 
 - Added `tests/test_mt5_timestamp_diagnostic.py` static read-only safety checks. Tests are committed but not executed.
 - Timestamp research was qualified: official MetaQuotes Python docs describe history data as UTC, while official snapshot docs omit explicit timezone semantics and forum reports conflict. No global UTC/server-local rewrite has been made. The raw capture is required before altering active normalization.
 - No test, lint, import, integration or runtime execution has occurred in this environment. Source implementation is committed; verification remains open.
+
+
+## Current execution ledger — 2026-11-11
+
+| Item | Current state | Evidence |
+|---|---|---|
+| Holdover uncertainty growth | Implemented, not test-executed | `platforms/mt5/clock.py` |
+| Connector holdover wiring | Implemented, not test-executed | `platforms/mt5/mt5_connector.py` |
+| Broker identity revalidation | Implemented, not test-executed | Connector refuses holdover if account server identity cannot be read or differs |
+| Holdover regression tests | Added, not executed | `tests/test_mt5_server_clock.py` |
+| Raw timestamp capture | Implemented, not owner-host executed | `scripts/diagnose_mt5_timestamp_semantics.py` |
+| Diagnostic safety test | Added, not executed | `tests/test_mt5_timestamp_diagnostic.py` |
+| Timestamp semantics decision | OPEN / DATA-GATED | Official documentation and public field reports conflict; preserve raw evidence until host capture |
+| Historical gap persistence | OPEN | Cursor, dedup and gap counters remain process-local |
+| Full consumer audit | OPEN | Current inventory is partial |
+| Python 3.11/3.12 CI | OPEN | No CI result yet |
+| Live broker mutation | PROHIBITED / NONE | Diagnostic is read-only |
+
+### Diagnostic execution
+
+On each supported Windows host with the MT5 terminal already initialized and logged into the intended account, run:
+
+```powershell
+python scripts/diagnose_mt5_timestamp_semantics.py --symbol XAUUSD --window-seconds 60
+```
+
+Use the exact broker-native symbol if it differs from XAUUSD. Save the JSON output from each host as an artifact and sanitize account-sensitive metadata before sharing. Do not include login IDs, passwords, terminal paths containing usernames or unrelated account data. Capture at least two hosts with different local timezone/wall-clock configurations. Repeat around a broker DST transition where feasible.
+
+The script requires at least two independent UTC authorities to establish query bounds. It records host wall time only for comparison; it does not use host wall time to establish the UTC request interval. A missing/empty history result is evidence to investigate, not proof by itself of timestamp convention.
+
+### Exact next action
+
+Open a draft PR to main to trigger CI. Review all checks before source normalization changes. Run the read-only capture on two owner hosts, compare the raw `time`/`time_msc` values and history rows against UTC witnesses and exact UTC request bounds, then settle the live and historical timestamp contract together. Continue durable tick history recovery, gap ledger persistence and complete downstream consumer audit. No acceptance gate may be marked complete until tests and owner-host evidence exist.
