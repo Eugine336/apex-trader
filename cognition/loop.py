@@ -1962,19 +1962,19 @@ class CognitionLoop:
             # ingestion clock. Unknown UTC remains explicit and yields no fresh
             # evidence in downstream Brain reasoning.
             ms.created_epoch = decision_now
-            if decision_now > 0.0:
-                ms.created_iso = datetime.fromtimestamp(
-                    decision_now, tz=timezone.utc,
-                ).isoformat()
+            ms.created_iso = (
+                datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                if decision_now > 0.0 else ""
+            )
             self._inject_calibration_evidence(ms, now=decision_now)
             output = self._brain.reason(ms, now=decision_now)
             decision = getattr(output, "decision", None)
             if decision is not None:
                 decision.created_epoch = decision_now
-                if decision_now > 0.0:
-                    decision.created_iso = datetime.fromtimestamp(
-                        decision_now, tz=timezone.utc,
-                    ).isoformat()
+                decision.created_iso = (
+                    datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                    if decision_now > 0.0 else ""
+                )
             output.decided_at_epoch = decision_now
             self._record_candidate_snapshot(output, ms)
             self._label_due_candidate_horizons(ms)
@@ -2676,18 +2676,18 @@ class CognitionLoop:
             decision_now = self._resolve_decision_utc(symbol, now)
             ms = self._consolidator.build(symbol, now=decision_now)
             ms.created_epoch = decision_now
-            if decision_now > 0.0:
-                ms.created_iso = datetime.fromtimestamp(
-                    decision_now, tz=timezone.utc,
-                ).isoformat()
+            ms.created_iso = (
+                datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                if decision_now > 0.0 else ""
+            )
             output = self._brain.manage(pos, ms, now=decision_now)
             decision = getattr(output, "decision", None)
             if decision is not None:
                 decision.created_epoch = decision_now
-                if decision_now > 0.0:
-                    decision.created_iso = datetime.fromtimestamp(
-                        decision_now, tz=timezone.utc,
-                    ).isoformat()
+                decision.created_iso = (
+                    datetime.fromtimestamp(decision_now, tz=timezone.utc).isoformat()
+                    if decision_now > 0.0 else ""
+                )
             output.decided_at_epoch = decision_now
             if symbol:
                 self._last_manage_at[symbol] = t
