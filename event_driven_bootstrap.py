@@ -16,6 +16,9 @@ import json
 import math
 import os
 import threading
+
+# Guards first-use lock creation for partially constructed/test instances too.
+_PORTFOLIO_ADMISSION_INIT_LOCK = threading.Lock()
 import time as _time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -2511,7 +2514,13 @@ class EventDrivenSystem:
 
     def _get_portfolio_admission_reservations(self):
         """Return the durable reservation ledger shared by concurrent origination calls."""
-        lock = self._portfolio_admission_reservations_lock
+        lock = getattr(self, "_portfolio_admission_reservations_lock", None)
+        if lock is None:
+            with _PORTFOLIO_ADMISSION_INIT_LOCK:
+                lock = getattr(self, "_portfolio_admission_reservations_lock", None)
+                if lock is None:
+                    lock = threading.Lock()
+                    self._portfolio_admission_reservations_lock = lock
         with lock:
             reservations = getattr(self, "_portfolio_admission_reservations", None)
             if reservations is None:
