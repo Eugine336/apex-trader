@@ -130,7 +130,7 @@ class PositionWorker:
         return kept
 
     # ──────────────────────────────────────────────────────────────────
-    # Layer 1: Tick-level checks (mirrors TradeManager.update)
+    # Independent broker-truth safety checks
     # ──────────────────────────────────────────────────────────────────
 
     def _check_stop_loss(self, snap: PositionSnapshot, out: list[Intent]) -> None:
