@@ -361,3 +361,21 @@ Poll PR #908's full CI matrix for HEAD `86bb4ea1d122d1c82b6260dbd087b5a0cb9b24c4
 
 ### Exact next action
 Poll the new PR #908 head `75752fdea4ff43f0bd5a4d73bea078dcb5411d94` for fresh Python 3.11/3.12, Gold Desk 3.11/3.12 and lint results. Diagnose and fix every failure at its source. Do not merge while checks are missing/failing or while the independent-host and operational acceptance gates remain open.
+
+
+### Full CI failure triage and correction increment — 2026-11-11
+
+- PR #908 validation run #4371 on pre-correction source head `9c51103125dadfaf3a8cd11c3020c4208c20c5d9`: lint passed; Python 3.11 and 3.12 test jobs failed. Python 3.11 reported **8 failed, 4,545 passed**; the Gold Desk focused run #2429 separately reported the three market-lens fixture failures (442 passed). Identity/safety audit step passed. These results are retained as failure evidence, not represented as current-head verification.
+- Root causes traced and corrected without weakening production guards:
+  1. Three market-lens tests supplied a forming bar but omitted `forming_bar_included=True`; both synthetic fixture builders now explicitly attest their actual shape.
+  2. Two MT5 history replay tests still attested `live_server_offset`; their fake history provider now uses the current batch contract `utc_request_bounds_verified`. Production history remains fail-closed on absent/old attestation.
+  3. Cross-asset test data included a bar opening at the current H1 boundary while claiming it was completed; the fixture now ends one full H1 interval earlier.
+  4. Production defect: `_fetch_completed_candles` had been inserted into `PositionEvaluator`, while `EventDrivenSystem._fetch_candles` invoked it on `EventDrivenSystem`. The single implementation was moved into the correct class; no duplicate method remains.
+  5. The technical-indicator test passed a plain list without completed-bar provenance; it now uses a DataFrame with explicit broker/timezone/completed-bar attestation.
+- Correction commits (in order): `75752fdea4ff43f0bd5a4d73bea078dcb5411d94`, `29d5136d7e1500459d79eccaa00a3d6d316c093c`, `e6258815c4f7eea0c5734521282cd697c73ff65a`, `b1041b1383b8d899902e10ba994fdcca45875484`, `2d28f18937aee1ffe81cd6e4c45ef20bf2b7fa6f`, `3529a070a781b42d9ea9561f1a66613e37fcd134`, `50debeb1e701b1e33a8e682602dbb7db3ec11184`, `acfe7b5304c5b1224910a13432652f5a608d201f`.
+- Static post-edit inspection confirms exactly one `_fetch_completed_candles` definition, located after `class EventDrivenSystem`; `_fetch_candles` calls it. The two market-lens fixtures, history normalization fixture, closed-H1 fixture and DataFrame provenance fixture are present.
+- Current PR #908 head at this checkpoint: `acfe7b5304c5b1224910a13432652f5a608d201f`; draft; base `main`; GitHub reports mergeable=false. No workflow runs or combined status checks are currently reported for this exact head. Therefore all corrections are **implemented but not verified**. Do not infer success from the previous run.
+- WP-T T-A1 through T-A10 remain OPEN. Multi-host MT5 capture, sustained feed, DST, full clock lifecycle, consumer coverage and integrated Systems 2/6/7 acceptance remain outstanding. No live broker mutation, host clock change, real `.env`/credential access, account-setting change or runtime DB change occurred.
+
+### Exact next action
+Resolve the PR's non-mergeable state after refreshing GitHub metadata, obtain a fresh full CI run for the exact latest head (Python 3.11/3.12, Gold Desk 3.11/3.12 and lint), and fix every remaining failure. If Actions cannot start because the repository quota is exhausted, run the same CI commands in the user's supported Windows checkout and capture complete output. Do not merge or mark WP-T accepted until automated and owner-host gates pass.
