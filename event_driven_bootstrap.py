@@ -2489,6 +2489,15 @@ class EventDrivenSystem:
                 return False
 
         def _serialized_sink(origination: Any) -> bool:
+            # Operator pause must be checked before touching the reservation
+            # ledger. A paused engine must not create or mutate admission state.
+            if self._paused:
+                logger.info(
+                    "[origination-sink] {} {} suppressed — operator pause is active",
+                    getattr(origination, "symbol", ""),
+                    getattr(origination, "direction", ""),
+                )
+                return False
             # Serialize check→size→reserve→submit so two decisions cannot both
             # consume the same still-unfilled broker capacity.
             reservation_book = self._get_portfolio_admission_reservations()
