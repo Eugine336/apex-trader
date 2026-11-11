@@ -272,18 +272,36 @@ class LiveCandleAggregator:
             return False
         tf_secs = _TF_SECONDS[tf]
         seeded_rows: list[dict] = []
-        for row in df.itertuples(index=False):
+        # Record iteration preserves the broker's explicit column names across
+        # pandas versions; namedtuple field access can be sanitized differently
+        # for reserved/renamed columns.
+        for row in df.to_dict(orient="records"):
             try:
-                row_time = pd.Timestamp(row.time)
+                row_time = row["time"]
+                utcoffset = (
+                    row_time.utcoffset()
+                    if callable(getattr(row_time, "utcoffset", None))
+                    else None
+                )
                 if (
-                    row_time.tzinfo is None
-                    or row_time.utcoffset() is None
-                    or row_time.utcoffset().total_seconds() != 0
+                    getattr(row_time, "tzinfo", None) is None
+                    or utcoffset is None
+                    or utcoffset.total_seconds() != 0
                 ):
                     raise ValueError("completed-bar warmup timestamp is not UTC-aware")
-                row_epoch = row_time.tz_convert("UTC").timestamp()
+                row_epoch = float(row_time.timestamp())
+                if not math.isfinite(row_epoch):
+                    raise ValueError("completed-bar warmup timestamp is non-finite")
                 if seeded_rows and row_epoch <= seeded_rows[-1]["timestamp_epoch"]:
                     raise ValueError("completed-bar warmup rows are not strictly chronological")
+                seeded_row = {
+                    "boundary": _candle_boundary(row_epoch, tf_secs),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row.get("volume", 0.0) or 0.0),
+                }
             except Exception as exc:
                 # A frame-level completed-bar attestation cannot make a naive
                 # or non-UTC row safe: timestamp conversion would otherwise
@@ -293,16 +311,8 @@ class LiveCandleAggregator:
                     symbol, tf, type(exc).__name__, exc,
                 )
                 return False
-            seeded_rows.append(
-                {
-                    "boundary": _candle_boundary(row_epoch, tf_secs),
-                    "open": float(row.open),
-                    "high": float(row.high),
-                    "low": float(row.low),
-                    "close": float(row.close),
-                    "volume": float(getattr(row, "volume", 0.0) or 0.0),
-                }
-            )
+            seeded_row["timestamp_epoch"] = row_epoch
+            seeded_rows.append(seeded_row)
         if not seeded_rows:
             return False
         # Keep only the most recent ``max_candles`` rows.
