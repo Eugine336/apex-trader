@@ -2605,7 +2605,11 @@ class EventDrivenSystem:
                                 from_dt=earliest,
                                 to_dt=now_utc,
                             )
-                        except (TypeError, ValueError, IndexError, RuntimeError, OSError):
+                        except (TypeError, ValueError, IndexError, RuntimeError, OSError) as exc:
+                            logger.warning(
+                                "[portfolio-reservations] entry-order history unavailable for position {} on {}: {}",
+                                ticket, route, exc,
+                            )
                             continue
                         if order_id in set(order_ids or []):
                             verified_links.setdefault(ticket, set()).add(order_id)
