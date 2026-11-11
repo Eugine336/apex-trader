@@ -267,3 +267,14 @@ def test_warmup_rejects_naive_timestamps_even_with_frame_completion_attestation(
         lambda _symbol, _tf, _count: frame,
     ) == 0
     assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
+
+def test_warmup_rejects_unordered_rows_even_with_completion_attestation():
+    agg = LiveCandleAggregator()
+    frame = _seed_df(1_700_000_000, 300, 5).iloc[::-1].copy()
+    frame.attrs["completed_bars_verified"] = True
+
+    assert agg.warmup(
+        ["EURUSD"], ["M5"],
+        lambda _symbol, _tf, _count: frame,
+    ) == 0
+    assert agg.get_confirmed_dataframe("EURUSD", "M5") is None
