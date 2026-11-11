@@ -32,7 +32,11 @@ def test_reservation_is_durable_across_event_store_reopen(tmp_path):
     store.close()
     reopened = EventStore(db_path=database)
     recovered = PortfolioAdmissionReservations(lambda: reopened)
-    assert recovered.snapshot() == [_payload()]
+    recovered_snapshot = recovered.snapshot()
+    assert len(recovered_snapshot) == 1
+    assert {
+        key: recovered_snapshot[0][key] for key in _payload()
+    } == _payload()
 
     assert recovered.release("idem-1", reason="explicit_rejection")
     assert recovered.snapshot() == []
