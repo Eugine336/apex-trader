@@ -5,7 +5,7 @@ MT5 or Deriv — the interface is identical.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -156,8 +156,8 @@ class PositionInfo:
     tick_size: float = 0.0
     # Account identity is attached by PlatformManager when aggregating
     # positions from multiple connected logins; it is internal risk-silo data.
-    account_key: str = ""
-    connector_index: int | None = None
+    account_key: str = field(default="", repr=False, compare=False)
+    connector_index: int | None = field(default=None, repr=False, compare=False)
 
 
 TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "D1")
