@@ -145,3 +145,13 @@ Poll CI run #4316 (and any subsequent run for the latest HEAD) until both Python
 5. Correct warmup so only provider-attested completed bars seed the closed-bar collection; preserve forming-bar state separately and test all market-open/market-closed edge cases.
 6. Inventory every consumer of raw ticks, verified ticks, TickStore events, candles and cognition wakes; prove completed-bar-only Brain consumption and explicit gap/missingness propagation.
 7. Run focused and full CI in a supported checkout, then obtain owner-host multi-host acceptance. Do not merge or mark WP-T accepted before these gates pass.
+
+
+## 2026-11-11 — MT5 diagnostic direct-launch import fix
+
+- **Branch:** `phase2/wp-t2-t6-tick-recovery`
+- **Change:** `scripts/diagnose_mt5_timestamp_semantics.py` now resolves the repository root from its own file location and inserts it at the front of `sys.path` before importing the `MetaTrader5` package or Apex modules. This supports the documented direct invocation from the repository root and from other working directories.
+- **Regression coverage:** `tests/test_mt5_timestamp_diagnostic.py` loads the diagnostic module without importing MT5, removes the repository root from a controlled `sys.path`, calls the bootstrap helper, and asserts the root is restored at index zero. Existing read-only safety assertions remain.
+- **User-reported failure:** direct invocation raised `ModuleNotFoundError: No module named 'platforms'` at the import of `platforms.mt5.clock`. Root cause was Python's script-directory import path, not MT5 connectivity.
+- **Status:** implementation committed via GitHub contents API; local pytest/lint not run in this execution environment. CI must verify.
+- **Next action:** rerun the exact documented PowerShell command after pulling this commit. If it advances beyond import and fails, diagnose that next failure separately; do not conflate it with the import-path defect.
