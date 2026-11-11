@@ -329,18 +329,29 @@ class MT5Connector(BaseConnector):
             if advance <= 0:
                 return _holdover_state()
 
-            # Tick arrival is event-driven and irregular. Comparing broker-event
-            # time deltas to poll intervals rejects legitimate sparse/bursty
-            # markets and confuses network delivery latency with clock drift.
-            # The absolute broker offset is instead checked against independent
-            # NTP/HTTPS authorities below. Monotonic time is used only to ensure
-            # the observations are ordered in the local process.
             if elapsed <= 0:
                 return _holdover_state()
 
-            # Advance the baseline only after observing a strictly newer broker
-            # event. This also lets the next observation recover after a stale,
-            # delayed or out-of-order quote without trusting that quote.
+            # A newer timestamp alone does not prove that the latest quote is
+            # current: a delayed/stale quote can be followed by an old burst.
+            # Require source-time progression to corroborate monotonic receipt
+            # progression before using the tick as a clock witness. This is a
+            # freshness gate only; offset is still estimated exclusively from
+            # independent UTC authorities. Sparse markets remain supported
+            # when source-time and monotonic elapsed time advance together.
+            alignment_error = abs(advance - elapsed)
+            alignment_tolerance = max(3.0, elapsed * 0.01)
+            if alignment_error > alignment_tolerance:
+                observations[key] = (tick_epoch, now_mono)
+                logger.debug(
+                    "[mt5] clock witness rejected for {}: source advance={:.3f}s "
+                    "monotonic advance={:.3f}s tolerance={:.3f}s",
+                    key[1], advance, elapsed, alignment_tolerance,
+                )
+                return _holdover_state()
+
+            # Advance the baseline only after a strictly newer, time-aligned
+            # broker event. A delayed burst cannot anchor the broker offset.
             observations[key] = (tick_epoch, now_mono)
 
             state = estimate_mt5_server_clock(
