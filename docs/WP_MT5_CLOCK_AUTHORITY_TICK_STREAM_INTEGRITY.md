@@ -223,3 +223,81 @@ The connector's existing `_COMMON_SUFFIXES` includes `.ecn`; its `symbol_map("XA
 - Latest-quote vs history timestamp domains: STRONG SINGLE-HOST EVIDENCE; DATA-GATED pending repeat and second-host comparison.
 - Clock offset and global normalization contract: OPEN.
 - All T-A1 through T-A10 acceptance gates remain OPEN.
+
+## Timestamp contract and recovery implementation — 2026-11-11
+
+### Owner-host evidence
+
+Two captures from the same Windows 11 host, MT5 package 5.0.6231 / terminal 500.6308, broker server `JustMarkets-Demo`, symbol `XAUUSD.ecn`, returned populated `copy_ticks_range` results. In both captures:
+
+- Raw `symbol_info_tick().time` and `time_msc` were approximately 7,200 seconds ahead of the independent UTC witnesses.
+- Raw `copy_ticks_range` rows were within the exact UTC request bounds and their seconds/milliseconds fields agreed.
+- The host wall clock was within the independent witness uncertainty; no host clock adjustment is supported.
+- The unsuffixed `XAUUSD` did not resolve; `XAUUSD.ecn` did. The connector's existing suffix resolver includes `.ecn`.
+
+This establishes a repeatable API timestamp-domain difference for this broker/terminal/host. It does not establish a fleet-wide contract; a second independent MT5 host is still required.
+
+### Implemented correction on `fix/wp-t-timestamp-contract-recovery`
+
+- `MT5Connector.get_price` retains live-quote normalization through the identity-bound broker clock and now carries the broker server identity in tick provenance.
+- `MT5Connector.get_ticks` no longer subtracts the live broker offset from `copy_ticks_range` rows. It preserves raw provider seconds/milliseconds and attests a batch as UTC only when both fields are finite, mutually consistent and inside the exact UTC request bounds. Uncorroborated data remains timezone-unknown and is not routed as verified UTC.
+- The poller now requires the explicit `utc_request_bounds_verified` attestation instead of the previous `live_server_offset` label.
+- Long recovery windows are split into independently validated 300-second batches. A failed, empty or unverified batch leaves the remaining range outstanding; the old jump-to-current-quote behavior is removed.
+- Replay checkpoints use the existing canonical EventStore with synchronous durable writes, broker-server identity binding, UTC cursor and a bounded recent fingerprint overlap. A failed durable checkpoint prevents cursor advancement. No new database or per-tick generic event logging was introduced.
+- Live candle warmup now rejects any frame without `completed_bars_verified=True`. The current broker warmup adapter does not yet provide this provider attestation, so warmup safely skips rather than classifying a potentially forming bar as closed. This is an explicit remaining integration/data-contract task, not accepted warmup functionality.
+- Added focused tests for UTC-range corroboration, offset-shifted and inconsistent history, multi-batch recovery, failure without cursor advancement, durable checkpoint restore, broker-identity mismatch and unattested warmup rejection.
+
+### Verification status
+
+- These source and test changes are committed on the dedicated branch.
+- No local pytest, lint, compile or integration command was executed in this environment. New CI is required.
+- PR #907 diagnostic CI run `43014426036` is green for Python 3.11, Python 3.12 and lint; that run does not include this correction branch.
+- Only one owner host has been captured (twice). Multi-host and sustained feed acceptance remain open.
+- No broker orders or other broker mutations were performed.
+
+### Remaining WP-T work
+
+1. Run the new focused tests and complete CI; fix all failures without weakening tests.
+2. Add durable checkpoint failure/restart integration tests against the real EventStore implementation and verify database-degraded behavior.
+3. Complete the provider-attested completed-bar contract for MT5 OHLCV; do not turn the current warmup fail-closed guard into an inferred timestamp heuristic.
+4. Complete System 2/6/7 consumer inventory, gap propagation and stale-data behavior; verify no Brain decision consumes raw or forming data.
+5. Finish clock lifecycle tests for stale first tick, no tick, NTP disagreement, identity change, restart and holdover expiry.
+6. Obtain a second independent MT5 host capture and sustained owner-host feed evidence.
+7. Keep T-A1 through T-A10 OPEN until the full evidence matrix passes.
+
+
+### Recovery hardening follow-up — 2026-11-11
+
+- Durable checkpoint writes are rate-limited to at most one per five seconds per symbol; each checkpoint retains the most recent 256 fingerprints. This bounds EventStore write volume while keeping restart replay overlap bounded. The cursor in memory may advance between durable checkpoints; restart resumes from the last committed cursor and replays the intervening range.
+- Empty history responses, invalid timestamp attestations, fetch failures, malformed timestamp batches and cursor-ahead conditions are retained as durable `MT5_TICK_RECOVERY_GAP` events when the canonical EventStore is available. The cursor is not advanced across these ranges.
+- Added a real temporary-SQLite EventStore close/reopen test for checkpoint restoration, plus tests for write failure, checkpoint write throttling and durable gap deduplication. These tests are committed but not executed.
+- The 300-second batch tests verify that a failed later batch leaves the cursor at the last successful batch rather than jumping to the requested end.
+- The test suite still needs CI execution. Same-host timestamp evidence remains repeated but not multi-host.
+
+
+## Completed-bar and timestamp contract supersession — 2026-11-11
+
+The earlier implementation note that aggregator warmup remained unavailable is superseded by the completed-bar correction:
+
+- `get_ohlcv(include_forming=False)` now requests MT5 `copy_rates_from_pos` with `start_pos=1`; position zero is the forming bar, position one is the last completed bar.
+- `get_ohlcv_range` validates UTC provider epochs against the exact requested interval and, for closed-only reads, filters using a conservative independent UTC lower bound.
+- The canonical event-driven `_fetch_candles` path now calls the completed-only fetcher. The live candle aggregator warmup uses the same provider-attested completed-bar contract.
+- Cross-asset context requires `completed_bars_verified=True` and `forming_bar_included=False`; it no longer drops a guessed final row.
+- Forming-bar WorldModel publications are no longer wired as cognition wake triggers. Brain analysis is fed completed, provenance-bearing bars; verified tick-change wakes remain independent.
+- The separate developing observer remains isolated to the existing position-management advisory; it is not admitted as Brain evidence or a Brain wake source.
+
+This does not close the remaining full consumer audit, clock lifecycle, multi-host, EventStore failure, or integrated System 2/6/7 gates.
+
+
+## Completed-bar and timestamp contract supersession — 2026-11-11
+
+The previous implementation note that aggregator warmup remained unavailable is superseded by the completed-bar correction:
+
+- `get_ohlcv(include_forming=False)` now requests MT5 `copy_rates_from_pos` with `start_pos=1`; position zero is the forming bar, position one is the last completed bar.
+- `get_ohlcv_range` validates UTC provider epochs against the exact requested interval and, for closed-only reads, filters using a conservative independent UTC lower bound.
+- The canonical event-driven `_fetch_candles` path now calls the completed-only fetcher. The live candle aggregator warmup uses the same provider-attested completed-bar contract.
+- Cross-asset context requires `completed_bars_verified=True` and `forming_bar_included=False`; it no longer drops a guessed final row.
+- Forming-bar WorldModel publications are no longer wired as cognition wake triggers. Brain analysis is fed completed, provenance-bearing bars; verified tick-change wakes remain independent.
+- The separate developing observer remains isolated to the existing position-management advisory; it is not admitted as Brain evidence or a Brain wake source.
+
+This does not close the remaining full consumer audit, clock lifecycle, multi-host, EventStore failure, or integrated System 2/6/7 gates.
