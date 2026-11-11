@@ -84,6 +84,7 @@ class MT5TickPoller:
                 event_types=[DE.MT5_TICK_RECOVERY_CHECKPOINT],
                 limit=10000,
                 raise_on_error=True,
+                order_by_sequence=True,
             )
             for row in rows:
                 symbol = str(row.get("symbol") or "").strip().upper()
