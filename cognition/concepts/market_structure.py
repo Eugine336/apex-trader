@@ -48,32 +48,49 @@ def _clean(bars: list[dict]) -> list[dict]:
     return out
 
 
+def _swings_at(
+    values: tuple[tuple[float, float], ...], i: int, last_kind: str | None,
+) -> list[tuple[int, str, float]]:
+    """Swings confirmed at bar ``i`` (needs bar i+1). A bar that is both a swing high
+    and a swing low (an outside bar) is ordered so it alternates with the previous swing;
+    with no previous swing, the side that extended less beyond the previous bar comes
+    first. Neither rule looks at the letter H/L, so a mirrored chart gives the mirrored
+    swings."""
+    previous_high, previous_low = values[i - 1]
+    high, low = values[i]
+    following_high, following_low = values[i + 1]
+    found: list[tuple[int, str, float]] = []
+    if high > previous_high and high >= following_high:
+        found.append((i, "H", high))
+    if low < previous_low and low <= following_low:
+        found.append((i, "L", low))
+    if len(found) == 2:
+        if last_kind is not None:
+            first = "L" if last_kind == "H" else "H"
+        else:
+            first = "H" if (high - previous_high) < (previous_low - low) else "L"
+        found.sort(key=lambda swing: swing[1] != first)
+    return found
+
+
+def _push_swing(out: list[tuple[int, str, float]], swing: tuple[int, str, float]) -> None:
+    if out and out[-1][1] == swing[1]:
+        more_extreme = swing[2] > out[-1][2] if swing[1] == "H" else swing[2] < out[-1][2]
+        if more_extreme:
+            out[-1] = swing
+        return
+    out.append(swing)
+
+
 @lru_cache(maxsize=512)
 def _fractal_swings_cached(
     values: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[int, str, float], ...]:
     """Shared immutable swing result keyed by the exact high/low history."""
-    raw: list[tuple[int, str, float]] = []
-    for i in range(1, len(values) - 1):
-        previous_high, previous_low = values[i - 1]
-        high, low = values[i]
-        following_high, following_low = values[i + 1]
-        if high > previous_high and high >= following_high:
-            raw.append((i, "H", high))
-        if low < previous_low and low <= following_low:
-            raw.append((i, "L", low))
-    raw.sort(key=lambda item: (item[0], item[1]))
     out: list[tuple[int, str, float]] = []
-    for swing in raw:
-        if out and out[-1][1] == swing[1]:
-            keep_new = (
-                swing[2] > out[-1][2] if swing[1] == "H"
-                else swing[2] < out[-1][2]
-            )
-            if keep_new:
-                out[-1] = swing
-            continue
-        out.append(swing)
+    for i in range(1, len(values) - 1):
+        for swing in _swings_at(values, i, out[-1][1] if out else None):
+            _push_swing(out, swing)
     return tuple(out)
 
 
@@ -94,25 +111,9 @@ def _append_confirmed_pivot(
     if len(values) < 3:
         return ()
     index = len(values) - 2
-    previous_high, previous_low = values[index - 1]
-    high, low = values[index]
-    following_high, following_low = values[index + 1]
-    new = []
-    if high > previous_high and high >= following_high:
-        new.append((index, "H", high))
-    if low < previous_low and low <= following_low:
-        new.append((index, "L", low))
     out = list(pivots)
-    for swing in new:
-        if out and out[-1][1] == swing[1]:
-            more_extreme = (
-                swing[2] > out[-1][2] if swing[1] == "H"
-                else swing[2] < out[-1][2]
-            )
-            if more_extreme:
-                out[-1] = swing
-        else:
-            out.append(swing)
+    for swing in _swings_at(values, index, out[-1][1] if out else None):
+        _push_swing(out, swing)
     return tuple(out)
 
 

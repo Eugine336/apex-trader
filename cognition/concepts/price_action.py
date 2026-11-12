@@ -193,7 +193,9 @@ class PriceActionConcepts:
         last = bars[-1]
         bull = last["low"] < low and last["close"] > low
         bear = last["high"] > high and last["close"] < high
-        if not (bull or bear):
+        if not (bull or bear) or (bull and bear):
+            # No sweep, or an outside bar that breached both extremes: the direction is
+            # unresolved, so no reading (never default to one side).
             return []
         side = LONG if bull else SHORT
         swept = low if bull else high

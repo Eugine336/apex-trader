@@ -164,11 +164,17 @@ class PriceDeliveryConcepts:
             elif c["high"] < a["low"]:
                 gaps.append(("bearish", c["high"], a["low"], i))
         bulls, bears = [g for g in gaps if g[0] == "bullish"], [g for g in gaps if g[0] == "bearish"]
-        for bull in reversed(bulls):
-            for bear in reversed(bears):
+        # Choose the most recent overlapping pair by recency alone (never by which side is
+        # iterated first), so a mirrored chart selects the mirrored pair.
+        pairs = []
+        for bull in bulls:
+            for bear in bears:
                 lo, hi = max(bull[1], bear[1]), min(bull[2], bear[2])
                 if lo >= hi or abs(bull[3] - bear[3]) > 20:
                     continue
+                pairs.append((max(bull[3], bear[3]), -abs(bull[3] - bear[3]), bull, bear, lo, hi))
+        if pairs:
+            for _latest, _gap, bull, bear, lo, hi in [max(pairs, key=lambda x: (x[0], x[1]))]:
                 latest = max(bull[3], bear[3])
                 invalid = any(x["close"] < lo or x["close"] > hi for x in bars[latest + 1:])
                 return [_record(
