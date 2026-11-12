@@ -697,7 +697,10 @@ class TestPendingOrderLifecycle:
         }
         system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
             "status": "CANCELLED", "broker_confirmed": True,
-            "record": {"ticket": "ORDER-CANCELLED", "state": 2},
+            "record": {
+                "ticket": "ORDER-CANCELLED", "state": 2,
+                "volume_initial": 0.10, "volume_current": 0.10,
+            },
         })
         store = MagicMock()
 
@@ -723,7 +726,10 @@ class TestPendingOrderLifecycle:
         }
         system._pm = SimpleNamespace(reconcile_pending_order=lambda *args, **kwargs: {
             "status": "EXPIRED", "broker_confirmed": True,
-            "record": {"ticket": "ORDER-EXPIRED", "state": 6},
+            "record": {
+                "ticket": "ORDER-EXPIRED", "state": 6,
+                "volume_initial": 0.10, "volume_current": 0.10,
+            },
         })
         store = MagicMock()
 
@@ -1111,3 +1117,169 @@ class TestPendingOrderLifecycle:
             system._restore_pending_orders()
         assert system._pending_orders["ORDER-CANCEL-ZERO-REMAINDER"]["status"] == "UNKNOWN"
 
+
+
+    def test_cancelled_partial_fill_with_unresolved_position_id_is_retained(self):
+        import threading
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-CANCEL-PARTIAL": {
+                "order_id": "ORDER-CANCEL-PARTIAL",
+                "symbol": "EURUSD",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "lots": 0.10,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "decision_id": "decision-cancel-partial",
+                "idempotency_key": "idem-cancel-partial",
+            },
+        }
+        system._entry_context = {}
+        system._known_open = {}
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "CANCELLED",
+                "broker_confirmed": True,
+                "record": {
+                    "ticket": "ORDER-CANCEL-PARTIAL",
+                    "position_id": "POSITION-CANCEL-PARTIAL",
+                    "state": 2,
+                    "volume_initial": 0.10,
+                    "volume_current": 0.06,
+                    "connector_index": 0,
+                },
+            },
+            get_pending_order_fill_deals=lambda *args, **kwargs: [],
+        )
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        assert "ORDER-CANCEL-PARTIAL" in system._pending_orders
+        assert system._pending_orders["ORDER-CANCEL-PARTIAL"]["status"] == "CANCELLED"
+        reconciled = [
+            call.kwargs["payload"]
+            for call in store.emit.call_args_list
+            if call.kwargs.get("event_type") == DE.ORDER_RECONCILED
+        ]
+        assert reconciled
+        assert reconciled[-1]["broker_record"]["position_id"] == "POSITION-CANCEL-PARTIAL"
+
+    def test_cancelled_partial_fill_without_position_id_is_still_retained(self):
+        import threading
+        from datetime import datetime, timezone
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {
+            "ORDER-CANCEL-PARTIAL-NO-POSITION": {
+                "order_id": "ORDER-CANCEL-PARTIAL-NO-POSITION",
+                "symbol": "EURUSD",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "lots": 0.10,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "decision_id": "decision-cancel-partial-no-position",
+                "idempotency_key": "idem-cancel-partial-no-position",
+            },
+        }
+        system._entry_context = {}
+        system._known_open = {}
+        system._pm = SimpleNamespace(
+            reconcile_pending_order=lambda *args, **kwargs: {
+                "status": "CANCELLED",
+                "broker_confirmed": True,
+                "record": {
+                    "ticket": "ORDER-CANCEL-PARTIAL-NO-POSITION",
+                    "state": 2,
+                    "volume_initial": 0.10,
+                    "volume_current": 0.06,
+                },
+            },
+            get_pending_order_fill_deals=lambda *args, **kwargs: [],
+        )
+        store = MagicMock()
+
+        with patch("event_driven_bootstrap.get_event_store", return_value=store):
+            system._reconcile_pending_orders([])
+
+        assert "ORDER-CANCEL-PARTIAL-NO-POSITION" in system._pending_orders
+        assert system._pending_orders["ORDER-CANCEL-PARTIAL-NO-POSITION"]["status"] == "CANCELLED"
+        reconciled = [
+            call.kwargs["payload"]
+            for call in store.emit.call_args_list
+            if call.kwargs.get("event_type") == DE.ORDER_RECONCILED
+        ]
+        assert reconciled
+        assert reconciled[-1]["broker_record"]["volume_current"] == 0.06
+
+
+    def test_restart_recovery_preserves_cancelled_partial_fill_without_position_id(self, tmp_path, monkeypatch):
+        import threading
+
+        import event_driven_bootstrap as bootstrap_module
+        from event_driven_bootstrap import EventDrivenSystem
+        from persistence import domain_events as DE
+        from persistence.event_store import EventStore
+
+        store = EventStore(db_path=str(tmp_path / "partial-fill-restart.db"))
+        monkeypatch.setattr(bootstrap_module, "get_event_store", lambda: store)
+        ticket = "ORDER-CANCEL-PARTIAL-RESTART"
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        store.emit(
+            event_type=DE.ORDER_PENDING,
+            severity="INFO",
+            symbol="EURUSD",
+            parent_id=ticket,
+            source_module="test.pending_order",
+            durable=True,
+            payload={
+                "order_id": ticket,
+                "symbol": "EURUSD",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "lots": 0.10,
+                "submitted_at": submitted_at,
+                "idempotency_key": "idem-partial-restart",
+            },
+        )
+        store.emit(
+            event_type=DE.ORDER_RECONCILED,
+            severity="WARNING",
+            symbol="EURUSD",
+            parent_id=ticket,
+            source_module="test.pending_order_reconciliation",
+            durable=True,
+            payload={
+                "order_id": ticket,
+                "status": "CANCELLED",
+                "attribution_status": "unresolved_position_ticket",
+                "broker_confirmed": True,
+                "broker_record": {
+                    "ticket": ticket,
+                    "state": 2,
+                    "volume_initial": 0.10,
+                    "volume_current": 0.06,
+                    "source_verified": True,
+                },
+            },
+        )
+
+        system = object.__new__(EventDrivenSystem)
+        system._pending_orders_lock = threading.Lock()
+        system._pending_orders = {}
+        system._restore_pending_orders()
+
+        assert ticket in system._pending_orders
+        recovered = system._pending_orders[ticket]
+        assert recovered["status"] == "CANCELLED"
+        assert recovered["attribution_status"] == "unresolved_position_ticket"
+        assert recovered["broker_record"]["volume_current"] == 0.06
+        store.close()

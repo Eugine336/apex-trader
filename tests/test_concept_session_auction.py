@@ -359,23 +359,30 @@ def test_session_calendar_consumes_verified_provider_timezone_and_holiday_observ
                 ),
                 values={
                     "timezone": "Europe/London",
+                    "session_id": "gold-session-1",
                     "session_open_epoch": 1_799_999_000,
                     "session_close_epoch": 1_800_100_000,
                     "dst_status": True,
                     "holiday_status": False,
                     "rollover_start_epoch": 1_800_010_000,
                     "rollover_end_epoch": 1_800_020_000,
+                    "rollover_window": "daily_rollover",
                     "liquidity": "regular",
                     "is_tradeable": True,
                 },
             ),)
 
     reading = SessionCalendar().read_with_context(
-        "XAUUSD", {"M5": _range_bars()},
+        "XAUUSD", {"M5": _range_bars(base=1_799_996_400)},
         {"data_source_registry": _Registry(),
          "analysis_epoch": 1_800_000_020},
     )[0]
     assert reading.facts["provider_session_calendar_verified"] is True
+    assert reading.facts["calendar_verified"] is True
+    assert reading.facts["status"] == "in_session"
+    assert reading.facts["session_id"] == "gold-session-1"
+    assert reading.facts["session_open_epoch"] == 1_799_999_000
+    assert reading.facts["rollover_active"] is False
     assert reading.facts["provider_session_timezone"] == "Europe/London"
     assert reading.facts["provider_dst_status"] is True
     assert reading.facts["provider_holiday_status"] is False
