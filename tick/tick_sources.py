@@ -29,6 +29,17 @@ if TYPE_CHECKING:  # type hints only — not needed (and not imported) at runtim
     from tick import TickRouter
 
 
+# History timestamp normalizations the adapter can attest. The last two are decided from
+# the response itself (containment inside the UTC request bounds, or inside the bounds
+# shifted by the verified broker offset); "live_server_offset" is the earlier clock-only rule.
+_HISTORY_CHUNK_SECONDS = 300.0           # one history request window
+_MAX_HISTORY_RECOVERY_SECONDS = 3600.0   # newest span recovered per poll; older span is a recorded gap
+
+_VERIFIED_HISTORY_NORMALIZATIONS = frozenset({
+    "live_server_offset", "request_bounds_utc", "request_bounds_server_offset",
+})
+
+
 class MT5TickPoller:
     """Polls MT5 prices and injects Tick objects into the TickRouter."""
 
@@ -60,6 +71,7 @@ class MT5TickPoller:
         self._history_seen_order: dict[str, deque] = {}
         self._history_seen_limit = 20_000
         self._history_gap_count: dict[str, int] = {}
+        self._history_status: dict[str, str] = {}
 
     def _remember_history_tick(self, symbol: str, key: tuple) -> bool:
         seen = self._history_seen.setdefault(symbol, set())
@@ -131,13 +143,15 @@ class MT5TickPoller:
         return True
 
     def _route_history_quotes(self, symbol: str, latest_quote: Any) -> bool:
-        """Replay all verified bid/ask ticks since the last broker-time cursor.
+        """Recover and route all verified bid/ask ticks since the last cursor.
 
-        MT5's latest-quote polling can skip intermediate updates. The history
-        API returns the broker's available quote tape, so the poller requests an
-        overlapping range, validates the adapter's UTC attestation, deduplicates
-        boundary repeats and routes every usable bid/ask event. Trade-only rows
-        are not converted into synthetic bid/ask quotes.
+        MT5's latest-quote polling can skip intermediate updates, and the feed can be
+        interrupted (terminal reconnect, outage, weekend). History is requested in
+        bounded overlapping chunks. Each chunk's time domain is verified from its own
+        response (see ``MT5Connector.get_ticks``), so recovery does not depend on how
+        recent the window is. Overlap is de-duplicated; a chunk whose timestamps cannot
+        be verified ends recovery and the unrecoverable span is recorded as a gap and
+        never synthesised. Work per poll is bounded by ``_MAX_HISTORY_RECOVERY_SECONDS``.
         """
         fetch = getattr(self._pm, "get_tick_history", None)
         if not callable(fetch):
@@ -150,27 +164,56 @@ class MT5TickPoller:
         start = (
             cursor - timedelta(milliseconds=1)
             if cursor is not None
-            else end - timedelta(seconds=300)
+            else end - timedelta(seconds=_HISTORY_CHUNK_SECONDS)
         )
-        window_seconds = (end - start).total_seconds()
-        if window_seconds < 0:
+        span = (end - start).total_seconds()
+        if span < 0:
             return False
-        if window_seconds > 300.0:
-            # get_ticks only attests UTC normalization for a recent live window.
-            # Do not relabel a long outage/weekend replay with today's offset:
-            # record the gap, re-anchor at the current verified quote, and resume
-            # live capture without fabricating timestamps for the missing span.
-            self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
-            self._history_cursor[symbol] = end
-            now = _time.monotonic()
-            if now - self._last_error_log.get(f"history-gap:{symbol}", 0.0) >= 60.0:
-                self._last_error_log[f"history-gap:{symbol}"] = now
-                logger.error(
-                    "[mt5-poller] {} tick-history gap {:.1f}s — cannot verify historical "
-                    "UTC offset; re-anchoring at current broker quote (gap_count={})",
-                    symbol, window_seconds, self._history_gap_count[symbol],
-                )
-            return False
+        if span > _MAX_HISTORY_RECOVERY_SECONDS:
+            # Only the newest bounded horizon is recovered; the older span is recorded as a gap.
+            self._record_history_gap(symbol, span - _MAX_HISTORY_RECOVERY_SECONDS, "older than recovery horizon")
+            start = end - timedelta(seconds=_MAX_HISTORY_RECOVERY_SECONDS)
+        routed_any = False
+        chunk_start = start
+        while chunk_start < end:
+            chunk_end = min(chunk_start + timedelta(seconds=_HISTORY_CHUNK_SECONDS), end)
+            if end - chunk_end <= timedelta(milliseconds=1):
+                # The 1 ms cursor overlap must not create a sliver chunk of its own.
+                chunk_end = end
+            final_chunk = chunk_end >= end
+            routed = self._route_history_window(symbol, chunk_start, chunk_end, fetch)
+            status = self._history_status.get(symbol, "failed")
+            if routed:
+                routed_any = True
+            elif status == "empty":
+                if not final_chunk:
+                    # The broker holds no ticks in this earlier interval (quiet market),
+                    # so recovery moves past it. The final window is not skipped: ticks
+                    # at the newest edge can still be appended.
+                    previous = self._history_cursor.get(symbol)
+                    self._history_cursor[symbol] = chunk_end if previous is None else max(previous, chunk_end)
+            else:   # "unverified" or "failed"
+                if span > _HISTORY_CHUNK_SECONDS:
+                    self._record_history_gap(symbol, (end - chunk_start).total_seconds(), f"chunk {status}")
+                    self._history_cursor[symbol] = end
+                break
+            chunk_start = chunk_end
+        return routed_any
+
+    def _record_history_gap(self, symbol: str, seconds: float, reason: str) -> None:
+        self._history_gap_count[symbol] = self._history_gap_count.get(symbol, 0) + 1
+        now = _time.monotonic()
+        if now - self._last_error_log.get(f"history-gap:{symbol}", 0.0) >= 60.0:
+            self._last_error_log[f"history-gap:{symbol}"] = now
+            logger.error(
+                "[mt5-poller] {} tick-history gap {:.1f}s recorded ({}); the span is not "
+                "synthesised (gap_count={})",
+                symbol, seconds, reason, self._history_gap_count[symbol],
+            )
+
+    def _route_history_window(self, symbol: str, start: datetime, end: datetime, fetch: Any) -> bool:
+        """Fetch, verify and route one history window; records ``self._history_status``."""
+        self._history_status[symbol] = "failed"
         try:
             frame = fetch(symbol, start, end)
         except Exception as exc:
@@ -184,7 +227,7 @@ class MT5TickPoller:
             not isinstance(attrs, dict)
             or attrs.get("source_timestamp_verified") is not True
             or attrs.get("source_timezone") != "UTC"
-            or attrs.get("utc_normalization") != "live_server_offset"
+            or attrs.get("utc_normalization") not in _VERIFIED_HISTORY_NORMALIZATIONS
         ):
             now = _time.monotonic()
             if now - self._last_error_log.get(f"history-clock:{symbol}", 0.0) >= 60.0:
@@ -194,8 +237,10 @@ class MT5TickPoller:
                     "history is not routed and cursor is not advanced",
                     symbol,
                 )
+            self._history_status[symbol] = "unverified"
             return False
         if bool(getattr(frame, "empty", True)):
+            self._history_status[symbol] = "empty"
             return False
 
         newest: Optional[datetime] = None
@@ -278,7 +323,9 @@ class MT5TickPoller:
             ))
         if newest is not None:
             self._history_cursor[symbol] = newest
+            self._history_status[symbol] = "routed"
             return True
+        self._history_status[symbol] = "empty"
         return False
 
     def _poll_symbol(self, symbol: str) -> None:

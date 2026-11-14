@@ -1154,9 +1154,11 @@ class MT5Connector(BaseConnector):
     ) -> pd.DataFrame:
         """Fetch the broker's historical tick tape without inventing aggressor flow.
 
-        Request bounds must be timezone-aware and are normalized to UTC. Returned
-        epochs are broker-server time; only a short live window is converted to
-        UTC with a fresh automatically synchronized broker offset. Older history remains unnormalized.
+        Request bounds must be timezone-aware and are normalized to UTC. The time
+        domain of the returned epochs is decided per call from the evidence in the
+        response itself (containment inside the UTC request bounds, or inside the
+        bounds shifted by the verified broker offset); an ambiguous or contradictory
+        response stays unverified and is never converted.
         BUY/SELL aggressor flags are exposed only when the broker supplies them.
         """
         self._require_connection()
@@ -1185,41 +1187,55 @@ class MT5Connector(BaseConnector):
                 "utc_normalization": "historical_offset_required",
             })
             return frame
-        # MT5 tick-history epochs are broker-server wall-clock values. A
-        # short window ending near now can be normalized with the live terminal
-        # offset; arbitrary historical ranges need an offset history and remain
-        # explicitly broker-server time.
+        # The time domain of the returned epochs is decided by evidence, not assumed.
+        # The request bounds are UTC. Ticks the terminal returns for that range must lie
+        # inside it: if every row does, the rows are UTC; if every row lies inside the
+        # bounds shifted by the verified broker offset, they are broker-server labels.
+        # Anything else (both fit, or neither) stays unverified and is never converted.
+        # The live broker clock is consulted only to test the second hypothesis; the
+        # UTC hypothesis needs no clock at all.
+        if "time_msc" in frame.columns:
+            epochs_ms = frame["time_msc"].astype("float64")
+        elif "time" in frame.columns:
+            epochs_ms = frame["time"].astype("float64") * 1000.0
+        else:
+            epochs_ms = pd.Series(dtype="float64")
+        start_ms, end_ms, tolerance_ms = start.timestamp() * 1000.0, end.timestamp() * 1000.0, 1.0
+        fits_utc = bool(len(epochs_ms)) and bool(
+            ((epochs_ms >= start_ms - tolerance_ms) & (epochs_ms <= end_ms + tolerance_ms)).all()
+        )
         clock = None
-        recent_window = (end - start).total_seconds() <= 300.0
-        if recent_window:
-            live_tick = mt5.symbol_info_tick(mapped)
-            clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            if clock is not None:
-                utc_now = (
-                    clock.observed_gmt_epoch
-                    + (_time.monotonic() - clock.observed_monotonic)
-                    - clock.uncertainty_seconds
-                )
-                recent_window = -5.0 <= utc_now - end.timestamp() <= 120.0
-            if not recent_window:
-                # A live offset is not authority for a historical query window.
-                # Keep the provider epochs and mark their timezone unresolved.
-                clock = None
+        try:
+            clock = self._read_server_clock_state(tick=mt5.symbol_info_tick(mapped), symbol=mapped)
+        except Exception as exc:  # noqa: BLE001 — a clock probe failure only removes hypothesis two
+            logger.debug("[mt5] tick-history clock probe failed for {}: {}", mapped, exc)
+        offset_seconds = float(getattr(clock, "offset_seconds", 0.0) or 0.0) if clock is not None else 0.0
+        fits_server = bool(
+            clock is not None and offset_seconds != 0.0 and len(epochs_ms)
+            and ((epochs_ms >= start_ms + offset_seconds * 1000.0 - tolerance_ms)
+                 & (epochs_ms <= end_ms + offset_seconds * 1000.0 + tolerance_ms)).all()
+        )
+        if fits_utc and not fits_server:
+            domain, normalization, applied_offset = "utc", "request_bounds_utc", 0.0
+        elif fits_server and not fits_utc:
+            domain, normalization, applied_offset = "broker_server", "request_bounds_server_offset", offset_seconds
+        else:
+            domain, normalization, applied_offset = None, "unresolved", None
         if "time" in frame.columns:
-            frame["time_server_epoch"] = frame["time"]
-            if clock is not None:
+            frame["time_server_epoch"] = frame["time"]          # raw provider epoch, preserved
+            frame["time_raw_epoch"] = frame["time"]
+            if domain is not None:
                 frame["time"] = pd.to_datetime(
-                    frame["time"].astype("float64") - clock.offset_seconds,
-                    unit="s", utc=True,
+                    frame["time"].astype("float64") - applied_offset, unit="s", utc=True,
                 )
             else:
                 frame["time"] = pd.to_datetime(frame["time"], unit="s")
         if "time_msc" in frame.columns:
-            frame["time_msc_server_epoch"] = frame["time_msc"]
-            if clock is not None:
+            frame["time_msc_server_epoch"] = frame["time_msc"]   # raw provider epoch, preserved
+            frame["time_msc_raw_epoch"] = frame["time_msc"]
+            if domain is not None:
                 frame["time_msc_datetime"] = pd.to_datetime(
-                    frame["time_msc"].astype("float64") - clock.offset_seconds * 1000,
-                    unit="ms", utc=True,
+                    frame["time_msc"].astype("float64") - applied_offset * 1000.0, unit="ms", utc=True,
                 )
             else:
                 frame["time_msc_datetime"] = pd.to_datetime(frame["time_msc"], unit="ms")
@@ -1235,10 +1251,18 @@ class MT5Connector(BaseConnector):
             "source": "mt5.copy_ticks_range",
             "source_verified": True,
             "source_symbol": mapped,
-            "source_timezone": "UTC" if clock is not None else "broker_server",
-            "source_timestamp_verified": clock is not None,
-            "source_utc_offset_seconds": clock.offset_seconds if clock is not None else None,
-            "utc_normalization": "live_server_offset" if clock is not None else "historical_offset_required",
+            "source_timezone": "UTC" if domain is not None else "broker_server",
+            "source_timestamp_verified": domain is not None,
+            "source_utc_offset_seconds": applied_offset,
+            "utc_normalization": normalization,
+            "time_domain_evidence": {
+                "rows_inside_utc_request_bounds": fits_utc,
+                "rows_inside_offset_shifted_bounds": fits_server,
+                "broker_offset_seconds_tested": offset_seconds if clock is not None else None,
+                "request_start_utc": start.isoformat(),
+                "request_end_utc": end.isoformat(),
+                "row_count": int(len(frame)),
+            },
             "aggressor_side_basis": "broker_flag_when_present_otherwise_unknown",
         })
         return frame

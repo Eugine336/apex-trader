@@ -236,3 +236,25 @@ Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and
 - PR #907 CI run #4325: Python 3.12 passed, lint passed, Python 3.11 still running at last poll.
 - WP-T acceptance: all T-A1 through T-A10 remain OPEN.
 - Next: poll run #4325; audit `symbol_map` production call graph and all `get_ticks` consumers; add non-mutating timestamp-domain regression fixtures; repeat owner-host capture and obtain second-host capture before any normalization rewrite. Continue durable tick recovery, completed-bar warmup and consumer audit independently.
+
+## WP-T tick-history time domain and bounded recovery — implementation entry (not accepted)
+
+Branch `wp-t/clock-authority-tick-integrity`. Implemented and tested with fakes only; **no owner-host acceptance claimed**.
+
+- **T3 (history time domain):** `MT5Connector.get_ticks` no longer assumes tick-history epochs are broker-server time or
+  subtracts a live offset by recency. The domain is decided per call from the response itself: all rows inside the UTC request
+  bounds ⇒ UTC (`request_bounds_utc`, no clock needed); all rows inside the bounds shifted by the tested broker offset ⇒
+  broker-server labels normalized by that proven offset (`request_bounds_server_offset`); both or neither ⇒ unverified,
+  unconverted, naive timestamps (`unresolved`). Raw provider epochs are preserved (`time_raw_epoch`, `time_msc_raw_epoch`) and
+  the evidence is attached (`time_domain_evidence`). A window wider than the offset cannot prove a domain and stays unresolved.
+  This matches the owner-host observation (history rows inside UTC bounds while latest-quote epochs run +7200 s ahead) and
+  removes the 2-hour shift the old rule would have applied to every history row.
+- **T4 (recovery):** `MT5TickPoller` recovers an interruption in bounded 300 s chunks with 1 ms overlap, de-duplicated; at
+  most 3,600 s per poll; the older span is a recorded gap; an unverifiable chunk in a long recovery records a gap and re-anchors;
+  nothing is synthesised. Empty interior chunks are skipped; the newest edge window is not.
+- **Tests:** `tests/test_mt5_market_data.py` (rewritten history tests incl. the owner-host pattern and wide-window ambiguity),
+  `tests/test_mt5_tick_recovery.py` (7 tests). Full suite 4,546 passed.
+
+Still open (needs the owner host): repeat capture and a second host to confirm the domain pattern holds across hosts/DST;
+bar (`copy_rates_*`) time-domain verification; durable cursor and restart recovery; terminal lifecycle probes; the T-A1–T-A10
+acceptance matrix.
