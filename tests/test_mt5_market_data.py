@@ -127,8 +127,9 @@ def test_ohlcv_preserves_tick_volume_real_volume_and_spread(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source_timestamp_verified"] is True
-    assert frame.attrs["source_timezone"] == "broker_server"
-    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert frame.attrs["source_timezone"] == "UTC"
+    assert frame.attrs["utc_normalization"] == "m1_open_proof_utc"
+    assert frame.attrs["source_utc_offset_seconds"] == 0.0
     assert "time_server_epoch" in frame.columns
     assert frame.attrs["volume_basis"] == "tick_volume_alias_with_real_volume_preserved"
 
@@ -142,7 +143,7 @@ def test_ohlcv_closed_bar_view_drops_only_forming_row(monkeypatch):
     assert frame.iloc[0]["tick_volume"] == 100
 
 
-def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch):
+def test_completed_bar_filter_compares_in_the_proven_domain_not_across_domains(monkeypatch):
     import time
 
     connector = _connected_connector(monkeypatch)
@@ -166,8 +167,13 @@ def test_completed_bar_filter_uses_broker_server_clock_not_host_utc(monkeypatch)
 
     frame = connector.get_ohlcv("EURUSD", "M1", count=2, include_forming=False)
 
+    # Broker labels are +7200 s: proven from the newest M1 bar, removed from the time column,
+    # and the completed-bar filter compares in that same UTC domain.
     assert frame["time_server_epoch"].tolist() == [int(server_now - 120)]
-    assert frame.attrs["source_timezone"] == "broker_server"
+    assert frame.attrs["source_timezone"] == "UTC"
+    assert frame.attrs["utc_normalization"] == "m1_open_proof_server_offset"
+    assert frame.attrs["source_utc_offset_seconds"] == offset
+    assert frame["time"].iloc[0].timestamp() == int(server_now - 120) - offset
 
 
 def test_recent_completed_bar_read_fails_closed_without_server_clock(monkeypatch):
@@ -358,8 +364,8 @@ def test_historical_bar_range_preserves_native_fields(monkeypatch):
     assert frame["real_volume"].tolist() == [25, 30]
     assert frame["spread"].tolist() == [12, 14]
     assert frame.attrs["source"] == "mt5.copy_rates_range"
-    assert frame.attrs["source_timezone"] == "broker_server"
-    assert frame.attrs["utc_normalization"] == "historical_offset_required"
+    assert frame.attrs["source_timezone"] == "UTC"
+    assert frame.attrs["utc_normalization"] == "m1_open_proof_utc"
 
 
 def test_broker_profit_and_margin_calculations_use_native_mt5_functions(monkeypatch):

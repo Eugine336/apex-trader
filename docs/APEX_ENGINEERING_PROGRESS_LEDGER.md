@@ -255,6 +255,17 @@ Branch `wp-t/clock-authority-tick-integrity`. Implemented and tested with fakes 
 - **Tests:** `tests/test_mt5_market_data.py` (rewritten history tests incl. the owner-host pattern and wide-window ambiguity),
   `tests/test_mt5_tick_recovery.py` (7 tests). Full suite 4,546 passed.
 
-Still open (needs the owner host): repeat capture and a second host to confirm the domain pattern holds across hosts/DST;
-bar (`copy_rates_*`) time-domain verification; durable cursor and restart recovery; terminal lifecycle probes; the T-A1–T-A10
-acceptance matrix.
+- **T3b (bar time domain):** `MT5Connector.get_ohlcv`/`get_ohlcv_range` previously labelled broker-server epochs as UTC with
+  `source_timestamp_verified=True`. On a broker whose server clock is not UTC (the owner host is about UTC+2) every bar then
+  looks hours in the future, every concept reading fails its freshness check and `derive_opportunity_geometry` returns nothing,
+  so no trade could ever be derived (reproduced: offsets of ±7200/10800 s gave 101 concept readings and no geometry). The domain
+  is now proven from the terminal's own data: the newest M1 bar must have opened within the last two minutes of either UTC
+  now or the broker-server now (`m1_open_proof_utc` / `m1_open_proof_server_offset`); exactly one hypothesis must fit, else the
+  bars are `unresolved`, unverified and produce no analysis evidence. The proven offset is removed from the time column
+  (raw epochs preserved) and the completed-bar filter compares in that same domain. The offset applies to the newest bars; bars
+  older than a broker daylight-saving change may carry a different offset (recorded as `offset_validity`).
+- **Tests:** `tests/test_mt5_bar_time_domain.py` (5, incl. an end-to-end broker bars → lenses → concepts → geometry test for
+  +7200 s labels, UTC labels, and unproven labels). Full suite 4,551 passed.
+
+Still open (needs the owner host): repeat capture and a second host to confirm the domain pattern holds across hosts/DST
+for both ticks and bars; durable cursor and restart recovery; terminal lifecycle probes; the T-A1–T-A10 acceptance matrix.
