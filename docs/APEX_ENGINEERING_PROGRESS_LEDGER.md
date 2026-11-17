@@ -269,3 +269,7 @@ Branch `wp-t/clock-authority-tick-integrity`. Implemented and tested with fakes 
 
 Still open (needs the owner host): repeat capture and a second host to confirm the domain pattern holds across hosts/DST
 for both ticks and bars; durable cursor and restart recovery; terminal lifecycle probes; the T-A1–T-A10 acceptance matrix.
+
+**Handoff:** next work in priority order, with file pointers and acceptance mapping, is in
+`docs/APEX_NEXT_WORK_HANDOFF.md` (durable tick cursor/restart recovery, terminal lifecycle, downstream/candle integrity,
+owner-host verification, multi-symbol bar channel, mirror defects, MT5-derivable data-gated concepts, demo procedure).
