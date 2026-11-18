@@ -1,6 +1,7 @@
 # Apex — next work (handoff)
 
 Written at the end of a working session so someone else can pick up without re-deriving context.
+The full prompt to hand to the next implementer is `docs/APEX_NEXT_IMPLEMENTER_PROMPT.md`.
 State when written: `main` @ `8e316a3a` (green, 4,619 tests incl. my open PRs), open PRs **#909** and **#910**, nothing merged by me.
 Nothing here has run against a real MT5 terminal except the owner-host *diagnostic* captures recorded in
 `docs/APEX_ENGINEERING_PROGRESS_LEDGER.md`. Everything else is tested with fakes and synthetic candles.
