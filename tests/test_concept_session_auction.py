@@ -221,6 +221,8 @@ def test_seasonality_uses_prior_same_bucket_samples_and_never_triggers():
     assert effects["time_of_day"]["sample_count"] > 0
     assert effects["month"]["sample_count"] > 0
     assert reading.facts["long_effect_log_return"] > 0
+    assert reading.facts["long_effect_price_change"] == 1.0
+    assert reading.facts["strength_basis"] == "absolute_mean_close_change_in_quote_units"
     assert _implications(reading)["LONG"].activated is False
     assert _implications(reading)["LONG"].objective_price is None
     assert any("instrument-local timezone" in item for item in reading.unknowns)

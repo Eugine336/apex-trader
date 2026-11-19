@@ -68,7 +68,11 @@ def _swings_at(
         if last_kind is not None:
             first = "L" if last_kind == "H" else "H"
         else:
-            first = "H" if (high - previous_high) < (previous_low - low) else "L"
+            upper_extension, lower_extension = high - previous_high, previous_low - low
+            if upper_extension == lower_extension:
+                # With no predecessor or asymmetry there is no ordered anchor.
+                return []
+            first = "H" if upper_extension < lower_extension else "L"
         found.sort(key=lambda swing: swing[1] != first)
     return found
 

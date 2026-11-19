@@ -145,14 +145,16 @@ class VolumeProfileConcept:
                     state = "accepted_above_value"
                 elif close < val:
                     state = "accepted_below_value"
+                elif current["high"] > vah and current["low"] < val:
+                    state = "rejected_at_both_edges"
                 elif current["high"] > vah and close <= vah:
                     state = "rejected_at_vah"
                 elif current["low"] < val and close >= val:
                     state = "rejected_at_val"
                 else:
                     state = "inside_value"
-                long_active = state in {"accepted_above_value", "rejected_at_val"}
-                short_active = state in {"accepted_below_value", "rejected_at_vah"}
+                long_active = state in {"accepted_above_value", "rejected_at_val", "rejected_at_both_edges"}
+                short_active = state in {"accepted_below_value", "rejected_at_vah", "rejected_at_both_edges"}
 
             naked_pocs = []
             if previous_profile is not None:
@@ -181,8 +183,8 @@ class VolumeProfileConcept:
                     "higher_value" if current_profile["poc"] > previous_profile["poc"] else
                     "lower_value" if current_profile["poc"] < previous_profile["poc"] else "unchanged_poc"
                 )
-            long_invalidation = (val if state == "rejected_at_val" else vah) if long_active and current_profile else None
-            short_invalidation = (vah if state == "rejected_at_vah" else val) if short_active and current_profile else None
+            long_invalidation = (val if state in {"rejected_at_val", "rejected_at_both_edges"} else vah) if long_active and current_profile else None
+            short_invalidation = (vah if state in {"rejected_at_vah", "rejected_at_both_edges"} else val) if short_active and current_profile else None
             long_milestones = (poc,) if long_active and poc is not None and long_target is not None and current["close"] < poc < long_target else ()
             short_milestones = (poc,) if short_active and poc is not None and short_target is not None and short_target < poc < current["close"] else ()
             implications = (

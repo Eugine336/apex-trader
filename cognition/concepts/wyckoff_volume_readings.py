@@ -93,24 +93,34 @@ def _obv(closes: list[float], volumes: list[float]) -> list[float]:
     return result
 
 
-def _mfi(bars: list[dict[str, Any]], volumes: list[float]) -> list[float | None]:
+def _flow_series(
+    bars: list[dict[str, Any]], volumes: list[float],
+) -> tuple[list[float | None], list[float | None]]:
+    """Fourteen-bar MFI and the corresponding signed volume balance.
+
+    The conventional money-flow observation weights by the price level.
+    Volume on rising versus falling typical prices is independent of the
+    quote origin and can therefore contribute to mirrored directional reads.
+    """
     typical = [(bar["high"] + bar["low"] + bar["close"]) / 3.0 for bar in bars]
-    flows = [typical[index] * volumes[index] for index in range(len(bars))]
-    result: list[float | None] = [None] * len(bars)
+    mfi: list[float | None] = [None] * len(bars)
+    balance: list[float | None] = [None] * len(bars)
     for end in range(_MFI_PERIOD, len(bars)):
-        positive = negative = 0.0
+        positive = negative = up_volume = down_volume = 0.0
         for index in range(end - _MFI_PERIOD + 1, end + 1):
             if typical[index] > typical[index - 1]:
-                positive += flows[index]
+                positive += typical[index] * volumes[index]
+                up_volume += volumes[index]
             elif typical[index] < typical[index - 1]:
-                negative += flows[index]
-        if positive == 0.0 and negative == 0.0:
-            result[end] = 50.0
-        elif negative == 0.0:
-            result[end] = 100.0
-        else:
-            result[end] = 100.0 - 100.0 / (1.0 + positive / negative)
-    return result
+                negative += typical[index] * volumes[index]
+                down_volume += volumes[index]
+        total_volume = up_volume + down_volume
+        if total_volume > 0:
+            balance[end] = (up_volume - down_volume) / total_volume
+        total_money = positive + negative
+        if positive >= 0 and negative >= 0 and total_money > 0:
+            mfi[end] = 100.0 * positive / total_money
+    return mfi, balance
 
 
 def _cmf(bars: list[dict[str, Any]], volumes: list[float]) -> list[float | None]:
@@ -330,7 +340,7 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
         }, unknowns
     closes = [bar["close"] for bar in clean]
     obv = _obv(closes, volumes)
-    mfi = _mfi(clean, volumes)
+    mfi, volume_balance = _flow_series(clean, volumes)
     cmf = _cmf(clean, volumes)
     ad = _ad_line(clean, volumes)
     volume_roc = _roc(volumes, 10)
@@ -345,16 +355,16 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
     divergence = {
         "obv": _volume_divergence(clean, obv),
         "mfi": _volume_divergence(clean, mfi),
+        "volume_balance": _volume_divergence(clean, volume_balance),
     }
     real_volumes = _series_volume(bars, "real_volume")
     real_complete = len(real_volumes) == len(bars) and all(value is not None and value > 0 for value in real_volumes[-_MIN_VOLUME_BARS:])
     def _alignment_at(end: int) -> tuple[float | None, float | None, float | None]:
         values: list[float] = []
         obv_value = _slope(obv[:end + 1], min(10, end + 1))
-        mfi_value = mfi[end] - 50.0 if end < len(mfi) and mfi[end] is not None else None
         cmf_value = cmf[end] if end < len(cmf) else None
         ad_value = ad[end] - ad[end - 10] if end >= 10 else None
-        for value in (obv_value, mfi_value, cmf_value, ad_value):
+        for value in (obv_value, volume_balance[end], cmf_value, ad_value):
             if value is not None and value != 0:
                 values.append(value)
         if not values:
@@ -378,6 +388,7 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
         "obv": obv[-1],
         "obv_slope_10": obv_slope,
         "mfi_14": mfi[-1],
+        "signed_volume_balance_14": volume_balance[-1],
         "mfi_14_recent_range": [min(mfi_history[-20:]), max(mfi_history[-20:])] if mfi_history else None,
         "chaikin_money_flow_20": cmf[-1],
         "accumulation_distribution_line": ad[-1],
@@ -395,6 +406,7 @@ def _volume_indicator_facts(bars: list[dict[str, Any]]) -> tuple[dict[str, Any],
         "indicator_semantics": {
             "obv": "signed cumulative selected bar volume by close-to-close price change; not aggressor delta",
             "mfi": "typical-price money-flow ratio; depends on the selected volume basis",
+            "volume_balance": "signed share of observed volume on rising versus falling typical prices over 14 comparisons",
             "chaikin_money_flow": "close-location weighted volume ratio over 20 completed bars",
             "accumulation_distribution": "close-location weighted cumulative bar volume; not exchange order flow",
         },
@@ -501,7 +513,8 @@ def _wyckoff_facts(
         accumulation = {
             "phase": phase_a, "events": acc_events, "range_high": range_high, "range_low": range_low,
             "invalidation_level": range_low, "breakout_level": breakout,
-            "objective_price": breakout + width if breakout is not None and width is not None and width > 0 else None,
+            "measured_move_projection": breakout + width if breakout is not None and width is not None and width > 0 else None,
+            "objective_price": nearest_structural_level(bars, LONG, max(breakout, bars[-1]["close"])) if breakout is not None else None,
             "last_event_index": lps["index"] if lps_held else sos["index"] if sos is not None else spring["index"] if spring is not None else st["index"] if st_valid else ar["index"] if ar is not None else sc["index"],
         }
         all_events.extend(acc_events)
@@ -529,26 +542,29 @@ def _wyckoff_facts(
         distribution = {
             "phase": phase_d, "events": dist_events, "range_high": range_high, "range_low": range_low,
             "invalidation_level": range_high, "breakout_level": breakout,
-            "objective_price": breakout - width if breakout is not None and width is not None and width > 0 else None,
+            "measured_move_projection": breakout - width if breakout is not None and width is not None and width > 0 else None,
+            "objective_price": nearest_structural_level(bars, SHORT, min(breakout, bars[-1]["close"])) if breakout is not None else None,
             "last_event_index": lpsy["index"] if lpsy_held else sow["index"] if sow is not None else utad["index"] if utad is not None else st["index"] if st_valid else ar["index"] if ar is not None else bc["index"],
         }
         all_events.extend(dist_events)
 
     if accumulation["phase"] is None and distribution["phase"] is None:
-        phase, interpretation, selected = "unresolved", "trading_range_or_transition_unresolved", accumulation
+        phase, interpretation, selected = "unresolved", "trading_range_or_transition_unresolved", {}
     elif accumulation["phase"] is not None and distribution["phase"] is not None:
         phase, interpretation = "competing", "competing_accumulation_and_distribution_sequences"
-        selected = accumulation if accumulation.get("last_event_index", -1) >= distribution.get("last_event_index", -1) else distribution
+        latest_acc = accumulation.get("last_event_index", -1)
+        latest_dist = distribution.get("last_event_index", -1)
+        selected = accumulation if latest_acc > latest_dist else distribution if latest_dist > latest_acc else {}
     elif accumulation["phase"] is not None:
         phase, interpretation, selected = f"accumulation_{accumulation['phase']}", "accumulation_or_markup_hypothesis", accumulation
     else:
         phase, interpretation, selected = f"distribution_{distribution['phase']}", "distribution_or_markdown_hypothesis", distribution
 
-    range_high, range_low = selected.get("range_high"), selected.get("range_low")
-    if range_high is None or range_low is None:
-        prior = bars[-_WYCKOFF_RANGE - 1:-1]
-        range_high = max((bar["high"] for bar in prior), default=None)
-        range_low = min((bar["low"] for bar in prior), default=None)
+    # The preceding auction range exists independently of either campaign.
+    # An unconfirmed side cannot borrow an opposing campaign's boundary.
+    prior = bars[-_WYCKOFF_RANGE - 1:-1]
+    range_high = max((bar["high"] for bar in prior), default=None)
+    range_low = min((bar["low"] for bar in prior), default=None)
     range_width = range_high - range_low if range_high is not None and range_low is not None else None
     # Structural range boundaries remain available as provisional invalidation
     # references even before a climax sequence is established.
@@ -800,8 +816,8 @@ def _volume_indicator_implications(
     history, coherence = facts.get("indicator_alignment_history", []), facts.get("indicator_alignment_score")
     strength = percentile_rank(coherence, history) if coherence is not None and history else None
     divergence = facts.get("confirmed_price_indicator_divergence", {})
-    bullish_divergence = any(isinstance(divergence.get(name, {}).get("bullish"), dict) and divergence[name]["bullish"].get("observed") is True for name in ("obv", "mfi"))
-    bearish_divergence = any(isinstance(divergence.get(name, {}).get("bearish"), dict) and divergence[name]["bearish"].get("observed") is True for name in ("obv", "mfi"))
+    bullish_divergence = any(isinstance(divergence.get(name, {}).get("bullish"), dict) and divergence[name]["bullish"].get("observed") is True for name in ("obv", "volume_balance"))
+    bearish_divergence = any(isinstance(divergence.get(name, {}).get("bearish"), dict) and divergence[name]["bearish"].get("observed") is True for name in ("obv", "volume_balance"))
     long_support = ["positive indicator ratio exceeds negative indicator ratio"] if long_ratio is not None and short_ratio is not None and long_ratio > short_ratio else []
     short_support = ["negative indicator ratio exceeds positive indicator ratio"] if long_ratio is not None and short_ratio is not None and short_ratio > long_ratio else []
     if bullish_divergence: long_support.append("confirmed bullish price/indicator divergence is present")

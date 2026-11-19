@@ -11,6 +11,7 @@ from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
     finite, reference_price,
 )
+from cognition.concepts.market_structure import fractal_swings
 from cognition.contracts import EvidenceDomain
 
 
@@ -68,46 +69,16 @@ class SwingGeometryConcepts:
             out.extend(self._channel(tf, bars, close, close_tf))
         return out
 
-    @staticmethod
-    def _pivots(bars):
-        pivots = []
-        for i in range(1, len(bars) - 1):
-            if bars[i]["high"] > bars[i-1]["high"] and bars[i]["high"] >= bars[i+1]["high"]:
-                pivots.append(("high", i, bars[i]["high"]))
-            if bars[i]["low"] < bars[i-1]["low"] and bars[i]["low"] <= bars[i+1]["low"]:
-                pivots.append(("low", i, bars[i]["low"]))
-        ordered = sorted(pivots, key=lambda x: x[1])
-        # Collapse consecutive same-side extrema to the most extreme confirmed
-        # pivot. Otherwise a weaker intervening high can incorrectly become the
-        # impulse endpoint while a later, stronger high is ignored.
-        alternating = []
-        for pivot in ordered:
-            if alternating and alternating[-1][0] == pivot[0]:
-                previous = alternating[-1]
-                more_extreme = (
-                    pivot[2] >= previous[2] if pivot[0] == "high"
-                    else pivot[2] <= previous[2]
-                )
-                if more_extreme:
-                    alternating[-1] = pivot
-                continue
-            alternating.append(pivot)
-        return alternating
-
     def _fibonacci_ote(self, tf, bars, close, close_tf):
-        pivots = self._pivots(bars)
-        pair = None
-        for left, right in zip(reversed(pivots[:-1]), reversed(pivots[1:])):
-            if left[0] != right[0]:
-                pair = (left, right)
+        pivots = fractal_swings(bars)
+        # OHLC cannot order a high and low inside the same outside bar.
+        for left, right in reversed(list(zip(pivots, pivots[1:]))):
+            if left[0] < right[0]:
                 break
-        if pair is None:
-            return []
-        left, right = pair
-        if left[0] == "low":
-            start, end, side = left[2], right[2], LONG
         else:
-            start, end, side = left[2], right[2], SHORT
+            return []
+        start, end = left[2], right[2]
+        side = LONG if left[1] == "L" else SHORT
         distance = abs(end - start)
         if distance <= 0:
             return []
@@ -132,13 +103,13 @@ class SwingGeometryConcepts:
             f"OTE interval={ote_low:.10g}–{ote_high:.10g}; inside_ote={in_ote}.",
             [_imp(side, f"{side} swing retracement is inside the declared 61.8–78.6% OTE zone",
                   active, "A completed close through the impulse origin invalidates the anchored impulse",
-                  stop=start, target=extension,
+                  stop=start, target=end if (current < end if side == LONG else current > end) else None,
                   requires=("reaction and renewed directional structure", "cost-aware opportunity geometry"),
                   conflicts=("price has not reached the OTE interval",) if not in_ote else ()),
              _imp(FLAT, "Fib geometry alone is not directional confirmation", True, "Not applicable",
                   requires=("independent structure and participation evidence",))],
             {"impulse_start": start, "impulse_end": end, "impulse_direction": side,
-             "start_pivot_index": left[1], "end_pivot_index": right[1],
+             "start_pivot_index": left[0], "end_pivot_index": right[0],
              "retracements": {str(k): v for k, v in fib.items()},
              "ote_low": ote_low, "ote_high": ote_high, "inside_ote": in_ote,
              "impulse_invalidated": invalid, "extension_1_272": extension,

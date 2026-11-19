@@ -31,6 +31,8 @@ def test_fibonacci_ote_uses_confirmed_swing_anchors_and_requires_reaction():
     assert fib.facts["impulse_direction"] == "LONG"
     assert fib.facts["start_pivot_index"] == 20
     assert fib.facts["end_pivot_index"] == 24
+    assert fib.implications[0].objective_price == 110.0
+    assert fib.facts["extension_1_272"] > fib.implications[0].objective_price
     assert fib.facts["inside_ote"] is True
     assert fib.implications[0].activated is True
     assert "reaction and renewed directional structure" in fib.implications[0].requires

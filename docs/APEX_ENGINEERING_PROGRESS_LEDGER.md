@@ -236,3 +236,13 @@ Open a draft PR from `fix/mt5-symbol-feed-diagnostics` to `main`, inspect CI and
 - PR #907 CI run #4325: Python 3.12 passed, lint passed, Python 3.11 still running at last poll.
 - WP-T acceptance: all T-A1 through T-A10 remain OPEN.
 - Next: poll run #4325; audit `symbol_map` production call graph and all `get_ticks` consumers; add non-mutating timestamp-domain regression fixtures; repeat owner-host capture and obtain second-host capture before any normalization rewrite. Continue durable tick recovery, completed-bar warmup and consumer audit independently.
+
+## 2026-11-18 — Concept mirror corrections on PR #909
+
+- Base `main` was `8e316a3a6a6d303c6f576807473797e551aca8ae`. PR #909 was open on `quality/mirror-harness` at `702c5cfeb3e9b6530f771fef3e11e2d78d001a26`. Run 4493 passed both Python test jobs and failed lint on the harness's unused local variable.
+- Swing geometry and classical patterns share the confirmed fractal swing implementation. Simultaneous extrema cannot serve as two successive pattern anchors. Fibonacci and Wyckoff retain measured extensions as descriptive facts and use observed structure for directional objectives.
+- The shared volume profile resolves tied modes by their first observation, records every tied mode and expands both equal-volume neighbours together. Range rotation receives the same correction. A completed bar rejecting both value edges retains both readings.
+- Seasonality reports conventional log returns and ranks calendar effects by signed close changes. Regime transition compares standardized mean and variance changes in quote units. Wyckoff keeps both campaign boundaries independent. Directional volume alignment uses signed observed volume balance. Conventional MFI and its divergences remain in the facts.
+- The original assertions passed with `--runxfail` for all 30 readers before the seven expected-failure marks were removed. The same corpus now exercises every reader as an ordinary test. Regressions cover an ambiguous first swing, tied profile modes and value boundaries, structural objectives and calendar strength units.
+- Full clean-main tests passed 4,535 on Python 3.11.18 and 4,535 on 3.12.14. The PR working tree passed 4,629 on each, with zero failures, skips or expected failures. Python 3.11 reported 111 warnings and 3.12 reported 154. The focused harness and reader suites passed 137 on 3.12. Repository lint, compilation, generated coverage and identity audit passed locally. Tests used synthetic inputs.
+- PR link <https://github.com/Eugine336/apex-trader/pull/909>. The new remote CI run, verified broker-history degeneracy tests and owner-host system acceptance are separate evidence items.

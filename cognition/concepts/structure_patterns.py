@@ -9,6 +9,7 @@ from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
     finite, reference_price,
 )
+from cognition.concepts.market_structure import fractal_swings
 from cognition.contracts import EvidenceDomain
 
 
@@ -22,16 +23,6 @@ def _clean(rows):
                     "timestamp_epoch": finite(row.get("timestamp_epoch")),
                     "source_timestamp_verified": row.get("source_timestamp_verified") is True})
     return out
-
-
-def _pivots(bars):
-    result = []
-    for i in range(1, len(bars) - 1):
-        if bars[i]["high"] > bars[i-1]["high"] and bars[i]["high"] >= bars[i+1]["high"]:
-            result.append(("H", i, bars[i]["high"]))
-        if bars[i]["low"] < bars[i-1]["low"] and bars[i]["low"] <= bars[i+1]["low"]:
-            result.append(("L", i, bars[i]["low"]))
-    return sorted(result, key=lambda p: p[1])
 
 
 def _imp(direction, statement, active, invalidation, *, stop=None, target=None, requires=(), conflicts=()):
@@ -77,7 +68,7 @@ class StructurePatternConcepts:
         return out
 
     def _patterns(self, tf, bars, ref, ref_tf):
-        pivots = _pivots(bars)
+        pivots = [(kind, index, price) for index, kind, price in fractal_swings(bars)]
         if len(pivots) < 3:
             return []
         ranges = [x["high"] - x["low"] for x in bars[-20:] if x["high"] > x["low"]]
@@ -100,7 +91,7 @@ class StructurePatternConcepts:
                 direction, invalid, neckline = LONG, min(a[2], c[2]), b[2]
                 break
         # Head-and-shoulders / inverse: H-L-H-L-H or its mirror.
-        if len(selected) == 5:
+        if len(selected) == 5 and len({p[1] for p in selected}) == 5:
             a, b, c, d, e = selected
             if [p[0] for p in selected] == ["H", "L", "H", "L", "H"]:
                 shoulders = abs(a[2]-e[2]) <= tolerance
@@ -119,7 +110,7 @@ class StructurePatternConcepts:
             tail = selected[-4:]
             highs = [p[2] for p in tail if p[0] == "H"]
             lows = [p[2] for p in tail if p[0] == "L"]
-            if len(highs) == 2 and len(lows) == 2:
+            if len({p[1] for p in tail}) == 4 and len(highs) == 2 and len(lows) == 2:
                 high_slope = highs[-1] - highs[0]
                 low_slope = lows[-1] - lows[0]
                 if high_slope < -tolerance and low_slope > tolerance:

@@ -13,8 +13,6 @@ readings a module actually emits; modules that emit nothing on the corpus are li
 by ``test_corpus_exercises_every_module`` so a dead module cannot pass silently.
 """
 
-import math
-
 import numpy as np
 import pytest
 
@@ -146,31 +144,8 @@ NEEDS_OTHER_INPUTS = {"execution_cost", "strategy_lens_readings", "intermarket_r
 # Calendar-position concepts change when the date changes; time-shift invariance does not apply.
 CALENDAR_DEPENDENT = {"seasonality"}
 
-# Known mirror-symmetry defects found by this harness (direction bias or direction-dependent
-# discretisation). strict=True: when a module is fixed the test XPASSes and must be removed here.
-KNOWN_MIRROR_DEFECTS = {
-    "swing_geometry": "Fibonacci swing selection differs on a mirrored chart (different anchor swing).",
-    "structure_patterns": "A chart pattern found on the original is not found on the mirrored chart (long/short detection asymmetric).",
-    "volume_profile": "Value-area/POC levels depend on price-bin alignment anchored at the minimum price, so mirrored levels differ.",
-    "seasonality": "Mirrored data changes the reading (check the signed tendency handling).",
-    "range_rotation": "Objective level depends on the same direction-dependent price binning as volume_profile.",
-    "regime_switching": "Trigger state (activated) differs on a mirrored chart.",
-    "wyckoff_volume_readings": "Invalidation level differs on a mirrored chart (range-bound selection is direction-dependent).",
-}
-
-
-def _params(defects=None):
-    out = []
-    for m in CONCEPT_MODULES:
-        marks = []
-        if defects and m.key in defects:
-            marks.append(pytest.mark.xfail(strict=True, reason=defects[m.key]))
-        out.append(pytest.param(m, id=m.key, marks=marks))
-    return out
-
-
-MODULES = _params()
-MIRROR_MODULES = _params(KNOWN_MIRROR_DEFECTS)
+# Every registered reader runs under the same assertions.
+MODULES = [pytest.param(module, id=module.key) for module in CONCEPT_MODULES]
 
 
 @pytest.mark.parametrize("module", MODULES)
@@ -182,11 +157,10 @@ def test_scale_invariance_no_absolute_price_thresholds(module):
             assert scaled == expected, f"{module.key}: readings change with price scale x{factor} on {kind}@{end}"
 
 
-@pytest.mark.parametrize("module", MIRROR_MODULES)
+@pytest.mark.parametrize("module", MODULES)
 def test_mirror_symmetry_no_direction_bias(module):
     c = 3.0
     for kind, end, frames in cases():
-        base = _all(module, frames, scale=1.0)
         mirrored_frames = _transform(frames, price=lambda p: c - p, flip=True)
         mirrored = _all(module, mirrored_frames, scale=1.0)
         expect = sorted((_sig_mirror(r, c) for r in _read(module, frames)), key=repr)

@@ -144,6 +144,7 @@ def weighted_vwap(bars: list[dict[str, Any]]) -> tuple[float | None, str]:
 def profile_from_bars(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
     """OHLCV proxy only; never infer intrabar traded volume."""
     nodes = {}
+    grid_origin = None
     bases = set()
     tick_size = None
     if bars and bars[-1].get("tick_size_verified") is True:
@@ -155,7 +156,12 @@ def profile_from_bars(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
         if volume is None or volume <= 0:
             continue
         typical = (bar["high"] + bar["low"] + bar["close"]) / 3.0
-        price = round(typical / tick_size) * tick_size if tick_size else typical
+        if tick_size:
+            if grid_origin is None:
+                grid_origin = bar["close"]
+            price = grid_origin + round((typical - grid_origin) / tick_size) * tick_size
+        else:
+            price = typical
         nodes[price] = nodes.get(price, 0.0) + volume
         bases.add(basis)
     if not nodes:
@@ -163,7 +169,11 @@ def profile_from_bars(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
     ordered = sorted(nodes.items())
     prices, volumes = [item[0] for item in ordered], [item[1] for item in ordered]
     total = sum(volumes)
-    poc_index = max(range(len(ordered)), key=lambda index: (volumes[index], -prices[index]))
+    # A tied mode is still an observed node. Use first observation order, which
+    # survives price reflection, and retain the other modes as evidence.
+    max_volume = max(volumes)
+    modes = tuple(price for price, volume in nodes.items() if volume == max_volume)
+    poc_index = prices.index(modes[0])
     low_index = high_index = poc_index
     included = volumes[poc_index]
     target = total * VALUE_AREA_FRACTION
@@ -180,7 +190,7 @@ def profile_from_bars(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
             if low_index > 0:
                 low_index -= 1
                 included += volumes[low_index]
-            if high_index < len(ordered) - 1 and included < target:
+            if high_index < len(ordered) - 1:
                 high_index += 1
                 included += volumes[high_index]
     hvn, lvn = [], []
@@ -196,6 +206,7 @@ def profile_from_bars(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {
         "poc": prices[poc_index], "vah": prices[high_index], "val": prices[low_index],
         "hvn": tuple(hvn), "lvn": tuple(lvn), "total_volume": total,
+        "modal_prices": modes, "poc_tie_break": "first_observed",
         "poc_volume": volumes[poc_index], "poc_concentration": volumes[poc_index] / total,
         "volume_basis": basis,
         "price_assignment": "verified_tick_size" if tick_size else "bar_typical_price_exact_nodes",
