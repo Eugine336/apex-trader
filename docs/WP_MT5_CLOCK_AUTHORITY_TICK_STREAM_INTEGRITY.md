@@ -223,3 +223,13 @@ The connector's existing `_COMMON_SUFFIXES` includes `.ecn`; its `symbol_map("XA
 - Latest-quote vs history timestamp domains: STRONG SINGLE-HOST EVIDENCE; DATA-GATED pending repeat and second-host comparison.
 - Clock offset and global normalization contract: OPEN.
 - All T-A1 through T-A10 acceptance gates remain OPEN.
+
+### WP-T2 implementation evidence — 2026-11-19
+
+Source commit `9236d97804bd5ff53f0a49f93fc6a73a89353be1` on
+`wp-t2/terminal-clock-lifecycle` includes live terminal-identity and
+process-lifetime binding, reconnect invalidation, exact UTC event
+corroboration, witness-disagreement holdover expiry, and generation-bound
+M1 proofs. The regression cases are in `tests/test_mt5_clock_lifecycle.py`.
+The procedure and observable fields are in `docs/MT5_CLOCK_BRIDGE.md`.
+All ten acceptance rows remain OPEN.

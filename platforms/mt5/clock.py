@@ -15,6 +15,7 @@ import secrets
 import socket
 import struct
 import time
+from statistics import median
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from itertools import combinations
@@ -33,14 +34,17 @@ MAX_OFFSET_SECONDS = 14 * 60 * 60
 class MT5ServerClockState:
     server: str
     offset_seconds: float
-    observed_server_epoch: int
-    observed_gmt_epoch: int
+    observed_server_epoch: float
+    observed_gmt_epoch: float
     file_age_seconds: float
     observed_monotonic: float | None = None
     uncertainty_seconds: float = 0.0
     sources: tuple[str, ...] = ()
     synchronization_status: str = "synchronized"
     holdover_age_seconds: float = 0.0
+    terminal_fingerprint: str | None = None
+    generation: int = 0
+    observation_basis: str = "advancing_latest_tick"
 
     def as_holdover(self, age_seconds: float) -> "MT5ServerClockState":
         """Return a conservative holdover view without moving the verified anchor."""
@@ -120,6 +124,7 @@ def load_mt5_server_clock(
             observed_server_epoch=server_epoch,
             observed_gmt_epoch=gmt_epoch,
             file_age_seconds=max(0.0, file_age),
+            observation_basis="diagnostic_publisher_file",
         )
     except (OSError, KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -212,6 +217,61 @@ def query_ntp_sources() -> tuple[NTPClockSample, ...]:
     return ntp + https
 
 
+@dataclass(frozen=True)
+class UTCConsensus:
+    utc_epoch: float
+    uncertainty_seconds: float
+    sources: tuple[str, ...]
+
+
+def corroborate_utc_samples(
+    samples: Iterable[NTPClockSample], monotonic_epoch: float,
+) -> UTCConsensus | None:
+    """Project fresh, independent witnesses onto one monotonic observation instant."""
+    if not math.isfinite(monotonic_epoch):
+        return None
+    by_authority = {}
+    for sample in samples:
+        endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
+        endpoint = endpoint.split(":", 1)[0].strip().lower()
+        if not endpoint:
+            continue
+        authority = next((
+            domain for domain in ("cloudflare.com", "google.com", "ntp.org")
+            if endpoint == domain or endpoint.endswith("." + domain)
+        ), endpoint)
+        try:
+            age = monotonic_epoch - float(sample.monotonic_epoch)
+            utc = float(sample.utc_epoch) + age
+            uncertainty = float(sample.uncertainty_seconds)
+        except (TypeError, ValueError, OverflowError):  # SAFE-FALLBACK: malformed observations cannot establish UTC.
+            continue
+        if not (abs(age) <= CLOCK_MAX_AGE_SECONDS and math.isfinite(utc) and utc > 0.0
+                and 0 <= uncertainty <= CLOCK_MAX_UNCERTAINTY_SECONDS):
+            continue
+        current = by_authority.get(authority)
+        if current is None or uncertainty < current[1]:
+            by_authority[authority] = (utc, uncertainty, sample.server)
+
+    # The largest group with overlapping uncertainty intervals must be unique.
+    # Equal-size competing groups cannot identify which witness is the outlier.
+    for size in range(len(by_authority), NTP_MIN_SOURCES - 1, -1):
+        clusters = [
+            group for group in combinations(by_authority.values(), size)
+            if max(v - u for v, u, _ in group) <= min(v + u for v, u, _ in group)
+        ]
+        if len(clusters) > 1:
+            return None
+        if clusters:
+            selected = clusters[0]
+            epoch = median(v for v, _, _ in selected)
+            bound = max(abs(v - epoch) + u for v, u, _ in selected)
+            if bound <= CLOCK_MAX_UNCERTAINTY_SECONDS:
+                return UTCConsensus(epoch, bound, tuple(source for _, _, source in selected))
+            return None
+    return None
+
+
 def estimate_mt5_server_clock(
     server: str,
     tick_server_epoch: float,
@@ -221,125 +281,33 @@ def estimate_mt5_server_clock(
     tick_precision_seconds: float = 0.5,
     tick_transport_uncertainty_seconds: float = 1.0,
 ) -> MT5ServerClockState | None:
-    """Estimate broker offset using a uniquely corroborated UTC sample cluster."""
+    """Estimate server time from a broker event and the corroborated UTC interval."""
     if not str(server or "").strip():
         return None
     try:
         tick_epoch = float(tick_server_epoch)
         tick_mono = float(tick_observed_monotonic)
-        tick_precision = max(0.0, float(tick_precision_seconds))
-        tick_transport_uncertainty = max(0.0, float(tick_transport_uncertainty_seconds))
+        precision = float(tick_precision_seconds)
+        transport = float(tick_transport_uncertainty_seconds)
     except (TypeError, ValueError, OverflowError):
         return None
-    if tick_epoch <= 0:
+    if not (math.isfinite(tick_epoch) and tick_epoch > 0 and math.isfinite(tick_mono)
+            and math.isfinite(precision) and precision >= 0 and math.isfinite(transport) and transport >= 0):
         return None
-
-    raw_samples = tuple(query_ntp_sources() if ntp_samples is None else ntp_samples)
-    # Count one observation per clock operator. NTP and HTTPS endpoints
-    # operated by the same provider are not independent witnesses.
-    by_authority: dict[str, NTPClockSample] = {}
-    for sample in raw_samples:
-        endpoint = str(sample.server or "").split(":", 1)[-1].split("/", 1)[0]
-        endpoint = endpoint.split(":", 1)[0].strip().lower()
-        if not endpoint:
-            continue
-        authority = next(
-            (
-                domain for domain in ("cloudflare.com", "google.com", "ntp.org")
-                if endpoint == domain or endpoint.endswith("." + domain)
-            ),
-            endpoint,
-        )
-        current = by_authority.get(authority)
-        try:
-            sample_quality = float(sample.uncertainty_seconds)
-            current_quality = (
-                float(current.uncertainty_seconds) if current is not None else float("inf")
-            )
-        # safe-fallback: malformed source uncertainty cannot corroborate the clock.
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if (
-            math.isfinite(sample_quality)
-            and sample_quality >= 0
-            and sample_quality < current_quality
-        ):
-            by_authority[authority] = sample
-    samples = tuple(by_authority.values())
-    if len(samples) < NTP_MIN_SOURCES:
+    samples = query_ntp_sources() if ntp_samples is None else ntp_samples
+    utc = corroborate_utc_samples(samples, tick_mono)
+    if utc is None:
         return None
-
-    estimates = []
-    for sample in samples:
-        try:
-            value = tick_epoch - (
-                float(sample.utc_epoch) + tick_mono - float(sample.monotonic_epoch)
-            )
-            sample_uncertainty = float(sample.uncertainty_seconds)
-        # safe-fallback: malformed UTC observations are excluded from consensus.
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if (
-            not math.isfinite(value)
-            or not math.isfinite(sample_uncertainty)
-            or sample_uncertainty < 0
-        ):
-            continue
-        estimates.append((value, sample, sample_uncertainty))
-    if len(estimates) < NTP_MIN_SOURCES:
+    offset = tick_epoch - utc.utc_epoch
+    uncertainty = utc.uncertainty_seconds + precision / 2 + transport + 0.15
+    if not (MIN_OFFSET_SECONDS <= offset <= MAX_OFFSET_SECONDS and uncertainty <= CLOCK_MAX_UNCERTAINTY_SECONDS):
         return None
-
-    # Build source clusters whose uncertainty intervals have a common
-    # intersection. A single slow or misbehaving NTP endpoint is excluded only
-    # when the remaining independent sources uniquely corroborate one another.
-    clusters = []
-    for size in range(len(estimates), NTP_MIN_SOURCES - 1, -1):
-        for cluster in combinations(estimates, size):
-            lower = max(value - uncertainty for value, _, uncertainty in cluster)
-            upper = min(value + uncertainty for value, _, uncertainty in cluster)
-            if lower <= upper:
-                clusters.append(cluster)
-        if clusters:
-            break
-    if not clusters:
-        return None
-
-    # Multiple equally large but materially different clusters are ambiguous.
-    # Do not choose whichever source happens to sort first.
-    cluster_medians = []
-    for cluster in clusters:
-        values = sorted(value for value, _, _ in cluster)
-        mid = len(values) // 2
-        median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
-        cluster_medians.append(median)
-    if max(cluster_medians) - min(cluster_medians) > 0.25:
-        return None
-
-    selected = clusters[0]
-    ordered = sorted(value for value, _, _ in selected)
-    middle = len(ordered) // 2
-    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
-    spread = max(abs(value - median) for value in ordered)
-    uncertainty = (
-        max(sample_uncertainty for _, _, sample_uncertainty in selected)
-        + spread + tick_precision / 2.0
-        + tick_transport_uncertainty + 0.15
-    )
-    if not (MIN_OFFSET_SECONDS <= median <= MAX_OFFSET_SECONDS):
-        return None
-    if uncertainty > CLOCK_MAX_UNCERTAINTY_SECONDS:
-        return None
-
     return MT5ServerClockState(
-        server=str(server),
-        offset_seconds=median,
-        observed_server_epoch=tick_epoch,
-        observed_gmt_epoch=tick_epoch - median,
-        file_age_seconds=0.0,
-        observed_monotonic=tick_mono,
-        uncertainty_seconds=uncertainty,
-        sources=tuple(sample.server for _, sample, _ in selected),
+        server=str(server), offset_seconds=offset, observed_server_epoch=tick_epoch,
+        observed_gmt_epoch=utc.utc_epoch, file_age_seconds=0.0, observed_monotonic=tick_mono,
+        uncertainty_seconds=uncertainty, sources=utc.sources,
     )
+
 
 __all__ = [
     "CLOCK_FILENAME",
@@ -347,6 +315,8 @@ __all__ = [
     "MT5ServerClockState",
     "load_mt5_server_clock",
     "NTPClockSample",
+    "UTCConsensus",
+    "corroborate_utc_samples",
     "CLOCK_MAX_UNCERTAINTY_SECONDS",
     "CLOCK_HOLDOVER_DRIFT_PPM",
     "estimate_mt5_server_clock",

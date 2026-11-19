@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import platforms.mt5.mt5_connector as connector_module
@@ -57,6 +58,8 @@ def _connector(monkeypatch, *, clock_age_seconds=0.0):
     )
     fake_mt5 = SimpleNamespace(
         symbol_info=lambda _symbol: info,
+        account_info=lambda: SimpleNamespace(server="Broker-Demo", login=101),
+        terminal_info=lambda: SimpleNamespace(connected=True, data_path=r"C:\demo\data", path=r"C:\demo"),
         SYMBOL_SWAP_MODE_DISABLED=0,
     )
     monkeypatch.setattr(connector_module, "mt5", fake_mt5)
@@ -64,8 +67,12 @@ def _connector(monkeypatch, *, clock_age_seconds=0.0):
     connector._require_connection = lambda: None
     connector.symbol_map = lambda symbol: symbol
     connector._get_symbol_sessions = lambda _symbol: {}
-    connector._server_clock_state_cache = state
-    connector._server_clock_state_cache_at = now - clock_age_seconds
+    monkeypatch.setattr(connector_module, "terminal_process_for", lambda *_args: ("demo", 1))
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: now)
+    identity = connector._validated_clock_identity()
+    connector._server_clock_state_cache = replace(
+        state, terminal_fingerprint=identity.fingerprint, generation=connector._clock_generation,
+    )
     return connector
 
 
@@ -77,6 +84,9 @@ def test_symbol_spec_timestamp_uses_fresh_synchronized_broker_clock(monkeypatch)
     assert spec["source_verified"] is True
     assert spec["specification_verified"] is True
     assert spec["source_timestamp_verified"] is True
+    assert spec["source_timestamp_epoch"] - spec["source_timestamp_utc_epoch"] == 7200.0
+    assert spec["source_terminal_fingerprint"]
+    assert spec["source_clock_sources"] == ["ntp:time.cloudflare.com", "https:time.google.com"]
     assert spec["source_timestamp_epoch"] > 0.0
     assert spec["source_timestamp_semantics"] == "broker_server_observation_time"
     assert spec["source_timestamp_uncertainty_seconds"] == 0.6

@@ -273,3 +273,55 @@ for both ticks and bars; durable cursor and restart recovery; terminal lifecycle
 **Handoff:** next work in priority order, with file pointers and acceptance mapping, is in
 `docs/APEX_NEXT_WORK_HANDOFF.md` (durable tick cursor/restart recovery, terminal lifecycle, downstream/candle integrity,
 owner-host verification, multi-symbol bar channel, mirror defects, MT5-derivable data-gated concepts, demo procedure).
+
+## 2026-11-19 — WP-T2 clock and terminal lifecycle
+
+Branch `wp-t2/terminal-clock-lifecycle` builds on [PR #910](https://github.com/Eugine336/apex-trader/pull/910)
+at `c2285857d469bc29221e0decdbf90803a8b49671`. Runtime and regression-test
+tip `9236d97804bd5ff53f0a49f93fc6a73a89353be1` was checked in independent
+clean worktrees for each Python version. Shared identity and UTC consensus
+commits are `8a37037ec01a31835cf6201c4e8f44ebc39c04fe` and
+`0d8dcfa8ed801e1bf375e80f4dd8cc995d89531b`.
+
+The connector binds the clock to the observed account, server, terminal
+data directory and Windows process lifetime. Disconnect, restart, account
+switch and timestamp discontinuity clear previous UTC and M1 proofs. An
+exact recent broker event on both API surfaces provides a second
+acquisition path for UTC-labelled quotes. Correlated or disagreeing UTC
+sources cannot establish an anchor. Holdover is limited by age and
+uncertainty. A slow M1 request must still have a valid clock when it
+returns. Symbol-spec snapshots preserve the broker epoch and provide a
+separate verified UTC observation time. This replaces the 600-second M1
+cache and direct consumption of an unbound symbol-spec clock.
+
+Production changes are in `platforms/mt5/mt5_connector.py`,
+`platforms/mt5/clock.py`, `platforms/mt5/process_witness.py`,
+`platforms/mt5/terminal_identity.py` and `requirements.txt`. Tests are
+in `tests/test_mt5_clock_lifecycle.py`, `tests/test_mt5_server_clock.py`,
+`tests/test_mt5_terminal_identity.py` and `tests/test_mt5_symbol_spec_provenance.py`.
+The roadmap, WP-T specification and `docs/MT5_CLOCK_BRIDGE.md` record
+the operating behavior and pending host evidence.
+
+| Executed check | Python 3.11 | Python 3.12 |
+|---|---:|---:|
+| Clean main `8e316a3a6a6d303c6f576807473797e551aca8ae` full suite | 4,535 passed | 4,535 passed |
+| WP-T2 CI collection | 4,578 collected | 4,578 collected |
+| WP-T2 full suite | 4,578 passed, 111 warnings, 137.46 s | 4,578 passed, 154 warnings, 133.58 s |
+| Focused clock, identity, tick recovery, bar data and exception audit | 83 passed | 83 passed |
+| CI-required cognition regression suites | 144 passed | 144 passed |
+
+Both full suites used the repository's explicit `pytest_asyncio.plugin`,
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, `PYTHONPATH=.` and
+`--continue-on-collection-errors`. Neither interpreter had a failed or
+expected-failing test on this branch. CI Ruff rules, compile checks,
+canonical identity audit and `scripts/concept_coverage.py --check` passed.
+The focused Python 3.12 coverage run measured 74% for the clock module,
+77% for process-witness discovery and 100% for terminal identity,
+including branch coverage. An earlier suite found two unclassified
+exception handlers; their fail-closed rationale is now on the handler
+lines and the original audit passes.
+
+Implementation is integrated and locally verified with fixtures. Next,
+apply the owner-host and second-host capture procedure across a terminal
+restart, reconnect and broker offset change. This checkout exercised no
+Windows terminal. T-A2, T-A3 and the remaining acceptance gates stay OPEN.
