@@ -102,6 +102,7 @@ class OrderResult:
     error: str = ""
     order_status: str = "FILLED"
     order_type: str = "MARKET"
+    fill_benchmark: Optional[dict] = None
 
 
 @dataclass
