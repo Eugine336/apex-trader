@@ -6,7 +6,7 @@ All lookbacks and formula conventions are explicit; insufficient history stays a
 from __future__ import annotations
 
 import math
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 
 from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
@@ -83,9 +83,9 @@ def _read(concept,tf,domain,bars,ref,ref_tf,observation,implications,facts,unkno
     )
 
 
-def _imp(direction,statement,active,requires=(),conflicts=()):
+def _imp(direction,statement,active,requires=(),conflicts=(),*,strength=None):
     return Implication(
-        direction=direction,statement=statement,strength=None,activated=bool(active),
+        direction=direction,statement=statement,strength=strength,activated=bool(active),
         activation_reason=statement if active else "The declared indicator condition is not satisfied",
         invalidation_reason="Reassess on the next completed bar and on structural change",
         requires=tuple(requires),conflicts_with=tuple(conflicts),
@@ -218,14 +218,17 @@ class IndicatorContextConcepts:
             pdi=100*plus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             mdi=100*minus_s[-1]/tr_s[-1] if tr_s[-1]>0 else 0.0
             di_side=LONG if pdi>mdi else SHORT if mdi>pdi else FLAT
-            strong=adx>=25.0
+            prior_adx = [value / 14.0 for value in adx_series[:-1] if value is not None]
+            rank = percentile_rank(adx, prior_adx)
+            strong = bool(prior_adx) and adx > median(prior_adx)
             out.append(_read(
                 "adx_directional",tf,EvidenceDomain.MOMENTUM,bars,ref,ref_tf,
                 f"ADX14={adx:.2f}; +DI={pdi:.2f}; -DI={mdi:.2f}; strength={'stronger' if strong else 'weak_or_mixed'}; direction={di_side}.",
                 [_imp(di_side,f"{di_side} directional movement with ADX14={adx:.2f}",strong and di_side!=FLAT,
-                      ("price structure and regime context",))],
+                      ("price structure and regime context",), strength=rank)],
                 {"adx14":adx,"plus_di14":pdi,"minus_di14":mdi,"direction":di_side,
-                 "strength_state":"stronger" if strong else "weak_or_mixed",
+                 "strength_state":("stronger" if strong else "weak_or_mixed") if prior_adx else "unknown",
+                 "own_history_strength_percentile":rank, "prior_adx_samples":len(prior_adx),
                  "conventional_strength_reference":25.0,"definition":"wilder_adx14_v1"},
                 ("ADX measures trend strength, not direction; 25 is a conventional reference, not a universal edge threshold.",)
             ))

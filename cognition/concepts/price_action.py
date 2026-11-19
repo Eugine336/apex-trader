@@ -5,6 +5,10 @@ an entry trigger; price levels are structural references with finite provenance.
 """
 from __future__ import annotations
 
+from statistics import median
+
+from cognition.concepts.liquidity import _untouched_flags
+from cognition.concepts.market_structure import fractal_swings
 from cognition.contracts import EvidenceDomain
 from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
@@ -59,7 +63,7 @@ class PriceActionConcepts:
             if tf not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[tf] < 300:
                 continue
             bars = _bars(raw)
-            if len(bars) < 12:
+            if len(bars) < 2:
                 continue
             out.extend(self._microstructure(tf, bars, ref, ref_tf))
             out.extend(self._candles(tf, bars, ref, ref_tf))
@@ -71,21 +75,21 @@ class PriceActionConcepts:
     def _microstructure(self, tf, bars, ref, ref_tf):
         current = bars[-1]
         span = current["high"] - current["low"]
-        if span <= 0:
+        if span <= 0 or len(bars) < 6:  # current candle and the five-close context reported below
             return []
         body = abs(current["close"] - current["open"])
         upper = current["high"] - max(current["open"], current["close"])
         lower = min(current["open"], current["close"]) - current["low"]
         close_location = (current["close"] - current["low"]) / span
-        history_ranges = [x["high"]-x["low"] for x in bars[-21:-1] if x["high"] > x["low"]]
-        median_range = sorted(history_ranges)[len(history_ranges)//2] if history_ranges else None
+        history_ranges = [x["high"]-x["low"] for x in bars[:-1] if x["high"] > x["low"]]
+        median_range = median(history_ranges) if history_ranges else None
         prior_closes = [x["close"] for x in bars[-6:-1]]
         up = sum(1 for a,b in zip(prior_closes, prior_closes[1:]) if b>a)
         down = sum(1 for a,b in zip(prior_closes, prior_closes[1:]) if b<a)
         facts = {
             "body_ratio": body/span, "upper_wick_ratio": upper/span,
             "lower_wick_ratio": lower/span, "close_location": close_location,
-            "range_price": span, "median_prior_range": median_range,
+            "range_price": span, "median_prior_range": median_range, "prior_range_samples": len(history_ranges),
             "range_vs_prior_median": span/median_range if median_range else None,
             "prior_five_close_up_steps": up, "prior_five_close_down_steps": down,
             "definition": "completed_candle_anatomy_and_five_close_sequence_v1",
@@ -187,27 +191,32 @@ class PriceActionConcepts:
         )]
 
     def _failed_auction(self, tf, bars, ref, ref_tf):
-        # Sweep a prior 10-bar extreme and close back inside that same range.
-        prior = bars[-11:-1]
-        high, low = max(x["high"] for x in prior), min(x["low"] for x in prior)
-        last = bars[-1]
-        bull = last["low"] < low and last["close"] > low
-        bear = last["high"] > high and last["close"] < high
+        # The swing must already be confirmed and intact before the reclaim bar.
+        prior, last = bars[:-1], bars[-1]
+        pivots = fractal_swings(prior)
+        intact = _untouched_flags(prior, pivots)
+        low_pivot = next((p for p in reversed(pivots) if p[1] == "L" and intact[p]), None)
+        high_pivot = next((p for p in reversed(pivots) if p[1] == "H" and intact[p]), None)
+        low = low_pivot[2] if low_pivot else None
+        high = high_pivot[2] if high_pivot else None
+        bull = low is not None and last["low"] < low < last["close"]
+        bear = high is not None and last["close"] < high < last["high"]
         if not (bull or bear) or (bull and bear):
             # No sweep, or an outside bar that breached both extremes: the direction is
             # unresolved, so no reading (never default to one side).
             return []
         side = LONG if bull else SHORT
-        swept = low if bull else high
+        anchor, _, swept = low_pivot if bull else high_pivot
         return [_read(
             "failed_auction", tf, EvidenceDomain.LIQUIDITY, bars, ref, ref_tf,
-            f"{side} failed auction proxy: price breached prior 10-bar {'low' if bull else 'high'} "
+            f"{side} failed auction proxy: price breached confirmed swing {'low' if bull else 'high'} "
             f"{swept:.10g} intrabar and completed back inside the reference range.",
             [_imp(side, f"{side} failed-auction/reclaim hypothesis", True,
                   "A subsequent completed close beyond the swept extreme invalidates the reclaim",
                   stop=last["low"] if bull else last["high"],
                   requires=("follow-through away from the swept boundary", "check independent order-flow evidence"))],
             {"direction": side, "swept_level": swept, "range_high": high, "range_low": low,
-             "reclaimed": True, "lookback_bars": 10, "definition": "wick_breach_close_reclaim_v1"},
+             "reclaimed": True, "swept_pivot_index": anchor, "lookback_bars": len(prior) - anchor,
+             "definition": "intact_confirmed_swing_breach_close_reclaim_v2"},
             ("A failed auction inferred from OHLC is not direct evidence of trapped participants or absorption.",)
         )]

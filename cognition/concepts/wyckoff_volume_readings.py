@@ -19,12 +19,15 @@ from cognition.concepts.base import (
 from cognition.contracts import EvidenceDomain
 
 
-_MIN_VOLUME_BARS = 21
+# Named 20-bar effort/volume measures require 20 prior observations plus the present bar.
 _EFFORT_BASELINE = 20
+_MIN_VOLUME_BARS = _EFFORT_BASELINE + 1
+# These periods define the reported MFI(14) and Chaikin money flow(20).
 _MFI_PERIOD = 14
 _CMF_PERIOD = 20
+# The rolling 40-bar extrema are reported as a candidate auction box.
+# The duration of an actual campaign is set by its observed sequence of events.
 _WYCKOFF_RANGE = 40
-_SWING_RADIUS = 1
 
 
 def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:

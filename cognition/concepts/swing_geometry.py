@@ -63,10 +63,11 @@ class SwingGeometryConcepts:
             if tf not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[tf] < 300:
                 continue
             bars = _clean(raw)
-            if len(bars) < 25:
+            if len(bars) < 3:
                 continue
             out.extend(self._fibonacci_ote(tf, bars, close, close_tf))
-            out.extend(self._channel(tf, bars, close, close_tf))
+            if len(bars) >= 30:  # this reader reports the named 30-close OLS channel
+                out.extend(self._channel(tf, bars, close, close_tf))
         return out
 
     def _fibonacci_ote(self, tf, bars, close, close_tf):

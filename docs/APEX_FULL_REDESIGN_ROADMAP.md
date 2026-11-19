@@ -779,3 +779,7 @@ The connector's existing suffix scan includes `.ecn`, but production integration
 ### System 2 concept quality — 2026-11-18
 
 The PR #909 branch resolves the seven known mirror failures across swing, pattern, auction, seasonal, regime and Wyckoff readings. All 30 readers passed the shared mirror assertions on the deterministic corpus. The engineering ledger records both supported Python versions and the focused regressions. System acceptance still requires verified historical and owner-host operating evidence.
+
+### System 2 concept windows — 2026-11-19
+
+The concept implementation plan now records the meaning and use of the readers' fixed windows, warmups, comparison samples and operational bounds. PR #909 derives failed-auction anchors, block lifetime, displacement strength and pattern tolerance from the same instrument's preceding bars. The two complete local test runs each passed 4,633 tests. Verified chronological replay remains an open System 2 evidence item.

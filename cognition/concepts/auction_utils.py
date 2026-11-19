@@ -1,6 +1,8 @@
 """Shared helpers for session and auction concepts; preserve unknown provenance."""
 from __future__ import annotations
 
+from bisect import bisect_right, insort
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +11,37 @@ from cognition.concepts.base import TIMEFRAME_SECONDS, finite, percentile_rank
 
 FRACTAL_RADIUS = 1
 VALUE_AREA_FRACTION = 0.70
+
+
+@dataclass(frozen=True, slots=True)
+class CandleBaseline:
+    observations: int
+    median_range: float | None
+    median_body_ratio: float | None
+    body_percentile: float | None
+
+
+def _median_sorted(values: list[float]) -> float | None:
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+
+def candle_baselines(bars: list[dict]) -> list[CandleBaseline]:
+    """Compare each candle with the earlier positive ranges on this instrument and timeframe."""
+    ranges: list[float] = []
+    ratios: list[float] = []
+    baselines = []
+    for bar in bars:
+        span = bar["high"] - bar["low"]
+        ratio = abs(bar["close"] - bar["open"]) / span if span > 0 else None
+        rank = bisect_right(ratios, ratio) / len(ratios) if ratios and ratio is not None else None
+        baselines.append(CandleBaseline(len(ranges), _median_sorted(ranges), _median_sorted(ratios), rank))
+        if ratio is not None:
+            insort(ranges, span)
+            insort(ratios, ratio)
+    return baselines
 
 
 def source_epoch(bar: dict[str, Any]) -> float | None:
