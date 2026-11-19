@@ -8,6 +8,7 @@ import platform as sys_platform
 import math
 import time as _time
 import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +26,10 @@ from platforms.order_idempotency import (
 )
 from platforms.mt5.clock import (
     CLOCK_MAX_AGE_SECONDS, CLOCK_MAX_UNCERTAINTY_SECONDS,
-    estimate_mt5_server_clock, query_ntp_sources,
+    MT5ServerClockState, corroborate_utc_samples, estimate_mt5_server_clock, query_ntp_sources,
 )
+from platforms.mt5.process_witness import terminal_process_for
+from platforms.mt5.terminal_identity import read_terminal_identity
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -155,15 +158,14 @@ class MT5Connector(BaseConnector):
             None if broker_name == "auto" else SymbolMapper(broker_name)
         )
         self._stale_warn_last: dict[str, float] = {}
+        self._invalidate_clock("startup")
 
     # ── Connection ───────────────────────────────────────────────────────
 
     def connect(self) -> bool:
-        self._server_clock_state_cache = None
-        self._server_clock_state_cache_at = None
-        self._clock_tick_observations = {}
-        self._server_clock_retry_after = 0.0
-        self._server_clock_unavailable_warned = False
+        self._connected = False
+        with _MT5_CLOCK_SYNC_LOCK:
+            self._invalidate_clock("connect")
         if sys_platform.system() != "Windows":
             logger.warning(
                 "MT5 requires Windows. Use Deriv connector on {}", sys_platform.system()
@@ -230,11 +232,8 @@ class MT5Connector(BaseConnector):
             except Exception as exc:
                 logger.warning("MT5 shutdown error: {}", exc)
         self._connected = False
-        self._server_clock_state_cache = None
-        self._server_clock_state_cache_at = None
-        self._clock_tick_observations = {}
-        self._server_clock_retry_after = 0.0
-        self._server_clock_unavailable_warned = False
+        with _MT5_CLOCK_SYNC_LOCK:
+            self._invalidate_clock("disconnected")
         logger.info("MT5 disconnected")
 
     def is_connected(self) -> bool:
@@ -242,139 +241,233 @@ class MT5Connector(BaseConnector):
             return False
         try:
             info = mt5.terminal_info()
-            return info is not None and info.connected
+            connected = info is not None and info.connected is True
         except Exception as exc:
             logger.warning("[mt5] health check failed: {}", exc)
-            return False
+            connected = False
+        if not connected:
+            with _MT5_CLOCK_SYNC_LOCK:
+                self._invalidate_clock("disconnected")
+        return connected
+
+    def _invalidate_clock(self, reason):
+        """Forget all evidence derived from the previous account, process or connection."""
+        self._server_clock_state_cache = None
+        self._clock_tick_observations = {}
+        self._bar_domain_cache = {}
+        self._server_clock_retry_after = 0.0
+        self._history_clock_retry_after = 0.0
+        self._clock_generation = getattr(self, "_clock_generation", 0) + 1
+        self._clock_binding = None
+        self._clock_phase = "disconnected" if reason == "disconnected" else "acquiring"
+        self._clock_reason = reason
+        self._clock_attempt_sources = ()
+        if hasattr(self, "_symbol_cache"):
+            self._symbol_cache.clear()
+
+    def _observe_clock_binding(self):
+        terminal = mt5.terminal_info()
+        if getattr(terminal, "connected", None) is False:
+            if getattr(self, "_clock_phase", None) != "disconnected":
+                self._invalidate_clock("disconnected")
+            return None
+        identity = read_terminal_identity(mt5)
+        if identity is None or getattr(terminal, "connected", None) is not True:
+            return None
+        old_binding = getattr(self, "_clock_binding", None)
+        # On an account/installation switch, a still-running old process in the
+        # same directory cannot attest the new IPC peer. Rediscover uniquely.
+        previous = old_binding[1] if old_binding and old_binding[0] == identity else None
+        process = terminal_process_for(getattr(terminal, "path", None), previous)
+        if process is None:
+            return None
+        return identity, process
+
+    def _validated_clock_identity(self):
+        """Revalidate the live account, installation and process before clock reuse."""
+        try:
+            binding = self._observe_clock_binding()
+        except Exception as exc:  # IPC can disappear during terminal restart.
+            logger.warning("[mt5] terminal clock identity unavailable ({})", type(exc).__name__)
+            binding = None
+        if binding is None:
+            if (getattr(self, "_clock_phase", None) != "disconnected" and
+                    getattr(self, "_clock_reason", None) != "terminal_identity_unavailable"):
+                self._invalidate_clock("terminal_identity_unavailable")
+            return None
+        if getattr(self, "_clock_binding", None) != binding:
+            self._invalidate_clock("terminal_identity_changed")
+            self._clock_binding = binding
+        return binding[0]
+
+    def _clock_holdover(self, now_mono, reason=None):
+        state = self._server_clock_state_cache
+        if reason is not None:
+            self._clock_reason = reason
+        if state is None:
+            if self._clock_phase != "expired":
+                self._clock_phase = "acquiring"
+            return None
+        binding = self._clock_binding
+        if (binding is None or state.terminal_fingerprint != binding[0].fingerprint
+                or state.generation != self._clock_generation or state.observed_monotonic is None):
+            self._invalidate_clock("unbound_clock_anchor")
+            return None
+        age = now_mono - state.observed_monotonic
+        if 0.0 <= age <= CLOCK_MAX_AGE_SECONDS:
+            view = state.as_holdover(age)
+            if view.uncertainty_seconds <= CLOCK_MAX_UNCERTAINTY_SECONDS:
+                if reason is not None:
+                    self._clock_phase = "holdover"
+                return view
+        self._server_clock_state_cache = None
+        self._bar_domain_cache.clear()
+        self._clock_phase = "expired"
+        return None
+
+    def clock_status(self) -> dict:
+        """Read the current clock health without initiating a UTC query."""
+        with _MT5_CLOCK_SYNC_LOCK:
+            identity = self._validated_clock_identity()
+            state = None
+            if self._server_clock_state_cache is not None:
+                state = self._clock_holdover(_time.monotonic())
+            return {
+                "phase": self._clock_phase, "reason": self._clock_reason,
+                "generation": self._clock_generation,
+                "terminal_fingerprint": identity.fingerprint if identity else None,
+                "witnesses": list(state.sources) if state else [],
+                "attempted_witnesses": list(self._clock_attempt_sources),
+                "observation_basis": state.observation_basis if state else None,
+                "offset_seconds": state.offset_seconds if state else None,
+                "uncertainty_seconds": state.uncertainty_seconds if state else None,
+                "age_seconds": state.holdover_age_seconds if state else None,
+            }
 
     def _read_server_clock_state(self, tick=None, symbol: str | None = None):
         with _MT5_CLOCK_SYNC_LOCK:
             return self._synchronize_server_clock_state(tick=tick, symbol=symbol)
 
+    def _matching_utc_history_clock(self, identity, tick, symbol, now_mono):
+        """Use a recent exact event match on both MT5 surfaces to attest a UTC label."""
+        fetch = getattr(mt5, "copy_ticks_range", None)
+        if not callable(fetch) or not symbol or not getattr(tick, "time_msc", 0):
+            return None
+        if now_mono < self._history_clock_retry_after:
+            return None
+        self._history_clock_retry_after = now_mono + 3.0
+        fields = ("time", "time_msc", "bid", "ask", "flags")
+        values = tuple(getattr(tick, field, None) for field in fields)
+        if any(value is None for value in values) or int(values[1]) // 1000 != int(values[0]):
+            return None
+        if not (math.isfinite(values[2]) and math.isfinite(values[3]) and 0 < values[2] <= values[3]):
+            return None
+        samples = query_ntp_sources()
+        self._clock_attempt_sources = tuple(sample.server for sample in samples)
+        utc = corroborate_utc_samples(samples, now_mono)
+        if utc is None:
+            return None
+        # Nonzero offset must be established by another mechanism. Similar prices
+        # alone cannot prove that two differently labelled rows are the same event.
+        start = utc.utc_epoch - CLOCK_MAX_AGE_SECONDS - utc.uncertainty_seconds
+        end = utc.utc_epoch + utc.uncertainty_seconds
+        if not (start <= values[1] / 1000 <= end):
+            return None
+        rows = fetch(symbol, datetime.fromtimestamp(start, timezone.utc),
+                     datetime.fromtimestamp(end, timezone.utc), getattr(mt5, "COPY_TICKS_ALL", 0))
+        if rows is None or not len(rows):
+            return None
+        if not all(start <= int(row["time_msc"]) / 1000 <= end for row in rows):
+            return None
+        if sum(tuple(row[field] for field in fields) == values for row in rows) != 1:
+            return None
+        return MT5ServerClockState(
+            server=identity.server, offset_seconds=0.0, observed_server_epoch=utc.utc_epoch,
+            observed_gmt_epoch=utc.utc_epoch, file_age_seconds=0.0, observed_monotonic=now_mono,
+            uncertainty_seconds=utc.uncertainty_seconds, sources=utc.sources,
+            observation_basis="exact_latest_event_in_utc_history",
+        )
+
     def _synchronize_server_clock_state(self, tick=None, symbol: str | None = None):
-        """Automatically synchronize broker time from live ticks and network UTC.
-
-        The Python terminal API has no TimeTradeServer() call. A verified state
-        therefore requires an advancing tick stream plus independent NTP/HTTPS
-        time sources. No host wall-clock or hardcoded broker offset is used.
-        """
+        """Acquire a broker clock for the active terminal or return bounded holdover."""
         now_mono = _time.monotonic()
-        cached = getattr(self, "_server_clock_state_cache", None)
-        cached_at = getattr(self, "_server_clock_state_cache_at", None)
-        cache_age = now_mono - cached_at if cached_at is not None else float("inf")
-        if cache_age < 0:
-            cached = None
-            cache_age = float("inf")
-            self._server_clock_state_cache = None
-            self._server_clock_state_cache_at = None
-        def _holdover_state():
-            if cached is None or not math.isfinite(cache_age) or cache_age > CLOCK_MAX_AGE_SECONDS:
-                return None
-            try:
-                return cached.as_holdover(cache_age)
-            except (AttributeError, TypeError, ValueError, OverflowError):
-                return None
-        retry_after = getattr(self, "_server_clock_retry_after", 0.0)
-        identity_verified = False
-
+        identity = self._validated_clock_identity()
+        if identity is None:
+            return None
         try:
-            account = mt5.account_info()
-            server = str(getattr(account, "server", "") or "").strip() if account else ""
-            if not server:
-                raise RuntimeError("MT5 account server identity unavailable")
-            identity_verified = True
-            if cached is not None and cached.server != server:
-                cached = None
-                cache_age = float("inf")
-                self._server_clock_state_cache = None
-                self._server_clock_state_cache_at = None
-                self._clock_tick_observations = {}
-            if cached is not None and cache_age <= min(10.0, CLOCK_MAX_AGE_SECONDS):
-                return _holdover_state()
-            if now_mono < retry_after:
-                return _holdover_state()
             if tick is None and symbol:
                 tick = mt5.symbol_info_tick(symbol)
                 now_mono = _time.monotonic()
-                cache_age = now_mono - cached_at if cached_at is not None else float("inf")
             if tick is None:
-                return _holdover_state()
-            tick_epoch = self._tick_server_epoch(tick)
-            if tick_epoch <= 0:
-                raise RuntimeError("MT5 tick timestamp unavailable")
-
-            key = (server, str(symbol or "").strip().upper())
-            observations = getattr(self, "_clock_tick_observations", None)
-            if not isinstance(observations, dict):
-                observations = {}
-                self._clock_tick_observations = observations
-            previous = observations.get(key)
-            if previous is None:
-                # The first observation establishes a baseline only. A second,
-                # strictly advancing broker event is required before estimating
-                # the broker clock against independent UTC authorities.
-                observations[key] = (tick_epoch, now_mono)
-                return _holdover_state()
-
-            previous_epoch, previous_mono = previous
-            elapsed = now_mono - previous_mono
-            advance = tick_epoch - previous_epoch
-
-            # MT5 symbol_info_tick() returns the latest quote, not a new event
-            # on every poll. Repeated polls commonly return the exact same
-            # timestamp while the market is quiet. Do not move the baseline on
-            # duplicates or out-of-order observations: doing so makes the next
-            # real tick appear to have advanced several seconds in a fraction
-            # of a second and permanently prevents clock synchronization.
-            if advance <= 0:
-                return _holdover_state()
-
-            # Tick arrival is event-driven and irregular. Comparing broker-event
-            # time deltas to poll intervals rejects legitimate sparse/bursty
-            # markets and confuses network delivery latency with clock drift.
-            # The absolute broker offset is instead checked against independent
-            # NTP/HTTPS authorities below. Monotonic time is used only to ensure
-            # the observations are ordered in the local process.
-            if elapsed <= 0:
-                return _holdover_state()
-
-            # Advance the baseline only after observing a strictly newer broker
-            # event. This also lets the next observation recover after a stale,
-            # delayed or out-of-order quote without trusting that quote.
-            observations[key] = (tick_epoch, now_mono)
-
-            state = estimate_mt5_server_clock(
-                server, tick_epoch, now_mono, ntp_samples=query_ntp_sources(),
-                tick_precision_seconds=(
-                    0.001 if float(getattr(tick, "time_msc", 0) or 0) > 0 else 1.0
-                ),
-                tick_transport_uncertainty_seconds=1.0,
-            )
-            if state is None:
-                raise RuntimeError(
-                    "network time sources disagree or timestamp uncertainty exceeds the safety limit"
+                return self._clock_holdover(now_mono, "quote_unavailable")
+            epoch = self._tick_server_epoch(tick)
+            if not math.isfinite(epoch) or epoch <= 0:
+                return self._clock_holdover(now_mono, "invalid_quote_epoch")
+            previous = self._clock_tick_observations.get(symbol)
+            advanced = previous is not None and epoch > previous[0] and now_mono > previous[1]
+            cached = self._server_clock_state_cache
+            # Discontinuities may mark a clock offset change; reacquire instead
+            # of interpreting this sample under the prior timestamp proof.
+            reversed_tick = previous is not None and epoch < previous[0]
+            future_tick = (cached is not None and
+                           epoch > cached.observed_server_epoch + (now_mono - cached.observed_monotonic)
+                           + cached.uncertainty_seconds)
+            if reversed_tick or future_tick or (previous is not None and now_mono < previous[1]):
+                binding = self._clock_binding
+                self._invalidate_clock("tick_or_monotonic_discontinuity")
+                self._clock_binding = binding
+                self._clock_tick_observations[symbol] = (epoch, now_mono)
+                return None
+            self._clock_tick_observations[symbol] = (epoch, now_mono)
+            if now_mono < self._server_clock_retry_after:
+                return self._clock_holdover(now_mono, self._clock_reason)
+            if advanced:
+                samples = query_ntp_sources()
+                self._clock_attempt_sources = tuple(sample.server for sample in samples)
+                state = estimate_mt5_server_clock(
+                    identity.server, epoch, now_mono, ntp_samples=samples,
+                    tick_precision_seconds=(0.001 if getattr(tick, "time_msc", 0) else 1.0),
+                    # The event arrived between these two polls. A long interruption
+                    # cannot be represented as a known one-second delivery delay.
+                    tick_transport_uncertainty_seconds=max(1.0, now_mono - previous[1]),
                 )
-            old_state = cached
+                if state is None:
+                    self._server_clock_retry_after = now_mono + 3.0
+                    reason = "utc_witnesses_unavailable"
+                    if samples:
+                        reason = ("utc_witnesses_not_corroborated" if corroborate_utc_samples(samples, now_mono) is None
+                                  else "offset_or_timing_uncertainty_out_of_bounds")
+                    return self._clock_holdover(now_mono, reason)
+            else:
+                state = self._matching_utc_history_clock(identity, tick, symbol, now_mono)
+                if state is None:
+                    reason = "waiting_for_advancing_tick" if previous is None else "non_advancing_tick"
+                    return self._clock_holdover(now_mono, reason)
+
+            # A witness request can span an account switch or terminal restart.
+            generation = self._clock_generation
+            if self._validated_clock_identity() != identity or self._clock_generation != generation:
+                return None
+            age = _time.monotonic() - state.observed_monotonic
+            if not (0 <= age <= CLOCK_MAX_AGE_SECONDS
+                    and state.as_holdover(age).uncertainty_seconds <= CLOCK_MAX_UNCERTAINTY_SECONDS):
+                self._bar_domain_cache.clear()
+                self._server_clock_state_cache = None
+                self._clock_phase, self._clock_reason = "expired", "observation_expired_during_acquisition"
+                return None
+            state = replace(state, terminal_fingerprint=identity.fingerprint, generation=generation)
             self._server_clock_state_cache = state
-            self._server_clock_state_cache_at = now_mono
-            self._server_clock_retry_after = now_mono + 10.0
-            if old_state is None:
-                logger.info(
-                    "[mt5] broker server clock synchronized — server={} offset={:+.3f}s "
-                    "uncertainty={:.3f}s sources={}",
-                    state.server, state.offset_seconds, state.uncertainty_seconds,
-                    ",".join(state.sources),
-                )
-            elif abs(old_state.offset_seconds - state.offset_seconds) >= 30.0:
-                logger.warning(
-                    "[mt5] broker clock offset changed — server={} old={:+.3f}s new={:+.3f}s",
-                    state.server, old_state.offset_seconds, state.offset_seconds,
-                )
+            self._server_clock_retry_after = now_mono + CLOCK_MAX_AGE_SECONDS / 2
+            self._bar_domain_cache.clear()
+            self._clock_phase, self._clock_reason = "synchronized", state.observation_basis
+            if cached is None or abs(cached.offset_seconds - state.offset_seconds) > state.uncertainty_seconds:
+                logger.info("[mt5] broker server clock synchronized server={} offset={:+.3f}s witnesses={} via={}",
+                            identity.server, state.offset_seconds, ",".join(state.sources), state.observation_basis)
             return state
-        except Exception as exc:  # noqa: BLE001 — clock metadata must fail closed
+        except Exception as exc:
             self._server_clock_retry_after = now_mono + 3.0
-            logger.warning("[mt5] automatic broker-clock synchronization unavailable: {}", exc)
-            return _holdover_state() if identity_verified else None
+            logger.warning("[mt5] clock observation failed ({})", type(exc).__name__)
+            return self._clock_holdover(now_mono, "clock_observation_failed")
 
     @staticmethod
     def _tick_server_epoch(tick: Any) -> float:
@@ -698,6 +791,9 @@ class MT5Connector(BaseConnector):
         if mapped is None:
             return {}
         try:
+            with _MT5_CLOCK_SYNC_LOCK:
+                before = self._validated_clock_identity()
+                generation = self._clock_generation
             si = mt5.symbol_info(mapped)
             if si is None:
                 return {}
@@ -705,27 +801,14 @@ class MT5Connector(BaseConnector):
             # independently synchronized MT5 server clock already maintained
             # by the live tick path. Do not call the network synchronizer here:
             # absent/stale clock evidence leaves the source timestamp unknown.
-            clock = getattr(self, "_server_clock_state_cache", None)
-            clock_cached_at = getattr(self, "_server_clock_state_cache_at", None)
-            clock_age = (
-                _time.monotonic() - float(clock_cached_at)
-                if clock_cached_at is not None else float("inf")
-            )
-            source_timestamp_epoch = None
-            source_timestamp_verified = False
-            source_timestamp_uncertainty = None
-            if (
-                clock is not None
-                and math.isfinite(clock_age)
-                and 0.0 <= clock_age <= CLOCK_MAX_AGE_SECONDS
-                and math.isfinite(float(getattr(clock, "uncertainty_seconds", float("inf"))))
-                and 0.0 <= float(clock.uncertainty_seconds) <= CLOCK_MAX_UNCERTAINTY_SECONDS
-            ):
-                observed_epoch = float(clock.server_now_epoch())
-                if math.isfinite(observed_epoch) and observed_epoch > 0.0:
-                    source_timestamp_epoch = observed_epoch
-                    source_timestamp_verified = True
-                    source_timestamp_uncertainty = float(clock.uncertainty_seconds)
+            with _MT5_CLOCK_SYNC_LOCK:
+                identity = self._validated_clock_identity()
+                clock = (self._clock_holdover(_time.monotonic())
+                         if identity is not None and identity == before and generation == self._clock_generation
+                         else None)
+            source_timestamp_epoch = clock.server_now_epoch() if clock else None
+            source_timestamp_verified = source_timestamp_epoch is not None
+            source_timestamp_uncertainty = clock.uncertainty_seconds if clock else None
             return {
                 "symbol": symbol,
                 "broker_symbol": mapped,
@@ -735,6 +818,10 @@ class MT5Connector(BaseConnector):
                 "source_verified": True,
                 "specification_verified": True,
                 "source_timestamp_epoch": source_timestamp_epoch,
+                "source_timestamp_utc_epoch": (clock.to_utc_epoch(source_timestamp_epoch) if clock else None),
+                "source_terminal_fingerprint": clock.terminal_fingerprint if clock else None,
+                "source_clock_generation": clock.generation if clock else None,
+                "source_clock_sources": list(clock.sources) if clock else [],
                 "source_timestamp_verified": source_timestamp_verified,
                 "source_timestamp_semantics": (
                     "broker_server_observation_time" if source_timestamp_verified else ""
@@ -868,7 +955,8 @@ class MT5Connector(BaseConnector):
         if clock is None:
             raise RuntimeError(
                 "MT5 broker server clock unavailable: waiting for advancing ticks "
-                "and independent network-time agreement"
+                "and independent network-time agreement "
+                f"({getattr(self, '_clock_reason', 'clock_unavailable')})"
             )
         tick_server_epoch = self._tick_server_epoch(tick)
         age = clock.age_seconds(tick_server_epoch)
@@ -927,6 +1015,11 @@ class MT5Connector(BaseConnector):
             "source_utc_offset_seconds": clock.offset_seconds,
             "source_utc_offset_uncertainty_seconds": clock.uncertainty_seconds,
             "source_clock_sources": list(clock.sources),
+            "source_clock_status": getattr(clock, "synchronization_status", None),
+            "source_clock_age_seconds": getattr(clock, "holdover_age_seconds", None),
+            "source_clock_observation": getattr(clock, "observation_basis", None),
+            "source_clock_generation": getattr(clock, "generation", None),
+            "source_terminal_fingerprint": getattr(clock, "terminal_fingerprint", None),
             "provider_timestamp_epoch": tick_server_epoch,
             "provider_timestamp_semantics": "broker_server_epoch",
             "timestamp_utc_epoch": clock.to_utc_epoch(tick_server_epoch),
@@ -984,7 +1077,8 @@ class MT5Connector(BaseConnector):
     # ------------------------------------------------------------------
     # Bar time authority
     # ------------------------------------------------------------------
-    _BAR_DOMAIN_TTL_SECONDS = 600.0
+    # A domain proof cannot outlive the verified clock holdover.
+    _BAR_DOMAIN_TTL_SECONDS = CLOCK_MAX_AGE_SECONDS
 
     def _bar_time_authority(self, mapped: str) -> dict:
         """Prove, from this terminal's own data, the time domain of bar timestamps.
@@ -1000,25 +1094,43 @@ class MT5Connector(BaseConnector):
         with daylight saving labels older bars with the earlier offset; this is
         recorded as the validity of the normalization, never hidden.
         """
-        cache = getattr(self, "_bar_domain_cache", None)
-        if cache is None:
-            cache = self._bar_domain_cache = {}
+        with _MT5_CLOCK_SYNC_LOCK:
+            return self._prove_bar_domain(mapped)
+
+    def _prove_bar_domain(self, mapped):
         now_mono = _time.monotonic()
-        cached = cache.get(mapped)
-        if cached is not None and 0.0 <= now_mono - cached["proven_at"] < self._BAR_DOMAIN_TTL_SECONDS:
-            return cached
         result = {"domain": None, "offset_seconds": None, "basis": "unresolved",
                   "uncertainty_seconds": None, "proven_at": now_mono,
                   "reason": "no proof attempted"}
         try:
             live_tick = mt5.symbol_info_tick(mapped)
             clock = self._read_server_clock_state(tick=live_tick, symbol=mapped)
-            rates = mt5.copy_rates_from_pos(mapped, self.timeframe_map("M1"), 0, 2)
+            fingerprint = getattr(clock, "terminal_fingerprint", None)
+            generation = getattr(clock, "generation", None)
+            anchor = getattr(clock, "observed_monotonic", None)
+            cached = getattr(self, "_bar_domain_cache", {}).get(mapped)
+            if (clock is not None and fingerprint and cached and cached["terminal_fingerprint"] == fingerprint
+                    and cached["clock_generation"] == generation and cached["clock_anchor"] == anchor
+                    and cached["tested_offset_seconds"] == clock.offset_seconds
+                    and 0 <= now_mono - cached["proven_at"] < self._BAR_DOMAIN_TTL_SECONDS):
+                return cached
+            rates = (mt5.copy_rates_from_pos(mapped, self.timeframe_map("M1"), 0, 2)
+                     if clock is not None else None)
             if clock is None:
                 result["reason"] = "broker clock unavailable"
             elif rates is None or len(rates) == 0:
                 result["reason"] = "no M1 bars to prove against"
             else:
+                if fingerprint:
+                    identity = self._validated_clock_identity()
+                    if (identity is None or identity.fingerprint != fingerprint
+                            or self._clock_generation != generation):
+                        result["reason"] = "terminal changed during M1 proof"
+                        return result
+                    clock = self._clock_holdover(_time.monotonic())
+                    if clock is None or clock.observed_monotonic != anchor:
+                        result["reason"] = "clock expired or changed during M1 proof"
+                        return result
                 label = float(rates[-1]["time"])
                 offset = float(clock.offset_seconds)
                 server_now = float(clock.server_now_epoch())
@@ -1030,6 +1142,10 @@ class MT5Connector(BaseConnector):
                     return now - window - tolerance <= label <= now + tolerance
 
                 fits_utc, fits_server = fits(utc_now), fits(server_now)
+                result.update(terminal_fingerprint=fingerprint, clock_generation=generation,
+                              clock_anchor=anchor, proof_utc_epoch=utc_now,
+                              clock_sources=list(clock.sources),
+                              clock_observation_basis=getattr(clock, "observation_basis", None))
                 result["uncertainty_seconds"] = float(clock.uncertainty_seconds)
                 result["newest_m1_label_epoch"] = label
                 result["tested_offset_seconds"] = offset
@@ -1047,7 +1163,11 @@ class MT5Connector(BaseConnector):
                     result["reason"] = "label fits neither or both hypotheses"
         except Exception as exc:  # noqa: BLE001 — an unproven domain is reported, not guessed
             result["reason"] = f"proof failed: {type(exc).__name__}: {exc}"
-        cache[mapped] = result
+        # Failed proofs are retried on the next call, including immediately after recovery.
+        if result["domain"] is not None and result.get("terminal_fingerprint"):
+            self._bar_domain_cache[mapped] = result
+        elif hasattr(self, "_bar_domain_cache"):
+            self._bar_domain_cache.pop(mapped, None)
         return result
 
     def get_ohlcv(
@@ -1140,7 +1260,8 @@ class MT5Connector(BaseConnector):
             "utc_normalization": authority["basis"] if proven else "unresolved",
             "bar_time_evidence": {k: authority.get(k) for k in (
                 "domain", "basis", "reason", "tested_offset_seconds",
-                "uncertainty_seconds", "newest_m1_label_epoch")},
+                "uncertainty_seconds", "newest_m1_label_epoch", "terminal_fingerprint",
+                "clock_generation", "clock_sources", "clock_observation_basis", "proof_utc_epoch")},
             "offset_validity": (
                 "newest bars; bars before a broker daylight-saving change may carry a different offset"
                 if authority["domain"] == "broker_server" else "n/a"),

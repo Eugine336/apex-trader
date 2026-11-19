@@ -775,3 +775,14 @@ A follow-up read-only capture using `XAUUSD.ecn` on the same Windows 11 / JustMa
 The raw latest quote epoch (`1794404576`, milliseconds `1794404576984`) was approximately two hours ahead of the independent UTC witness projection, while the last history row (`1794397376`, milliseconds `1794397376835`) fell within the UTC query interval. This is strong single-host evidence that latest-quote and historical-range API timestamp domains differ. The active `get_ticks` path currently assumes history rows are broker-server time and can subtract the live offset; if the observed history semantics are confirmed, this would shift UTC history by two hours. No normalization change is made until repeated and second-host captures establish the contract. Preserve raw timestamps and unresolved provenance in the meantime.
 
 The connector's existing suffix scan includes `.ecn`, but production integration must be traced to prove all Apex market-data callers pass canonical `XAUUSD` through `MT5Connector.symbol_map` and consume the mapped `XAUUSD.ecn` consistently. Do not rename the canonical instrument. Host wall-time discrepancy remains within the reported witness uncertainty; no clock correction is supported. All WP-T acceptance gates remain OPEN.
+
+### WP-T2 terminal clock lifecycle — 2026-11-19
+
+The MT5 market-data connector on the WP-T2 branch now invalidates clock
+and M1 proofs on terminal process, account, server and connection changes.
+Each cache lookup requires a valid identity, clock generation and offset.
+Loss of witness agreement permits bounded holdover until uncertainty or
+age expires. The fixture results and source commits are in the engineering
+ledger. T-A2 and T-A3 remain OPEN for owner and second-host evidence,
+including a broker offset transition. Windows process identification and
+reconnect behavior need verification on the intended installations.

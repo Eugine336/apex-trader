@@ -82,3 +82,42 @@ Evidence:
 Do not convert this ambiguity into a hardcoded UTC or broker-server rule. Keep raw integer fields unchanged and distinguish API request-bound semantics from returned snapshot/history field semantics. The new read-only `scripts/diagnose_mt5_timestamp_semantics.py` captures raw live and historical samples, API/package/terminal version, server identity, host wall/monotonic readings, independent UTC witnesses and exact UTC request bounds. Run it on each supported host and preserve outputs. A source contract change requires correlated samples across hosts and versions, with no unexplained offset residual or DST discontinuity.
 
 Until evidence resolves the contract, any timestamp conversion requiring the disputed interpretation must remain explicitly gated; do not silently apply the estimated broker offset twice or treat a wall-clock comparison as proof.
+
+## Identity and reconciliation after restart
+
+The production connector binds each clock observation to the live account,
+server, terminal data directory and running Windows terminal process. The
+public fingerprint is a digest. The environment-marker dependency on
+`psutil` lets the connector check the installed terminal executable and
+process lifetime. A missing or ambiguous process witness leaves time
+unverified. Reconnect, process replacement, a changed account or server,
+and discontinuous broker or monotonic time discard the old anchor, M1
+proofs and mapped-symbol cache.
+
+An advancing quote and corroborated UTC witnesses can establish an offset.
+If the latest quote already carries a UTC label, an exact, unique match of
+its raw millisecond epoch, second, bid, ask and flags inside a recently
+witnessed UTC history interval can also establish it. Nonzero offsets require
+advancing-event evidence. An unsuccessful probe leaves
+the prior verified clock usable only for its bounded holdover. Holdover
+expires at 20 seconds or earlier if drift pushes the uncertainty above 2.5
+seconds. The connector retries acquisition when a fresh observation arrives.
+
+`clock_status()` reports the phase, last observation reason, observation
+basis, account/terminal fingerprint, generation, witnesses attempted and
+accepted, uncertainty and monotonic age. Latest quote raw fields and
+`bar_time_evidence` retain the responsible witness information. Every M1
+proof lookup checks the active clock generation, anchor and offset first.
+A new clock observation triggers a new M1 proof. The maximum proof age is
+the clock holdover lifetime, and a failed M1 proof is retried on the next
+request. `get_symbol_spec` preserves the broker server observation epoch
+and publishes `source_timestamp_utc_epoch` separately when bound to the
+active clock.
+
+On the read-only owner terminal and a second independent terminal, capture
+clock health, quotes and bar-time evidence before disconnect, after
+reconnect, after process restart and across the broker's seasonal offset
+change. Look for a new generation, a period of unavailable or acquiring
+time, and a fresh M1 proof with the observed offset. Use the opaque
+fingerprint in shared evidence. Windows process discovery, broker
+permissions and clock behavior remain owner-host qualification items.

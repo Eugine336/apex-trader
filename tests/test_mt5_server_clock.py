@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
+from types import SimpleNamespace
 
 from platforms.mt5.clock import CLOCK_FILENAME, load_mt5_server_clock
+
+
+class _ConnectedClockTerminal:
+    def account_info(self):
+        return SimpleNamespace(server="JustMarkets-Demo", login=101)
+
+    def terminal_info(self):
+        return SimpleNamespace(connected=True, data_path=r"C:\demo\data", path=r"C:\demo")
+
+
+def _install_clock_terminal(monkeypatch, module):
+    monkeypatch.setattr(module, "mt5", _ConnectedClockTerminal())
+    monkeypatch.setattr(module, "terminal_process_for", lambda *_args: ("demo", 1))
 
 
 def _write_clock(tmp_path, *, server="JustMarkets-Demo", offset=7200,
@@ -199,13 +214,9 @@ def test_connector_automatically_synchronizes_after_advancing_tick(monkeypatch):
     from platforms.mt5.clock import NTPClockSample
     from platforms.mt5.mt5_connector import MT5Connector
 
-    class _MT5:
-        def account_info(self):
-            return SimpleNamespace(server="JustMarkets-Demo")
-
-    times = iter((10.0, 11.1))
+    times = iter((10.0, 11.1, 11.1))
     monkeypatch.setattr(connector_module._time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(connector_module, "mt5", _MT5())
+    _install_clock_terminal(monkeypatch, connector_module)
     monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
         NTPClockSample(1001.0, 11.1, 0.55, "ntp:a"),
         NTPClockSample(1001.1, 11.1, 0.55, "ntp:b"),
@@ -243,15 +254,11 @@ def test_duplicate_quote_polls_do_not_reset_advancing_tick_clock_baseline(monkey
     from platforms.mt5.clock import NTPClockSample
     from platforms.mt5.mt5_connector import MT5Connector
 
-    class _MT5:
-        def account_info(self):
-            return SimpleNamespace(server="JustMarkets-Demo")
-
     # The poller reads the same latest quote repeatedly, then receives a new
     # quote 3 seconds later only 100 ms after the previous poll.
-    times = iter((10.0, 10.1, 10.2, 13.0, 13.1))
+    times = iter((10.0, 10.1, 10.2, 13.0, 13.1, 13.1))
     monkeypatch.setattr(connector_module._time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(connector_module, "mt5", _MT5())
+    _install_clock_terminal(monkeypatch, connector_module)
     monkeypatch.setattr(connector_module, "query_ntp_sources", lambda: (
         NTPClockSample(1003.1, 13.1, 0.55, "ntp:a"),
         NTPClockSample(1003.2, 13.1, 0.55, "ntp:b"),
@@ -334,15 +341,12 @@ def test_connector_returns_growing_holdover_only_after_identity_revalidation(mon
         sources=("ntp:one", "ntp:two"),
     )
     connector = MT5Connector.__new__(MT5Connector)
-    connector._server_clock_state_cache = state
-    connector._server_clock_state_cache_at = 10.0
-    connector._server_clock_retry_after = 20.0
-    connector._clock_tick_observations = {}
-    monkeypatch.setattr(connector_module._time, "monotonic", lambda: 15.0)
-    monkeypatch.setattr(
-        connector_module, "mt5",
-        SimpleNamespace(account_info=lambda: SimpleNamespace(server="JustMarkets-Demo")),
+    _install_clock_terminal(monkeypatch, connector_module)
+    identity = connector._validated_clock_identity()
+    connector._server_clock_state_cache = replace(
+        state, terminal_fingerprint=identity.fingerprint, generation=connector._clock_generation,
     )
+    monkeypatch.setattr(connector_module._time, "monotonic", lambda: 15.0)
 
     holdover = connector._synchronize_server_clock_state()
 
@@ -379,3 +383,26 @@ def test_connector_does_not_use_holdover_when_broker_identity_is_unavailable(mon
     )
 
     assert connector._synchronize_server_clock_state() is None
+
+
+def test_utc_consensus_excludes_old_and_nonfinite_witnesses_before_deduplication():
+    from platforms.mt5.clock import NTPClockSample, corroborate_utc_samples
+
+    sources = (
+        NTPClockSample(50.0, 0.0, 0.001, "ntp:time.google.com"),
+        NTPClockSample(float("nan"), 100.0, 0.002, "https:www.cloudflare.com"),
+        NTPClockSample(1000.5, 100.5, 0.3, "https:www.google.com"),
+        NTPClockSample(1000.0, 100.0, 0.4, "ntp:time.cloudflare.com"),
+    )
+    utc = corroborate_utc_samples(sources, 101.0)
+    assert utc.utc_epoch == 1001.0
+    assert utc.sources == ("https:www.google.com", "ntp:time.cloudflare.com")
+    assert utc.uncertainty_seconds == 0.4
+
+
+def test_equal_competing_utc_witness_clusters_do_not_establish_an_offset():
+    from platforms.mt5.clock import NTPClockSample, corroborate_utc_samples
+
+    sources = [NTPClockSample(v, 10.0, 0.1, name) for name, v in
+               (("ntp:a", 1000.0), ("ntp:b", 1000.18), ("ntp:c", 1000.36))]
+    assert corroborate_utc_samples(sources, 10.0) is None
