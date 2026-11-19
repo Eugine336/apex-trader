@@ -21,20 +21,22 @@ def _calendar_key(epoch: float, zone: timezone | ZoneInfo) -> dict:
 
 
 def _effect(records: list[dict], key: str, value: int) -> dict:
-    sample = [row["return"] for row in records if row[key] == value]
+    members = [row for row in records if row[key] == value]
+    sample = [row["return"] for row in members if row["return"] is not None]
+    change = mean(row["price_change"] for row in members) if members else None
     if not sample:
-        return {"sample_count": 0, "mean_log_return": None, "standard_error": None,
+        return {"sample_count": 0, "mean_log_return": None, "mean_price_change": change, "price_change_samples": len(members), "standard_error": None,
                 "confidence_interval_95": None, "evidence_label": "insufficient"}
     average = mean(sample)
     if len(sample) < 2:
-        return {"sample_count": len(sample), "mean_log_return": average,
+        return {"sample_count": len(sample), "mean_log_return": average, "mean_price_change": change, "price_change_samples": len(members),
                 "standard_error": None, "confidence_interval_95": None,
                 "evidence_label": "insufficient"}
     error = stdev(sample) / math.sqrt(len(sample))
     interval = (average - NORMAL_95_CRITICAL_VALUE * error,
                 average + NORMAL_95_CRITICAL_VALUE * error)
     label = "strong" if interval[0] > 0 or interval[1] < 0 else "weak"
-    return {"sample_count": len(sample), "mean_log_return": average,
+    return {"sample_count": len(sample), "mean_log_return": average, "mean_price_change": change, "price_change_samples": len(members),
             "standard_error": error, "confidence_interval_95": interval,
             "evidence_label": label}
 
@@ -74,15 +76,15 @@ class SeasonalityConcept:
                         continue
                     if not isinstance(previous_epoch, (int, float)) or not isinstance(bar_epoch, (int, float)):
                         continue
-                    if previous["close"] <= 0 or bar["close"] <= 0:
-                        continue
                     records.append({
                         **_calendar_key(float(bar_epoch), zone),
-                        "return": math.log(bar["close"] / previous["close"]),
+                        "return": (math.log(bar["close"] / previous["close"])
+                                   if bar["close"] > 0 and previous["close"] > 0 else None),
+                        "price_change": bar["close"] - previous["close"],
                         "epoch": float(bar_epoch),
                     })
             current_key = _calendar_key(epoch, zone) if epoch is not None else None
-            prior_records = records[:-1] if records else []
+            prior_records = [row for row in records if row["epoch"] < epoch] if epoch is not None else []
             effects = {}
             if current_key is not None:
                 effects = {
@@ -92,19 +94,19 @@ class SeasonalityConcept:
                 }
             else:
                 unknowns.append("calendar buckets cannot be assigned without a verified source timestamp")
-            available = [item for item in effects.values() if item["mean_log_return"] is not None]
-            positive = [item for item in available if item["mean_log_return"] > 0]
-            negative = [item for item in available if item["mean_log_return"] < 0]
+            available = [item for item in effects.values() if item["mean_price_change"] is not None]
+            # Log-return magnitudes depend on the price origin. Retain them for
+            # reporting and rank the observed signed changes in quote units.
             historical_magnitudes = []
             for key in ("weekday", "hour", "month"):
-                values = sorted({record[key] for record in prior_records})
+                values = {record[key] for record in prior_records}
                 historical_magnitudes.extend(
-                    abs(item["mean_log_return"])
-                    for item in (_effect(prior_records, key, value) for value in values)
-                    if item["mean_log_return"] is not None
+                    abs(_effect(prior_records, key, value)["mean_price_change"]) for value in values
                 )
-            long_effect = max((item["mean_log_return"] for item in positive), default=None)
-            short_effect = min((item["mean_log_return"] for item in negative), default=None)
+            changes = [item["mean_price_change"] for item in available]
+            long_effect = max((value for value in changes if value > 0), default=None)
+            short_effect = min((value for value in changes if value < 0), default=None)
+            log_means = [item["mean_log_return"] for item in available if item["mean_log_return"] is not None]
             long_strength = percentile_strength(abs(long_effect), historical_magnitudes) if long_effect is not None else None
             short_strength = percentile_strength(abs(short_effect), historical_magnitudes) if short_effect is not None else None
             if not available:
@@ -146,7 +148,10 @@ class SeasonalityConcept:
                     "calendar_timezone": str(getattr(zone, "key", "UTC")),
                     "calendar_bucket": current_key, "effects": effects,
                     "prior_return_samples": len(prior_records),
-                    "long_effect_log_return": long_effect, "short_effect_log_return": short_effect,
+                    "long_effect_log_return": max((v for v in log_means if v > 0), default=None),
+                    "short_effect_log_return": min((v for v in log_means if v < 0), default=None),
+                    "long_effect_price_change": long_effect, "short_effect_price_change": short_effect,
+                    "strength_basis": "absolute_mean_close_change_in_quote_units",
                     "strength_is_percentile_of_own_history": True,
                     "normal_95_critical_value_is_uncertainty_definition": NORMAL_95_CRITICAL_VALUE,
                 },source_bar_epoch=epoch,

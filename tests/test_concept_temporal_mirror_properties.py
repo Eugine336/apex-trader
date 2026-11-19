@@ -4,7 +4,8 @@ import copy
 import math
 
 from cognition.concepts import CONCEPT_MODULES
-from cognition.concepts.auction_utils import nearest_structural_level, swing_points
+from cognition.concepts.auction_utils import nearest_structural_level, profile_from_bars, swing_points
+from cognition.concepts.market_structure import fractal_swings
 
 
 def _bars(count: int, *, offset: float = 0.0, step: int = 300, end_epoch: float = 1_800_000_000.0):
@@ -108,3 +109,28 @@ def test_registered_concept_readers_keep_source_time_within_their_timeframe():
                 )
             assert not _contains_lookahead_true(reading.facts), (module.key, reading.concept, reading.facts)
     assert bars_by_tf == original
+
+
+def test_symmetric_outside_bar_with_no_prior_side_has_no_ordered_swing():
+    # Both extrema are real; OHLC supplies no ordering in this exact tie.
+    bars = [{"high": 103, "low": 97}, {"high": 105, "low": 95}, {"high": 102, "low": 98}]
+    assert {p["kind"] for p in swing_points(bars)} == {"high", "low"}
+    assert fractal_swings(bars) == []
+
+
+def test_tied_profile_modes_choose_an_observed_node_by_time_under_reflection():
+    levels = [(110.0, 40), (100.0, 40), (105.0, 10)]
+    bars = [{"open": p, "high": p, "low": p, "close": p, "volume": v} for p, v in levels]
+    profile = profile_from_bars(bars)
+    mirrored = profile_from_bars(_mirror(bars))
+    assert profile["modal_prices"] == (110.0, 100.0)
+    assert profile["poc"] == 110.0
+    assert mirrored["poc"] == 500.0 - profile["poc"]
+    assert mirrored["val"] == 500.0 - profile["vah"]
+
+
+def test_value_area_includes_both_equal_neighbours_when_either_would_cross_target():
+    levels = [(105.0, 50), (104.0, 25), (106.0, 25)]
+    bars = [{"open": p, "high": p, "low": p, "close": p, "volume": v} for p, v in levels]
+    profile = profile_from_bars(bars)
+    assert (profile["val"], profile["poc"], profile["vah"]) == (104.0, 105.0, 106.0)

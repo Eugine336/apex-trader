@@ -5,10 +5,14 @@ they never claim hidden institutional orders or independently authorize trades.
 """
 from __future__ import annotations
 
+from statistics import median
+
+from cognition.concepts.auction_utils import candle_baselines
 from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
     finite, reference_price,
 )
+from cognition.concepts.market_structure import fractal_swings
 from cognition.contracts import EvidenceDomain
 
 
@@ -22,16 +26,6 @@ def _clean(rows):
                     "timestamp_epoch": finite(row.get("timestamp_epoch")),
                     "source_timestamp_verified": row.get("source_timestamp_verified") is True})
     return out
-
-
-def _pivots(bars):
-    result = []
-    for i in range(1, len(bars) - 1):
-        if bars[i]["high"] > bars[i-1]["high"] and bars[i]["high"] >= bars[i+1]["high"]:
-            result.append(("H", i, bars[i]["high"]))
-        if bars[i]["low"] < bars[i-1]["low"] and bars[i]["low"] <= bars[i+1]["low"]:
-            result.append(("L", i, bars[i]["low"]))
-    return sorted(result, key=lambda p: p[1])
 
 
 def _imp(direction, statement, active, invalidation, *, stop=None, target=None, requires=(), conflicts=()):
@@ -70,19 +64,27 @@ class StructurePatternConcepts:
             if tf not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[tf] < 300:
                 continue
             bars = _clean(raw)
-            if len(bars) < 25:
+            if len(bars) < 3:
                 continue
             out.extend(self._patterns(tf, bars, ref, ref_tf))
             out.extend(self._zones(tf, bars, ref, ref_tf))
         return out
 
     def _patterns(self, tf, bars, ref, ref_tf):
-        pivots = _pivots(bars)
+        pivots = [(kind, index, price) for index, kind, price in fractal_swings(bars)]
         if len(pivots) < 3:
             return []
-        ranges = [x["high"] - x["low"] for x in bars[-20:] if x["high"] > x["low"]]
-        tolerance = (sum(ranges) / len(ranges)) * 0.35 if ranges else 0.0
         selected = pivots[-5:]
+        # Price equality is resolved at the typical wick excursion observed
+        # before this formation. Both tails contribute in the same price units.
+        prior_wicks = [
+            wick for row in bars[:selected[0][1]]
+            for wick in (row["high"] - max(row["open"], row["close"]),
+                         min(row["open"], row["close"]) - row["low"])
+        ]
+        if not prior_wicks:
+            return []
+        tolerance = median(prior_wicks)
         tags, direction, invalid, neckline = [], FLAT, None, None
         # Double top / bottom: select the latest valid alternating triple.
         # Require at least two bars between each pivot; adjacent one-bar noise
@@ -100,7 +102,7 @@ class StructurePatternConcepts:
                 direction, invalid, neckline = LONG, min(a[2], c[2]), b[2]
                 break
         # Head-and-shoulders / inverse: H-L-H-L-H or its mirror.
-        if len(selected) == 5:
+        if len(selected) == 5 and len({p[1] for p in selected}) == 5:
             a, b, c, d, e = selected
             if [p[0] for p in selected] == ["H", "L", "H", "L", "H"]:
                 shoulders = abs(a[2]-e[2]) <= tolerance
@@ -119,7 +121,7 @@ class StructurePatternConcepts:
             tail = selected[-4:]
             highs = [p[2] for p in tail if p[0] == "H"]
             lows = [p[2] for p in tail if p[0] == "L"]
-            if len(highs) == 2 and len(lows) == 2:
+            if len({p[1] for p in tail}) == 4 and len(highs) == 2 and len(lows) == 2:
                 high_slope = highs[-1] - highs[0]
                 low_slope = lows[-1] - lows[0]
                 if high_slope < -tolerance and low_slope > tolerance:
@@ -149,38 +151,34 @@ class StructurePatternConcepts:
              _imp(FLAT, "Chart-pattern geometry can fail and must be compared with the competing auction explanation",
                   True, "Not applicable", requires=("market-regime and volatility context",))],
             {"patterns": tags, "pivots": [{"kind": p[0], "index": p[1], "price": p[2]} for p in selected],
-             "tolerance_price": tolerance, "neckline": neckline, "breakout_confirmed": confirmed,
+             "tolerance_price": tolerance, "prior_wick_samples": len(prior_wicks), "neckline": neckline, "breakout_confirmed": confirmed,
              "definition": "confirmed_fractal_double_top_bottom_hs_triangle_v1"},
-            ("Classical pattern taxonomy is ambiguous; fixed geometric tolerances are declared definitions, not fitted predictive thresholds.",)
+            ("Classical pattern labels depend on the confirmed pivots and the instrument’s observed wick distribution.",)
         )]
 
     def _zones(self, tf, bars, ref, ref_tf):
-        for impulse_i in range(len(bars)-1, max(4, len(bars)-12), -1):
-            prior_ranges = [
-                x["high"] - x["low"]
-                for x in bars[max(0, impulse_i-20):impulse_i]
-                if x["high"] > x["low"]
-            ]
-            if len(prior_ranges) < 10:
-                continue
-            baseline = sorted(prior_ranges)[len(prior_ranges)//2]
-            if baseline <= 0:
+        baselines = candle_baselines(bars)
+        for impulse_i in range(len(bars) - 1, 1, -1):
+            history = baselines[impulse_i]
+            baseline = history.median_range
+            if baseline is None or history.median_body_ratio is None:
                 continue
             impulse = bars[impulse_i]
             span = impulse["high"] - impulse["low"]
-            if span < 1.5 * baseline:
+            if span <= baseline:
                 continue
-            body_ratio = abs(impulse["close"]-impulse["open"]) / max(span, 1e-12)
-            if body_ratio < 0.65:
+            body = abs(impulse["close"] - impulse["open"])
+            body_ratio = body / span
+            if body <= span - body or body_ratio <= history.median_body_ratio:
                 continue
             bull = impulse["close"] > impulse["open"]
-            for width in range(2, 6):
+            for width in range(2, min(5, impulse_i) + 1):  # defined two-to-five-bar base proxy
                 base = bars[impulse_i-width:impulse_i]
                 if len(base) != width:
                     continue
                 base_high = max(x["high"] for x in base)
                 base_low = min(x["low"] for x in base)
-                if base_high-base_low > baseline * width * 0.9:
+                if base_high - base_low >= span:
                     continue
                 later = bars[impulse_i+1:]
                 mitigated = any(x["low"] <= base_high and x["high"] >= base_low for x in later)
@@ -201,7 +199,7 @@ class StructurePatternConcepts:
                     {"zone_low": base_low, "zone_high": base_high, "direction": side,
                      "base_start_index": impulse_i-width, "base_end_index": impulse_i-1,
                      "impulse_index": impulse_i, "impulse_range_multiple": span/baseline,
-                     "impulse_body_ratio": body_ratio, "mitigated": mitigated,
+                     "impulse_body_ratio": body_ratio, "impulse_baseline_samples": history.observations, "mitigated": mitigated,
                      "invalidated": invalid, "definition": "two_to_five_bar_base_before_relative_impulse_v1"},
                     ("Supply/demand zone is a price-action proxy; it does not prove hidden limit orders or institutional ownership.",)
                 )]

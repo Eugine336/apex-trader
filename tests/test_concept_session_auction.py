@@ -221,6 +221,8 @@ def test_seasonality_uses_prior_same_bucket_samples_and_never_triggers():
     assert effects["time_of_day"]["sample_count"] > 0
     assert effects["month"]["sample_count"] > 0
     assert reading.facts["long_effect_log_return"] > 0
+    assert reading.facts["long_effect_price_change"] == 1.0
+    assert reading.facts["strength_basis"] == "absolute_mean_close_change_in_quote_units"
     assert _implications(reading)["LONG"].activated is False
     assert _implications(reading)["LONG"].objective_price is None
     assert any("instrument-local timezone" in item for item in reading.unknowns)
@@ -417,3 +419,16 @@ def test_session_calendar_rejects_provider_calendar_after_analysis_cutoff():
         {"data_source_registry": _Registry(), "analysis_epoch": 1_800_000_050},
     )[0]
     assert reading.facts["provider_session_calendar_verified"] is False
+
+
+def test_seasonality_can_report_signed_changes_when_log_returns_are_undefined():
+    bars = _seasonality_bars()
+    for bar in bars:
+        for key in ("open", "high", "low", "close"):
+            bar[key] -= 200.0
+    reading = _reading(SeasonalityConcept(), bars, "D1")
+    assert reading.facts["long_effect_price_change"] == 1.0
+    assert reading.facts["long_effect_log_return"] is None
+    effect = reading.facts["effects"]["time_of_day"]
+    assert effect["price_change_samples"] > 0
+    assert effect["mean_log_return"] is None

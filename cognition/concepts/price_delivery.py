@@ -5,10 +5,11 @@ stays unknown, and OHLC proxies are not represented as institutional order data.
 """
 from __future__ import annotations
 
+from cognition.concepts.auction_utils import candle_baselines
 from cognition.contracts import EvidenceDomain
 from cognition.concepts.base import (
     FLAT, LONG, SHORT, TIMEFRAME_SECONDS, ConceptReading, Implication,
-    finite, percentile_rank, reference_price,
+    finite, reference_price,
 )
 
 
@@ -20,6 +21,29 @@ def _clean(rows):
             continue
         out.append({**row, "open": o, "high": h, "low": l, "close": c})
     return out
+
+
+def _origin_impulses(bars, baselines):
+    """An above-usual body closes across the last opposite candle's far edge."""
+    impulses = []
+    last_up = last_down = None
+    for i, (bar, baseline) in enumerate(zip(bars, baselines)):
+        span = bar["high"] - bar["low"]
+        body = bar["close"] - bar["open"]
+        if not body or span <= 0:
+            continue
+        origin = last_down if body > 0 else last_up
+        if origin is not None and baseline.median_body_ratio is not None and abs(body) / span > baseline.median_body_ratio:
+            previous, close = bars[i - 1]["close"], bar["close"]
+            edge = bars[origin]["high" if body > 0 else "low"]
+            crossed = previous <= edge < close if body > 0 else close < edge <= previous
+            if crossed:
+                impulses.append((i, origin, baseline.body_percentile, body > 0))
+        if body > 0:
+            last_up = i
+        else:
+            last_down = i
+    return impulses
 
 
 def _epoch(bar):
@@ -64,22 +88,25 @@ class PriceDeliveryConcepts:
             if tf not in TIMEFRAME_SECONDS or TIMEFRAME_SECONDS[tf] < 300:
                 continue
             bars = _clean(raw)
-            if len(bars) < 22:
+            if len(bars) < 3:
                 continue
-            readings.extend(self._fvg(tf, bars, close, close_tf))
-            readings.extend(self._order_block(tf, bars, close, close_tf))
+            baselines = candle_baselines(bars)
+            impulses = _origin_impulses(bars, baselines)
+            readings.extend(self._fvg(tf, bars, close, close_tf, baselines))
+            readings.extend(self._order_block(tf, bars, close, close_tf, impulses))
             readings.extend(self._bpr(tf, bars, close, close_tf))
-            readings.append(self._dealing_range(tf, bars, close, close_tf))
+            if len(bars) >= 20:  # the named 20-bar reference requires exactly 20 completed bars
+                readings.append(self._dealing_range(tf, bars, close, close_tf))
             readings.extend(self._break_retest(tf, bars, close, close_tf))
             readings.extend(self._gaps(tf, bars, close, close_tf))
-            readings.extend(self._displacement(tf, bars, close, close_tf))
-            readings.extend(self._breaker_block(tf, bars, close, close_tf))
+            readings.extend(self._displacement(tf, bars, close, close_tf, baselines[-1]))
+            readings.extend(self._breaker_block(tf, bars, close, close_tf, impulses))
         return readings
 
-    def _fvg(self, tf, bars, close, close_tf):
+    def _fvg(self, tf, bars, close, close_tf, baselines):
         # Three-candle non-overlap. Return the most recent imbalance only.
         for i in range(len(bars) - 1, 1, -1):
-            a, b, c = bars[i - 2], bars[i - 1], bars[i]
+            a, c = bars[i - 2], bars[i]
             bull, bear = c["low"] > a["high"], c["high"] < a["low"]
             if not (bull or bear):
                 continue
@@ -90,10 +117,7 @@ class PriceDeliveryConcepts:
             filled = any(x["low"] <= lo for x in later) if bull else any(x["high"] >= hi for x in later)
             invalid = any(x["close"] < lo for x in later) if bull else any(x["close"] > hi for x in later)
             active = not invalid and not filled
-            sample = [abs(x["close"] - x["open"]) / max(x["high"] - x["low"], 1e-12)
-                      for x in bars[max(0, i - 20):i] if x["high"] > x["low"]]
-            body = abs(b["close"] - b["open"]) / max(b["high"] - b["low"], 1e-12)
-            strength = percentile_rank(body, sample)
+            strength = baselines[i - 1].body_percentile
             return [_record(
                 "fair_value_gap", tf, EvidenceDomain.STRUCTURE,
                 f"{side} three-candle imbalance {lo:.10g}–{hi:.10g}; touched={touched}; "
@@ -108,28 +132,15 @@ class PriceDeliveryConcepts:
                       "Not applicable")],
                 {"lower": lo, "upper": hi, "midpoint": (lo + hi) / 2, "direction": side,
                  "touched": touched, "fully_filled": filled, "invalidated": invalid,
-                 "displacement_body_percentile": strength, "definition": "three_candle_non_overlap_v1"},
+                 "displacement_body_percentile": strength, "body_baseline_samples": baselines[i - 1].observations,
+                 "definition": "three_candle_non_overlap_v1"},
                 bars, close, close_tf,
                 ("OHLC imbalance does not prove unfilled institutional orders.",)
             )]
         return []
 
-    def _order_block(self, tf, bars, close, close_tf):
-        # Last opposite-colour candle within three bars before a relative impulse.
-        for i in range(len(bars) - 1, max(2, len(bars) - 18), -1):
-            impulse = bars[i]
-            body = abs(impulse["close"] - impulse["open"]) / max(impulse["high"] - impulse["low"], 1e-12)
-            sample = [abs(x["close"] - x["open"]) / max(x["high"] - x["low"], 1e-12)
-                      for x in bars[max(0, i - 20):i] if x["high"] > x["low"]]
-            rank = percentile_rank(body, sample)
-            if rank is None or rank < 0.80 or impulse["close"] == impulse["open"]:
-                continue
-            bull = impulse["close"] > impulse["open"]
-            origin = next((j for j in range(i - 1, max(-1, i - 4), -1)
-                           if (bars[j]["close"] < bars[j]["open"] if bull
-                               else bars[j]["close"] > bars[j]["open"])), None)
-            if origin is None:
-                continue
+    def _order_block(self, tf, bars, close, close_tf, impulses):
+        for i, origin, rank, bull in reversed(impulses):
             block = bars[origin]
             lo, hi = block["low"], block["high"]
             later = bars[i + 1:]
@@ -164,26 +175,44 @@ class PriceDeliveryConcepts:
             elif c["high"] < a["low"]:
                 gaps.append(("bearish", c["high"], a["low"], i))
         bulls, bears = [g for g in gaps if g[0] == "bullish"], [g for g in gaps if g[0] == "bearish"]
-        for bull in reversed(bulls):
-            for bear in reversed(bears):
+        # Choose the most recent overlapping pair by recency alone (never by which side is
+        # iterated first), so a mirrored chart selects the mirrored pair.
+        # Both zones must still exist when the second gap completes. Use the
+        # actual subsequent closes to date the failure of the earlier gap.
+        failed_at = {}
+        for kind, low, high, index in gaps:
+            failure = next((
+                j for j in range(index + 1, len(bars))
+                if (bars[j]["close"] < low if kind == "bullish" else bars[j]["close"] > high)
+            ), len(bars))
+            failed_at[index] = failure
+        latest_pair = None
+        latest_key = None
+        for bull in bulls:
+            for bear in bears:
                 lo, hi = max(bull[1], bear[1]), min(bull[2], bear[2])
-                if lo >= hi or abs(bull[3] - bear[3]) > 20:
+                if lo >= hi or failed_at[min(bull[3], bear[3])] <= max(bull[3], bear[3]):
                     continue
-                latest = max(bull[3], bear[3])
-                invalid = any(x["close"] < lo or x["close"] > hi for x in bars[latest + 1:])
-                return [_record(
-                    "balanced_price_range", tf, EvidenceDomain.STRUCTURE,
-                    f"Opposing FVGs overlap at {lo:.10g}–{hi:.10g}; latest close "
-                    f"{bars[-1]['close']:.10g}; invalidated={invalid}.",
-                    [_imp(FLAT, "BPR is a two-sided reaction area; direction requires acceptance or rejection",
-                          not invalid, "Completed close outside the overlap invalidates the balance zone",
-                          requires=("observe which side accepts or rejects the overlap",))],
-                    {"lower": lo, "upper": hi, "bullish_fvg_index": bull[3],
-                     "bearish_fvg_index": bear[3], "invalidated": invalid,
-                     "definition": "overlap_of_opposing_three_candle_fvgs_v1"},
-                    bars, close, close_tf,
-                    ("OHLC overlap does not establish order-book balance.",)
-                )]
+                key = (max(bull[3], bear[3]), -abs(bull[3] - bear[3]))
+                if latest_key is None or key > latest_key:
+                    latest_key, latest_pair = key, (bull, bear, lo, hi)
+        if latest_pair is not None:
+            bull, bear, lo, hi = latest_pair
+            latest = max(bull[3], bear[3])
+            invalid = any(x["close"] < lo or x["close"] > hi for x in bars[latest + 1:])
+            return [_record(
+                "balanced_price_range", tf, EvidenceDomain.STRUCTURE,
+                f"Opposing FVGs overlap at {lo:.10g}–{hi:.10g}; latest close "
+                f"{bars[-1]['close']:.10g}; invalidated={invalid}.",
+                [_imp(FLAT, "BPR is a two-sided reaction area; direction requires acceptance or rejection",
+                      not invalid, "Completed close outside the overlap invalidates the balance zone",
+                      requires=("observe which side accepts or rejects the overlap",))],
+                {"lower": lo, "upper": hi, "bullish_fvg_index": bull[3],
+                 "bearish_fvg_index": bear[3], "invalidated": invalid,
+                 "definition": "overlap_of_opposing_three_candle_fvgs_v1"},
+                bars, close, close_tf,
+                ("OHLC overlap does not establish order-book balance.",)
+            )]
         return []
 
     def _dealing_range(self, tf, bars, close, close_tf):
@@ -209,11 +238,8 @@ class PriceDeliveryConcepts:
     def _break_retest(self, tf, bars, close, close_tf):
         # Find the most recent close beyond a prior 20-bar extreme. Only bars
         # after that break can establish retest, hold or failure.
-        start = max(20, len(bars) - 12)
-        for i in range(len(bars) - 1, start - 1, -1):
+        for i in range(len(bars) - 1, 19, -1):
             prior = bars[i - 20:i]
-            if len(prior) != 20:
-                continue
             ceiling = max(x["high"] for x in prior)
             floor = min(x["low"] for x in prior)
             current = bars[i]
@@ -254,19 +280,21 @@ class PriceDeliveryConcepts:
 
 
 
-    def _displacement(self, tf, bars, close, close_tf):
+    def _displacement(self, tf, bars, close, close_tf, history):
         current = bars[-1]
         span = current["high"] - current["low"]
         if span <= 0:
             return []
-        prior_ranges = [x["high"]-x["low"] for x in bars[-21:-1] if x["high"]>x["low"]]
-        if len(prior_ranges) < 10:
+        baseline, usual_body = history.median_range, history.median_body_ratio
+        if baseline is None or usual_body is None:
             return []
-        baseline = sorted(prior_ranges)[len(prior_ranges)//2]
         body_ratio = abs(current["close"]-current["open"])/span
         multiple = span/baseline if baseline>0 else 0.0
         close_location = (current["close"]-current["low"])/span
-        displaced = multiple>=1.5 and body_ratio>=0.65
+        expanded = span > baseline
+        # The directional body exceeds both its historical median share and the combined wicks.
+        dominant = body_ratio > usual_body and abs(current["close"] - current["open"]) > span / 2
+        displaced = expanded and dominant
         side = LONG if current["close"]>current["open"] else SHORT if current["close"]<current["open"] else FLAT
         return [_record(
             "displacement",tf,EvidenceDomain.STRUCTURE,
@@ -275,34 +303,17 @@ class PriceDeliveryConcepts:
             [_imp(side,f"{side} relative-range displacement" if displaced else "No qualifying displacement on latest completed bar",
                   displaced and side!=FLAT,"A completed close back through the displacement origin invalidates the impulse",
                   stop=current["open"],requires=("confirmed structure break or shift","participation/volume confirmation"),
-                  conflicts=("range expansion without directional body dominance",) if multiple>=1.5 and body_ratio<0.65 else ())],
+                  conflicts=("range expansion without directional body dominance",) if expanded and not dominant else ())],
             {"direction":side,"range_multiple":multiple,"body_ratio":body_ratio,
              "close_location":close_location,"displacement":displaced,
-             "prior_median_range":baseline,"definition":"latest_range_1_5x_median_and_body_ratio_0_65_v1"},
+             "prior_median_range":baseline, "prior_median_body_ratio":usual_body,
+             "prior_range_samples":history.observations, "definition":"own_history_range_expansion_body_dominance_v2"},
             bars,close,close_tf,
             ("OHLC displacement is a price expansion proxy; it does not prove aggressive institutional execution.",)
         )]
 
-    def _breaker_block(self, tf, bars, close, close_tf):
-        # An origin zone is a breaker only after the original block is invalidated
-        # and price subsequently retests it from the opposite side.
-        for i in range(len(bars)-1,max(2,len(bars)-30),-1):
-            impulse=bars[i]
-            span=impulse["high"]-impulse["low"]
-            if span<=0:
-                continue
-            sample=[abs(x["close"]-x["open"])/max(x["high"]-x["low"],1e-12)
-                    for x in bars[max(0,i-20):i] if x["high"]>x["low"]]
-            ratio=abs(impulse["close"]-impulse["open"])/span
-            rank=percentile_rank(ratio,sample)
-            if rank is None or rank<0.80 or impulse["close"]==impulse["open"]:
-                continue
-            original_bull=impulse["close"]>impulse["open"]
-            origin=next((j for j in range(i-1,max(-1,i-4),-1)
-                         if (bars[j]["close"]<bars[j]["open"] if original_bull
-                             else bars[j]["close"]>bars[j]["open"])),None)
-            if origin is None:
-                continue
+    def _breaker_block(self, tf, bars, close, close_tf, impulses):
+        for i, origin, rank, original_bull in reversed(impulses):
             zone=bars[origin]
             lo,hi=zone["low"],zone["high"]
             invalidation_index=None

@@ -1,4 +1,4 @@
-"""Descriptive distribution-shift diagnostics for completed-bar returns.
+"""Descriptive distribution-shift diagnostics for completed-bar price changes.
 
 This is not a predictive regime classifier. It exposes possible mean/variance
 changes for the Brain to challenge against structure, volatility and execution
@@ -39,15 +39,16 @@ class RegimeSwitchingConcepts:
                 bars.append({**bar, **values})
             if len(bars) < 61:
                 continue
-            closes = [float(bar["close"]) for bar in bars]
-            returns = [
-                math.log(current / previous)
-                for previous, current in zip(closes, closes[1:])
-                if previous > 0 and current > 0
-            ]
-            if len(returns) < 60:
-                continue
-            baseline, recent = returns[-60:-30], returns[-30:]
+            # Equal nonoverlapping windows define this two-sample comparison.
+            # Changes in quote units mirror exactly; the t statistic and the
+            # variance ratio remove the quote unit when comparing instruments.
+            closes = [bar["close"] for bar in bars[-61:]]
+            changes = [current - previous for previous, current in zip(closes, closes[1:])]
+            baseline, recent = changes[:30], changes[30:]
+            log_returns = (
+                [math.log(current / previous) for previous, current in zip(closes, closes[1:])]
+                if all(price > 0 for price in closes) else None
+            )
             base_mean, recent_mean = mean(baseline), mean(recent)
             base_var = variance(baseline)
             recent_var = variance(recent)
@@ -73,23 +74,27 @@ class RegimeSwitchingConcepts:
             epoch = finite(bars[-1].get("timestamp_epoch")) if bars[-1].get("source_timestamp_verified") is True else None
             facts = {
                 "baseline_return_count": len(baseline), "recent_return_count": len(recent),
-                "baseline_mean_log_return": base_mean, "recent_mean_log_return": recent_mean,
+                "baseline_mean_log_return": mean(log_returns[:30]) if log_returns else None,
+                "recent_mean_log_return": mean(log_returns[30:]) if log_returns else None,
+                "baseline_mean_price_change": base_mean, "recent_mean_price_change": recent_mean,
                 "mean_shift_t_statistic": mean_shift_t, "mean_shift_detected": mean_shift,
-                "baseline_return_variance": base_var, "recent_return_variance": recent_var,
+                "baseline_return_variance": variance(log_returns[:30]) if log_returns else None,
+                "recent_return_variance": variance(log_returns[30:]) if log_returns else None,
+                "baseline_price_change_variance": base_var, "recent_price_change_variance": recent_var,
                 "variance_ratio_recent_to_baseline": variance_ratio,
                 "variance_shift_detected": variance_shift, "possible_transition": detected,
                 "mean_shift_direction": direction,
                 "baseline_lag1_autocorrelation": base_autocorr,
                 "recent_lag1_autocorrelation": recent_autocorr,
-                "windows": {"baseline": "previous 30 log returns", "recent": "latest 30 log returns"},
+                "windows": {"baseline": "previous 30 close changes", "recent": "latest 30 close changes"},
                 "diagnostic_conventions": {"absolute_mean_shift_t": 2.0, "variance_ratio_upper": 2.0,
                                            "variance_ratio_lower": 0.5},
-                "definition": "two_nonoverlapping_30_return_welch_mean_and_variance_shift_v1",
+                "definition": "two_nonoverlapping_30_close_change_mean_and_variance_shift_v2",
             }
             readings.append(ConceptReading(
                 concept="regime_switching", timeframe=timeframe, domain=EvidenceDomain.VOLATILITY,
                 applicable=True,
-                applicability_reason="Two complete 30-return samples are available for a descriptive distribution comparison",
+                applicability_reason="Two complete 30-change samples are available for a descriptive distribution comparison",
                 observation=(f"{timeframe} distribution comparison: mean-shift t={mean_shift_t:.3f}; "
                              f"variance ratio={variance_ratio}; possible transition={detected}."),
                 implications=(Implication(
