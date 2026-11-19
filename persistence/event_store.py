@@ -500,6 +500,26 @@ class EventStore:
             print(f"[event_store] replay failed: {exc}", file=sys.stderr)
             return []
 
+    def recent_fill_benchmarks(self, symbol: str) -> list[dict]:
+        """Read only the benchmark from each receipt, never the whole decision snapshot."""
+        from persistence.domain_events import DECISION_TRADE_ENTRY_SNAPSHOT
+        with self._db_lock:
+            # Limit broker reconciliation work per concept pass. This is a sample,
+            # not a claim about the full historical distribution of executions.
+            rows = self._conn.execute(
+                "SELECT parent_id, json_extract(payload_json, '$.fill_benchmark') "
+                "FROM events WHERE event_type=? AND symbol=? AND source_module=? "
+                "AND json_valid(payload_json) AND json_type(payload_json, '$.fill_benchmark')='object' "
+                "ORDER BY ts_utc_ms DESC, seq DESC LIMIT 32",
+                (DECISION_TRADE_ENTRY_SNAPSHOT, symbol.upper(), "execution.decision_provenance"),
+            ).fetchall()
+        result = []
+        for ticket, raw in rows:
+            receipt = json.loads(raw)
+            if receipt.get("order_ticket") == ticket:
+                result.append(receipt)
+        return result
+
     def get_trade_close_map(self) -> Dict[str, Dict[str, Any]]:
         """Return {order_id: payload} for all TRADE_CLOSE events (exit attribution)."""
         try:

@@ -6511,6 +6511,9 @@ class EventDrivenSystem:
                     getattr(intent, "timestamp", None), "isoformat", lambda: ""
                 )(),
             }
+            fill_benchmark = _response_value("fill_benchmark")
+            if isinstance(fill_benchmark, dict):
+                context["fill_benchmark"] = fill_benchmark
             contexts = getattr(self, "_entry_context", None)
             if isinstance(contexts, dict):
                 prior = contexts.get(ticket)

@@ -23,6 +23,7 @@ from ops.redaction import mask_account_id
 from platforms.order_idempotency import (
     build_order_comment, extract_idempotency_key, matches_idempotency_comment,
 )
+from platforms.mt5.fill_benchmark import account_scope, capture_fill_benchmark
 from platforms.mt5.clock import (
     CLOCK_MAX_AGE_SECONDS, CLOCK_MAX_UNCERTAINTY_SECONDS,
     estimate_mt5_server_clock, query_ntp_sources,
@@ -797,6 +798,43 @@ class MT5Connector(BaseConnector):
             {**self._record_fields(deal), "source": "mt5.history_deals_get", "source_verified": True}
             for deal in deals
         ]
+
+    def get_benchmark_deal(self, symbol: str, receipt: dict) -> dict | None:
+        """Read the exact deal acknowledged for our market request on the same account."""
+        self._require_connection()
+        scope = account_scope(mt5.account_info())
+        if not scope or scope != receipt.get("account_scope"):
+            return None
+        if self.symbol_map(symbol) != receipt.get("native_symbol"):
+            return None
+        order = int(receipt["order_ticket"])
+        deal_id = int(receipt["deal_ticket"])
+        if order <= 0 or deal_id <= 0:
+            return None
+        # In MT5's Python API the ticket filter here is the order ticket. Confirm
+        # the exact deal too, since one order may have several partial executions.
+        deals = mt5.history_deals_get(ticket=order)
+        if deals is None:
+            raise RuntimeError("MT5 benchmark deal history unavailable")
+        if account_scope(mt5.account_info()) != scope:
+            return None
+        records = [item for item in deals if item.ticket == deal_id and item.order == order]
+        if len(records) != 1:
+            return None
+        item = records[0]
+        types = {mt5.DEAL_TYPE_BUY: "BUY", mt5.DEAL_TYPE_SELL: "SELL"}
+        if (
+            item.symbol != receipt["native_symbol"] or item.magic != self._magic
+            or types.get(item.type) != receipt["side"]
+            or item.entry != mt5.DEAL_ENTRY_IN
+            or type(item.time_msc) is not int or type(item.time) is not int
+            or item.time_msc <= 0 or item.time_msc // 1000 != item.time
+        ):
+            return None
+        return {
+            "time_msc": item.time_msc, "price": item.price, "volume": item.volume,
+            "commission": getattr(item, "commission", None),
+        }
 
     def get_position_deal_history_checked(self, position_id: str) -> list[dict]:
         """Return complete broker deal history for one exact position identifier."""
@@ -1603,6 +1641,7 @@ class MT5Connector(BaseConnector):
         # CLOSED if it exceeds free margin — prevents margin-call entries that a
         # balance/equity estimate would miss. order_calc_margin returns None if
         # it cannot compute (e.g. unsupported), in which case we skip the check.
+        acct = None
         try:
             req_margin = mt5.order_calc_margin(order_type, mapped, float(lots), price)
             acct = mt5.account_info()
@@ -1664,7 +1703,8 @@ class MT5Connector(BaseConnector):
                     )
             t0 = _time.monotonic()
             result = mt5.order_send(request)
-            latency = (_time.monotonic() - t0) * 1000
+            response_monotonic = _time.monotonic()
+            latency = (response_monotonic - t0) * 1000
 
             if result is not None and result.retcode in done_codes:
                 break
@@ -1685,6 +1725,7 @@ class MT5Connector(BaseConnector):
                 # Re-price off a fresh tick before retrying (requote/price-off).
                 fresh = mt5.symbol_info_tick(mapped)
                 if fresh is not None and fresh.bid > 0 and fresh.ask > 0:
+                    tick = fresh
                     price = fresh.ask if is_buy else fresh.bid
                     request["price"] = price
                 continue
@@ -1746,6 +1787,12 @@ class MT5Connector(BaseConnector):
             sl=sl,
             tp=tp,
             platform="mt5",
+            fill_benchmark=capture_fill_benchmark(
+                account=acct, clock=clock, tick=tick, native_symbol=mapped,
+                direction="BUY" if is_buy else "SELL", result=result, submitted_price=price,
+                submit_monotonic=t0, response_monotonic=response_monotonic,
+                max_tick_age_seconds=self._max_tick_age_seconds,
+            ),
         )
 
     def place_pending_order(

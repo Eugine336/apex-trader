@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from loguru import logger
+
 from cognition.concepts.base import FLAT, ConceptReading, Implication, reference_price
 from cognition.concepts.auction_utils import last_source_epoch
 from cognition.contracts import EvidenceDomain
@@ -105,8 +107,9 @@ class ProviderDataReadings:
         def fetch(kind: ObservationKind, instrument: str | None = None) -> list[DataObservation]:
             try:
                 if callable(getattr(registry, "fetch_with_status", None)):
+                    bounds = {"end_epoch": cutoff} if kind is ObservationKind.EXECUTION_COST else {}
                     result, errors = registry.fetch_with_status(
-                        kind, canonical_instrument=instrument,
+                        kind, canonical_instrument=instrument, **bounds,
                     )
                     for provider, error in errors.items():
                         provider_errors[f"{kind.value}:{provider}"] = error
@@ -378,8 +381,22 @@ class ProviderDataReadings:
                 "quote_timestamp_epoch": quote_epoch, "fill_timestamp_epoch": fill_epoch,
                 "commission_account_currency": commission,
                 "commission_currency": commission_currency or None,
+                "benchmark": values.get("benchmark"),
+                "raw_fill_time_msc": values.get("raw_fill_time_msc"),
+                "raw_quote_time_msc": values.get("raw_quote_time_msc"),
+                "fill_time_domain": values.get("fill_time_domain"),
+                "broker_offset_seconds": values.get("broker_offset_seconds"),
+                "utc_uncertainty_seconds": values.get("utc_uncertainty_seconds"),
             })
+        for channel, error in provider_errors.items():
+            if channel.split(":", 1)[0] == ObservationKind.EXECUTION_COST.value:
+                logger.warning("[concepts] broker execution history unavailable for {} ({} / {})",
+                               symbol, channel, error)
         if execution_rows:
+            groups: dict[tuple, list[float]] = {}
+            for row in execution_rows:
+                key = (row["provider"], row["venue"], row["side"], row["executed_size"])
+                groups.setdefault(key, []).append(row["signed_price_impact"])
             missing_costs = any(
                 row["commission_account_currency"] is None
                 or not row["commission_currency"]
@@ -391,9 +408,15 @@ class ProviderDataReadings:
                 f"{symbol}: {len(execution_rows)} broker-confirmed executions are paired with contemporaneous executable quotes.",
                 {"executions": execution_rows, "execution_count": len(execution_rows),
                  "mean_signed_price_impact": sum(row["signed_price_impact"] for row in execution_rows) / len(execution_rows),
+                 "observed_slippage_by_side_and_size": [
+                     {"provider": provider, "venue": venue, "side": side, "executed_size": size,
+                      "count": len(values), "mean_signed_price_slippage": sum(values) / len(values)}
+                     for (provider, venue, side, size), values in sorted(groups.items())
+                 ],
                  "commission_complete": not missing_costs,
                  "predictive_fill_probability_emitted": False},
-                ("selection-complete samples across intended order sizes, sides, volatility states and sessions",)
+                ("selection-complete samples across intended order sizes, sides, volatility states and sessions",
+                 "causal market impact and post-fill adverse selection require independent counterfactual and markout evidence",)
                 + (("complete commission amount and account-currency conversion",) if missing_costs else ()),
                 provider_epoch=max(row["fill_timestamp_epoch"] for row in execution_rows),
             ))
